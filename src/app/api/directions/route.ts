@@ -60,8 +60,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Call Google Directions API avoiding tolls and requesting alternatives
-    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&avoid=tolls&alternatives=true&region=th&key=${apiKey}`;
+    // Call Google Directions API avoiding tolls, requesting alternatives, and using motorcycle mode
+    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&avoid=tolls&alternatives=true&mode=two_wheeler&region=th&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();
