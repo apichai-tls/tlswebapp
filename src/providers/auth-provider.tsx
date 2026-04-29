@@ -10,14 +10,14 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string) => User;
+  login: (email: string, password?: string) => User;
   logout: () => void;
   isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
-  login: () => ({ id: '', email: '', role: 'admin' }),
+  login: (email, password) => ({ id: '', email: '', role: 'admin' }),
   logout: () => {},
   isLoading: true,
 });
