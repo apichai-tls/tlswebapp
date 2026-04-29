@@ -115,7 +115,7 @@ export default function FeeCalculatorPage() {
                   const newCoords = { lat: loc.lat, lng: loc.lng };
                   setTargetLocation({
                     name: loc.name,
-                    address: loc.name,
+                    address: loc.address || loc.name,
                     coords: newCoords
                   });
                   if (isAutoSelectShop) {

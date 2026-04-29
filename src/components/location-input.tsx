@@ -78,10 +78,15 @@ export function LocationInput({ id, placeholder, value, onChange, onSelectLocati
                   onSelectLocation(result);
                   setIsOpen(false);
                 }}
-                className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-slate-50 transition-colors"
+                className="flex cursor-pointer items-start gap-3 px-3 py-2 hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0"
               >
-                <MapPin size={16} className="mt-0.5 shrink-0 text-slate-400" />
-                <span className="line-clamp-2 text-slate-700">{result.name}</span>
+                <MapPin size={16} className="mt-1 shrink-0 text-slate-400" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-slate-900 truncate">{result.name}</p>
+                  {result.address && result.address !== result.name && (
+                    <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">{result.address}</p>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

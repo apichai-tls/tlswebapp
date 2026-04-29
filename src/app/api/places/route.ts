@@ -35,7 +35,8 @@ export async function GET(request: NextRequest) {
     // Format the response to match what the frontend expects
     const formattedResults = (data.results || []).map((item: any) => ({
       placeId: item.place_id,
-      name: item.formatted_address || item.name,
+      name: item.name || item.formatted_address,
+      address: item.formatted_address || item.name,
       lat: item.geometry?.location?.lat || 0,
       lng: item.geometry?.location?.lng || 0,
     }));

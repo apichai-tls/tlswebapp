@@ -3,6 +3,7 @@ import { settingsStore, poiStore, getClosestShopId, type ShopLocation, type LatL
 export interface SearchResult {
   placeId: string;
   name: string;
+  address: string;
   lat: number;
   lng: number;
 }
@@ -27,6 +28,7 @@ export async function searchLocation(query: string): Promise<SearchResult[]> {
   let results: SearchResult[] = localMatches.map(poi => ({
     placeId: poi.id,
     name: `⭐ ${poi.name}`, // Add star to indicate local saved POI
+    address: poi.address,
     lat: poi.coords.lat,
     lng: poi.coords.lng,
   }));
