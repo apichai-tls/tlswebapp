@@ -60,8 +60,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Call Google Directions API avoiding tolls
-    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&avoid=tolls&region=th&key=${apiKey}`;
+    // Call Google Directions API avoiding tolls and requesting alternatives
+    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&avoid=tolls&alternatives=true&region=th&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();
@@ -71,16 +71,31 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Google Directions API failed", details: data }, { status: 500 });
     }
 
-    const route = data.routes[0];
-    if (!route || !route.legs || route.legs.length === 0) {
+    if (!data.routes || data.routes.length === 0) {
       return NextResponse.json({ error: "No routes found" }, { status: 404 });
     }
 
-    const distanceMeters = route.legs[0].distance.value;
+    // Find the route with the shortest physical distance
+    let shortestRoute = data.routes[0];
+    let minDistance = shortestRoute.legs?.[0]?.distance?.value || Infinity;
+
+    for (let i = 1; i < data.routes.length; i++) {
+      const dist = data.routes[i].legs?.[0]?.distance?.value;
+      if (dist !== undefined && dist < minDistance) {
+        shortestRoute = data.routes[i];
+        minDistance = dist;
+      }
+    }
+
+    if (minDistance === Infinity) {
+      return NextResponse.json({ error: "Could not calculate distance" }, { status: 400 });
+    }
+
+    const distanceMeters = minDistance;
     const distanceKm = Math.round((distanceMeters / 1000) * 10) / 10;
     
     // Decode the polyline so the frontend can just draw it easily
-    const encodedPolyline = route.overview_polyline.points;
+    const encodedPolyline = shortestRoute.overview_polyline.points;
     const coordinates = decodePolyline(encodedPolyline);
 
     return NextResponse.json({
