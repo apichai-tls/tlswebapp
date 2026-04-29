@@ -61,9 +61,10 @@ import {
   LogOut,
   Settings,
   CalendarClock,
+  Calculator,
 } from "lucide-react";
-import { toast } from "sonner";
 import Link from "next/link";
+import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
@@ -300,6 +301,15 @@ export default function AdminPage() {
                   <Map size={18} />
                   Live Map
                 </motion.div>
+                <Link href="/tools/fee-calculator" className="block">
+                  <motion.div
+                    whileHover={{ x: 2 }}
+                    className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+                  >
+                    <Calculator size={18} />
+                    Distance Calculator
+                  </motion.div>
+                </Link>
                 <motion.div
                   onClick={() => setActiveTab("settings")}
                   whileHover={{ x: 2 }}
