@@ -128,3 +128,8 @@
     @apply font-sans;
   }
 }
+
+/* Fix React-Leaflet z-index issues overlapping with Shadcn UI elements */
+.leaflet-container {
+  z-index: 10 !important;
+}

@@ -1,0 +1,155 @@
+{
+  "priceLists": [
+    {
+      "id": "regular",
+      "name": "Regular (Standard Pricing)",
+      "isDefault": true,
+      "servicePrices": {
+        "p1": 40,
+        "p2": 60,
+        "p3": 35,
+        "p4": 150,
+        "p5": 50
+      }
+    }
+  ],
+  "customers": [
+    {
+      "id": "CUST-001",
+      "name": "Khun Somchai (VIP)",
+      "phone": "081-234-5678",
+      "defaultAddress": "The Monument Thong Lo",
+      "defaultCoords": { "lat": 13.7385, "lng": 100.5826 },
+      "isMember": true
+    },
+    {
+      "id": "CUST-002",
+      "name": "Khun Manee",
+      "phone": "089-876-5432",
+      "defaultAddress": "Ideocraft Sukhumvit 11",
+      "defaultCoords": { "lat": 13.7431, "lng": 100.5568 },
+      "isMember": false
+    },
+    {
+      "id": "CUST-003",
+      "name": "บริษัท แสนดี จำกัด",
+      "phone": "02-111-2222",
+      "defaultAddress": "Silom Complex",
+      "defaultCoords": { "lat": 13.7285, "lng": 100.5342 },
+      "isMember": true
+    }
+  ],
+  "services": [
+    { "id": "p1", "name": "Wash & Fold (kg)", "price": 40, "memberPrice": 35, "category": "Weight", "unit": "kg" },
+    { "id": "p2", "name": "Wash & Iron (kg)", "price": 60, "memberPrice": 50, "category": "Weight", "unit": "kg" },
+    { "id": "p3", "name": "Shirt/Pants", "price": 35, "memberPrice": 30, "category": "Clothing", "unit": "piece" },
+    { "id": "p4", "name": "Duvet/Comforter", "price": 150, "memberPrice": 120, "category": "Bedding" },
+    { "id": "p5", "name": "Express Service", "price": 50, "memberPrice": 50, "category": "Add-on" }
+  ],
+  "riders": [
+    {
+      "id": "RIDER-01",
+      "name": "Somchai R.",
+      "phone": "081-111-1111",
+      "status": "online",
+      "rating": 4.8,
+      "completedJobs": 142,
+      "currentLocation": { "lat": 13.7380, "lng": 100.5600 },
+      "avatarUrl": "https://ui-avatars.com/api/?name=Somchai+R&background=f59e0b&color=fff&size=150",
+      "nationalId": "1100500000001",
+      "vehicleType": "motorcycle",
+      "vehiclePlate": "1กข 1234 กทม"
+    },
+    {
+      "id": "RIDER-02",
+      "name": "Narong S.",
+      "phone": "082-222-2222",
+      "status": "busy",
+      "rating": 4.9,
+      "completedJobs": 310,
+      "currentLocation": { "lat": 13.7420, "lng": 100.5500 },
+      "avatarUrl": "https://ui-avatars.com/api/?name=Narong+S&background=6366f1&color=fff&size=150",
+      "nationalId": "1100500000002",
+      "vehicleType": "motorcycle",
+      "vehiclePlate": "3กค 5678 กทม"
+    },
+    {
+      "id": "RIDER-03",
+      "name": "Piti W.",
+      "phone": "083-333-3333",
+      "status": "offline",
+      "rating": 4.6,
+      "completedJobs": 89,
+      "avatarUrl": "https://ui-avatars.com/api/?name=Piti+W&background=0D8ABC&color=fff&size=150",
+      "nationalId": "1100500000003",
+      "vehicleType": "truck",
+      "vehiclePlate": "70-1234 กทม"
+    },
+    {
+      "id": "RIDER-04",
+      "name": "Manee J.",
+      "phone": "084-444-4444",
+      "status": "online",
+      "rating": 4.9,
+      "completedJobs": 215,
+      "currentLocation": { "lat": 13.7300, "lng": 100.5300 },
+      "avatarUrl": "https://ui-avatars.com/api/?name=Manee+J&background=10b981&color=fff&size=150",
+      "nationalId": "1100500000004",
+      "vehicleType": "motorcycle",
+      "vehiclePlate": "9กง 9999 กทม"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "JOB-001",
+      "type": "full_service",
+      "pickupLocation": "Sukhumvit Soi 11, Bangkok",
+      "dropoffLocation": "That Laundry Shop (Branch 1)",
+      "pickupCoords": { "lat": 13.7433, "lng": 100.5488 },
+      "dropoffCoords": { "lat": 13.7417, "lng": 100.5526 },
+      "distance": 1.2,
+      "fee": 9.6,
+      "status": "pending",
+      "createdAt": "2026-04-23T01:30:00.000Z",
+      "scheduledAt": "2026-04-23T02:00:00.000Z",
+      "pickupScheduledAt": "2026-04-23T02:00:00.000Z",
+      "deliveryScheduledAt": "2026-04-24T07:00:00.000Z",
+      "legs": {
+        "pickupOutbound": { "scheduledAt": "2026-04-23T02:00:00.000Z", "status": "pending" },
+        "pickupInbound": { "scheduledAt": "2026-04-23T02:00:00.000Z", "status": "pending" },
+        "deliveryOutbound": { "scheduledAt": "2026-04-24T07:00:00.000Z", "status": "pending" },
+        "deliveryInbound": { "scheduledAt": "2026-04-24T07:00:00.000Z", "status": "pending" }
+      },
+      "serviceType": "wash_fold",
+      "source": "app",
+      "totalAmount": 120
+    },
+    {
+      "id": "JOB-002",
+      "type": "full_service",
+      "pickupLocation": "Silom Road, Bang Rak, Bangkok",
+      "dropoffLocation": "That Laundry Shop (Branch 1)",
+      "pickupCoords": { "lat": 13.7262, "lng": 100.5235 },
+      "dropoffCoords": { "lat": 13.7417, "lng": 100.5526 },
+      "distance": 4.8,
+      "fee": 38.4,
+      "status": "active",
+      "createdAt": "2026-04-23T02:15:00.000Z",
+      "scheduledAt": "2026-04-23T07:00:00.000Z",
+      "pickupRiderId": "RIDER-01",
+      "deliveryRiderId": "RIDER-02",
+      "pickupScheduledAt": "2026-04-23T07:00:00.000Z",
+      "deliveryScheduledAt": "2026-04-24T03:00:00.000Z",
+      "riderId": "RIDER-01",
+      "legs": {
+        "pickupOutbound": { "scheduledAt": "2026-04-23T07:00:00.000Z", "status": "completed", "riderId": "RIDER-01", "completedAt": "2026-04-23T07:10:00.000Z" },
+        "pickupInbound": { "scheduledAt": "2026-04-23T07:00:00.000Z", "status": "in_transit", "riderId": "RIDER-01" },
+        "deliveryOutbound": { "scheduledAt": "2026-04-24T03:00:00.000Z", "status": "pending", "riderId": "RIDER-02" },
+        "deliveryInbound": { "scheduledAt": "2026-04-24T03:00:00.000Z", "status": "pending", "riderId": "RIDER-02" }
+      },
+      "serviceType": "wash_iron_fold",
+      "source": "app",
+      "totalAmount": 350
+    }
+  ]
+}
