@@ -219,11 +219,8 @@ export function calculateFee(distanceKm: number): number {
   
   const distanceFare = Math.ceil(distanceKm * 3) * 10;
   
-  if (distanceFare < 30) {
-    return 30; // ถ้าคำนวณระยะทางได้ต่ำกว่า 30 บาท ให้คิดแบบเหมา 30 บาท (ไม่ต้องบวกเพิ่ม)
-  } else {
-    return 30 + distanceFare; // ถ้าเกิน 30 บาท ให้เอาค่าเรียก 30 บาท + ค่าระยะทาง
-  }
+  // คิดราคาตามระยะทางจริง แต่มีขั้นต่ำที่ 30 บาท
+  return Math.max(30, distanceFare);
 }
 
 export function randomDistance(): number {
