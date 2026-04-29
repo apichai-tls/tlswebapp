@@ -40,20 +40,34 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setIsLoading(false);
   }, []);
 
-  const login = (email: string) => {
-    let role: 'admin' | 'rider' | 'manager' = 'admin';
-    let id = 'admin_1';
-    
-    if (email.toLowerCase().startsWith('rider')) {
-      role = 'rider';
-      const match = email.match(/rider(\d+)/);
-      id = match ? `RIDER-${match[1].padStart(2, '0')}` : 'RIDER-01';
-    } else if (email.toLowerCase().startsWith('manager')) {
-      role = 'manager';
-      id = 'manager_1';
+  const login = (email: string, password?: string) => {
+    // Valid Users Database
+    const users: Record<string, { role: 'admin' | 'manager' | 'rider', id: string, pass: string }> = {
+      'admin@tls.com': { role: 'admin', id: 'admin_1', pass: 'admin1234' },
+      'manager@tls.com': { role: 'manager', id: 'manager_1', pass: 'manager1234' },
+      'rider1@tls.com': { role: 'rider', id: 'RIDER-01', pass: 'rider1234' },
+      'rider2@tls.com': { role: 'rider', id: 'RIDER-02', pass: 'rider1234' },
+      'rider3@tls.com': { role: 'rider', id: 'RIDER-03', pass: 'rider1234' },
+      'rider4@tls.com': { role: 'rider', id: 'RIDER-04', pass: 'rider1234' },
+    };
+
+    const targetEmail = email.toLowerCase().trim();
+    const validUser = users[targetEmail];
+
+    if (!validUser) {
+      throw new Error("Invalid email or password");
     }
 
-    const userData: User = { email, role, id };
+    if (password && password !== validUser.pass) {
+      throw new Error("Invalid email or password");
+    }
+
+    const userData: User = { 
+      email: targetEmail, 
+      role: validUser.role, 
+      id: validUser.id 
+    };
+    
     setUser(userData);
     localStorage.setItem('authUser', JSON.stringify(userData));
     return userData;

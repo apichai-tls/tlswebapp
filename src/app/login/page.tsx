@@ -32,7 +32,7 @@ function LoginForm() {
     await new Promise(r => setTimeout(r, 1200));
 
     try {
-      const user = login(email);
+      const user = login(email, password);
       toast.success(`Welcome back, ${user.role}!`);
       
       const redirectPath = searchParams.get("redirect");
@@ -41,8 +41,8 @@ function LoginForm() {
       } else {
         router.push(user.role === "admin" || user.role === "manager" ? "/admin" : "/rider");
       }
-    } catch (error) {
-      toast.error("Login failed. Please try again.");
+    } catch (error: any) {
+      toast.error(error.message || "Login failed. Please try again.");
       setIsSubmitting(false);
     }
   };
@@ -58,7 +58,7 @@ function LoginForm() {
           <Input 
             id="email"
             type="email"
-            placeholder="name@example.com"
+            placeholder="admin@tls.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className="pl-10 h-12 bg-slate-50 border-transparent focus:bg-white focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition-all rounded-xl shadow-sm text-base"
@@ -66,8 +66,11 @@ function LoginForm() {
             autoFocus
           />
         </div>
-        <p className="text-[11px] text-slate-400 pl-1">
-          Tip: Use <span className="font-semibold text-slate-600">rider@test.com</span> for Rider app, <span className="font-semibold text-slate-600">manager@test.com</span> for Manager, anything else for Admin.
+        <p className="text-[11px] text-slate-400 pl-1 leading-relaxed">
+          <span className="font-semibold text-indigo-500">Admin:</span> admin@tls.com (pass: admin1234)<br/>
+          <span className="font-semibold text-emerald-500">Manager:</span> manager@tls.com (pass: manager1234)<br/>
+          <span className="font-semibold text-amber-500">Rider:</span> rider1@tls.com (pass: rider1234)<br/>
+          <span className="text-[10px]">*Riders 1-4 are available (rider1, rider2, etc.)</span>
         </p>
       </div>
 
