@@ -215,8 +215,15 @@ export const riderStore = {
 // --- JOB STORE ---
 // Fee formula: ระยะทางปัดเศษขึ้น คูณ 3 คูณ 10 บาท
 export function calculateFee(distanceKm: number): number {
-  const fee = Math.ceil(distanceKm) * 3 * 10;
-  return Math.max(30, fee);
+  if (!distanceKm || distanceKm <= 0) return 0;
+  
+  const distanceFare = Math.ceil(distanceKm * 3) * 10;
+  
+  if (distanceFare < 30) {
+    return 30; // ถ้าคำนวณระยะทางได้ต่ำกว่า 30 บาท ให้คิดแบบเหมา 30 บาท (ไม่ต้องบวกเพิ่ม)
+  } else {
+    return 30 + distanceFare; // ถ้าเกิน 30 บาท ให้เอาค่าเรียก 30 บาท + ค่าระยะทาง
+  }
 }
 
 export function randomDistance(): number {

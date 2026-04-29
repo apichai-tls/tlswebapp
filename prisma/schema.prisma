@@ -1,0 +1,120 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Customer {
+  id             String   @id @default(uuid())
+  name           String
+  phone          String
+  defaultAddress String
+  defaultLat     Float
+  defaultLng     Float
+  priceListId    String?
+  creditBalance  Float    @default(0)
+  tier           String?  // "regular" | "bronze" | "silver" | "gold" | "platinum"
+  isMember       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  jobs           Job[]
+}
+
+model Job {
+  id                  String    @id @default(uuid())
+  type                String    // "pickup" | "delivery" | "full_service"
+  customerId          String?
+  customerName        String?
+  customerPhone       String?
+  pickupLocation      String
+  dropoffLocation     String
+  pickupLat           Float
+  pickupLng           Float
+  dropoffLat          Float
+  dropoffLng          Float
+  distance            Float
+  fee                 Float
+  status              String    // "pending" | "accepted" | "pickup" | "delivery" | "completed" | "active"
+  createdAt           DateTime  @default(now())
+  scheduledAt         DateTime
+  completedAt         DateTime?
+  proofImageUrl       String?
+  riderId             String?
+  bagImageUrl         String?
+  serviceType         String?   // "wash_fold" | "wash_iron_fold"
+  source              String?   // "app" | "pos"
+  totalAmount         Float?
+  paymentMethod       String?   // "cash" | "transfer" | "credit" | "card"
+  discount            Float?    @default(0)
+  pickupScheduledAt   DateTime?
+  deliveryScheduledAt DateTime?
+  pickupRiderId       String?
+  deliveryRiderId     String?
+  
+  itemsJson           String?   // Array of { name, quantity, price }
+  legsJson            String?   // JobLegs object
+  remark              String?
+
+  customer            Customer? @relation(fields: [customerId], references: [id])
+}
+
+model ServiceItem {
+  id          String   @id @default(uuid())
+  name        String
+  price       Float
+  memberPrice Float
+  category    String
+  unit        String?
+}
+
+model Rider {
+  id             String   @id @default(uuid())
+  name           String
+  phone          String
+  status         String   // "online" | "offline" | "busy"
+  currentLat     Float?
+  currentLng     Float?
+  avatarUrl      String?
+  rating         Float    @default(5.0)
+  completedJobs  Int      @default(0)
+  nationalId     String?
+  vehicleType    String?  // "motorcycle" | "car" | "truck"
+  vehiclePlate   String?
+}
+
+model PriceList {
+  id            String   @id @default(uuid())
+  name          String
+  isDefault     Boolean  @default(false)
+  servicePrices String   // JSON string: Record<string, number>
+}
+
+model ShopLocation {
+  id      String @id @default(uuid())
+  name    String
+  address String
+  lat     Float
+  lng     Float
+}
+
+model POI {
+  id      String @id @default(uuid())
+  name    String
+  address String
+  lat     Float
+  lng     Float
+}
+
+model Setting {
+  id    String @id @default(uuid())
+  key   String @unique
+  value String
+}

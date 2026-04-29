@@ -2,7 +2,8 @@
 
 import { useState, useSyncExternalStore, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { Calculator, MapPin, Search, Store, Navigation } from "lucide-react";
+import Link from "next/link";
+import { Calculator, MapPin, Search, Store, Navigation, Database } from "lucide-react";
 import { poiStore, shopStore, calculateFee, type ShopLocation, type POI, type LatLng } from "@/lib/store";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { Button } from "@/components/ui/button";
@@ -64,14 +65,22 @@ export default function FeeCalculatorPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
-      <div className="mb-6 flex items-center gap-4 shrink-0">
-        <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl">
-          <Calculator size={28} />
+      <div className="mb-6 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-4">
+          <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl">
+            <Calculator size={28} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Delivery Fee Calculator</h1>
+            <p className="text-sm font-medium text-slate-500">Search locations and calculate precise delivery fees based on real routing.</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight">Delivery Fee Calculator</h1>
-          <p className="text-sm font-medium text-slate-500">Search locations and calculate precise delivery fees based on real routing.</p>
-        </div>
+        <Link href="/tools/poi-importer">
+          <Button variant="outline" className="h-10 md:h-12 px-4 md:px-6 border-slate-300 font-bold bg-white hover:bg-slate-50">
+            <Database size={18} className="mr-2 hidden md:block" />
+            Manage POIs
+          </Button>
+        </Link>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6 flex-1 min-h-0">

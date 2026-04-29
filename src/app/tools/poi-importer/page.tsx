@@ -168,6 +168,66 @@ export default function PoiImporter() {
             </Button>
           </div>
 
+          <div className="mt-8 pt-8 border-t border-slate-100">
+            <h3 className="text-lg font-bold text-slate-800 mb-4">Add Single Location Manually</h3>
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-4">
+              <Input 
+                id="manual-name"
+                placeholder="Location Name (e.g. Condo ABC)" 
+                className="h-12"
+              />
+              <Input 
+                id="manual-url"
+                placeholder="Google Maps URL" 
+                className="h-12"
+              />
+              <Button 
+                onClick={async () => {
+                  const nameInput = document.getElementById('manual-name') as HTMLInputElement;
+                  const urlInput = document.getElementById('manual-url') as HTMLInputElement;
+                  const name = nameInput.value;
+                  const url = urlInput.value;
+                  
+                  if (!name || !url) {
+                    toast.error("Please enter both name and URL");
+                    return;
+                  }
+                  
+                  const btn = document.getElementById('manual-btn');
+                  if (btn) btn.innerHTML = "Processing...";
+                  
+                  try {
+                    let targetUrl = url.trim();
+                    if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl;
+                    
+                    const res = await fetch(`/api/map-convert?url=${encodeURIComponent(targetUrl)}`);
+                    const result = await res.json();
+                    
+                    if (!res.ok) throw new Error(result.error || "Failed to resolve");
+                    
+                    await poiStore.addPOI({
+                      name: name,
+                      address: result.finalUrl || url,
+                      coords: { lat: parseFloat(result.lat), lng: parseFloat(result.lng) }
+                    });
+                    
+                    toast.success(`Successfully added "${name}"`);
+                    nameInput.value = "";
+                    urlInput.value = "";
+                  } catch (err: any) {
+                    toast.error("Failed to add: " + err.message);
+                  } finally {
+                    if (btn) btn.innerHTML = "Add Location";
+                  }
+                }}
+                id="manual-btn"
+                className="h-12 px-8 bg-slate-800 hover:bg-slate-900 text-white font-bold whitespace-nowrap"
+              >
+                Add Location
+              </Button>
+            </div>
+          </div>
+
           {data.length > 0 && (
             <div className="mt-8 space-y-4">
               <div className="flex justify-between items-center text-sm font-bold text-slate-600 bg-slate-100 p-4 rounded-xl">

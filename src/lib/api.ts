@@ -1,4 +1,5 @@
 import mockDb from './data/mock-db.json';
+import * as dbActions from '@/actions/db';
 import type { Customer, Job, Rider, ServiceItem, PriceList } from './store'; // we'll use types from store.ts for now
 
 const DB_KEY = 'that_laundry_shop_db';
@@ -58,22 +59,6 @@ const initDb = (): Database => {
     return fallbackDb;
   }
   return memoryDb;
-};
-
-// Helper to save to server
-const saveDb = async (db: Database) => {
-  memoryDb = db;
-  if (typeof window !== 'undefined') {
-    try {
-      await fetch('/api/db', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(db)
-      });
-    } catch (error) {
-      console.error('Failed to save DB to server', error);
-    }
-  }
 };
 
 // JSON Reviver to convert ISO string dates back to Date objects
@@ -139,24 +124,24 @@ const parseMockDb = (data: unknown): Database => {
 export const api = {
   // --- CUSTOMERS ---
   async getCustomers(): Promise<Customer[]> {
-    await delay();
+    
     return initDb().customers;
   },
   
   async addCustomer(customer: Omit<Customer, 'id'>): Promise<Customer> {
-    await delay();
+    
     const db = initDb();
     const newCustomer = {
       ...customer,
       id: `CUST-${String(db.customers.length + 1).padStart(3, "0")}`,
     };
     db.customers = [newCustomer, ...db.customers];
-    saveDb(db);
+    await dbActions.addCustomerAction(newCustomer);
     return newCustomer;
   },
 
   async updateCustomer(id: string, updates: Partial<Customer>): Promise<Customer> {
-    await delay();
+    
     const db = initDb();
     let updatedCustomer: Customer | null = null;
     db.customers = db.customers.map(c => {
@@ -167,25 +152,25 @@ export const api = {
       return c;
     });
     if (!updatedCustomer) throw new Error("Customer not found");
-    saveDb(db);
+    await dbActions.updateCustomerAction(id, updates);
     return updatedCustomer;
   },
 
   async deleteCustomer(id: string): Promise<void> {
-    await delay();
+    
     const db = initDb();
     db.customers = db.customers.filter(c => c.id !== id);
-    saveDb(db);
+    await dbActions.deleteCustomerAction(id);
   },
 
   // --- JOBS ---
   async getJobs(): Promise<Job[]> {
-    await delay();
+    
     return initDb().jobs;
   },
 
   async addJob(jobDetails: Partial<Job> & Record<string, unknown>): Promise<Job> {
-    await delay(800); // Simulate network
+     // Simulate network
     const db = initDb();
     
     // Copy the exact logic from store.ts for creating a new job
@@ -235,12 +220,12 @@ export const api = {
     };
 
     db.jobs = [newJob, ...db.jobs];
-    saveDb(db);
+    await dbActions.addJobAction(newJob);
     return newJob;
   },
 
   async updateJob(id: string, updates: Partial<Job>): Promise<Job> {
-    await delay();
+    
     const db = initDb();
     let updatedJob: Job | null = null;
     db.jobs = db.jobs.map(j => {
@@ -251,30 +236,30 @@ export const api = {
       return j;
     });
     if (!updatedJob) throw new Error("Job not found");
-    saveDb(db);
+    await dbActions.updateJobAction(id, updates);
     return updatedJob;
   },
 
   // --- SERVICES ---
   async getServices(): Promise<ServiceItem[]> {
-    await delay(300);
+    
     return initDb().services;
   },
 
   async addService(service: Omit<ServiceItem, 'id'>): Promise<ServiceItem> {
-    await delay(300);
+    
     const db = initDb();
     const newService = {
       ...service,
       id: `SRV-${String(db.services.length + 1).padStart(3, "0")}`,
     };
     db.services = [newService, ...db.services];
-    saveDb(db);
+    await dbActions.addServiceAction(newService);
     return newService;
   },
 
   async updateService(id: string, updates: Partial<ServiceItem>): Promise<ServiceItem> {
-    await delay(300);
+    
     const db = initDb();
     let updatedService: ServiceItem | null = null;
     db.services = db.services.map(s => {
@@ -285,25 +270,25 @@ export const api = {
       return s;
     });
     if (!updatedService) throw new Error("Service not found");
-    saveDb(db);
+    await dbActions.updateServiceAction(id, updates);
     return updatedService;
   },
 
   async deleteService(id: string): Promise<void> {
-    await delay(300);
+    
     const db = initDb();
     db.services = db.services.filter(s => s.id !== id);
-    saveDb(db);
+    await dbActions.deleteServiceAction(id);
   },
 
   // --- RIDERS ---
   async getRiders(): Promise<Rider[]> {
-    await delay(300);
+    
     return initDb().riders;
   },
 
   async updateRider(id: string, updates: Partial<Rider>): Promise<Rider> {
-    await delay();
+    
     const db = initDb();
     let updatedRider: Rider | null = null;
     db.riders = db.riders.map(r => {
@@ -314,49 +299,49 @@ export const api = {
       return r;
     });
     if (!updatedRider) throw new Error("Rider not found");
-    saveDb(db);
+    await dbActions.updateRiderAction(id, updates);
     return updatedRider;
   },
 
   async addRider(rider: Omit<Rider, 'id'>): Promise<Rider> {
-    await delay();
+    
     const db = initDb();
     const newRider = {
       ...rider,
       id: `RIDER-${String(db.riders.length + 1).padStart(3, "0")}`,
     } as Rider;
     db.riders = [newRider, ...db.riders];
-    saveDb(db);
+    await dbActions.addRiderAction(newRider);
     return newRider;
   },
 
   async deleteRider(id: string): Promise<void> {
-    await delay();
+    
     const db = initDb();
     db.riders = db.riders.filter(r => r.id !== id);
-    saveDb(db);
+    await dbActions.deleteRiderAction(id);
   },
 
   // --- PRICE LISTS ---
   async getPriceLists(): Promise<PriceList[]> {
-    await delay(200);
+    
     return initDb().priceLists;
   },
 
   async addPriceList(list: Omit<PriceList, 'id'>): Promise<PriceList> {
-    await delay(300);
+    
     const db = initDb();
     const newList = {
       ...list,
       id: `PL-${Date.now().toString(36).toUpperCase()}`,
     };
     db.priceLists = [...db.priceLists, newList];
-    saveDb(db);
+    await dbActions.addPriceListAction(newList);
     return newList;
   },
 
   async updatePriceList(id: string, updates: Partial<PriceList>): Promise<PriceList> {
-    await delay(300);
+    
     const db = initDb();
     let updatedList: PriceList | null = null;
     db.priceLists = db.priceLists.map(p => {
@@ -367,17 +352,17 @@ export const api = {
       return p;
     });
     if (!updatedList) throw new Error("Price list not found");
-    saveDb(db);
+    await dbActions.updatePriceListAction(id, updates);
     return updatedList;
   },
 
   async deletePriceList(id: string): Promise<void> {
-    await delay(300);
+    
     const db = initDb();
     db.priceLists = db.priceLists.filter(p => p.id !== id);
     // Reset customers using this price list to regular
     db.customers = db.customers.map(c => c.priceListId === id ? { ...c, priceListId: "regular" } : c);
-    saveDb(db);
+    await dbActions.deletePriceListAction(id);
   },
 
   // --- AUTH/STORE SYNC UTILS ---
@@ -396,22 +381,22 @@ export const api = {
 
   // --- SHOP LOCATIONS ---
   async getShopLocations() {
-    await delay(200);
+    
     return initDb().shopLocations;
   },
   async addShopLocation(shop: Omit<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }, 'id'>) {
-    await delay(300);
+    
     const db = initDb();
     const newShop = {
       ...shop,
       id: `SHOP-${Date.now().toString(36).toUpperCase()}`,
     };
     db.shopLocations = [...db.shopLocations, newShop];
-    saveDb(db);
+    await dbActions.addShopLocationAction(newShop);
     return newShop;
   },
   async updateShopLocation(id: string, updates: Partial<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }>) {
-    await delay(300);
+    
     const db = initDb();
     let updatedShop = null;
     db.shopLocations = db.shopLocations.map(s => {
@@ -422,40 +407,40 @@ export const api = {
       return s;
     });
     if (!updatedShop) throw new Error("Shop not found");
-    saveDb(db);
+    await dbActions.updateShopLocationAction(id, updates);
     return updatedShop;
   },
   async deleteShopLocation(id: string) {
-    await delay(300);
+    
     const db = initDb();
     db.shopLocations = db.shopLocations.filter(s => s.id !== id);
-    saveDb(db);
+    await dbActions.deleteShopLocationAction(id);
   },
 
   // --- SETTINGS ---
   async getSettings(): Promise<Record<string, string>> {
-    await delay(100);
+    
     return initDb().settings;
   },
 
   async updateSetting(key: string, value: string): Promise<Record<string, string>> {
-    await delay(200);
+    
     const db = initDb();
     db.settings = { ...db.settings, [key]: value };
-    saveDb(db);
+    await dbActions.updateSettingAction(key, value);
     return db.settings;
   },
 
   // --- POIS ---
   async getPOIs() {
-    await delay(100);
+    
     return initDb().pois;
   },
   async addPOI(poi: Omit<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }, 'id'>) {
     const db = initDb();
     const newPoi = { ...poi, id: `POI-${Date.now().toString(36).toUpperCase()}` };
     db.pois = [...db.pois, newPoi];
-    saveDb(db);
+    await dbActions.addPOIAction(newPoi);
     return newPoi;
   },
   async updatePOI(id: string, updates: Partial<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }>) {
@@ -469,12 +454,12 @@ export const api = {
       return p;
     });
     if (!updatedPoi) throw new Error("POI not found");
-    saveDb(db);
+    await dbActions.updatePOIAction(id, updates);
     return updatedPoi;
   },
   async deletePOI(id: string) {
     const db = initDb();
     db.pois = db.pois.filter(p => p.id !== id);
-    saveDb(db);
+    await dbActions.deletePOIAction(id);
   }
 };
