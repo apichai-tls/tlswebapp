@@ -21,6 +21,7 @@ export default function FeeCalculatorPage() {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [googleSearchQuery, setGoogleSearchQuery] = useState("");
   const [selectedShopId, setSelectedShopId] = useState<string>("");
   const [targetLocation, setTargetLocation] = useState<{ name: string; address: string; coords: LatLng } | null>(null);
   
@@ -44,6 +45,7 @@ export default function FeeCalculatorPage() {
   }, [pois, searchQuery]);
 
   const handleSelectPoi = async (poi: POI) => {
+    setGoogleSearchQuery("");
     setTargetLocation({
       name: poi.name,
       address: poi.address,
@@ -105,9 +107,10 @@ export default function FeeCalculatorPage() {
               <LocationInput 
                 id="custom-location"
                 placeholder="Type any address..."
-                value={targetLocation && !pois.some(p => p.name === targetLocation.name) ? targetLocation.name : ""}
-                onChange={() => {}}
+                value={googleSearchQuery}
+                onChange={setGoogleSearchQuery}
                 onSelectLocation={async (loc) => {
+                  setGoogleSearchQuery(loc.name);
                   const newCoords = { lat: loc.lat, lng: loc.lng };
                   setTargetLocation({
                     name: loc.name,
