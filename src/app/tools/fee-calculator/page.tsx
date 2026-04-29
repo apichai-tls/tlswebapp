@@ -3,12 +3,13 @@
 import { useState, useSyncExternalStore, useMemo } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { Calculator, MapPin, Search, Store, Navigation, Database } from "lucide-react";
+import { Calculator, MapPin, Search, Store, Navigation, Database, Plus } from "lucide-react";
 import { poiStore, shopStore, calculateFee, type ShopLocation, type POI, type LatLng } from "@/lib/store";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LocationInput } from "@/components/location-input";
+import { toast } from "sonner";
 
 // Dynamically import Map to avoid SSR issues
 const CreateJobMap = dynamic(
@@ -256,9 +257,31 @@ export default function FeeCalculatorPage() {
                   <div className="mt-0.5 p-1.5 bg-blue-100 text-blue-600 rounded-lg shrink-0">
                     <MapPin size={16} />
                   </div>
-                  <div>
+                  <div className="flex-1">
                     <h4 className="font-bold text-slate-900 text-sm leading-tight">{targetLocation.name}</h4>
                     <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{targetLocation.address}</p>
+                    
+                    {!pois.some(p => p.name === targetLocation.name) && (
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="mt-3 h-7 text-[10px] font-bold px-2.5 rounded-lg border-indigo-200 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 w-full"
+                        onClick={async () => {
+                          try {
+                            await poiStore.addPOI({
+                              name: targetLocation.name,
+                              address: targetLocation.address,
+                              coords: targetLocation.coords
+                            });
+                            toast.success("Location saved to database!");
+                          } catch (err: any) {
+                            toast.error(err.message || "Failed to save location");
+                          }
+                        }}
+                      >
+                        <Plus size={12} className="mr-1" /> Save to Database
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
