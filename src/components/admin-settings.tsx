@@ -10,10 +10,10 @@ import { Badge } from "@/components/ui/badge";
 import { LocationInput } from "@/components/location-input";
 
 export function AdminSettings() {
-  const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot);
-  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot);
-  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot);
-  const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot);
+  const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
+  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingList, setEditingList] = useState<PriceList | null>(null);

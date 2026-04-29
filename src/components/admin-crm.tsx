@@ -31,7 +31,7 @@ const itemVariants = {
 export function AdminCRM() {
   const customers = useCustomers();
   const jobs = useJobs();
-  const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot);
+  const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   
   const [searchTerm, setSearchTerm] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);

@@ -51,7 +51,7 @@ function getPointAtDistance(path: LatLng[], targetDist: number): LatLng | null {
 
 
 // Helper to create a custom div icon with the rider's avatar
-function createAvatarIcon(rider: Rider) {
+function createAvatarIcon(rider: Rider & { _speed?: number }) {
   const speed = rider._speed || 0;
   return L.divIcon({
     className: "bg-transparent border-none overflow-visible",
@@ -98,7 +98,7 @@ function createShopIcon(shop: { name: string, address: string }) {
 
 export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
   const riders = useRiders();
-  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot);
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [isMounted, setIsMounted] = useState(false);
   const [simulatedRiders, setSimulatedRiders] = useState<Rider[]>([]);
 
@@ -144,7 +144,7 @@ export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
       if (!active) return;
       
       const updatedRiders = await Promise.all(
-        simulatedRidersRef.current.map(async (rider: Rider & { _target?: LatLng; _path?: LatLng[]; _step?: number }) => {
+        simulatedRidersRef.current.map(async (rider: any) => {
           if (!rider.currentLocation) return rider;
 
           let targetWpIndex = rider._targetWaypoint ?? 0;

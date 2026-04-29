@@ -168,6 +168,19 @@ export const serviceStore = {
   },
   getSnapshot(): ServiceItem[] {
     return api.sync.getServices();
+  },
+  async addService(service: Omit<ServiceItem, 'id'>) {
+    const newService = await api.addService(service);
+    emitServiceChange();
+    return newService;
+  },
+  async updateService(id: string, updates: Partial<ServiceItem>) {
+    await api.updateService(id, updates);
+    emitServiceChange();
+  },
+  async deleteService(id: string) {
+    await api.deleteService(id);
+    emitServiceChange();
   }
 };
 
@@ -186,6 +199,15 @@ export const riderStore = {
   },
   async updateRider(id: string, updates: Partial<Rider>) {
     await api.updateRider(id, updates);
+    emitRiderChange();
+  },
+  async addRider(rider: Omit<Rider, 'id'>) {
+    const newRider = await api.addRider(rider);
+    emitRiderChange();
+    return newRider;
+  },
+  async deleteRider(id: string) {
+    await api.deleteRider(id);
     emitRiderChange();
   }
 };

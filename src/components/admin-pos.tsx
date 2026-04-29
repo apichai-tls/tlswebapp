@@ -47,7 +47,7 @@ interface CartItem {
 }
 
 export function AdminPOS() {
-  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot);
+  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const customers = useCustomers();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");

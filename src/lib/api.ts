@@ -206,10 +206,10 @@ export const api = {
       type: "full_service",
       customerName: jobDetails.customerName,
       customerPhone: jobDetails.customerPhone,
-      pickupLocation: jobDetails.pickupLocation,
-      dropoffLocation: jobDetails.dropoffLocation,
-      pickupCoords: jobDetails.pickupCoords,
-      dropoffCoords: jobDetails.dropoffCoords,
+      pickupLocation: jobDetails.pickupLocation || "",
+      dropoffLocation: jobDetails.dropoffLocation || "",
+      pickupCoords: jobDetails.pickupCoords || { lat: 0, lng: 0 },
+      dropoffCoords: jobDetails.dropoffCoords || { lat: 0, lng: 0 },
       distance: jobDetails.distance || 0,
       fee: jobDetails.fee || 0,
       status: initialStatus,
@@ -222,7 +222,7 @@ export const api = {
       bagImageUrl: jobDetails.bagImageUrl,
       serviceType: jobDetails.serviceType || "wash_fold",
       source: jobDetails.source || "app",
-      totalAmount: jobDetails.totalAmount || (jobDetails.fee * 2.5),
+      totalAmount: jobDetails.totalAmount || ((jobDetails.fee || 0) * 2.5),
       discount: jobDetails.discount || 0,
       items: jobDetails.items || [],
       riderId: pRider,
@@ -261,6 +261,41 @@ export const api = {
     return initDb().services;
   },
 
+  async addService(service: Omit<ServiceItem, 'id'>): Promise<ServiceItem> {
+    await delay(300);
+    const db = initDb();
+    const newService = {
+      ...service,
+      id: `SRV-${String(db.services.length + 1).padStart(3, "0")}`,
+    };
+    db.services = [newService, ...db.services];
+    saveDb(db);
+    return newService;
+  },
+
+  async updateService(id: string, updates: Partial<ServiceItem>): Promise<ServiceItem> {
+    await delay(300);
+    const db = initDb();
+    let updatedService: ServiceItem | null = null;
+    db.services = db.services.map(s => {
+      if (s.id === id) {
+        updatedService = { ...s, ...updates };
+        return updatedService;
+      }
+      return s;
+    });
+    if (!updatedService) throw new Error("Service not found");
+    saveDb(db);
+    return updatedService;
+  },
+
+  async deleteService(id: string): Promise<void> {
+    await delay(300);
+    const db = initDb();
+    db.services = db.services.filter(s => s.id !== id);
+    saveDb(db);
+  },
+
   // --- RIDERS ---
   async getRiders(): Promise<Rider[]> {
     await delay(300);
@@ -281,6 +316,25 @@ export const api = {
     if (!updatedRider) throw new Error("Rider not found");
     saveDb(db);
     return updatedRider;
+  },
+
+  async addRider(rider: Omit<Rider, 'id'>): Promise<Rider> {
+    await delay();
+    const db = initDb();
+    const newRider = {
+      ...rider,
+      id: `RIDER-${String(db.riders.length + 1).padStart(3, "0")}`,
+    } as Rider;
+    db.riders = [newRider, ...db.riders];
+    saveDb(db);
+    return newRider;
+  },
+
+  async deleteRider(id: string): Promise<void> {
+    await delay();
+    const db = initDb();
+    db.riders = db.riders.filter(r => r.id !== id);
+    saveDb(db);
   },
 
   // --- PRICE LISTS ---

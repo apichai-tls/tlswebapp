@@ -40,7 +40,7 @@ import { serviceStore, type ServiceItem } from "@/lib/store";
 import { toast } from "sonner";
 
 export function AdminServiceMenu() {
-  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot);
+  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingService, setEditingService] = useState<ServiceItem | null>(null);
@@ -50,13 +50,6 @@ export function AdminServiceMenu() {
     name: "",
     price: 0,
     memberPrice: 0,
-    prices: {
-      regular: 0,
-      bronze: 0,
-      silver: 0,
-      gold: 0,
-      platinum: 0
-    },
     category: "Weight",
     unit: ""
   });
@@ -73,13 +66,6 @@ export function AdminServiceMenu() {
         name: service.name,
         price: service.price,
         memberPrice: service.memberPrice,
-        prices: service.prices || {
-          regular: service.price,
-          bronze: service.price,
-          silver: service.memberPrice,
-          gold: service.memberPrice,
-          platinum: service.memberPrice
-        },
         category: service.category,
         unit: service.unit || ""
       });
@@ -89,13 +75,6 @@ export function AdminServiceMenu() {
         name: "",
         price: 0,
         memberPrice: 0,
-        prices: {
-          regular: 0,
-          bronze: 0,
-          silver: 0,
-          gold: 0,
-          platinum: 0
-        },
         category: "Weight",
         unit: ""
       });

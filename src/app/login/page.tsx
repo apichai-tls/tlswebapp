@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { useAuth } from "@/providers/auth-provider";
@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-export default function LoginPage() {
+function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -48,6 +48,68 @@ export default function LoginPage() {
   };
 
   return (
+    <form onSubmit={handleLogin} className="space-y-6">
+      <div className="space-y-2">
+        <Label htmlFor="email" className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          Email Address
+        </Label>
+        <div className="relative">
+          <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <Input 
+            id="email"
+            type="email"
+            placeholder="name@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="pl-10 h-12 bg-slate-50 border-transparent focus:bg-white focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition-all rounded-xl shadow-sm text-base"
+            autoComplete="email"
+            autoFocus
+          />
+        </div>
+        <p className="text-[11px] text-slate-400 pl-1">
+          Tip: Use <span className="font-semibold text-slate-600">rider@test.com</span> for Rider app, <span className="font-semibold text-slate-600">manager@test.com</span> for Manager, anything else for Admin.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label htmlFor="password" className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Password
+          </Label>
+        </div>
+        <div className="relative">
+          <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <Input 
+            id="password"
+            type="password"
+            placeholder="••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="pl-10 h-12 bg-slate-50 border-transparent focus:bg-white focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition-all rounded-xl shadow-sm text-base"
+          />
+        </div>
+      </div>
+
+      <Button 
+        type="submit" 
+        disabled={isSubmitting}
+        className="w-full h-12 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-medium shadow-md transition-all group border-none text-base mt-4"
+      >
+        {isSubmitting ? (
+          <Loader2 className="animate-spin" size={20} />
+        ) : (
+          <>
+            Sign In
+            <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform opacity-70" size={18} />
+          </>
+        )}
+      </Button>
+    </form>
+  );
+}
+
+export default function LoginPage() {
+  return (
     <div className="min-h-screen flex items-center justify-center bg-white font-sans selection:bg-indigo-100 selection:text-indigo-900">
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
@@ -66,63 +128,9 @@ export default function LoginPage() {
           </p>
         </div>
 
-        <form onSubmit={handleLogin} className="space-y-6">
-          <div className="space-y-2">
-            <Label htmlFor="email" className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Email Address
-            </Label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-              <Input 
-                id="email"
-                type="email"
-                placeholder="name@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="pl-10 h-12 bg-slate-50 border-transparent focus:bg-white focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition-all rounded-xl shadow-sm text-base"
-                autoComplete="email"
-                autoFocus
-              />
-            </div>
-            <p className="text-[11px] text-slate-400 pl-1">
-              Tip: Use <span className="font-semibold text-slate-600">rider@test.com</span> for Rider app, <span className="font-semibold text-slate-600">manager@test.com</span> for Manager, anything else for Admin.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="password" className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Password
-              </Label>
-            </div>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-              <Input 
-                id="password"
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="pl-10 h-12 bg-slate-50 border-transparent focus:bg-white focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition-all rounded-xl shadow-sm text-base"
-              />
-            </div>
-          </div>
-
-          <Button 
-            type="submit" 
-            disabled={isSubmitting}
-            className="w-full h-12 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-medium shadow-md transition-all group border-none text-base mt-4"
-          >
-            {isSubmitting ? (
-              <Loader2 className="animate-spin" size={20} />
-            ) : (
-              <>
-                Sign In
-                <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform opacity-70" size={18} />
-              </>
-            )}
-          </Button>
-        </form>
+        <Suspense fallback={<div className="flex justify-center py-8"><Loader2 className="animate-spin text-slate-400" size={24} /></div>}>
+          <LoginForm />
+        </Suspense>
 
         <div className="mt-12 text-center">
           <p className="text-xs font-medium text-slate-400">

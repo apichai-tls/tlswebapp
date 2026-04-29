@@ -125,7 +125,7 @@ export default function AdminPage() {
   const jobs = useJobs();
   const riders = useRiders();
   const customers = useCustomers();
-  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot);
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings">("dashboard");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerName, setCustomerName] = useState("");
