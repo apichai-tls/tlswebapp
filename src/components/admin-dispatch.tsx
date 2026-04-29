@@ -53,7 +53,7 @@ export function AdminDispatch() {
   const [editRiderId, setEditRiderId] = useState<string>("");
 
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [currentView, setCurrentView] = useState('week');
+  const [currentView, setCurrentView] = useState<any>('week');
 
   // Toggle rider selection
   const toggleRider = (riderId: string) => {
@@ -144,7 +144,7 @@ export function AdminDispatch() {
   };
 
   // Event Click Handler
-  const onSelectEvent = (event: CalendarEvent) => {
+  const onSelectEvent = (event: any) => {
     setEditingEvent(event);
     setEditRiderId(event.riderId || "");
   };
@@ -165,7 +165,7 @@ export function AdminDispatch() {
   };
 
   // Custom Event Styling
-  const eventStyleGetter = (event: CalendarEvent) => {
+  const eventStyleGetter = (event: any) => {
     let backgroundColor = event.type === 'pickup' ? '#f59e0b' : '#4f46e5'; // Amber vs Indigo
     if (event.jobStatus === 'completed') {
       backgroundColor = '#10b981'; // Emerald

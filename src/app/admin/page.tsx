@@ -75,6 +75,14 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
     label: "Accepted",
     className: "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-50",
   },
+  pickup: {
+    label: "Pickup",
+    className: "bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-50",
+  },
+  delivery: {
+    label: "Delivery",
+    className: "bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-50",
+  },
   completed: {
     label: "Completed",
     className: "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50",
@@ -88,6 +96,8 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
 const statusIcon: Record<JobStatus, React.ReactNode> = {
   pending: <Clock size={13} />,
   accepted: <Truck size={13} />,
+  pickup: <Package size={13} />,
+  delivery: <Navigation size={13} />,
   completed: <CheckCircle2 size={13} />,
   active: <Zap size={13} />,
 };

@@ -13,8 +13,7 @@ import { useRiders } from "@/lib/use-riders";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { useAuth } from "@/providers/auth-provider";
-import { jobStore } from "@/lib/store";
-
+import { jobStore, type Job, type JobStatus } from "@/lib/store";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   pending: {
     label: "Pending",
