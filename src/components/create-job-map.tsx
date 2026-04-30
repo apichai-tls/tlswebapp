@@ -8,26 +8,29 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-
 import L from "leaflet";
 import { useEffect, useState, useRef } from "react";
 import type { LatLng } from "@/lib/store";
-import { pickupIcon, dropoffIcon } from "@/components/map-component";
+import { pickupIcon, dropoffIcon, storeIcon } from "@/components/map-component";
 import { getRoute } from "@/lib/map-api";
 
 interface CreateJobMapProps {
-  pickup: LatLng;
-  dropoff: LatLng;
-  onMarkerDrag: (isPickup: boolean, coords: LatLng) => void;
-  onDistanceCalculated: (distanceKm: number) => void;
+  branchCoords: LatLng;
+  pickupCoords: LatLng | null;
+  deliveryCoords: LatLng | null;
+  onMarkerDrag?: (type: 'pickup' | 'delivery' | 'branch', coords: LatLng) => void;
+  onDistanceCalculated?: (pickupDistKm: number, deliveryDistKm: number) => void;
   className?: string;
 }
 
 // Component to handle polyline and distance calculation dynamically
 function MapLineAndDistance({
-  pickup,
-  dropoff,
+  start,
+  end,
+  color,
   onDistanceCalculated,
 }: {
-  pickup: LatLng;
-  dropoff: LatLng;
-  onDistanceCalculated: (distanceKm: number) => void;
+  start: LatLng | null;
+  end: LatLng | null;
+  color: string;
+  onDistanceCalculated?: (distanceKm: number) => void;
 }) {
   const map = useMap();
   const [routeCoords, setRouteCoords] = useState<[number, number][]>([]);
@@ -43,15 +46,22 @@ function MapLineAndDistance({
 
   useEffect(() => {
     let active = true;
+    if (!start || !end) {
+      setRouteCoords([]);
+      if (onDistanceCalculatedRef.current) onDistanceCalculatedRef.current(0);
+      return;
+    }
+    
     async function fetchRoute() {
-      const route = await getRoute(pickup, dropoff);
+      if (!start || !end) return;
+      const route = await getRoute(start, end);
       if (!active) return;
       
-      const boundsKey = `${pickup.lat},${pickup.lng}-${dropoff.lat},${dropoff.lng}`;
+      const boundsKey = `${start.lat},${start.lng}-${end.lat},${end.lng}`;
       
       if (route && route.coordinates.length > 0) {
         setRouteCoords(route.coordinates.map((c: LatLng) => [c.lat, c.lng] as [number, number]));
-        onDistanceCalculatedRef.current(route.distanceKm);
+        if (onDistanceCalculatedRef.current) onDistanceCalculatedRef.current(route.distanceKm);
 
         if (lastFitBoundsRef.current !== boundsKey) {
           const bounds = L.latLngBounds(route.coordinates.map((c: LatLng) => [c.lat, c.lng] as [number, number]));
@@ -60,10 +70,11 @@ function MapLineAndDistance({
         }
       } else {
         // Fallback to straight line if routing fails
-        setRouteCoords([[pickup.lat, pickup.lng], [dropoff.lat, dropoff.lng]]);
-        const p1 = L.latLng(pickup.lat, pickup.lng);
-        const p2 = L.latLng(dropoff.lat, dropoff.lng);
-        onDistanceCalculatedRef.current(Math.round((p1.distanceTo(p2) / 1000) * 10) / 10);
+        setRouteCoords([[start.lat, start.lng], [end.lat, end.lng]]);
+        const p1 = L.latLng(start.lat, start.lng);
+        const p2 = L.latLng(end.lat, end.lng);
+        const dist = Math.round((p1.distanceTo(p2) / 1000) * 10) / 10;
+        if (onDistanceCalculatedRef.current) onDistanceCalculatedRef.current(dist);
         
         if (lastFitBoundsRef.current !== boundsKey) {
           map.fitBounds(L.latLngBounds([p1, p2]), { padding: [50, 50], maxZoom: 15, animate: true });
@@ -74,34 +85,48 @@ function MapLineAndDistance({
     
     fetchRoute();
     return () => { active = false; };
-  }, [pickup.lat, pickup.lng, dropoff.lat, dropoff.lng, map]);
+  }, [start?.lat, start?.lng, end?.lat, end?.lng, map]);
 
   if (routeCoords.length === 0) return null;
 
   return (
     <Polyline 
       positions={routeCoords} 
-      pathOptions={{ color: '#3b82f6', weight: 4 }} 
+      pathOptions={{ color: color, weight: 4 }} 
     />
   );
 }
 
-export function CreateJobMap({ pickup, dropoff, onMarkerDrag, onDistanceCalculated, className = "h-full w-full" }: CreateJobMapProps) {
-  const startMarkerRef = useRef<L.Marker>(null);
-  const endMarkerRef = useRef<L.Marker>(null);
+export function CreateJobMap({ branchCoords, pickupCoords, deliveryCoords, onMarkerDrag, onDistanceCalculated, className = "h-full w-full" }: CreateJobMapProps) {
+  const branchMarkerRef = useRef<L.Marker>(null);
+  const pickupMarkerRef = useRef<L.Marker>(null);
+  const deliveryMarkerRef = useRef<L.Marker>(null);
+  
+  const [pDist, setPDist] = useState(0);
+  const [dDist, setDDist] = useState(0);
 
-  const handleDragEnd = (isPickup: boolean) => {
-    const marker = isPickup ? startMarkerRef.current : endMarkerRef.current;
+  useEffect(() => {
+    if (onDistanceCalculated) {
+      onDistanceCalculated(pDist, dDist);
+    }
+  }, [pDist, dDist, onDistanceCalculated]);
+
+  const handleDragEnd = (type: 'pickup' | 'delivery' | 'branch') => {
+    if (!onMarkerDrag) return;
+    const marker = type === 'pickup' ? pickupMarkerRef.current : type === 'delivery' ? deliveryMarkerRef.current : branchMarkerRef.current;
     if (marker) {
       const pos = marker.getLatLng();
-      onMarkerDrag(isPickup, { lat: pos.lat, lng: pos.lng });
+      onMarkerDrag(type, { lat: pos.lat, lng: pos.lng });
     }
   };
+
+  // Center on branch initially if no other points
+  const center = pickupCoords ? [pickupCoords.lat, pickupCoords.lng] : [branchCoords.lat, branchCoords.lng];
 
   return (
     <div className={`h-full w-full rounded-xl overflow-hidden border border-slate-200 shadow-inner relative z-0 ${className}`}>
       <MapContainer
-        center={[pickup.lat, pickup.lng]}
+        center={center as any}
         zoom={13}
         className="h-full w-full"
         style={{ minHeight: "100%", zIndex: 0 }}
@@ -113,29 +138,51 @@ export function CreateJobMap({ pickup, dropoff, onMarkerDrag, onDistanceCalculat
         />
         
         <Marker 
-          position={[pickup.lat, pickup.lng]} 
-          icon={pickupIcon}
-          draggable={true}
-          eventHandlers={{ dragend: () => handleDragEnd(true) }}
-          ref={startMarkerRef}
+          position={[branchCoords.lat, branchCoords.lng]} 
+          icon={storeIcon}
+          draggable={!!onMarkerDrag}
+          eventHandlers={{ dragend: () => handleDragEnd('branch') }}
+          ref={branchMarkerRef}
         >
-          <Popup><span className="text-xs font-semibold">Drag to set Pickup</span></Popup>
-        </Marker>
-        
-        <Marker 
-          position={[dropoff.lat, dropoff.lng]} 
-          icon={dropoffIcon}
-          draggable={true}
-          eventHandlers={{ dragend: () => handleDragEnd(false) }}
-          ref={endMarkerRef}
-        >
-          <Popup><span className="text-xs font-semibold">Drag to set Drop-off</span></Popup>
+          <Popup><span className="text-xs font-semibold">Store Branch</span></Popup>
         </Marker>
 
+        {pickupCoords && (
+          <Marker 
+            position={[pickupCoords.lat, pickupCoords.lng]} 
+            icon={pickupIcon}
+            draggable={!!onMarkerDrag}
+            eventHandlers={{ dragend: () => handleDragEnd('pickup') }}
+            ref={pickupMarkerRef}
+          >
+            <Popup><span className="text-xs font-semibold">Drag to set Pickup</span></Popup>
+          </Marker>
+        )}
+        
+        {deliveryCoords && (
+          <Marker 
+            position={[deliveryCoords.lat, deliveryCoords.lng]} 
+            icon={dropoffIcon}
+            draggable={!!onMarkerDrag}
+            eventHandlers={{ dragend: () => handleDragEnd('delivery') }}
+            ref={deliveryMarkerRef}
+          >
+            <Popup><span className="text-xs font-semibold">Drag to set Delivery</span></Popup>
+          </Marker>
+        )}
+
         <MapLineAndDistance 
-          pickup={pickup} 
-          dropoff={dropoff} 
-          onDistanceCalculated={onDistanceCalculated} 
+          start={branchCoords} 
+          end={pickupCoords} 
+          color="#10b981" // emerald-500
+          onDistanceCalculated={setPDist} 
+        />
+        
+        <MapLineAndDistance 
+          start={branchCoords} 
+          end={deliveryCoords} 
+          color="#ef4444" // red-500
+          onDistanceCalculated={setDDist} 
         />
       </MapContainer>
     </div>

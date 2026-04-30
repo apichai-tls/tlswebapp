@@ -131,10 +131,20 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
-  const [customerLoc, setCustomerLoc] = useState("");
-  const [customerCoords, setCustomerCoords] = useState<LatLng>({ lat: 13.7433, lng: 100.5488 });
+  
+  const [pickupLoc, setPickupLoc] = useState("");
+  const [pickupCoords, setPickupCoords] = useState<LatLng | null>(null);
+  const [deliveryLoc, setDeliveryLoc] = useState("");
+  const [deliveryCoords, setDeliveryCoords] = useState<LatLng | null>(null);
+  
+  const [isPickup, setIsPickup] = useState(true);
+  const [isDelivery, setIsDelivery] = useState(true);
+  const [isDeliveryDirty, setIsDeliveryDirty] = useState(false); // Track if user manually changed delivery
+
+  const [pickupDist, setPickupDist] = useState(0);
+  const [deliveryDist, setDeliveryDist] = useState(0);
+
   const [selectedStoreIndex, setSelectedStoreIndex] = useState(0);
-  const [distance, setDistance] = useState(0);
   const [serviceType, setServiceType] = useState<ServiceType>("wash_fold");
   const [pickupScheduledTime, setPickupScheduledTime] = useState(format(new Date(), "HH:mm"));
   const [pickupRiderId, setPickupRiderId] = useState("");
@@ -147,7 +157,19 @@ export default function AdminPage() {
     window.location.href = "/login";
   };
 
-  const baseFee = calculateFee(distance);
+  // Fee calculation: (pickupDist * 2 * 10) + (deliveryDist * 10)
+  const calculateTotalFee = () => {
+    let total = 0;
+    if (isPickup) {
+      total += Math.ceil(pickupDist * 2) * 10;
+    }
+    if (isDelivery) {
+      total += Math.ceil(deliveryDist) * 10;
+    }
+    return Math.max(isPickup || isDelivery ? 30 : 0, total);
+  };
+
+  const baseFee = calculateTotalFee();
   const fee = isFreeDelivery ? 0 : baseFee;
 
   const handleCapture = (jobId: string, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -179,8 +201,16 @@ export default function AdminPage() {
     }));
 
   async function handleCreate() {
-    if (!customerLoc.trim()) {
-      toast.error("Please fill in the customer location.");
+    if (isPickup && !pickupLoc.trim()) {
+      toast.error("Please fill in the pickup location.");
+      return;
+    }
+    if (isDelivery && !deliveryLoc.trim()) {
+      toast.error("Please fill in the delivery location.");
+      return;
+    }
+    if (!isPickup && !isDelivery) {
+      toast.error("Please select at least one service (Pickup or Delivery).");
       return;
     }
     
@@ -194,22 +224,24 @@ export default function AdminPage() {
     const job = await jobStore.addJob({
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
-      pickupLocation: customerLoc.trim(), // Centralize on customer location
-      dropoffLocation: shop.address,
-      pickupCoords: customerCoords,
-      dropoffCoords: shop.coords,
+      pickupLocation: isPickup ? pickupLoc.trim() : shop.address,
+      dropoffLocation: isDelivery ? deliveryLoc.trim() : shop.address,
+      pickupCoords: isPickup && pickupCoords ? pickupCoords : shop.coords,
+      dropoffCoords: isDelivery && deliveryCoords ? deliveryCoords : shop.coords,
       scheduledAt: pDate,
       pickupScheduledAt: pDate,
       pickupRiderId,
-      distance,
+      distance: Math.max(pickupDist, deliveryDist), // legacy field, we store max
       fee,
       bagImageUrl,
       serviceType,
       remark: isFreeDelivery ? "ส่งฟรี" : undefined,
     });
 
-    toast.success(`Full Service Task ${job.id} created — ${job.distance} km (1-way), ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
-    setCustomerLoc("");
+    toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+    setPickupLoc("");
+    setDeliveryLoc("");
+    setIsDeliveryDirty(false);
     setIsFreeDelivery(false);
     setDialogOpen(false);
   }
@@ -398,8 +430,11 @@ export default function AdminPage() {
                           if (cust) {
                             setCustomerName(cust.name);
                             setCustomerPhone(cust.phone);
-                            setCustomerLoc(cust.defaultAddress);
-                            setCustomerCoords(cust.defaultCoords);
+                            setPickupLoc(cust.defaultAddress);
+                            setPickupCoords(cust.defaultCoords);
+                            setDeliveryLoc(cust.defaultAddress);
+                            setDeliveryCoords(cust.defaultCoords);
+                            setIsDeliveryDirty(false);
                             setSelectedStoreIndex(getClosestShopIndex(cust.defaultCoords, shopLocations));
                           } else {
                             // Reset
@@ -478,23 +513,80 @@ export default function AdminPage() {
                         </select>
                       </div>
 
-                      <div className="space-y-2">
-                        <Label htmlFor="location" className="flex items-center gap-1.5 text-xs font-medium">
-                          <MapPin size={14} className="text-emerald-600" />
-                          Customer Destination
+                      <div className="flex items-center gap-4 py-2">
+                        <Label className="flex items-center gap-2 cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={isPickup}
+                            onChange={(e) => setIsPickup(e.target.checked)}
+                            className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                          />
+                          <span className="text-sm font-medium text-slate-700">บริการไปรับ (Pickup)</span>
                         </Label>
-                        <LocationInput
-                          id="location"
-                          placeholder="Customer address (e.g. Sukhumvit Soi 11)"
-                          value={customerLoc}
-                          onChange={setCustomerLoc}
-                          onSelectLocation={(loc) => {
-                            const newCoords = { lat: loc.lat, lng: loc.lng };
-                            setCustomerCoords(newCoords);
-                            setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
-                          }}
-                        />
+                        <Label className="flex items-center gap-2 cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={isDelivery}
+                            onChange={(e) => setIsDelivery(e.target.checked)}
+                            className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                          />
+                          <span className="text-sm font-medium text-slate-700">บริการไปส่ง (Delivery)</span>
+                        </Label>
                       </div>
+
+                      {isPickup && (
+                        <div className="space-y-2">
+                          <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
+                            <MapPin size={14} className="text-emerald-600" />
+                            ที่อยู่ไปรับ (Pickup Address)
+                          </Label>
+                          <LocationInput
+                            id="pickup-location"
+                            placeholder="Customer pickup address"
+                            value={pickupLoc}
+                            onChange={(v) => {
+                              setPickupLoc(v);
+                              if (!isDeliveryDirty) {
+                                setDeliveryLoc(v);
+                              }
+                            }}
+                            onSelectLocation={(loc) => {
+                              const newCoords = { lat: loc.lat, lng: loc.lng };
+                              setPickupCoords(newCoords);
+                              setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                              if (!isDeliveryDirty) {
+                                setDeliveryCoords(newCoords);
+                              }
+                            }}
+                          />
+                        </div>
+                      )}
+
+                      {isDelivery && (
+                        <div className="space-y-2">
+                          <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
+                            <Navigation size={14} className="text-red-600" />
+                            ที่อยู่ไปส่ง (Delivery Address)
+                          </Label>
+                          <LocationInput
+                            id="delivery-location"
+                            placeholder="Customer delivery address"
+                            value={deliveryLoc}
+                            onChange={(v) => {
+                              setDeliveryLoc(v);
+                              setIsDeliveryDirty(true);
+                            }}
+                            onSelectLocation={(loc) => {
+                              const newCoords = { lat: loc.lat, lng: loc.lng };
+                              setDeliveryCoords(newCoords);
+                              setIsDeliveryDirty(true);
+                              if (!isPickup) {
+                                setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                              }
+                            }}
+                          />
+                        </div>
+                      )}
                     </div>
                     
                     <div className="space-y-4 pt-4 border-t border-slate-100">
@@ -558,9 +650,19 @@ export default function AdminPage() {
                     </div>
 
                     <div className="mt-auto rounded-lg bg-slate-50 p-4 border border-slate-100 shadow-sm">
-                      <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-200/60">
-                        <span className="text-sm text-slate-500">Actual Map Distance</span>
-                        <span className="font-semibold text-slate-700">{distance} km</span>
+                      <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-200/60">
+                        {isPickup && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs text-slate-500">Pickup Distance</span>
+                            <span className="text-xs font-medium text-slate-700">{pickupDist} km (×2)</span>
+                          </div>
+                        )}
+                        {isDelivery && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs text-slate-500">Delivery Distance</span>
+                            <span className="text-xs font-medium text-slate-700">{deliveryDist} km</span>
+                          </div>
+                        )}
                       </div>
                       
                       <div className="flex justify-between items-center mb-2">
@@ -582,7 +684,9 @@ export default function AdminPage() {
                           <span className={`text-2xl font-bold ${isFreeDelivery ? 'text-emerald-600' : 'text-slate-900'}`}>฿{fee.toFixed(0)}</span>
                         </div>
                       </div>
-                      <p className="text-[10px] text-slate-400 mt-2 text-right">(ระยะทางปัดเศษขึ้น × 3 × 10 บาท, ขั้นต่ำ 30 บาท)</p>
+                      <p className="text-[10px] text-slate-400 mt-2 text-right">
+                        ไปรับ: (ระยะทาง×2)×10 | ไปส่ง: ระยะทาง×10 (ขั้นต่ำ 30฿)
+                      </p>
                     </div>
                   </motion.div>
                   
@@ -594,17 +698,28 @@ export default function AdminPage() {
                     transition={{ delay: 0.2 }}
                   >
                     <CreateJobMap 
-                      pickup={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
-                      dropoff={customerCoords}
-                      onMarkerDrag={(isPickup, coords) => {
-                        // In this view, pickup is store (marker0), dropoff is customer (marker1)
-                        // User should be able to drag customer coords
-                        if (!isPickup) {
-                           setCustomerCoords(coords);
-                           setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                      branchCoords={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
+                      pickupCoords={isPickup ? pickupCoords : null}
+                      deliveryCoords={isDelivery ? deliveryCoords : null}
+                      onMarkerDrag={(type, coords) => {
+                        if (type === 'pickup') {
+                          setPickupCoords(coords);
+                          setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                          if (!isDeliveryDirty) {
+                            setDeliveryCoords(coords);
+                          }
+                        } else if (type === 'delivery') {
+                          setDeliveryCoords(coords);
+                          setIsDeliveryDirty(true);
+                          if (!isPickup) {
+                            setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                          }
                         }
                       }}
-                      onDistanceCalculated={(dist) => setDistance(dist)}
+                      onDistanceCalculated={(p, d) => {
+                        setPickupDist(p);
+                        setDeliveryDist(d);
+                      }}
                     />
                   </motion.div>
                 </div>

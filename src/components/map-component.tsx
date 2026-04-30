@@ -9,6 +9,21 @@ import L from "leaflet";
 import { useEffect, useState } from "react";
 import type { LatLng } from "@/lib/store";
 
+export const storeIcon = new L.DivIcon({
+  className: "custom-marker",
+  html: `<div style="
+    width: 28px; height: 28px;
+    background: #4f46e5;
+    border: 3px solid white;
+    border-radius: 50%;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    display: flex; align-items: center; justify-content: center;
+  "><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>`,
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+  popupAnchor: [0, -14],
+});
+
 export const pickupIcon = new L.DivIcon({
   className: "custom-marker",
   html: `<div style="

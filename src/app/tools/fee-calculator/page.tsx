@@ -29,6 +29,9 @@ export default function FeeCalculatorPage() {
   const [distanceKm, setDistanceKm] = useState<number>(0);
   const [isCalculatingShop, setIsCalculatingShop] = useState(false);
   const [isAutoSelectShop, setIsAutoSelectShop] = useState(true);
+  
+  const [isPickup, setIsPickup] = useState(true);
+  const [isDelivery, setIsDelivery] = useState(true);
 
   // Set default shop if none selected
   const activeShop = useMemo(() => {
@@ -64,7 +67,13 @@ export default function FeeCalculatorPage() {
     }
   };
 
-  const fee = distanceKm > 0 ? calculateFee(distanceKm) : 0;
+  const fee = useMemo(() => {
+    if (distanceKm <= 0) return 0;
+    let total = 0;
+    if (isPickup) total += Math.ceil(distanceKm * 2) * 10;
+    if (isDelivery) total += Math.ceil(distanceKm) * 10;
+    return Math.max(isPickup || isDelivery ? 30 : 0, total);
+  }, [distanceKm, isPickup, isDelivery]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
@@ -200,6 +209,27 @@ export default function FeeCalculatorPage() {
               </div>
             </div>
 
+            <div className="flex items-center gap-4 w-full md:w-auto">
+              <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={isPickup}
+                  onChange={(e) => setIsPickup(e.target.checked)}
+                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
+                />
+                <span className="text-sm font-bold text-slate-700">ไปรับ (Pickup)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={isDelivery}
+                  onChange={(e) => setIsDelivery(e.target.checked)}
+                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
+                />
+                <span className="text-sm font-bold text-slate-700">ไปส่ง (Delivery)</span>
+              </label>
+            </div>
+
             <div className="flex gap-6 w-full md:w-auto justify-between md:justify-end">
               <div className="text-right">
                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Distance</div>
@@ -222,10 +252,11 @@ export default function FeeCalculatorPage() {
               </div>
             ) : (
               <CreateJobMap
-                pickup={activeShop?.coords || { lat: 13.7367, lng: 100.5231 }} // Shop is origin
-                dropoff={targetLocation.coords} // Customer is destination
-                onMarkerDrag={async (isPickup, coords) => {
-                  if (!isPickup) {
+                branchCoords={activeShop?.coords || { lat: 13.7367, lng: 100.5231 }}
+                pickupCoords={targetLocation.coords}
+                deliveryCoords={null}
+                onMarkerDrag={async (type, coords) => {
+                  if (type === 'pickup') {
                     setTargetLocation(prev => prev ? { ...prev, coords } : null);
                     if (isAutoSelectShop) {
                       setIsCalculatingShop(true);
@@ -237,9 +268,8 @@ export default function FeeCalculatorPage() {
                       }
                     }
                   }
-                  // We don't allow dragging the shop in this tool for simplicity
                 }}
-                onDistanceCalculated={setDistanceKm}
+                onDistanceCalculated={(pDist) => setDistanceKm(pDist)}
                 className="w-full h-full"
               />
             )}
