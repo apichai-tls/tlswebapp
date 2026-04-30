@@ -308,6 +308,14 @@ export default function FeeCalculatorPage() {
                   <div className="flex-1">
                     <h4 className="font-bold text-slate-900 text-sm leading-tight">{targetLocation.name}</h4>
                     <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{targetLocation.address}</p>
+                    <a 
+                      href={`https://www.google.com/maps/search/?api=1&query=${targetLocation.coords.lat},${targetLocation.coords.lng}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 px-2 py-1 rounded-md hover:bg-blue-100"
+                    >
+                      <MapPin size={10} /> Open in Google Maps
+                    </a>
                     
                     {!pois.some(p => p.name === targetLocation.name) && (
                       <Button 
