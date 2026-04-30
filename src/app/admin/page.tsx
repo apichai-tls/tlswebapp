@@ -774,16 +774,16 @@ export default function AdminPage() {
           </header>
 
           {/* Dynamic Content Views */}
-          {activeTab === "dashboard" && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && <AdminAllJobs jobs={jobs} />}
-          {activeTab === "dispatch" && <AdminDispatch />}
-          {activeTab === "riders" && <AdminRiders />}
-          {activeTab === "map" && <AdminLiveMap />}
-          {activeTab === "pos" && <AdminPOS />}
-          {activeTab === "services" && <AdminServiceMenu />}
-          {activeTab === "customers" && <AdminCRM />}
-          {activeTab === "settings" && <AdminSettings />}
-          {activeTab === "users" && <AdminUsers />}
+          {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} />}
+          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch />}
+          {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
+          {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
+          {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}
+          {activeTab === "services" && hasAccess("services") && <AdminServiceMenu />}
+          {activeTab === "customers" && hasAccess("customers") && <AdminCRM />}
+          {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
+          {activeTab === "users" && hasAccess("users") && <AdminUsers />}
         </main>
       </motion.div>
     </AnimatePresence>
