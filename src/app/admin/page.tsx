@@ -63,6 +63,7 @@ import {
   Settings,
   CalendarClock,
   Calculator,
+  ShieldAlert,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
