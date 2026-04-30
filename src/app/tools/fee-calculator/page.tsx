@@ -70,8 +70,8 @@ export default function FeeCalculatorPage() {
   const fee = useMemo(() => {
     if (distanceKm <= 0) return 0;
     let total = 0;
-    if (isPickup) total += Math.ceil(distanceKm * 2) * 10;
-    if (isDelivery) total += Math.ceil(distanceKm) * 10;
+    if (isPickup) total += Math.round(distanceKm * 2) * 10;
+    if (isDelivery) total += Math.round(distanceKm) * 10;
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
   }, [distanceKm, isPickup, isDelivery]);
 
