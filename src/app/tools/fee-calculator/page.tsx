@@ -217,7 +217,7 @@ export default function FeeCalculatorPage() {
                   onChange={(e) => setIsPickup(e.target.checked)}
                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
                 />
-                <span className="text-sm font-bold text-slate-700">ไปรับ (Pickup){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {distanceKm} km</span>}</span>
+                <span className="text-sm font-bold text-slate-700">ไปรับ (Pickup){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {+(distanceKm * 2).toFixed(1)} km</span>}</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
                 <input 
