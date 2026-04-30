@@ -128,7 +128,7 @@ export default function AdminPage() {
   const riders = useRiders();
   const customers = useCustomers();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users">("dashboard");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -156,6 +156,11 @@ export default function AdminPage() {
   const handleLogout = () => {
     logout();
     window.location.href = "/login";
+  };
+
+  const hasAccess = (key: string) => {
+    if (user?.role === 'admin') return true;
+    return user?.permissions?.includes(key);
   };
 
   // Fee calculation: (pickupDist * 2 * 10) + (deliveryDist * 10)

@@ -211,14 +211,14 @@ export function AdminUsers() {
               
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
                 {MENU_PERMISSIONS.map(perm => (
-                  <label key={perm.id} className={\`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors \${selectedPerms.includes(perm.id) ? 'bg-indigo-100' : 'hover:bg-slate-100'}\`}>
+                  <label key={perm.id} className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${selectedPerms.includes(perm.id) ? 'bg-indigo-100' : 'hover:bg-slate-100'}`}>
                     <input 
                       type="checkbox" 
                       checked={selectedPerms.includes(perm.id)}
                       onChange={() => togglePermission(perm.id)}
                       className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
                     />
-                    <span className={\`text-sm font-bold \${selectedPerms.includes(perm.id) ? 'text-indigo-900' : 'text-slate-600'}\`}>
+                    <span className={`text-sm font-bold ${selectedPerms.includes(perm.id) ? 'text-indigo-900' : 'text-slate-600'}`}>
                       {perm.label}
                     </span>
                   </label>
@@ -276,11 +276,11 @@ export function AdminUsers() {
                         <div className="text-xs text-slate-500">{user.email}</div>
                       </td>
                       <td className="px-6 py-4">
-                        <span className={\`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-full \${
+                        <span className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-full ${
                           user.role === 'admin' ? 'bg-indigo-100 text-indigo-700' :
                           user.role === 'manager' ? 'bg-emerald-100 text-emerald-700' :
                           'bg-slate-100 text-slate-700'
-                        }\`}>
+                        }`}>
                           {user.role}
                         </span>
                       </td>
