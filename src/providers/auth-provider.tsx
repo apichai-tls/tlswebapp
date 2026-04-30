@@ -67,7 +67,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
 
     // Authenticate Admin/Manager/CSO against DB
-    const userData = await loginUser(email, password);
+    const response = await loginUser(email, password);
+    if (!response || !response.success || !response.user) {
+      throw new Error(response?.error || "Invalid email or password");
+    }
+    const userData = response.user;
     
     setUser(userData);
     localStorage.setItem('authUser', JSON.stringify(userData));

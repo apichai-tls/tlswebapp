@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getUsers, createUser, updateUser, deleteUser } from "@/actions/users";
+import { useAuth } from "@/providers/auth-provider";
 
 interface AdminUser {
   id: string;
@@ -31,6 +32,7 @@ const MENU_PERMISSIONS = [
 ];
 
 export function AdminUsers() {
+  const { user } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
@@ -47,10 +49,14 @@ export function AdminUsers() {
   const fetchUsers = async () => {
     try {
       setIsLoading(true);
-      const data = await getUsers();
-      setUsers(data as AdminUser[]);
+      const res = await getUsers();
+      if (res?.success) {
+        setUsers(res.data as AdminUser[]);
+      } else {
+        toast.error(res?.error || "Failed to load users");
+      }
     } catch (error: any) {
-      toast.error("Failed to load users: " + error.message);
+      toast.error("Network error: " + error.message);
     } finally {
       setIsLoading(false);
     }
@@ -114,11 +120,13 @@ export function AdminUsers() {
       };
 
       if (editingId) {
-        await updateUser(editingId, data);
+        const res = await updateUser(editingId, { name, email, password: password || undefined, role, permissions: selectedPerms });
+        if (!res?.success) throw new Error(res?.error || "Failed to update user");
         toast.success("User updated successfully");
       } else {
         if (!password) return toast.error("Password is required for new users");
-        await createUser(data as any);
+        const res = await createUser({ name, email, password, role, permissions: selectedPerms });
+        if (!res?.success) throw new Error(res?.error || "Failed to create user");
         toast.success("User created successfully");
       }
       resetForm();
@@ -131,7 +139,9 @@ export function AdminUsers() {
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this user?")) return;
     try {
-      await deleteUser(id);
+      const res = await deleteUser(id, user?.email || "");
+      if (!res?.success) throw new Error(res?.error || "Failed to delete user");
+      
       toast.success("User deleted successfully");
       fetchUsers();
     } catch (error: any) {
