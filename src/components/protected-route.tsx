@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 
-export function ProtectedRoute({ children, allowedRole }: { children: React.ReactNode, allowedRole?: 'admin' | 'rider' | 'manager' | ('admin' | 'rider' | 'manager')[] }) {
+export function ProtectedRoute({ children, allowedRole }: { children: React.ReactNode, allowedRole?: 'admin' | 'rider' | 'manager' | 'cso' | ('admin' | 'rider' | 'manager' | 'cso')[] }) {
   const { user, isLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
@@ -19,7 +19,7 @@ export function ProtectedRoute({ children, allowedRole }: { children: React.Reac
         const roles = Array.isArray(allowedRole) ? allowedRole : [allowedRole];
         if (!roles.includes(user.role)) {
           // Role mismatch, send them to their proper dashboard
-          router.push(user.role === 'admin' || user.role === 'manager' ? '/admin' : '/rider');
+          router.push(user.role === 'rider' ? '/rider' : '/admin');
         }
       }
     }

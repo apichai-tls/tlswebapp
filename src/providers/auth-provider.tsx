@@ -5,7 +5,7 @@ import React, { createContext, useState, useContext, useEffect, ReactNode } from
 interface User {
   id: string;
   email: string;
-  role: 'admin' | 'rider' | 'manager';
+  role: 'admin' | 'rider' | 'manager' | 'cso';
 }
 
 interface AuthContextType {
@@ -42,9 +42,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const login = (email: string, password?: string) => {
     // Valid Users Database
-    const users: Record<string, { role: 'admin' | 'manager' | 'rider', id: string, pass: string }> = {
+    const users: Record<string, { role: 'admin' | 'manager' | 'rider' | 'cso', id: string, pass: string }> = {
       'admin@tls.com': { role: 'admin', id: 'admin_1', pass: 'admin1234' },
       'manager@tls.com': { role: 'manager', id: 'manager_1', pass: 'manager1234' },
+      'cso1@tls.com': { role: 'cso', id: 'cso_1', pass: 'cso1234' },
+      'cso2@tls.com': { role: 'cso', id: 'cso_2', pass: 'cso1234' },
       'rider1@tls.com': { role: 'rider', id: 'RIDER-01', pass: 'rider1234' },
       'rider2@tls.com': { role: 'rider', id: 'RIDER-02', pass: 'rider1234' },
       'rider3@tls.com': { role: 'rider', id: 'RIDER-03', pass: 'rider1234' },

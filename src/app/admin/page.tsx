@@ -247,7 +247,7 @@ export default function AdminPage() {
   }
 
   return (
-    <ProtectedRoute allowedRole={['admin', 'manager']}>
+    <ProtectedRoute allowedRole={['admin', 'manager', 'cso']}>
       <AnimatePresence mode="wait">
         <motion.div
         className="flex min-h-screen"
@@ -272,7 +272,7 @@ export default function AdminPage() {
               Dashboard
             </motion.div>
             
-            {user?.role !== 'manager' && (
+            {user?.role === 'admin' && (
               <motion.div
                 onClick={() => setActiveTab("services")}
                 whileHover={{ x: 2 }}
@@ -283,14 +283,17 @@ export default function AdminPage() {
               </motion.div>
             )}
 
-            <motion.div
-              onClick={() => setActiveTab("pos")}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-            >
-              <CreditCard size={18} />
-              POS
-            </motion.div>
+            {user?.role !== 'cso' && (
+              <motion.div
+                onClick={() => setActiveTab("pos")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <CreditCard size={18} />
+                POS
+              </motion.div>
+            )}
+
             <motion.div
               onClick={() => setActiveTab("jobs")}
               whileHover={{ x: 2 }}
@@ -315,16 +318,20 @@ export default function AdminPage() {
               <CalendarClock size={18} />
               Dispatch Schedule
             </motion.div>
-            {user?.role !== 'manager' && (
+
+            {user?.role === 'admin' && (
+              <motion.div
+                onClick={() => setActiveTab("riders")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <Truck size={18} />
+                Riders
+              </motion.div>
+            )}
+
+            {(user?.role === 'admin' || user?.role === 'cso') && (
               <>
-                <motion.div
-                  onClick={() => setActiveTab("riders")}
-                  whileHover={{ x: 2 }}
-                  className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                >
-                  <Truck size={18} />
-                  Riders
-                </motion.div>
                 <motion.div
                   onClick={() => setActiveTab("map")}
                   whileHover={{ x: 2 }}
@@ -342,15 +349,18 @@ export default function AdminPage() {
                     Distance Calculator
                   </motion.div>
                 </Link>
-                <motion.div
-                  onClick={() => setActiveTab("settings")}
-                  whileHover={{ x: 2 }}
-                  className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                >
-                  <Settings size={18} />
-                  Settings
-                </motion.div>
               </>
+            )}
+
+            {user?.role === 'admin' && (
+              <motion.div
+                onClick={() => setActiveTab("settings")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <Settings size={18} />
+                Settings
+              </motion.div>
             )}
           </nav>
           <div className="border-t border-slate-200 px-4 py-4 space-y-2">
