@@ -25,6 +25,10 @@ function LoginForm() {
       toast.error("Please enter an email address");
       return;
     }
+    if (!password.trim()) {
+      toast.error("Please enter a password");
+      return;
+    }
 
     setIsSubmitting(true);
     

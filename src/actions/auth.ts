@@ -15,7 +15,7 @@ export async function loginUser(email: string, password?: string) {
 
   // In a real production app with high security requirements, you'd use bcrypt to compare hashes here.
   // For this internal tool, we're using plain text passwords as requested to allow admins to easily see/manage them.
-  if (password && password !== user.password) {
+  if (!password || password !== user.password) {
     throw new Error("Invalid email or password");
   }
 

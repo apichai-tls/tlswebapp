@@ -53,7 +53,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         'rider4@tls.com': { role: 'rider', id: 'RIDER-04', pass: 'rider1234' },
       };
       const validUser = users[email.toLowerCase().trim()];
-      if (validUser && (!password || password === validUser.pass)) {
+      if (validUser && password === validUser.pass) {
         const userData: User = { 
           email: email.toLowerCase().trim(), 
           role: validUser.role, 
