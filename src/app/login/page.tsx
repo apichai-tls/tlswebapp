@@ -66,12 +66,7 @@ function LoginForm() {
             autoFocus
           />
         </div>
-        <p className="text-[11px] text-slate-400 pl-1 leading-relaxed">
-          <span className="font-semibold text-indigo-500">Admin:</span> admin@tls.com (pass: admin1234)<br/>
-          <span className="font-semibold text-emerald-500">Manager:</span> manager@tls.com (pass: manager1234)<br/>
-          <span className="font-semibold text-amber-500">Rider:</span> rider1@tls.com (pass: rider1234)<br/>
-          <span className="text-[10px]">*Riders 1-4 are available (rider1, rider2, etc.)</span>
-        </p>
+
       </div>
 
       <div className="space-y-2">
