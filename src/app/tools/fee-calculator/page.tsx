@@ -67,11 +67,13 @@ export default function FeeCalculatorPage() {
     }
   };
 
+  const roundHalfUp = (val: number) => Math.ceil(val * 2) / 2;
+
   const fee = useMemo(() => {
     if (distanceKm <= 0) return 0;
     let total = 0;
-    if (isPickup) total += Math.round(distanceKm * 2) * 10;
-    if (isDelivery) total += Math.round(distanceKm) * 10;
+    if (isPickup) total += roundHalfUp(distanceKm * 2) * 10;
+    if (isDelivery) total += roundHalfUp(distanceKm) * 10;
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
   }, [distanceKm, isPickup, isDelivery]);
 
@@ -217,7 +219,7 @@ export default function FeeCalculatorPage() {
                   onChange={(e) => setIsPickup(e.target.checked)}
                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
                 />
-                <span className="text-sm font-bold text-slate-700">ไปรับ (Pickup){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {+(distanceKm * 2).toFixed(1)} km</span>}</span>
+                <span className="text-sm font-bold text-slate-700">ไปรับ (Pickup){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {roundHalfUp(distanceKm * 2).toFixed(1)} km</span>}</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
                 <input 
@@ -226,7 +228,7 @@ export default function FeeCalculatorPage() {
                   onChange={(e) => setIsDelivery(e.target.checked)}
                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
                 />
-                <span className="text-sm font-bold text-slate-700">ไปส่ง (Delivery){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {distanceKm} km</span>}</span>
+                <span className="text-sm font-bold text-slate-700">ไปส่ง (Delivery){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {roundHalfUp(distanceKm).toFixed(1)} km</span>}</span>
               </label>
             </div>
 
@@ -235,7 +237,7 @@ export default function FeeCalculatorPage() {
                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Distance</div>
                 <div className="text-xl font-black text-slate-900">
                   {distanceKm > 0 && (isPickup || isDelivery) 
-                    ? `${+((isPickup ? distanceKm * 2 : 0) + (isDelivery ? distanceKm : 0)).toFixed(1)} km` 
+                    ? `${((isPickup ? roundHalfUp(distanceKm * 2) : 0) + (isDelivery ? roundHalfUp(distanceKm) : 0)).toFixed(1)} km` 
                     : '-'}
                 </div>
               </div>
