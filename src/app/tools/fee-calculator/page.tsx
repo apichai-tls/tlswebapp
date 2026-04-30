@@ -233,7 +233,11 @@ export default function FeeCalculatorPage() {
             <div className="flex gap-6 w-full md:w-auto justify-between md:justify-end">
               <div className="text-right">
                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Distance</div>
-                <div className="text-xl font-black text-slate-900">{distanceKm > 0 ? `${distanceKm} km` : '-'}</div>
+                <div className="text-xl font-black text-slate-900">
+                  {distanceKm > 0 && (isPickup || isDelivery) 
+                    ? `${+((isPickup ? distanceKm * 2 : 0) + (isDelivery ? distanceKm : 0)).toFixed(1)} km` 
+                    : '-'}
+                </div>
               </div>
               <div className="w-px bg-slate-200 h-10 hidden md:block"></div>
               <div className="text-right">
