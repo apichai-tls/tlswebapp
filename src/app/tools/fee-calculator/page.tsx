@@ -32,6 +32,7 @@ export default function FeeCalculatorPage() {
   
   const [isPickup, setIsPickup] = useState(true);
   const [isDelivery, setIsDelivery] = useState(true);
+  const [isVip, setIsVip] = useState(false);
 
   // Set default shop if none selected
   const activeShop = useMemo(() => {
@@ -72,10 +73,11 @@ export default function FeeCalculatorPage() {
   const fee = useMemo(() => {
     if (distanceKm <= 0) return 0;
     let total = 0;
-    if (isPickup) total += roundHalfUp(distanceKm * 2) * 10;
-    if (isDelivery) total += roundHalfUp(distanceKm) * 10;
+    const ratePerKm = isVip ? 4 : 10;
+    if (isPickup) total += roundHalfUp(distanceKm * 2) * ratePerKm;
+    if (isDelivery) total += roundHalfUp(distanceKm) * ratePerKm;
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
-  }, [distanceKm, isPickup, isDelivery]);
+  }, [distanceKm, isPickup, isDelivery, isVip]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
@@ -229,6 +231,16 @@ export default function FeeCalculatorPage() {
                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
                 />
                 <span className="text-sm font-bold text-slate-700">ไปส่ง (Delivery){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {roundHalfUp(distanceKm).toFixed(1)} km</span>}</span>
+              </label>
+              <div className="w-px bg-slate-200 h-6 mx-1 hidden md:block"></div>
+              <label className="flex items-center gap-2 cursor-pointer bg-amber-50 px-3 py-2 rounded-lg border border-amber-200 hover:bg-amber-100 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={isVip}
+                  onChange={(e) => setIsVip(e.target.checked)}
+                  className="rounded border-amber-400 text-amber-500 focus:ring-amber-500 h-4 w-4"
+                />
+                <span className="text-sm font-black text-amber-700 uppercase tracking-wide">VIP</span>
               </label>
             </div>
 
