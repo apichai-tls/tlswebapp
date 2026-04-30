@@ -309,7 +309,7 @@ export default function FeeCalculatorPage() {
                     <h4 className="font-bold text-slate-900 text-sm leading-tight">{targetLocation.name}</h4>
                     <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{targetLocation.address}</p>
                     <a 
-                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(targetLocation.name)}`}
+                      href={`https://www.google.com/maps/search/?api=1&query=${targetLocation.coords.lat},${targetLocation.coords.lng}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 px-2 py-1 rounded-md hover:bg-blue-100"
