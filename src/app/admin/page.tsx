@@ -34,6 +34,7 @@ import { AdminServiceMenu } from "@/components/admin-service-menu";
 import { AdminCRM } from "@/components/admin-crm";
 import { AdminSettings } from "@/components/admin-settings";
 import { AdminDispatch } from "@/components/admin-dispatch";
+import { AdminUsers } from "@/components/admin-users";
 import { useRiders } from "@/lib/use-riders";
 import {
   Plus,
@@ -263,16 +264,18 @@ export default function AdminPage() {
             <Logo />
           </div>
           <nav className="flex-1 px-4 py-6 space-y-1">
-            <motion.div
-              onClick={() => setActiveTab("dashboard")}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-            >
-              <LayoutDashboard size={18} />
-              Dashboard
-            </motion.div>
+            {hasAccess("dashboard") && (
+              <motion.div
+                onClick={() => setActiveTab("dashboard")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <LayoutDashboard size={18} />
+                Dashboard
+              </motion.div>
+            )}
             
-            {user?.role === 'admin' && (
+            {hasAccess("services") && (
               <motion.div
                 onClick={() => setActiveTab("services")}
                 whileHover={{ x: 2 }}
@@ -283,7 +286,7 @@ export default function AdminPage() {
               </motion.div>
             )}
 
-            {user?.role !== 'cso' && (
+            {hasAccess("pos") && (
               <motion.div
                 onClick={() => setActiveTab("pos")}
                 whileHover={{ x: 2 }}
@@ -294,32 +297,38 @@ export default function AdminPage() {
               </motion.div>
             )}
 
-            <motion.div
-              onClick={() => setActiveTab("jobs")}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-            >
-              <Package size={18} />
-              All Jobs
-            </motion.div>
-            <motion.div
-              onClick={() => setActiveTab("customers")}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-            >
-              <Users size={18} />
-              Customers (CRM)
-            </motion.div>
-            <motion.div
-              onClick={() => setActiveTab("dispatch")}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-            >
-              <CalendarClock size={18} />
-              Dispatch Schedule
-            </motion.div>
+            {hasAccess("jobs") && (
+              <motion.div
+                onClick={() => setActiveTab("jobs")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <Package size={18} />
+                All Jobs
+              </motion.div>
+            )}
+            {hasAccess("customers") && (
+              <motion.div
+                onClick={() => setActiveTab("customers")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <Users size={18} />
+                Customers (CRM)
+              </motion.div>
+            )}
+            {hasAccess("dispatch") && (
+              <motion.div
+                onClick={() => setActiveTab("dispatch")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <CalendarClock size={18} />
+                Dispatch Schedule
+              </motion.div>
+            )}
 
-            {user?.role === 'admin' && (
+            {hasAccess("riders") && (
               <motion.div
                 onClick={() => setActiveTab("riders")}
                 whileHover={{ x: 2 }}
@@ -330,29 +339,30 @@ export default function AdminPage() {
               </motion.div>
             )}
 
-            {(user?.role === 'admin' || user?.role === 'cso') && (
-              <>
+            {hasAccess("map") && (
+              <motion.div
+                onClick={() => setActiveTab("map")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <Map size={18} />
+                Live Map
+              </motion.div>
+            )}
+            
+            {hasAccess("calculator") && (
+              <Link href="/tools/fee-calculator" className="block">
                 <motion.div
-                  onClick={() => setActiveTab("map")}
                   whileHover={{ x: 2 }}
-                  className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                  className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
                 >
-                  <Map size={18} />
-                  Live Map
+                  <Calculator size={18} />
+                  Distance Calculator
                 </motion.div>
-                <Link href="/tools/fee-calculator" className="block">
-                  <motion.div
-                    whileHover={{ x: 2 }}
-                    className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
-                  >
-                    <Calculator size={18} />
-                    Distance Calculator
-                  </motion.div>
-                </Link>
-              </>
+              </Link>
             )}
 
-            {user?.role === 'admin' && (
+            {hasAccess("settings") && (
               <motion.div
                 onClick={() => setActiveTab("settings")}
                 whileHover={{ x: 2 }}
@@ -360,6 +370,17 @@ export default function AdminPage() {
               >
                 <Settings size={18} />
                 Settings
+              </motion.div>
+            )}
+            
+            {hasAccess("users") && (
+              <motion.div
+                onClick={() => setActiveTab("users")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "users" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <ShieldCheck size={18} />
+                Manage Users
               </motion.div>
             )}
           </nav>
@@ -757,6 +778,7 @@ export default function AdminPage() {
           {activeTab === "services" && <AdminServiceMenu />}
           {activeTab === "customers" && <AdminCRM />}
           {activeTab === "settings" && <AdminSettings />}
+          {activeTab === "users" && <AdminUsers />}
         </main>
       </motion.div>
     </AnimatePresence>

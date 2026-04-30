@@ -32,7 +32,7 @@ function LoginForm() {
     await new Promise(r => setTimeout(r, 1200));
 
     try {
-      const user = login(email, password);
+      const user = await login(email, password);
       toast.success(`Welcome back, ${user.role}!`);
       
       const redirectPath = searchParams.get("redirect");

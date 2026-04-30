@@ -2,22 +2,25 @@
 
 import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
 
-interface User {
+import { loginUser } from '@/actions/auth';
+
+export interface User {
   id: string;
   email: string;
-  role: 'admin' | 'rider' | 'manager' | 'cso';
+  role: 'admin' | 'rider' | 'manager' | 'cso' | 'staff';
+  permissions: string[];
 }
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password?: string) => User;
+  login: (email: string, password?: string) => Promise<User>;
   logout: () => void;
   isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
-  login: (email, password) => ({ id: '', email: '', role: 'admin' }),
+  login: async (email, password) => ({ id: '', email: '', role: 'admin', permissions: [] }),
   logout: () => {},
   isLoading: true,
 });
@@ -40,35 +43,31 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setIsLoading(false);
   }, []);
 
-  const login = (email: string, password?: string) => {
-    // Valid Users Database
-    const users: Record<string, { role: 'admin' | 'manager' | 'rider' | 'cso', id: string, pass: string }> = {
-      'admin@tls.com': { role: 'admin', id: 'admin_1', pass: 'admin1234' },
-      'manager@tls.com': { role: 'manager', id: 'manager_1', pass: 'manager1234' },
-      'cso1@tls.com': { role: 'cso', id: 'cso_1', pass: 'cso1234' },
-      'cso2@tls.com': { role: 'cso', id: 'cso_2', pass: 'cso1234' },
-      'rider1@tls.com': { role: 'rider', id: 'RIDER-01', pass: 'rider1234' },
-      'rider2@tls.com': { role: 'rider', id: 'RIDER-02', pass: 'rider1234' },
-      'rider3@tls.com': { role: 'rider', id: 'RIDER-03', pass: 'rider1234' },
-      'rider4@tls.com': { role: 'rider', id: 'RIDER-04', pass: 'rider1234' },
-    };
-
-    const targetEmail = email.toLowerCase().trim();
-    const validUser = users[targetEmail];
-
-    if (!validUser) {
-      throw new Error("Invalid email or password");
+  const login = async (email: string, password?: string) => {
+    // Check rider hardcoded first since riders are not in AdminUser table
+    if (email.startsWith('rider')) {
+      const users: Record<string, { role: 'rider', id: string, pass: string }> = {
+        'rider1@tls.com': { role: 'rider', id: 'RIDER-01', pass: 'rider1234' },
+        'rider2@tls.com': { role: 'rider', id: 'RIDER-02', pass: 'rider1234' },
+        'rider3@tls.com': { role: 'rider', id: 'RIDER-03', pass: 'rider1234' },
+        'rider4@tls.com': { role: 'rider', id: 'RIDER-04', pass: 'rider1234' },
+      };
+      const validUser = users[email.toLowerCase().trim()];
+      if (validUser && (!password || password === validUser.pass)) {
+        const userData: User = { 
+          email: email.toLowerCase().trim(), 
+          role: validUser.role, 
+          id: validUser.id,
+          permissions: [] 
+        };
+        setUser(userData);
+        localStorage.setItem('authUser', JSON.stringify(userData));
+        return userData;
+      }
     }
 
-    if (password && password !== validUser.pass) {
-      throw new Error("Invalid email or password");
-    }
-
-    const userData: User = { 
-      email: targetEmail, 
-      role: validUser.role, 
-      id: validUser.id 
-    };
+    // Authenticate Admin/Manager/CSO against DB
+    const userData = await loginUser(email, password);
     
     setUser(userData);
     localStorage.setItem('authUser', JSON.stringify(userData));
