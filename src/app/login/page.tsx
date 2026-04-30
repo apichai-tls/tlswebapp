@@ -43,7 +43,7 @@ function LoginForm() {
       if (redirectPath) {
         router.push(redirectPath);
       } else {
-        router.push(user.role === "admin" || user.role === "manager" ? "/admin" : "/rider");
+        router.push(user.role === "rider" ? "/rider" : "/admin");
       }
     } catch (error: any) {
       toast.error(error.message || "Login failed. Please try again.");

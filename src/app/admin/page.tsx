@@ -253,7 +253,7 @@ export default function AdminPage() {
   }
 
   return (
-    <ProtectedRoute allowedRole={['admin', 'manager', 'cso']}>
+    <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
       <AnimatePresence mode="wait">
         <motion.div
         className="flex min-h-screen"
@@ -784,6 +784,15 @@ export default function AdminPage() {
           {activeTab === "customers" && hasAccess("customers") && <AdminCRM />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
+
+          {/* Fallback for no access to current tab */}
+          {!hasAccess(activeTab) && (
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-400 p-8 h-full bg-slate-50/50">
+              <ShieldAlert size={48} className="mb-4 text-slate-300" />
+              <h2 className="text-xl font-bold text-slate-500 mb-2">Access Restricted</h2>
+              <p className="text-sm">Please select an available menu from the sidebar.</p>
+            </div>
+          )}
         </main>
       </motion.div>
     </AnimatePresence>
