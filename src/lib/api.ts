@@ -1,4 +1,3 @@
-import mockDb from './data/mock-db.json';
 import * as dbActions from '@/actions/db';
 import type { Customer, Job, Rider, ServiceItem, PriceList } from './store'; // we'll use types from store.ts for now
 
@@ -50,12 +49,23 @@ if (typeof window !== 'undefined') {
   ensureDbLoaded();
 }
 
+const emptyDb: Database = {
+  customers: [],
+  jobs: [],
+  riders: [],
+  services: [],
+  priceLists: [],
+  shopLocations: [],
+  pois: [],
+  settings: {}
+};
+
 let fallbackDb: Database | null = null;
 const initDb = (): Database => {
   if (!memoryDb) {
-    // Return a stable reference to mockDb as a fallback until the server data loads
+    // Return a stable reference to empty db as a fallback until the server data loads
     // This fixes the "getServerSnapshot should be cached" SSR infinite loop warning
-    if (!fallbackDb) fallbackDb = parseMockDb(mockDb);
+    if (!fallbackDb) fallbackDb = parseMockDb(emptyDb);
     return fallbackDb;
   }
   return memoryDb;
@@ -70,52 +80,17 @@ const dateReviver = (key: string, value: unknown) => {
   return value;
 };
 
-// Parse initial mock db and convert date strings to Date objects
+// Parse initial db and convert date strings to Date objects
 const parseMockDb = (data: unknown): Database => {
   const db = JSON.parse(JSON.stringify(data), dateReviver) as Database;
-  if (!db.priceLists || db.priceLists.length === 0) {
-    db.priceLists = [{
-      id: "regular",
-      name: "Regular (Standard Pricing)",
-      isDefault: true,
-      servicePrices: {}
-    }];
-  }
-  if (!db.shopLocations || db.shopLocations.length === 0) {
-    db.shopLocations = [
-      {
-        id: "shop-main",
-        name: "Main branch",
-        address: "220/13, Sukhumvit 1/1, Sukhumvit Road, North Klongtoey, Wattana, Bangkok 10110.",
-        coords: { lat: 13.7417, lng: 100.5526 }
-      },
-      {
-        id: "shop-head",
-        name: "Head Office",
-        address: "12/500, 15 Sukhumvit Residences, G/F, Sukhumvit 15, North Klongtoey Wattana, Bangkok 10110.",
-        coords: { lat: 13.7438, lng: 100.5583 }
-      },
-      {
-        id: "shop-rhythm",
-        name: "Rhythm Asoke",
-        address: "299/1, Rhythm Asoke, Asoke Din-Deang Road, Makkasan, Ratchathewi Bangkok 10400",
-        coords: { lat: 13.7540, lng: 100.5645 }
-      }
-    ];
-  }
-  if (db.customers) {
-    db.customers = db.customers.map(c => ({
-      ...c,
-      priceListId: c.priceListId || "regular",
-      creditBalance: c.creditBalance || 0
-    }));
-  }
-  if (!db.settings) {
-    db.settings = {};
-  }
-  if (!db.pois) {
-    db.pois = [];
-  }
+  if (!db.priceLists) db.priceLists = [];
+  if (!db.shopLocations) db.shopLocations = [];
+  if (!db.customers) db.customers = [];
+  if (!db.jobs) db.jobs = [];
+  if (!db.riders) db.riders = [];
+  if (!db.services) db.services = [];
+  if (!db.settings) db.settings = {};
+  if (!db.pois) db.pois = [];
   return db;
 };
 
