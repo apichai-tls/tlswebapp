@@ -199,8 +199,13 @@ export function AdminRiders() {
                       type="file" 
                       accept="image/*" 
                       onChange={(e) => {
-                        if (e.target.files && e.target.files[0]) {
-                          setAvatarUrl(URL.createObjectURL(e.target.files[0]));
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            setAvatarUrl(reader.result as string);
+                          };
+                          reader.readAsDataURL(file);
                         }
                       }}
                       className="cursor-pointer text-xs"
