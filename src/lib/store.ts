@@ -38,6 +38,8 @@ export interface POI {
   name: string;
   address: string;
   coords: LatLng;
+  closestShopId?: string;
+  distanceKm?: number;
 }
 
 export interface PriceList {

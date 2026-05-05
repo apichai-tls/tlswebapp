@@ -106,11 +106,13 @@ model ShopLocation {
 }
 
 model POI {
-  id      String @id @default(uuid())
-  name    String
-  address String
-  lat     Float
-  lng     Float
+  id            String  @id @default(uuid())
+  name          String
+  address       String
+  lat           Float
+  lng           Float
+  closestShopId String?
+  distanceKm    Float?
 }
 
 model Setting {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore, useMemo } from "react";
+import { useState, useSyncExternalStore, useMemo, useDeferredValue } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { Calculator, MapPin, Search, Store, Navigation, Database, Plus } from "lucide-react";
@@ -40,14 +40,16 @@ export default function FeeCalculatorPage() {
     return shops[0];
   }, [shops, selectedShopId]);
 
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+
   const filteredPois = useMemo(() => {
-    if (!searchQuery.trim()) return pois;
-    const lowerQuery = searchQuery.toLowerCase();
+    if (!deferredSearchQuery.trim()) return pois;
+    const lowerQuery = deferredSearchQuery.toLowerCase();
     return pois.filter(p => 
       p.name.toLowerCase().includes(lowerQuery) || 
       p.address.toLowerCase().includes(lowerQuery)
     );
-  }, [pois, searchQuery]);
+  }, [pois, deferredSearchQuery]);
 
   const handleSelectPoi = async (poi: POI) => {
     setGoogleSearchQuery("");
@@ -58,12 +60,17 @@ export default function FeeCalculatorPage() {
     });
     
     if (isAutoSelectShop) {
-      setIsCalculatingShop(true);
-      try {
-        const closestShopId = await getClosestShopByRoute(poi.coords, shops);
-        if (closestShopId) setSelectedShopId(closestShopId);
-      } finally {
-        setIsCalculatingShop(false);
+      if (poi.closestShopId && poi.distanceKm !== undefined && poi.distanceKm !== null) {
+        setSelectedShopId(poi.closestShopId);
+        setDistanceKm(poi.distanceKm);
+      } else {
+        setIsCalculatingShop(true);
+        try {
+          const closestShopId = await getClosestShopByRoute(poi.coords, shops);
+          if (closestShopId) setSelectedShopId(closestShopId);
+        } finally {
+          setIsCalculatingShop(false);
+        }
       }
     }
   };
@@ -175,7 +182,10 @@ export default function FeeCalculatorPage() {
               <Store className="text-emerald-500 shrink-0" size={20} />
               <div className="flex-1">
                 <div className="flex items-center justify-between mb-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Origin Branch</label>
+                  <label className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    Origin Branch
+                    {isCalculatingShop && <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>}
+                  </label>
                   <label className="flex items-center gap-1.5 cursor-pointer select-none">
                     <input 
                       type="checkbox" 
@@ -292,12 +302,7 @@ export default function FeeCalculatorPage() {
               />
             )}
             
-            {isCalculatingShop && (
-              <div className="absolute inset-0 z-[500] bg-white/50 backdrop-blur-sm flex flex-col items-center justify-center">
-                <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3 shadow-lg"></div>
-                <div className="text-sm font-black text-indigo-700 bg-white/80 px-4 py-1.5 rounded-full shadow-sm">Finding nearest branch...</div>
-              </div>
-            )}
+            {/* Removed blocking UI */}
             
             {targetLocation && (
               <div className="absolute top-4 left-4 z-[400] bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-lg border border-slate-200 max-w-sm">

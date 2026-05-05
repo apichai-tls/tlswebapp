@@ -14,7 +14,7 @@ interface Database {
   services: ServiceItem[];
   priceLists: PriceList[];
   shopLocations: { id: string; name: string; address: string; coords: { lat: number; lng: number } }[];
-  pois: { id: string; name: string; address: string; coords: { lat: number; lng: number } }[];
+  pois: { id: string; name: string; address: string; coords: { lat: number; lng: number }; closestShopId?: string; distanceKm?: number }[];
   settings: Record<string, string>;
 }
 

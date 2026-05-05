@@ -1,4 +1,4 @@
-import { settingsStore, poiStore, getClosestShopId, type ShopLocation, type LatLng } from "@/lib/store";
+import { settingsStore, poiStore, getClosestShopId, getDirectDistance, type ShopLocation, type LatLng } from "@/lib/store";
 
 export interface SearchResult {
   placeId: string;
@@ -69,7 +69,14 @@ export async function searchLocation(query: string): Promise<SearchResult[]> {
   }
 }
 
+const routeCache = new Map<string, RouteResult>();
+
 export async function getRoute(pickup: LatLng, dropoff: LatLng): Promise<RouteResult | null> {
+  const cacheKey = `${pickup.lat.toFixed(5)},${pickup.lng.toFixed(5)}-${dropoff.lat.toFixed(5)},${dropoff.lng.toFixed(5)}`;
+  if (routeCache.has(cacheKey)) {
+    return routeCache.get(cacheKey)!;
+  }
+
   try {
     const settings = settingsStore.getSnapshot();
     
@@ -83,18 +90,18 @@ export async function getRoute(pickup: LatLng, dropoff: LatLng): Promise<RouteRe
       const data = await res.json();
       
       if (!data.error && data.coordinates) {
-        return {
+        const result = {
           distanceKm: data.distanceKm,
-          coordinates: data.coordinates, // already decoded by the proxy
+          coordinates: data.coordinates,
         };
+        routeCache.set(cacheKey, result);
+        return result;
       }
       
       console.warn("Google Directions API failed, falling back to OSRM", data.error);
     }
 
     // 2. Fallback to Free OSRM API (Using 'driving' profile)
-    // We use 'driving' here as a fallback because 'bike' goes against one-way traffic on OSM.
-    // Note: Public OSRM 'driving' profile might not perfectly avoid tolls.
     const url = `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}?overview=full&geometries=geojson`;
     const res = await fetch(url);
     const data = await res.json();
@@ -107,16 +114,14 @@ export async function getRoute(pickup: LatLng, dropoff: LatLng): Promise<RouteRe
     const distanceMeters = route.distance;
     const distanceKm = Math.round((distanceMeters / 1000) * 10) / 10;
     
-    // GeoJSON coordinates are [longitude, latitude]
     const coordinates: LatLng[] = route.geometry.coordinates.map((coord: number[]) => ({
       lat: coord[1],
       lng: coord[0],
     }));
 
-    return {
-      distanceKm,
-      coordinates,
-    };
+    const result = { distanceKm, coordinates };
+    routeCache.set(cacheKey, result);
+    return result;
   } catch (error) {
     console.error("Routing failed:", error);
     return null;
@@ -128,29 +133,65 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
   if (shops.length === 1) return shops[0].id;
 
   try {
-    // 1. Fetch routes for all shops in parallel
-    const routePromises = shops.map(shop => getRoute(shop.coords, targetCoords));
-    const results = await Promise.all(routePromises);
+    // As requested, we won't reduce scope. We will check the distance matrix against all shops.
+    const candidateShops = shops;
 
-    // 2. Find the minimum distance
+    const settings = settingsStore.getSnapshot();
     let minDistance = Infinity;
     let closestShopId = "";
 
-    results.forEach((route, index) => {
-      if (route && route.distanceKm < minDistance) {
-        minDistance = route.distanceKm;
-        closestShopId = shops[index].id;
-      }
-    });
+    // 1. Try Google Distance Matrix API
+    if (settings.enableGoogleApi === "true" && settings.googleMapsApiKey) {
+      const apiKey = settings.googleMapsApiKey;
+      const origins = `${targetCoords.lat},${targetCoords.lng}`;
+      const destinations = candidateShops.map(s => `${s.coords.lat},${s.coords.lng}`).join("|");
 
-    // 3. Return the closest shop if found, otherwise fallback to straight-line
-    if (closestShopId) {
-      return closestShopId;
+      const res = await fetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}&key=${encodeURIComponent(apiKey)}`);
+      const data = await res.json();
+
+      if (!data.error && data.distancesKm) {
+        data.distancesKm.forEach((dist: number, i: number) => {
+          if (dist < minDistance) {
+            minDistance = dist;
+            closestShopId = candidateShops[i].id;
+          }
+        });
+        if (closestShopId) return closestShopId;
+      }
+    }
+
+    // 2. Fallback to OSRM Table Service
+    const coordsList = [
+      `${targetCoords.lng},${targetCoords.lat}`, 
+      ...candidateShops.map(s => `${s.coords.lng},${s.coords.lat}`)
+    ].join(";");
+    
+    const osrmUrl = `https://router.project-osrm.org/table/v1/driving/${coordsList}?sources=0&annotations=distance`;
+    
+    try {
+      const res = await fetch(osrmUrl);
+      const data = await res.json();
+      
+      if (data.code === "Ok" && data.distances && data.distances[0]) {
+        for (let i = 0; i < candidateShops.length; i++) {
+          const distMeters = data.distances[0][i + 1];
+          if (distMeters !== undefined && distMeters !== null) {
+            const distKm = distMeters / 1000;
+            if (distKm < minDistance) {
+              minDistance = distKm;
+              closestShopId = candidateShops[i].id;
+            }
+          }
+        }
+        if (closestShopId) return closestShopId;
+      }
+    } catch (e) {
+      console.warn("OSRM Table failed", e);
     }
   } catch (error) {
-    console.error("Failed to calculate closest shop by route:", error);
+    console.error("Failed to calculate closest shop by distance matrix:", error);
   }
 
-  // Fallback to straight-line distance if routing fails
+  // Fallback to straight-line distance if routing matrix fails
   return getClosestShopId(targetCoords, shops);
 }
