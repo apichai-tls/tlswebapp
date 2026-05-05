@@ -164,14 +164,16 @@ export default function AdminPage() {
     return user?.permissions?.includes(key);
   };
 
-  // Fee calculation: (pickupDist * 2 * 10) + (deliveryDist * 10)
+  // Fee calculation using the latest tuned formula (roundHalfUp)
+  const roundHalfUp = (val: number) => Math.ceil(val * 2) / 2;
+  
   const calculateTotalFee = () => {
     let total = 0;
     if (isPickup) {
-      total += Math.ceil(pickupDist * 2) * 10;
+      total += roundHalfUp(pickupDist * 2) * 10;
     }
     if (isDelivery) {
-      total += Math.ceil(deliveryDist) * 10;
+      total += roundHalfUp(deliveryDist) * 10;
     }
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
   };
