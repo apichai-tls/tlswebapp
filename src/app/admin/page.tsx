@@ -153,6 +153,9 @@ export default function AdminPage() {
   const [bagImageUrl, setBagImageUrl] = useState("");
   const [capturedImages, setCapturedImages] = useState<Record<string, string>>({});
   const [isFreeDelivery, setIsFreeDelivery] = useState(false);
+  const [adminNote, setAdminNote] = useState("");
+  const [showAdminNote, setShowAdminNote] = useState(false);
+  const [leaveAtLobby, setLeaveAtLobby] = useState(false);
 
   const handleLogout = () => {
     logout();
@@ -244,7 +247,11 @@ export default function AdminPage() {
       fee,
       bagImageUrl,
       serviceType,
-      remark: isFreeDelivery ? "ส่งฟรี" : undefined,
+      remark: [
+        isFreeDelivery ? "ส่งฟรี" : "",
+        leaveAtLobby ? "ฝากไว้ที่ Lobby / Concierge" : "",
+        adminNote ? `Note: ${adminNote}` : ""
+      ].filter(Boolean).join(" | ") || undefined,
     });
 
     toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
@@ -252,6 +259,9 @@ export default function AdminPage() {
     setDeliveryLoc("");
     setIsDeliveryDirty(false);
     setIsFreeDelivery(false);
+    setAdminNote("");
+    setShowAdminNote(false);
+    setLeaveAtLobby(false);
     setDialogOpen(false);
   }
 
@@ -686,6 +696,41 @@ export default function AdminPage() {
                           </div>
                         )}
                       </div>
+                    </div>
+
+                    {/* Admin Notes & Options */}
+                    <div className="space-y-3 pt-4 border-t border-slate-100">
+                      <Label className="flex items-center gap-2 cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={leaveAtLobby}
+                          onChange={(e) => setLeaveAtLobby(e.target.checked)}
+                          className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                        />
+                        <span className="text-sm font-medium text-slate-700">ฝากไว้ที่ Lobby / Concierge (ไม่ต้องนัดรับ)</span>
+                      </Label>
+
+                      {!showAdminNote ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full text-xs border-dashed border-slate-300 text-slate-500 hover:text-slate-700"
+                          onClick={() => setShowAdminNote(true)}
+                        >
+                          <Plus size={14} className="mr-1" /> Add Admin Note
+                        </Button>
+                      ) : (
+                        <div className="space-y-2">
+                          <Label htmlFor="adminNote" className="text-xs font-medium text-slate-500">Admin Note</Label>
+                          <Input
+                            id="adminNote"
+                            placeholder="Enter any additional instructions or notes..."
+                            value={adminNote}
+                            onChange={(e) => setAdminNote(e.target.value)}
+                            className="h-8 text-xs bg-white"
+                          />
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-auto rounded-lg bg-slate-50 p-4 border border-slate-100 shadow-sm">
