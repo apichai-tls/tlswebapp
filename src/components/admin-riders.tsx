@@ -59,6 +59,7 @@ export function AdminRiders() {
 
   // Form State
   const [name, setName] = useState("");
+  const [nickname, setNickname] = useState("");
   const [phone, setPhone] = useState("");
   const [status, setStatus] = useState<Rider["status"]>("offline");
   const [nationalId, setNationalId] = useState("");
@@ -81,6 +82,7 @@ export function AdminRiders() {
   function openEdit(rider: Rider) {
     setEditingId(rider.id);
     setName(rider.name);
+    setNickname(rider.nickname || "");
     setPhone(rider.phone);
     setStatus(rider.status);
     setNationalId(rider.nationalId || "");
@@ -97,7 +99,7 @@ export function AdminRiders() {
     }
 
     const payload = { 
-      name, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl
+      name, nickname, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl
     };
 
     if (editingId) {
@@ -131,10 +133,7 @@ export function AdminRiders() {
         </div>
         
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <Button onClick={openCreate} className="gap-2 bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">
-            <Plus size={16} />
-            Add New Rider
-          </Button>
+          {/* Add New Rider button removed to enforce creation via Manage Users */}
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>{editingId ? "Edit Rider Profile" : "Create New Rider"}</DialogTitle>
@@ -148,6 +147,10 @@ export function AdminRiders() {
                 <div className="grid gap-2">
                   <Label htmlFor="riderName">Full Name *</Label>
                   <Input id="riderName" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Somchai R." />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="riderNickname">Nickname / Short Code</Label>
+                  <Input id="riderNickname" value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="e.g. RIDER-01 or Boy" />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="riderPhone">Phone Number *</Label>
@@ -242,7 +245,7 @@ export function AdminRiders() {
               
               <div className="pt-14 pb-6 px-6 text-center">
                 <h3 className="text-lg font-bold text-slate-900">{rider.name}</h3>
-                <p className="text-xs font-mono text-slate-400 mt-0.5">{rider.id}</p>
+                <p className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 inline-block px-2 py-0.5 rounded-full mt-1.5">{rider.nickname || rider.id.split('-')[0]}</p>
                 
                 <div className="flex items-center justify-center gap-1.5 mt-3 text-slate-600">
                   <Phone size={14} />

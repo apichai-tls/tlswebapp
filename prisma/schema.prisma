@@ -78,6 +78,7 @@ model ServiceItem {
 model Rider {
   id             String   @id @default(uuid())
   name           String
+  nickname       String?
   phone          String
   status         String   // "online" | "offline" | "busy"
   currentLat     Float?

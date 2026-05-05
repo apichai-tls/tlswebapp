@@ -107,6 +107,7 @@ export interface ServiceItem {
 export interface Rider {
   id: string;
   name: string;
+  nickname?: string;
   phone: string;
   status: "online" | "offline" | "busy";
   currentLocation?: LatLng;

@@ -35,6 +35,19 @@ export async function createUser(data: { name: string; email: string; password?:
       }
     });
 
+    if (data.role === 'rider') {
+      await prisma.rider.create({
+        data: {
+          id: newUser.id,
+          name: newUser.name,
+          nickname: newUser.name.split(' ')[0],
+          phone: "N/A",
+          status: "offline",
+          avatarUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(newUser.name)}&background=0D8ABC&color=fff&size=150`
+        }
+      });
+    }
+
     revalidatePath('/admin');
     return { success: true, data: newUser };
   } catch (error: any) {
@@ -69,6 +82,27 @@ export async function updateUser(id: string, data: { name: string; email: string
       data: updateData
     });
 
+    if (data.role === 'rider') {
+      const existingRider = await prisma.rider.findUnique({ where: { id } });
+      if (!existingRider) {
+        await prisma.rider.create({
+          data: {
+            id,
+            name: data.name,
+            nickname: data.name.split(' ')[0],
+            phone: "N/A",
+            status: "offline",
+            avatarUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(data.name)}&background=0D8ABC&color=fff&size=150`
+          }
+        });
+      } else {
+        await prisma.rider.update({
+          where: { id },
+          data: { name: data.name }
+        });
+      }
+    }
+
     revalidatePath('/admin');
     return { success: true, data: updated };
   } catch (error: any) {
@@ -96,6 +130,15 @@ export async function deleteUser(id: string, currentUserEmail: string) {
     }
 
     const deleted = await prisma.adminUser.delete({ where: { id } });
+    
+    if (targetUser.role === 'rider') {
+      try {
+        await prisma.rider.delete({ where: { id } });
+      } catch (e) {
+        // ignore if rider profile didn't exist
+      }
+    }
+
     revalidatePath('/admin');
     return { success: true, data: deleted };
   } catch (error: any) {

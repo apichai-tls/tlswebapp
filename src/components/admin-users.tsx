@@ -206,6 +206,7 @@ export function AdminUsers() {
                   <option value="manager">Manager</option>
                   <option value="cso">CSO</option>
                   <option value="staff">Staff</option>
+                  <option value="rider">Rider</option>
                 </select>
               </div>
             </div>
@@ -289,6 +290,7 @@ export function AdminUsers() {
                         <span className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-full ${
                           user.role === 'admin' ? 'bg-indigo-100 text-indigo-700' :
                           user.role === 'manager' ? 'bg-emerald-100 text-emerald-700' :
+                          user.role === 'rider' ? 'bg-orange-100 text-orange-700' :
                           'bg-slate-100 text-slate-700'
                         }`}>
                           {user.role}
