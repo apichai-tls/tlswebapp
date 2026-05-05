@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Edit2, Trash2, Phone, Star, Activity, Circle, CheckCircle2, BarChart3, ChevronRight, ChevronDown, Calendar, ArrowRight, Banknote, Image as ImageIcon } from "lucide-react";
@@ -35,6 +35,27 @@ export function AdminRiders() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reportRiderId, setReportRiderId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  const riderStats = useMemo(() => {
+    const stats: Record<string, { monthEarnings: number, totalEarnings: number }> = {};
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    jobs.forEach(j => {
+      if (j.status !== 'completed' || !j.riderId) return;
+      if (!stats[j.riderId]) stats[j.riderId] = { monthEarnings: 0, totalEarnings: 0 };
+      
+      const earning = j.distance * 2;
+      stats[j.riderId].totalEarnings += earning;
+      
+      const date = new Date(j.completedAt || j.createdAt);
+      if (date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
+        stats[j.riderId].monthEarnings += earning;
+      }
+    });
+    return stats;
+  }, [jobs]);
 
   // Form State
   const [name, setName] = useState("");
@@ -244,18 +265,13 @@ export function AdminRiders() {
                   </div>
                   <div className="text-center flex flex-col items-center justify-center border-l border-slate-100">
                     <div className="flex items-center justify-center gap-1 text-slate-700 font-semibold text-indigo-600 text-sm">
-                      ฿{jobs.filter(j => 
-                        j.riderId === rider.id && 
-                        j.status === 'completed' && 
-                        new Date(j.completedAt || j.createdAt).getMonth() === new Date().getMonth() &&
-                        new Date(j.completedAt || j.createdAt).getFullYear() === new Date().getFullYear()
-                      ).reduce((sum, j) => sum + (j.distance * 2), 0).toFixed(0)}
+                      ฿{(riderStats[rider.id]?.monthEarnings || 0).toFixed(0)}
                     </div>
                     <p className="text-[9px] text-slate-400 uppercase tracking-widest mt-1">Month</p>
                   </div>
                   <div className="text-center flex flex-col items-center justify-center border-l border-slate-100">
                     <div className="flex items-center justify-center gap-1 text-slate-600 font-medium text-sm">
-                      ฿{jobs.filter(j => j.riderId === rider.id && j.status === 'completed').reduce((sum, j) => sum + (j.distance * 2), 0).toFixed(0)}
+                      ฿{(riderStats[rider.id]?.totalEarnings || 0).toFixed(0)}
                     </div>
                     <p className="text-[9px] text-slate-400 uppercase tracking-widest mt-1">Total</p>
                   </div>
