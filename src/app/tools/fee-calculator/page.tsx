@@ -314,7 +314,7 @@ export default function FeeCalculatorPage() {
                   </div>
                   <div className="flex-1">
                     <h4 className="font-bold text-slate-900 text-sm leading-tight">{targetLocation.name}</h4>
-                    <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{targetLocation.address}</p>
+                    <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{targetLocation.address}</p>
                     {(() => {
                       let mapsUrl = `https://www.google.com/maps/search/?api=1&query=${targetLocation.coords.lat},${targetLocation.coords.lng}`;
                       if (targetLocation.placeId) {
