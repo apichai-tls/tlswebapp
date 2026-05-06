@@ -317,7 +317,9 @@ export default function FeeCalculatorPage() {
                     <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{targetLocation.address}</p>
                     {(() => {
                       let mapsUrl = `https://www.google.com/maps/search/?api=1&query=${targetLocation.coords.lat},${targetLocation.coords.lng}`;
-                      if (targetLocation.placeId) {
+                      if (targetLocation.address && targetLocation.address.startsWith('http')) {
+                        mapsUrl = targetLocation.address;
+                      } else if (targetLocation.placeId) {
                         mapsUrl += `&query_place_id=${targetLocation.placeId}`;
                       } else {
                         const isPoi = pois.some(p => p.name === targetLocation.name);
