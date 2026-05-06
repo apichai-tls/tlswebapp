@@ -195,6 +195,7 @@ export async function addPOIAction(data: any) {
       address: data.address,
       lat: data.coords.lat,
       lng: data.coords.lng,
+      placeId: data.placeId,
     }
   });
 }
@@ -203,6 +204,7 @@ export async function updatePOIAction(id: string, updates: any) {
   const data: any = {};
   if (updates.name) data.name = updates.name;
   if (updates.address) data.address = updates.address;
+  if (updates.placeId !== undefined) data.placeId = updates.placeId;
   if (updates.coords) {
     data.lat = updates.coords.lat;
     data.lng = updates.coords.lng;

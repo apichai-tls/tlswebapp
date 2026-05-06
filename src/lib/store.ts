@@ -38,6 +38,7 @@ export interface POI {
   name: string;
   address: string;
   coords: LatLng;
+  placeId?: string;
   closestShopId?: string;
   distanceKm?: number;
 }

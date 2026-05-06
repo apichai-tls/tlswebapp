@@ -14,7 +14,7 @@ interface Database {
   services: ServiceItem[];
   priceLists: PriceList[];
   shopLocations: { id: string; name: string; address: string; coords: { lat: number; lng: number } }[];
-  pois: { id: string; name: string; address: string; coords: { lat: number; lng: number }; closestShopId?: string; distanceKm?: number }[];
+  pois: { id: string; name: string; address: string; coords: { lat: number; lng: number }; placeId?: string; closestShopId?: string; distanceKm?: number }[];
   settings: Record<string, string>;
 }
 
@@ -411,14 +411,14 @@ export const api = {
     
     return initDb().pois;
   },
-  async addPOI(poi: Omit<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }, 'id'>) {
+  async addPOI(poi: Omit<{ id: string; name: string; address: string; coords: { lat: number; lng: number }, placeId?: string }, 'id'>) {
     const db = initDb();
     const newPoi = { ...poi, id: `POI-${Date.now().toString(36).toUpperCase()}` };
     db.pois = [...db.pois, newPoi];
     await dbActions.addPOIAction(newPoi);
     return newPoi;
   },
-  async updatePOI(id: string, updates: Partial<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }>) {
+  async updatePOI(id: string, updates: Partial<{ id: string; name: string; address: string; coords: { lat: number; lng: number }, placeId?: string }>) {
     const db = initDb();
     let updatedPoi = null;
     db.pois = db.pois.map(p => {

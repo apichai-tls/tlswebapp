@@ -24,7 +24,7 @@ export default function FeeCalculatorPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [googleSearchQuery, setGoogleSearchQuery] = useState("");
   const [selectedShopId, setSelectedShopId] = useState<string>("");
-  const [targetLocation, setTargetLocation] = useState<{ name: string; address: string; coords: LatLng } | null>(null);
+  const [targetLocation, setTargetLocation] = useState<{ name: string; address: string; coords: LatLng; placeId?: string } | null>(null);
   
   const [distanceKm, setDistanceKm] = useState<number>(0);
   const [isCalculatingShop, setIsCalculatingShop] = useState(false);
@@ -56,7 +56,8 @@ export default function FeeCalculatorPage() {
     setTargetLocation({
       name: poi.name,
       address: poi.address,
-      coords: poi.coords
+      coords: poi.coords,
+      placeId: poi.placeId
     });
     
     if (isAutoSelectShop) {
@@ -136,7 +137,8 @@ export default function FeeCalculatorPage() {
                   setTargetLocation({
                     name: loc.name,
                     address: loc.address || loc.name,
-                    coords: newCoords
+                    coords: newCoords,
+                    placeId: loc.placeId
                   });
                   if (isAutoSelectShop) {
                     setIsCalculatingShop(true);
@@ -313,14 +315,27 @@ export default function FeeCalculatorPage() {
                   <div className="flex-1">
                     <h4 className="font-bold text-slate-900 text-sm leading-tight">{targetLocation.name}</h4>
                     <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{targetLocation.address}</p>
-                    <a 
-                      href={`https://www.google.com/maps/search/?api=1&query=${targetLocation.coords.lat},${targetLocation.coords.lng}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 px-2 py-1 rounded-md hover:bg-blue-100"
-                    >
-                      <MapPin size={10} /> Open in Google Maps
-                    </a>
+                    {(() => {
+                      let mapsUrl = `https://www.google.com/maps/search/?api=1&query=${targetLocation.coords.lat},${targetLocation.coords.lng}`;
+                      if (targetLocation.placeId) {
+                        mapsUrl += `&query_place_id=${targetLocation.placeId}`;
+                      } else {
+                        const isPoi = pois.some(p => p.name === targetLocation.name);
+                        if (isPoi) {
+                          mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${targetLocation.name} ${targetLocation.address || ''}`.trim())}`;
+                        }
+                      }
+                      return (
+                        <a 
+                          href={mapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 px-2 py-1 rounded-md hover:bg-blue-100"
+                        >
+                          <MapPin size={10} /> Open in Google Maps
+                        </a>
+                      );
+                    })()}
                     
                     {!pois.some(p => p.name === targetLocation.name) && (
                       <Button 
@@ -332,7 +347,8 @@ export default function FeeCalculatorPage() {
                             await poiStore.addPOI({
                               name: targetLocation.name,
                               address: targetLocation.address,
-                              coords: targetLocation.coords
+                              coords: targetLocation.coords,
+                              placeId: targetLocation.placeId
                             });
                             toast.success("Location saved to database!");
                           } catch (err: any) {

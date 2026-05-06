@@ -112,6 +112,7 @@ model POI {
   address       String
   lat           Float
   lng           Float
+  placeId       String?
   closestShopId String?
   distanceKm    Float?
 }
