@@ -16,14 +16,15 @@ export interface RouteResult {
 export async function searchLocation(query: string): Promise<SearchResult[]> {
   if (!query.trim()) return [];
 
-  const lowerQuery = query.toLowerCase();
+  const lowerQuery = query.toLowerCase().replace(/\u200b/g, '');
 
   // 1. Search Local POIs First
   const allPois = poiStore.getSnapshot();
-  const localMatches = allPois.filter(poi => 
-    poi.name.toLowerCase().includes(lowerQuery) || 
-    poi.address.toLowerCase().includes(lowerQuery)
-  );
+  const localMatches = allPois.filter(poi => {
+    const safeName = poi.name.toLowerCase().replace(/\u200b/g, '');
+    const safeAddress = poi.address.toLowerCase().replace(/\u200b/g, '');
+    return safeName.includes(lowerQuery) || safeAddress.includes(lowerQuery);
+  });
 
   let results: SearchResult[] = localMatches.map(poi => ({
     placeId: poi.id,
