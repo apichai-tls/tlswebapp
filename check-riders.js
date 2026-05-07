@@ -1,1 +1,0 @@
-﻿const { PrismaClient } = require('@prisma/client'); const prisma = new PrismaClient(); async function main() { const riders = await prisma.rider.findMany(); console.log(riders.map(r => r.avatarUrl)); } main().finally(() => prisma.$disconnect());
