@@ -35,8 +35,8 @@ export async function searchLocation(query: string): Promise<SearchResult[]> {
   }));
 
   // If we found enough local matches, return them immediately
-  if (results.length >= 5) {
-    return results.slice(0, 5);
+  if (results.length >= 10) {
+    return results.slice(0, 10);
   }
 
   // 2. Fallback to Google Maps API (if enabled)
@@ -63,7 +63,7 @@ export async function searchLocation(query: string): Promise<SearchResult[]> {
       }
     }
 
-    return results.slice(0, 5);
+    return results.slice(0, 10);
   } catch (error) {
     console.error("Location search failed:", error);
     return results;

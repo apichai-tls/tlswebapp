@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
     // We use the Places Text Search API
     const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(
       query
-    )}&region=th&language=en&key=${apiKey}`;
+    )}&region=th&language=th&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();

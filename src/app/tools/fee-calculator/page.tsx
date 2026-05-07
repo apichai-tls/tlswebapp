@@ -44,11 +44,19 @@ export default function FeeCalculatorPage() {
 
   const filteredPois = useMemo(() => {
     if (!deferredSearchQuery.trim()) return pois;
-    const lowerQuery = deferredSearchQuery.toLowerCase();
-    return pois.filter(p => 
-      p.name.toLowerCase().includes(lowerQuery) || 
-      p.address.toLowerCase().includes(lowerQuery)
-    );
+    
+    // Split search query into individual terms for more forgiving search
+    const searchTerms = deferredSearchQuery.toLowerCase().trim().split(/\s+/);
+    
+    return pois.filter(p => {
+      // Remove zero-width spaces (\u200b) which are common in copy-pasted Google Maps names
+      const safeName = p.name.toLowerCase().replace(/\u200b/g, '');
+      const safeAddress = p.address.toLowerCase().replace(/\u200b/g, '');
+      const searchTarget = `${safeName} ${safeAddress}`;
+      
+      // All search terms must be present in either name or address
+      return searchTerms.every(term => searchTarget.includes(term));
+    });
   }, [pois, deferredSearchQuery]);
 
   const handleSelectPoi = async (poi: POI) => {
@@ -91,9 +99,9 @@ export default function FeeCalculatorPage() {
     <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
       <div className="mb-6 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
-          <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl">
+          <Link href="/admin" className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl hover:bg-indigo-200 transition-colors cursor-pointer block">
             <Calculator size={28} />
-          </div>
+          </Link>
           <div>
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">Delivery Fee Calculator</h1>
             <p className="text-sm font-medium text-slate-500">Search locations and calculate precise delivery fees based on real routing.</p>
