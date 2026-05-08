@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore, useMemo, useDeferredValue } from "react";
+import { useState, useSyncExternalStore, useMemo, useDeferredValue, useEffect } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { Calculator, MapPin, Search, Store, Navigation, Database, Plus } from "lucide-react";
@@ -21,18 +21,27 @@ export default function FeeCalculatorPage() {
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
-  const [searchQuery, setSearchQuery] = useState("");
-  const [googleSearchQuery, setGoogleSearchQuery] = useState("");
+
+  const [pickupSearchQuery, setPickupSearchQuery] = useState("");
+  const [deliverySearchQuery, setDeliverySearchQuery] = useState("");
   const [selectedShopId, setSelectedShopId] = useState<string>("");
-  const [targetLocation, setTargetLocation] = useState<{ name: string; address: string; coords: LatLng; placeId?: string } | null>(null);
+  const [pickupLoc, setPickupLoc] = useState<{ name: string; address: string; coords: LatLng; placeId?: string } | null>(null);
+  const [deliveryLoc, setDeliveryLoc] = useState<{ name: string; address: string; coords: LatLng; placeId?: string } | null>(null);
+  const [isDeliveryDirty, setIsDeliveryDirty] = useState(false);
   
-  const [distanceKm, setDistanceKm] = useState<number>(0);
+  const [pickupDist, setPickupDist] = useState<number>(0);
+  const [deliveryDist, setDeliveryDist] = useState<number>(0);
   const [isCalculatingShop, setIsCalculatingShop] = useState(false);
   const [isAutoSelectShop, setIsAutoSelectShop] = useState(true);
   
   const [isPickup, setIsPickup] = useState(true);
   const [isDelivery, setIsDelivery] = useState(true);
   const [isVip, setIsVip] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Set default shop if none selected
   const activeShop = useMemo(() => {
@@ -40,60 +49,46 @@ export default function FeeCalculatorPage() {
     return shops[0];
   }, [shops, selectedShopId]);
 
-  const deferredSearchQuery = useDeferredValue(searchQuery);
-
-  const filteredPois = useMemo(() => {
-    if (!deferredSearchQuery.trim()) return pois;
-    
-    // Split search query into individual terms for more forgiving search
-    const searchTerms = deferredSearchQuery.toLowerCase().trim().split(/\s+/);
-    
-    return pois.filter(p => {
-      // Remove zero-width spaces (\u200b) which are common in copy-pasted Google Maps names
-      const safeName = p.name.toLowerCase().replace(/\u200b/g, '');
-      const safeAddress = p.address.toLowerCase().replace(/\u200b/g, '');
-      const searchTarget = `${safeName} ${safeAddress}`;
-      
-      // All search terms must be present in either name or address
-      return searchTerms.every(term => searchTarget.includes(term));
-    });
-  }, [pois, deferredSearchQuery]);
-
-  const handleSelectPoi = async (poi: POI) => {
-    setGoogleSearchQuery("");
-    setTargetLocation({
-      name: poi.name,
-      address: poi.address,
-      coords: poi.coords,
-      placeId: poi.placeId
-    });
-    
-    if (isAutoSelectShop) {
-      if (poi.closestShopId && poi.distanceKm !== undefined && poi.distanceKm !== null) {
-        setSelectedShopId(poi.closestShopId);
-        setDistanceKm(poi.distanceKm);
-      } else {
-        setIsCalculatingShop(true);
-        try {
-          const closestShopId = await getClosestShopByRoute(poi.coords, shops);
-          if (closestShopId) setSelectedShopId(closestShopId);
-        } finally {
-          setIsCalculatingShop(false);
-        }
-      }
-    }
-  };
-
   const roundHalfUp = (val: number) => Math.ceil(val * 2) / 2;
 
   const fee = useMemo(() => {
-    if (distanceKm <= 0) return 0;
     let total = 0;
     const ratePerKm = isVip ? 4 : 10;
-    if (isPickup) total += roundHalfUp(distanceKm * 2) * ratePerKm;
-    if (isDelivery) total += roundHalfUp(distanceKm) * ratePerKm;
+    if (isPickup && pickupDist > 0) total += roundHalfUp(pickupDist * 2) * ratePerKm;
+    if (isDelivery && deliveryDist > 0) total += roundHalfUp(deliveryDist) * ratePerKm;
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
-  }, [distanceKm, isPickup, isDelivery, isVip]);
+  }, [pickupDist, deliveryDist, isPickup, isDelivery, isVip]);
+
+  const localDataForSearch = useMemo(() => {
+    return pois.map(p => ({
+      name: p.name,
+      address: p.address,
+      lat: p.coords.lat,
+      lng: p.coords.lng,
+      placeId: p.placeId || p.id,
+      isLocal: true
+    }));
+  }, [pois]);
+
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
+        <div className="mb-6 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 bg-slate-200 rounded-2xl animate-pulse"></div>
+            <div>
+              <div className="h-8 w-64 bg-slate-200 rounded-lg animate-pulse mb-2"></div>
+              <div className="h-4 w-96 bg-slate-200 rounded-lg animate-pulse"></div>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col lg:flex-row gap-6 flex-1 min-h-0">
+          <div className="w-full lg:w-[400px] bg-slate-200 rounded-3xl animate-pulse"></div>
+          <div className="flex-1 bg-slate-200 rounded-3xl animate-pulse"></div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
@@ -116,38 +111,35 @@ export default function FeeCalculatorPage() {
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6 flex-1 min-h-0">
-        {/* Left Panel: POI List */}
-        <div className="w-full lg:w-[400px] flex flex-col bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden shrink-0">
-          <div className="p-5 border-b border-slate-100 space-y-4 bg-slate-50/50">
+        {/* Left Panel: Location Search */}
+        <div className="w-full lg:w-[350px] flex flex-col shrink-0">
+          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-5 space-y-4">
             <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Search Database</label>
-              <div className="relative">
-                <Input 
-                  placeholder="Search saved locations..." 
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 h-12 bg-white rounded-xl shadow-sm"
-                />
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-              </div>
-            </div>
-            
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Or Search Google Maps</label>
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5"><MapPin size={12} className="text-emerald-500" /> Pickup Location</label>
               <LocationInput 
-                id="custom-location"
-                placeholder="Type any address..."
-                value={googleSearchQuery}
-                onChange={setGoogleSearchQuery}
+                id="pickup-location"
+                placeholder="Type pickup address..."
+                value={pickupSearchQuery}
+                localData={localDataForSearch}
+                onChange={setPickupSearchQuery}
                 onSelectLocation={async (loc) => {
-                  setGoogleSearchQuery(loc.name);
+                  setPickupSearchQuery(loc.name);
                   const newCoords = { lat: loc.lat, lng: loc.lng };
-                  setTargetLocation({
+                  setPickupLoc({
                     name: loc.name,
                     address: loc.address || loc.name,
                     coords: newCoords,
                     placeId: loc.placeId
                   });
+                  if (!isDeliveryDirty) {
+                    setDeliverySearchQuery(loc.name);
+                    setDeliveryLoc({
+                      name: loc.name,
+                      address: loc.address || loc.name,
+                      coords: newCoords,
+                      placeId: loc.placeId
+                    });
+                  }
                   if (isAutoSelectShop) {
                     setIsCalculatingShop(true);
                     try {
@@ -158,29 +150,30 @@ export default function FeeCalculatorPage() {
                     }
                   }
                 }}
-                className="[&_input]:h-12 [&_input]:rounded-xl [&_input]:shadow-sm"
+                className="[&_input]:h-10 [&_input]:rounded-xl [&_input]:shadow-sm"
               />
             </div>
-          </div>
 
-          <div className="flex-1 overflow-y-auto p-3">
-            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 px-2">Saved Locations ({filteredPois.length})</div>
-            <div className="space-y-1">
-              {filteredPois.map(poi => (
-                <div 
-                  key={poi.id}
-                  onClick={() => handleSelectPoi(poi)}
-                  className={`p-3 rounded-xl cursor-pointer transition-all border ${targetLocation?.name === poi.name ? 'bg-indigo-50 border-indigo-200' : 'border-transparent hover:bg-slate-50 hover:border-slate-200'}`}
-                >
-                  <div className="font-bold text-slate-900 line-clamp-1">{poi.name}</div>
-                  <div className="text-xs text-slate-500 line-clamp-1 mt-0.5">{poi.address}</div>
-                </div>
-              ))}
-              {filteredPois.length === 0 && (
-                <div className="text-center p-8 text-slate-400 text-sm font-medium">
-                  No locations found matching "{searchQuery}"
-                </div>
-              )}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5"><Navigation size={12} className="text-indigo-500" /> Delivery Location</label>
+              <LocationInput 
+                id="delivery-location"
+                placeholder="Type delivery address..."
+                value={deliverySearchQuery}
+                localData={localDataForSearch}
+                onChange={(val) => { setDeliverySearchQuery(val); setIsDeliveryDirty(true); }}
+                onSelectLocation={async (loc) => {
+                  setIsDeliveryDirty(true);
+                  setDeliverySearchQuery(loc.name);
+                  setDeliveryLoc({
+                    name: loc.name,
+                    address: loc.address || loc.name,
+                    coords: { lat: loc.lat, lng: loc.lng },
+                    placeId: loc.placeId
+                  });
+                }}
+                className="[&_input]:h-10 [&_input]:rounded-xl [&_input]:shadow-sm"
+              />
             </div>
           </div>
         </div>
@@ -203,10 +196,10 @@ export default function FeeCalculatorPage() {
                       onChange={async (e) => {
                         const checked = e.target.checked;
                         setIsAutoSelectShop(checked);
-                        if (checked && targetLocation) {
+                        if (checked && pickupLoc) {
                           setIsCalculatingShop(true);
                           try {
-                            const closestShopId = await getClosestShopByRoute(targetLocation.coords, shops);
+                            const closestShopId = await getClosestShopByRoute(pickupLoc.coords, shops);
                             if (closestShopId) setSelectedShopId(closestShopId);
                           } finally {
                             setIsCalculatingShop(false);
@@ -241,7 +234,7 @@ export default function FeeCalculatorPage() {
                   onChange={(e) => setIsPickup(e.target.checked)}
                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
                 />
-                <span className="text-sm font-bold text-slate-700">ไปรับ (Pickup){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {roundHalfUp(distanceKm * 2).toFixed(1)} km</span>}</span>
+                <span className="text-sm font-bold text-slate-700">ไปรับ (Pickup){pickupDist > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {roundHalfUp(pickupDist * 2).toFixed(1)} km</span>}</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
                 <input 
@@ -250,7 +243,7 @@ export default function FeeCalculatorPage() {
                   onChange={(e) => setIsDelivery(e.target.checked)}
                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
                 />
-                <span className="text-sm font-bold text-slate-700">ไปส่ง (Delivery){distanceKm > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {roundHalfUp(distanceKm).toFixed(1)} km</span>}</span>
+                <span className="text-sm font-bold text-slate-700">ไปส่ง (Delivery){deliveryDist > 0 && <span className="text-xs font-medium text-slate-400 ml-1">• {roundHalfUp(deliveryDist).toFixed(1)} km</span>}</span>
               </label>
               <div className="w-px bg-slate-200 h-6 mx-1 hidden md:block"></div>
               <label className="flex items-center gap-2 cursor-pointer bg-amber-50 px-3 py-2 rounded-lg border border-amber-200 hover:bg-amber-100 transition-colors">
@@ -268,8 +261,8 @@ export default function FeeCalculatorPage() {
               <div className="text-right">
                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Distance</div>
                 <div className="text-xl font-black text-slate-900">
-                  {distanceKm > 0 && (isPickup || isDelivery) 
-                    ? `${((isPickup ? roundHalfUp(distanceKm * 2) : 0) + (isDelivery ? roundHalfUp(distanceKm) : 0)).toFixed(1)} km` 
+                  {(pickupDist > 0 || deliveryDist > 0) && (isPickup || isDelivery) 
+                    ? `${((isPickup ? roundHalfUp(pickupDist * 2) : 0) + (isDelivery ? roundHalfUp(deliveryDist) : 0)).toFixed(1)} km` 
                     : '-'}
                 </div>
               </div>
@@ -282,7 +275,7 @@ export default function FeeCalculatorPage() {
           </div>
 
           <div className="flex-1 bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden relative">
-            {!targetLocation ? (
+            {!(pickupLoc || deliveryLoc) ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 bg-slate-50/50">
                 <Navigation size={48} className="mb-4 opacity-20" />
                 <h3 className="text-lg font-bold text-slate-600 mb-1">Select a Destination</h3>
@@ -291,11 +284,16 @@ export default function FeeCalculatorPage() {
             ) : (
               <CreateJobMap
                 branchCoords={activeShop?.coords || { lat: 13.7367, lng: 100.5231 }}
-                pickupCoords={targetLocation.coords}
-                deliveryCoords={null}
+                pickupCoords={pickupLoc?.coords || null}
+                deliveryCoords={deliveryLoc?.coords || null}
                 onMarkerDrag={async (type, coords) => {
                   if (type === 'pickup') {
-                    setTargetLocation(prev => prev ? { ...prev, coords } : null);
+                    setPickupLoc(prev => {
+                      if (!prev) return null;
+                      const newLoc = { ...prev, coords };
+                      if (!isDeliveryDirty) setDeliveryLoc(newLoc);
+                      return newLoc;
+                    });
                     if (isAutoSelectShop) {
                       setIsCalculatingShop(true);
                       try {
@@ -305,72 +303,89 @@ export default function FeeCalculatorPage() {
                         setIsCalculatingShop(false);
                       }
                     }
+                  } else if (type === 'delivery') {
+                    setIsDeliveryDirty(true);
+                    setDeliveryLoc(prev => prev ? { ...prev, coords } : null);
                   }
                 }}
-                onDistanceCalculated={(pDist) => setDistanceKm(pDist)}
+                onDistanceCalculated={(pDist, dDist) => {
+                  setPickupDist(pDist);
+                  setDeliveryDist(dDist);
+                }}
                 className="w-full h-full"
               />
             )}
             
-            {/* Removed blocking UI */}
-            
-            {targetLocation && (
-              <div className="absolute top-4 left-4 z-[400] bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-lg border border-slate-200 max-w-sm">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 p-1.5 bg-blue-100 text-blue-600 rounded-lg shrink-0">
-                    <MapPin size={16} />
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="font-bold text-slate-900 text-sm leading-tight">{targetLocation.name}</h4>
-                    <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{targetLocation.address}</p>
-                    {(() => {
-                      let mapsUrl = `https://www.google.com/maps/search/?api=1&query=${targetLocation.coords.lat},${targetLocation.coords.lng}`;
-                      if (targetLocation.address && targetLocation.address.startsWith('http')) {
-                        mapsUrl = targetLocation.address;
-                      } else if (targetLocation.placeId) {
-                        mapsUrl += `&query_place_id=${targetLocation.placeId}`;
-                      } else {
-                        const isPoi = pois.some(p => p.name === targetLocation.name);
-                        if (isPoi) {
-                          mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${targetLocation.name} ${targetLocation.address || ''}`.trim())}`;
-                        }
-                      }
-                      return (
-                        <a 
-                          href={mapsUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 px-2 py-1 rounded-md hover:bg-blue-100"
+            {(pickupLoc || deliveryLoc) && (
+              <div className="absolute top-4 left-4 z-[400] bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-lg border border-slate-200 max-w-sm space-y-3">
+                {pickupLoc && (
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 p-1.5 bg-emerald-100 text-emerald-600 rounded-lg shrink-0">
+                      <MapPin size={16} />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="font-bold text-slate-900 text-sm leading-tight">Pickup: {pickupLoc.name}</h4>
+                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{pickupLoc.address}</p>
+                      
+                      {!pois.some(p => p.name === pickupLoc.name) && (
+                        <Button 
+                          size="sm" 
+                          variant="outline" 
+                          className="mt-3 h-7 text-[10px] font-bold px-2.5 rounded-lg border-indigo-200 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 w-full"
+                          onClick={async () => {
+                            try {
+                              await poiStore.addPOI({
+                                name: pickupLoc.name,
+                                address: pickupLoc.address,
+                                coords: pickupLoc.coords,
+                                placeId: pickupLoc.placeId
+                              });
+                              toast.success("Pickup location saved to database!");
+                            } catch (err: any) {
+                              toast.error(err.message || "Failed to save location");
+                            }
+                          }}
                         >
-                          <MapPin size={10} /> Open in Google Maps
-                        </a>
-                      );
-                    })()}
-                    
-                    {!pois.some(p => p.name === targetLocation.name) && (
-                      <Button 
-                        size="sm" 
-                        variant="outline" 
-                        className="mt-3 h-7 text-[10px] font-bold px-2.5 rounded-lg border-indigo-200 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 w-full"
-                        onClick={async () => {
-                          try {
-                            await poiStore.addPOI({
-                              name: targetLocation.name,
-                              address: targetLocation.address,
-                              coords: targetLocation.coords,
-                              placeId: targetLocation.placeId
-                            });
-                            toast.success("Location saved to database!");
-                          } catch (err: any) {
-                            toast.error(err.message || "Failed to save location");
-                          }
-                        }}
-                      >
-                        <Plus size={12} className="mr-1" /> Save to Database
-                      </Button>
-                    )}
+                          <Plus size={12} className="mr-1" /> Save Pickup Location
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
+                {deliveryLoc && (
+                  <div className={`flex items-start gap-3 ${pickupLoc ? 'pt-3 border-t border-slate-100' : ''}`}>
+                    <div className="mt-0.5 p-1.5 bg-indigo-100 text-indigo-600 rounded-lg shrink-0">
+                      <Navigation size={16} />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="font-bold text-slate-900 text-sm leading-tight">Delivery: {deliveryLoc.name}</h4>
+                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{deliveryLoc.address}</p>
+                      
+                      {!pois.some(p => p.name === deliveryLoc.name) && (
+                        <Button 
+                          size="sm" 
+                          variant="outline" 
+                          className="mt-3 h-7 text-[10px] font-bold px-2.5 rounded-lg border-indigo-200 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 w-full"
+                          onClick={async () => {
+                            try {
+                              await poiStore.addPOI({
+                                name: deliveryLoc.name,
+                                address: deliveryLoc.address,
+                                coords: deliveryLoc.coords,
+                                placeId: deliveryLoc.placeId
+                              });
+                              toast.success("Delivery location saved to database!");
+                            } catch (err: any) {
+                              toast.error(err.message || "Failed to save location");
+                            }
+                          }}
+                        >
+                          <Plus size={12} className="mr-1" /> Save Delivery Location
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

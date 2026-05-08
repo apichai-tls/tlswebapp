@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
@@ -36,6 +36,7 @@ import { AdminSettings } from "@/components/admin-settings";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminUsers } from "@/components/admin-users";
 import { AdminVerify } from "@/components/admin-verify";
+import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
 import { useRiders } from "@/lib/use-riders";
 import {
   Plus,
@@ -134,6 +135,18 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [selectedVIPLabel, setSelectedVIPLabel] = useState("");
+
+  const filteredCustomers = useMemo(() => {
+    if (!customerSearchQuery) return [];
+    const query = customerSearchQuery.toLowerCase();
+    return customers.filter(c => 
+      c.name.toLowerCase().includes(query) || 
+      c.phone.includes(query)
+    );
+  }, [customerSearchQuery, customers]);
   
   const [pickupLoc, setPickupLoc] = useState("");
   const [pickupCoords, setPickupCoords] = useState<LatLng | null>(null);
@@ -149,14 +162,19 @@ export default function AdminPage() {
 
   const [selectedStoreIndex, setSelectedStoreIndex] = useState(0);
   const [serviceType, setServiceType] = useState<ServiceType>("wash_fold");
-  const [pickupScheduledTime, setPickupScheduledTime] = useState(format(new Date(), "HH:mm"));
+  const [deliveryScheduledTime, setDeliveryScheduledTime] = useState(format(new Date(Date.now() + 86400000), "yyyy-MM-dd'T'HH:mm"));
+  const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [pickupRiderId, setPickupRiderId] = useState("");
-  const [bagImageUrl, setBagImageUrl] = useState("");
-  const [capturedImages, setCapturedImages] = useState<Record<string, string>>({});
+  const [deliveryRiderId, setDeliveryRiderId] = useState("");
+  const [bagImageUrls, setBagImageUrls] = useState<string[]>([]);
+  const [pickupScheduledTime, setPickupScheduledTime] = useState(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
   const [isFreeDelivery, setIsFreeDelivery] = useState(false);
   const [adminNote, setAdminNote] = useState("");
   const [showAdminNote, setShowAdminNote] = useState(false);
-  const [leaveAtLobby, setLeaveAtLobby] = useState(false);
+  const [handoverType, setHandoverType] = useState<"meet" | "lobby">("meet");
+  const [serviceSpeed, setServiceSpeed] = useState<"standard" | "express_50" | "express_100">("standard");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const uploaderRef = useRef<MultiImageUploaderRef>(null);
 
   const handleLogout = () => {
     logout();
@@ -168,33 +186,33 @@ export default function AdminPage() {
     return user?.permissions?.includes(key);
   };
 
+  const parseTime = (timeStr: string) => {
+    if (timeStr.includes("T")) {
+      return new Date(timeStr);
+    }
+    const [hours, minutes] = timeStr.split(":").map(Number);
+    const date = new Date();
+    date.setHours(hours, minutes, 0, 0);
+    return date;
+  };
+
   // Fee calculation using the latest tuned formula (roundHalfUp)
   const roundHalfUp = (val: number) => Math.ceil(val * 2) / 2;
   
   const calculateTotalFee = () => {
     let total = 0;
+    const ratePerKm = selectedVIPLabel ? 4 : 10;
     if (isPickup) {
-      total += roundHalfUp(pickupDist * 2) * 10;
+      total += roundHalfUp(pickupDist * 2) * ratePerKm;
     }
     if (isDelivery) {
-      total += roundHalfUp(deliveryDist) * 10;
+      total += roundHalfUp(deliveryDist) * ratePerKm;
     }
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
   };
 
   const baseFee = calculateTotalFee();
   const fee = isFreeDelivery ? 0 : baseFee;
-
-  const handleCapture = (jobId: string, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setCapturedImages(prev => ({ ...prev, [jobId]: reader.result as string }));
-      };
-      reader.readAsDataURL(file);
-    }
-  };
 
   const pendingCount = jobs.filter((j) => j.status === "pending").length;
   const acceptedCount = jobs.filter((j) => j.status === "accepted").length;
@@ -230,9 +248,18 @@ export default function AdminPage() {
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
 
     // Parse scheduled pickup time for today
-    const pDate = new Date();
-    const [phours, pminutes] = pickupScheduledTime.split(":").map(Number);
-    pDate.setHours(phours, pminutes, 0, 0);
+    const pDate = parseTime(pickupScheduledTime);
+    
+    setIsSubmitting(true);
+    let finalBagImageUrls: string[] = [];
+    try {
+      if (uploaderRef.current) {
+        finalBagImageUrls = await uploaderRef.current.startUpload();
+      }
+    } catch (err) {
+      setIsSubmitting(false);
+      return; // Stop creation if upload fails
+    }
 
     const job = await jobStore.addJob({
       customerName: customerName.trim(),
@@ -243,14 +270,18 @@ export default function AdminPage() {
       dropoffCoords: isDelivery && deliveryCoords ? deliveryCoords : shop.coords,
       scheduledAt: pDate,
       pickupScheduledAt: pDate,
-      pickupRiderId,
-      distance: Math.max(pickupDist, deliveryDist), // legacy field, we store max
+      deliveryScheduledAt: isDelivery ? (deliveryScheduledTime ? parseTime(deliveryScheduledTime) : null) : null,
+      pickupRiderId: isPickup ? pickupRiderId || null : null,
+      deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
+      bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : undefined,
+      paymentMethod: paymentMethod === 'unpaid' ? null : paymentMethod,
       fee,
-      bagImageUrl,
       serviceType,
       remark: [
         isFreeDelivery ? "ส่งฟรี" : "",
-        leaveAtLobby ? "ฝากไว้ที่ Lobby / Concierge" : "",
+        serviceSpeed === "express_50" ? "ด่วน Express 50%" : "",
+        serviceSpeed === "express_100" ? "ด่วนพิเศษ Express 100%" : "",
+        handoverType === "lobby" ? "ฝากไว้ที่ Lobby / Concierge" : "นัดรับ/เจอตัว",
         adminNote ? `Note: ${adminNote}` : ""
       ].filter(Boolean).join(" | ") || undefined,
     });
@@ -260,9 +291,19 @@ export default function AdminPage() {
     setDeliveryLoc("");
     setIsDeliveryDirty(false);
     setIsFreeDelivery(false);
+    setPickupScheduledTime(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
+    setDeliveryScheduledTime(format(new Date(Date.now() + 86400000), "yyyy-MM-dd'T'HH:mm"));
+    setPaymentMethod("unpaid");
+    setPickupRiderId("");
+    setDeliveryRiderId("");
+    setBagImageUrls([]);
+    setServiceType("wash_fold");
+    setServiceSpeed("standard");
+    setSelectedVIPLabel("");
     setAdminNote("");
     setShowAdminNote(false);
-    setLeaveAtLobby(false);
+    setHandoverType("meet");
+    setIsSubmitting(false);
     setDialogOpen(false);
   }
 
@@ -464,118 +505,201 @@ export default function AdminPage() {
                       }
                     />
                   </motion.div>
-              <DialogContent className="w-full max-w-4xl p-3 md:p-4 max-h-[95vh] overflow-y-auto">
-                <DialogHeader className="pb-1">
-                  <DialogTitle className="flex items-center gap-2 text-lg">
-                    <Package size={18} />
-                    Create New Job
+              <DialogContent className="w-full max-w-[95vw] lg:max-w-7xl p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
+                <DialogHeader className="p-4 pb-3 border-b border-slate-200 bg-white shrink-0">
+                  <DialogTitle className="flex items-center text-lg pr-6">
+                    <div className="flex items-center gap-2">
+                      <Package size={18} />
+                      Create New Job
+                    </div>
+                    {selectedVIPLabel && (
+                      <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-auto mt-0">
+                        VIP {selectedVIPLabel}
+                      </Badge>
+                    )}
                   </DialogTitle>
                 </DialogHeader>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 py-0">
-                  <motion.div
-                    className="space-y-1.5 flex flex-col"
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.1, duration: 0.3 }}
-                  >
-                    {/* Customer Quick Select */}
-                    <div className="space-y-2">
-                      <Label htmlFor="customer-select" className="flex items-center gap-1.5 text-sm font-medium">
-                        <Users size={14} className="text-blue-600" />
-                        Saved Contacts
-                      </Label>
-                      <select 
-                        id="customer-select"
-                        className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                        onChange={(e) => {
-                          const cust = customers.find(c => c.id === e.target.value);
-                          if (cust) {
-                            setCustomerName(cust.name);
-                            setCustomerPhone(cust.phone);
-                            setPickupLoc(cust.defaultAddress);
-                            setPickupCoords(cust.defaultCoords);
-                            setDeliveryLoc(cust.defaultAddress);
-                            setDeliveryCoords(cust.defaultCoords);
-                            setIsDeliveryDirty(false);
-                            setSelectedStoreIndex(getClosestShopIndex(cust.defaultCoords, shopLocations));
-                          } else {
-                            // Reset
-                            setCustomerName("");
-                            setCustomerPhone("");
-                          }
-                        }}
-                      >
-                        <option value="">-- Manual Entry --</option>
-                        {customers.map(c => (
-                          <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>
-                        ))}
-                      </select>
-                    </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-2">
-                        <Label htmlFor="custName" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                          <User size={12} />
-                          Customer Name
-                        </Label>
-                        <Input
-                          id="custName"
-                          placeholder="Name"
-                          value={customerName}
-                          onChange={(e) => setCustomerName(e.target.value)}
-                          className="h-8 text-xs"
-                        />
+                {/* Main Content Grid */}
+                <div className="flex-1 overflow-y-auto lg:overflow-hidden p-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-full">
+                    
+                    {/* COL 1: Basic Info (span 3) */}
+                    <motion.div
+                      className="lg:col-span-3 flex flex-col gap-4 overflow-y-auto pr-1 pb-4 lg:pb-0"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.1, duration: 0.3 }}
+                    >
+                      {/* Customer Info Card */}
+                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                        <div className="space-y-2 relative">
+                          <Label htmlFor="customer-search" className="flex items-center gap-1.5 text-sm font-medium">
+                            <Search size={14} className="text-blue-600" />
+                            Search Customer
+                          </Label>
+                          <Input
+                            id="customer-search"
+                            placeholder="Search by name or phone..."
+                            value={customerSearchQuery}
+                            onChange={(e) => {
+                              setCustomerSearchQuery(e.target.value);
+                              setShowCustomerDropdown(true);
+                            }}
+                            onFocus={() => {
+                              if (customerSearchQuery) setShowCustomerDropdown(true);
+                            }}
+                            onBlur={() => {
+                              // Small delay to allow clicking on dropdown items
+                              setTimeout(() => setShowCustomerDropdown(false), 200);
+                            }}
+                            className="h-8 text-xs"
+                          />
+                          
+                          {showCustomerDropdown && customerSearchQuery && (
+                            <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto top-[100%]">
+                              {filteredCustomers.length > 0 ? (
+                                filteredCustomers.map(c => (
+                                  <div
+                                    key={c.id}
+                                    className="px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 flex items-center justify-between border-b border-slate-50 last:border-0"
+                                    onClick={() => {
+                                      setCustomerName(c.name);
+                                      setCustomerPhone(c.phone);
+                                      setPickupLoc(c.defaultAddress);
+                                      setPickupCoords(c.defaultCoords);
+                                      setDeliveryLoc(c.defaultAddress);
+                                      setDeliveryCoords(c.defaultCoords);
+                                      setIsDeliveryDirty(false);
+                                      setSelectedStoreIndex(getClosestShopIndex(c.defaultCoords, shopLocations));
+                                      
+                                      if (c.tier === "gold" || c.tier === "platinum" || c.isMember) {
+                                        setSelectedVIPLabel(c.tier ? c.tier.toUpperCase() : "MEMBER");
+                                      } else {
+                                        setSelectedVIPLabel("");
+                                      }
+                                      
+                                      setCustomerSearchQuery("");
+                                      setShowCustomerDropdown(false);
+                                    }}
+                                  >
+                                    <div>
+                                      <p className="font-semibold text-slate-800">{c.name}</p>
+                                      <p className="text-[10px] text-slate-500">{c.phone}</p>
+                                    </div>
+                                    {(c.tier === "gold" || c.tier === "platinum" || c.isMember) && (
+                                      <Badge variant="outline" className="text-[9px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
+                                        VIP {c.tier ? c.tier.toUpperCase() : "MEMBER"}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="px-3 py-4 text-center text-xs text-slate-500 bg-slate-50">
+                                  No customers found. Fill details manually below.
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Label htmlFor="custName" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                                <User size={12} />
+                                Customer Name <span className="text-red-500">*</span>
+                              </Label>
+                            </div>
+                            <Input
+                              id="custName"
+                              placeholder="Name"
+                              value={customerName}
+                              onChange={(e) => {
+                                setCustomerName(e.target.value);
+                                setSelectedVIPLabel("");
+                              }}
+                              className="h-8 text-xs"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="custPhone" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                              <Phone size={12} />
+                              Phone
+                            </Label>
+                            <Input
+                              id="custPhone"
+                              placeholder="Phone number"
+                              value={customerPhone}
+                              onChange={(e) => setCustomerPhone(e.target.value)}
+                              className="h-8 text-xs"
+                            />
+                          </div>
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="custPhone" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                          <Phone size={12} />
-                          Phone
-                        </Label>
-                        <Input
-                          id="custPhone"
-                          placeholder="Phone number"
-                          value={customerPhone}
-                          onChange={(e) => setCustomerPhone(e.target.value)}
-                          className="h-8 text-xs"
-                        />
-                      </div>
-                    </div>
 
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
-                          <Store size={14} className="text-blue-600" />
-                          Origin Store Branch
-                        </Label>
-                        <select 
-                          id="store-select"
-                          className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                          value={selectedStoreIndex}
-                          onChange={(e) => setSelectedStoreIndex(Number(e.target.value))}
-                        >
-                          {shopLocations.map((shop, idx) => (
-                            <option key={shop.id} value={idx}>{shop.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                      {/* Service Info Card */}
+                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
+                            <Store size={14} className="text-blue-600" />
+                            Origin Store Branch
+                          </Label>
+                          <select 
+                            id="store-select"
+                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                            value={selectedStoreIndex}
+                            onChange={(e) => setSelectedStoreIndex(Number(e.target.value))}
+                          >
+                            {shopLocations.map((shop, idx) => (
+                              <option key={shop.id} value={idx}>{shop.name}</option>
+                            ))}
+                          </select>
+                        </div>
 
-                      <div className="space-y-2">
-                        <Label htmlFor="service-select" className="flex items-center gap-1.5 text-xs font-medium">
-                          <ArrowDownUp size={14} className="text-purple-600" />
-                          Laundry Service Type
-                        </Label>
-                        <select 
-                          id="service-select"
-                          className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                          value={serviceType}
-                          onChange={(e) => setServiceType(e.target.value as ServiceType)}
-                        >
-                          <option value="wash_fold">Wash/Fold</option>
-                          <option value="wash_iron_fold">Wash/Iron/Fold</option>
-                        </select>
-                      </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="service-select" className="flex items-center gap-1.5 text-xs font-medium">
+                            <ArrowDownUp size={14} className="text-purple-600" />
+                            Laundry Service Type
+                          </Label>
+                          <select 
+                            id="service-select"
+                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                            value={serviceType}
+                            onChange={(e) => setServiceType(e.target.value as ServiceType)}
+                          >
+                            <option value="wash_fold">Wash/Fold</option>
+                            <option value="wash_iron_fold">Wash/Iron/Fold</option>
+                          </select>
+                        </div>
 
-                      <div className="flex items-center gap-4 py-2">
+                        <div className="space-y-2 pt-1">
+                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Service Speed</Label>
+                          <div className="grid grid-cols-3 gap-2">
+                            <Label className={`flex items-center justify-center text-[10px] p-2 border rounded-lg cursor-pointer transition-colors ${serviceSpeed === "standard" ? "border-indigo-600 bg-indigo-50 font-bold text-indigo-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                              <input type="radio" className="hidden" checked={serviceSpeed === "standard"} onChange={() => setServiceSpeed("standard")} />
+                              Standard
+                            </Label>
+                            <Label className={`flex items-center justify-center text-[10px] p-2 border rounded-lg cursor-pointer transition-colors ${serviceSpeed === "express_50" ? "border-amber-500 bg-amber-50 font-bold text-amber-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                              <input type="radio" className="hidden" checked={serviceSpeed === "express_50"} onChange={() => setServiceSpeed("express_50")} />
+                              Express 50%
+                            </Label>
+                            <Label className={`flex items-center justify-center text-[10px] p-2 border rounded-lg cursor-pointer transition-colors ${serviceSpeed === "express_100" ? "border-red-500 bg-red-50 font-bold text-red-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                              <input type="radio" className="hidden" checked={serviceSpeed === "express_100"} onChange={() => setServiceSpeed("express_100")} />
+                              Express 100%
+                            </Label>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+
+                    {/* COL 2: Logistics & Map (span 5) */}
+                    <motion.div
+                      className="lg:col-span-5 flex flex-col gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.15, duration: 0.3 }}
+                    >
+                      <div className="flex items-center gap-4 shrink-0">
                         <Label className="flex items-center gap-2 cursor-pointer">
                           <input 
                             type="checkbox" 
@@ -596,237 +720,287 @@ export default function AdminPage() {
                         </Label>
                       </div>
 
-                      {isPickup && (
-                        <div className="space-y-2">
-                          <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
-                            <MapPin size={14} className="text-emerald-600" />
-                            ที่อยู่ไปรับ (Pickup Address)
-                          </Label>
-                          <LocationInput
-                            id="pickup-location"
-                            placeholder="Customer pickup address"
-                            value={pickupLoc}
-                            onChange={(v) => {
-                              setPickupLoc(v);
-                              if (!isDeliveryDirty) {
-                                setDeliveryLoc(v);
-                              }
-                            }}
-                            onSelectLocation={(loc) => {
-                              const newCoords = { lat: loc.lat, lng: loc.lng };
-                              setPickupCoords(newCoords);
-                              setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
-                              if (!isDeliveryDirty) {
-                                setDeliveryCoords(newCoords);
-                              }
-                            }}
-                          />
-                        </div>
-                      )}
+                      <div className="flex flex-col gap-3 shrink-0">
+                        {isPickup && (
+                          <div className="space-y-2">
+                            <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
+                              <MapPin size={14} className="text-emerald-600" />
+                              ที่อยู่ไปรับ (Pickup Address) <span className="text-red-500">*</span>
+                            </Label>
+                            <LocationInput
+                              id="pickup-location"
+                              placeholder="Customer pickup address"
+                              value={pickupLoc}
+                              onChange={(v) => {
+                                setPickupLoc(v);
+                              }}
+                              onSelectLocation={(loc) => {
+                                const newCoords = { lat: loc.lat, lng: loc.lng };
+                                setPickupCoords(newCoords);
+                                setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                                if (!isDeliveryDirty) {
+                                  setDeliveryLoc(loc.name);
+                                  setDeliveryCoords(newCoords);
+                                }
+                              }}
+                            />
+                          </div>
+                        )}
 
-                      {isDelivery && (
-                        <div className="space-y-2">
-                          <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
-                            <Navigation size={14} className="text-red-600" />
-                            ที่อยู่ไปส่ง (Delivery Address)
-                          </Label>
-                          <LocationInput
-                            id="delivery-location"
-                            placeholder="Customer delivery address"
-                            value={deliveryLoc}
-                            onChange={(v) => {
-                              setDeliveryLoc(v);
-                              setIsDeliveryDirty(true);
-                            }}
-                            onSelectLocation={(loc) => {
-                              const newCoords = { lat: loc.lat, lng: loc.lng };
-                              setDeliveryCoords(newCoords);
+                        {isDelivery && (
+                          <div className="space-y-2">
+                            <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
+                              <Navigation size={14} className="text-red-600" />
+                              ที่อยู่ไปส่ง (Delivery Address) <span className="text-red-500">*</span>
+                            </Label>
+                            <LocationInput
+                              id="delivery-location"
+                              placeholder="Customer delivery address"
+                              value={deliveryLoc}
+                              onChange={(v) => {
+                                setDeliveryLoc(v);
+                                setIsDeliveryDirty(true);
+                              }}
+                              onSelectLocation={(loc) => {
+                                const newCoords = { lat: loc.lat, lng: loc.lng };
+                                setDeliveryCoords(newCoords);
+                                setIsDeliveryDirty(true);
+                                if (!isPickup) {
+                                  setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                                }
+                              }}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Interactive Map */}
+                      <div className="flex-1 min-h-[250px] lg:h-auto rounded-lg overflow-hidden border border-slate-200 mt-1 relative">
+                        <CreateJobMap 
+                          branchCoords={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
+                          pickupCoords={isPickup ? pickupCoords : null}
+                          deliveryCoords={isDelivery ? deliveryCoords : null}
+                          onMarkerDrag={(type, coords) => {
+                            if (type === 'pickup') {
+                              setPickupCoords(coords);
+                              setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                              if (!isDeliveryDirty) {
+                                setDeliveryCoords(coords);
+                              }
+                            } else if (type === 'delivery') {
+                              setDeliveryCoords(coords);
                               setIsDeliveryDirty(true);
                               if (!isPickup) {
-                                setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                                setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
                               }
-                            }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="space-y-4 pt-4 border-t border-slate-100">
-                      <div className="space-y-2">
-                         <Label htmlFor="schedule" className="flex items-center gap-1.5 text-xs font-medium">
-                          <Clock size={14} className="text-amber-500" />
-                          Pickup Scheduled Time & Rider
-                        </Label>
-                        <div className="grid grid-cols-2 gap-3">
-                          <Input
-                            id="schedule-pickup"
-                            type="time"
-                            value={pickupScheduledTime}
-                            onChange={(e) => setPickupScheduledTime(e.target.value)}
-                            className="h-8 text-xs"
-                          />
-                          <select
-                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                            value={pickupRiderId}
-                            onChange={(e) => setPickupRiderId(e.target.value)}
-                          >
-                            <option value="">-- Assign Rider --</option>
-                            {riders.map(r => (
-                              <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <p className="text-[10px] text-slate-500">Delivery assignment will be handled in the Order Lifecycle dashboard later.</p>
-                      </div>
-                    </div>
-                    
-
-
-                    {/* Laundry Bag Photo Upload */}
-                    <div className="space-y-2 pt-2 border-t border-slate-100">
-                      <Label htmlFor="bagPhoto" className="flex items-center gap-1.5 text-xs font-medium">
-                        <Package size={14} className="text-indigo-600" />
-                        Laundry Bag Photo
-                      </Label>
-                      <div className="flex items-center gap-4">
-                        <div className="flex-1">
-                          <Input 
-                            id="bagPhoto" 
-                            type="file" 
-                            accept="image/*" 
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                setBagImageUrl(URL.createObjectURL(file));
-                              }
-                            }}
-                            className="cursor-pointer text-xs"
-                          />
-                        </div>
-                        {bagImageUrl && (
-                          <div className="w-12 h-12 rounded-lg border border-slate-200 overflow-hidden shrink-0 shadow-sm">
-                            <img src={bagImageUrl} alt="Bag" className="w-full h-full object-cover" />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Admin Notes & Options */}
-                    <div className="space-y-3 pt-4 border-t border-slate-100">
-                      <Label className="flex items-center gap-2 cursor-pointer">
-                        <input 
-                          type="checkbox" 
-                          checked={leaveAtLobby}
-                          onChange={(e) => setLeaveAtLobby(e.target.checked)}
-                          className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                            }
+                          }}
+                          onDistanceCalculated={(p, d) => {
+                            setPickupDist(p);
+                            setDeliveryDist(d);
+                          }}
                         />
-                        <span className="text-sm font-medium text-slate-700">ฝากไว้ที่ Lobby / Concierge (ไม่ต้องนัดรับ)</span>
-                      </Label>
+                      </div>
+                    </motion.div>
 
-                      {!showAdminNote ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full text-xs border-dashed border-slate-300 text-slate-500 hover:text-slate-700"
-                          onClick={() => setShowAdminNote(true)}
-                        >
-                          <Plus size={14} className="mr-1" /> Add Admin Note
-                        </Button>
-                      ) : (
-                        <div className="space-y-2">
-                          <Label htmlFor="adminNote" className="text-xs font-medium text-slate-500">Admin Note</Label>
-                          <Input
-                            id="adminNote"
-                            placeholder="Enter any additional instructions or notes..."
-                            value={adminNote}
-                            onChange={(e) => setAdminNote(e.target.value)}
-                            className="h-8 text-xs bg-white"
+                    {/* COL 3: Fulfillment & Summary (span 4) */}
+                    <motion.div
+                      className="lg:col-span-4 flex flex-col gap-4 overflow-y-auto pl-1 pb-4 lg:pb-0"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.2, duration: 0.3 }}
+                    >
+                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4 flex-1 flex flex-col">
+                        <div className="space-y-3">
+                          <div className="space-y-2">
+                            <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-xs font-medium">
+                              <Clock size={14} className="text-amber-500" />
+                              Pickup Scheduled Time & Rider
+                            </Label>
+                            <div className="grid grid-cols-2 gap-3">
+                              <Input
+                                id="schedule-pickup"
+                                type="datetime-local"
+                                value={pickupScheduledTime}
+                                onChange={(e) => setPickupScheduledTime(e.target.value)}
+                                className="h-8 text-xs"
+                              />
+                              <select
+                                className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                                value={pickupRiderId}
+                                onChange={(e) => setPickupRiderId(e.target.value)}
+                              >
+                                <option value="">-- Assign Rider --</option>
+                                {riders.map(r => (
+                                  <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-100">
+                            <div className="space-y-2">
+                              <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-xs font-medium">
+                                <CalendarClock size={14} className="text-blue-500" />
+                                Est. Return Date
+                              </Label>
+                              <Input
+                                id="schedule-delivery"
+                                type="datetime-local"
+                                value={deliveryScheduledTime}
+                                onChange={(e) => setDeliveryScheduledTime(e.target.value)}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor="payment-method" className="flex items-center gap-1.5 text-xs font-medium">
+                                <CreditCard size={14} className="text-slate-600" />
+                                Payment Status
+                              </Label>
+                              <select
+                                id="payment-method"
+                                className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                                value={paymentMethod}
+                                onChange={(e) => setPaymentMethod(e.target.value)}
+                              >
+                                <option value="unpaid">Unpaid (เก็บปลายทาง)</option>
+                                <option value="transfer">โอนเงิน (PromptPay)</option>
+                                <option value="cash">จ่ายแล้ว (Cash)</option>
+                                <option value="credit">หักเครดิต (Member)</option>
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Laundry Bag Photo Upload */}
+                        <div className="space-y-2 pt-2 border-t border-slate-100">
+                          <Label className="flex items-center gap-1.5 text-xs font-medium">
+                            <Package size={14} className="text-indigo-600" />
+                            Laundry Bag Photos
+                          </Label>
+                          <MultiImageUploader
+                            ref={uploaderRef}
+                            entityType="job"
+                            entityId={Date.now().toString()} // Temp ID since job isn't created yet
+                            subType="bags"
+                            value={bagImageUrls}
+                            onValueChange={setBagImageUrls}
+                            maxFiles={5}
                           />
                         </div>
-                      )}
-                    </div>
 
-                    <div className="mt-auto rounded-lg bg-slate-50 p-4 border border-slate-100 shadow-sm">
-                      <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-200/60">
-                        {isPickup && (
-                          <div className="flex justify-between items-center">
-                            <span className="text-xs text-slate-500">Pickup Distance</span>
-                            <span className="text-xs font-medium text-slate-700">{pickupDist} km (×2)</span>
+                        {/* Admin Notes & Options */}
+                        <div className="space-y-3 pt-4 border-t border-slate-100 mt-auto">
+                          <div className="grid grid-cols-2 gap-3 mt-1">
+                            <Label className={`flex items-center justify-center gap-2 cursor-pointer p-2 border rounded-lg transition-colors ${handoverType === "meet" ? 'border-indigo-600 bg-indigo-50 font-medium' : 'border-slate-200 hover:bg-slate-50'}`}>
+                              <input 
+                                type="radio" 
+                                name="handoverType"
+                                className="hidden"
+                                checked={handoverType === "meet"}
+                                onChange={() => setHandoverType("meet")}
+                              />
+                              <span className="text-xs text-slate-900 text-center">นัดรับ / เจอตัว<br/><span className="text-[10px] text-slate-500 font-normal">(Meet in person)</span></span>
+                            </Label>
+                            <Label className={`flex items-center justify-center gap-2 cursor-pointer p-2 border rounded-lg transition-colors ${handoverType === "lobby" ? 'border-indigo-600 bg-indigo-50 font-medium' : 'border-slate-200 hover:bg-slate-50'}`}>
+                              <input 
+                                type="radio" 
+                                name="handoverType"
+                                className="hidden"
+                                checked={handoverType === "lobby"}
+                                onChange={() => setHandoverType("lobby")}
+                              />
+                              <span className="text-xs text-slate-900 text-center">ฝาก Lobby / Concierge<br/><span className="text-[10px] text-slate-500 font-normal">(Leave at Lobby)</span></span>
+                            </Label>
                           </div>
-                        )}
-                        {isDelivery && (
-                          <div className="flex justify-between items-center">
-                            <span className="text-xs text-slate-500">Delivery Distance</span>
-                            <span className="text-xs font-medium text-slate-700">{deliveryDist} km</span>
-                          </div>
-                        )}
-                      </div>
-                      
-                      <div className="flex justify-between items-center mb-2">
-                        <Label className="flex items-center gap-2 cursor-pointer">
-                          <input 
-                            type="checkbox" 
-                            className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                            checked={isFreeDelivery}
-                            onChange={(e) => setIsFreeDelivery(e.target.checked)}
-                          />
-                          <span className="text-sm font-medium text-slate-700">ส่งฟรี (Free Delivery)</span>
-                        </Label>
-                      </div>
 
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm font-medium text-slate-700">Calculated Fee</span>
-                        <div className="text-right">
-                          {isFreeDelivery && <span className="text-sm line-through text-slate-400 mr-2">฿{baseFee.toFixed(0)}</span>}
-                          <span className={`text-2xl font-bold ${isFreeDelivery ? 'text-emerald-600' : 'text-slate-900'}`}>฿{fee.toFixed(0)}</span>
+                          {!showAdminNote ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="w-full text-xs border-dashed border-slate-300 text-slate-500 hover:text-slate-700"
+                              onClick={() => setShowAdminNote(true)}
+                            >
+                              <Plus size={14} className="mr-1" /> Add Admin Note
+                            </Button>
+                          ) : (
+                            <div className="space-y-2">
+                              <Label htmlFor="adminNote" className="text-xs font-medium text-slate-500">Admin Note</Label>
+                              <Input
+                                id="adminNote"
+                                placeholder="Enter instructions..."
+                                value={adminNote}
+                                onChange={(e) => setAdminNote(e.target.value)}
+                                className="h-8 text-xs bg-white"
+                              />
+                            </div>
+                          )}
                         </div>
                       </div>
-                      <p className="text-[10px] text-slate-400 mt-2 text-right">
-                        ไปรับ: (ระยะทาง×2)×10 | ไปส่ง: ระยะทาง×10 (ขั้นต่ำ 30฿)
-                      </p>
-                    </div>
-                  </motion.div>
-                  
-                  {/* Interactive Map */}
-                  <motion.div 
-                    className="h-[200px] md:h-auto md:min-h-[300px] rounded-lg overflow-hidden border border-slate-200"
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ delay: 0.2 }}
-                  >
-                    <CreateJobMap 
-                      branchCoords={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
-                      pickupCoords={isPickup ? pickupCoords : null}
-                      deliveryCoords={isDelivery ? deliveryCoords : null}
-                      onMarkerDrag={(type, coords) => {
-                        if (type === 'pickup') {
-                          setPickupCoords(coords);
-                          setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
-                          if (!isDeliveryDirty) {
-                            setDeliveryCoords(coords);
-                          }
-                        } else if (type === 'delivery') {
-                          setDeliveryCoords(coords);
-                          setIsDeliveryDirty(true);
-                          if (!isPickup) {
-                            setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
-                          }
-                        }
-                      }}
-                      onDistanceCalculated={(p, d) => {
-                        setPickupDist(p);
-                        setDeliveryDist(d);
-                      }}
-                    />
-                  </motion.div>
+
+                      {/* Summary Card */}
+                      <div className="bg-slate-900 text-white rounded-xl p-4 shadow-md shrink-0">
+                        <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-700">
+                          {isPickup && (
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs text-slate-400">Pickup Dist.</span>
+                              <span className="text-xs font-medium">{pickupDist} km (×2)</span>
+                            </div>
+                          )}
+                          {isDelivery && (
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs text-slate-400">Delivery Dist.</span>
+                              <span className="text-xs font-medium">{deliveryDist} km</span>
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="flex justify-between items-center mb-2">
+                          <Label className="flex items-center gap-2 cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              className="rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 h-4 w-4 bg-slate-800"
+                              checked={isFreeDelivery}
+                              onChange={(e) => setIsFreeDelivery(e.target.checked)}
+                            />
+                            <span className="text-sm font-medium text-slate-300">ส่งฟรี (Free)</span>
+                          </Label>
+                        </div>
+
+                        <div className="flex justify-between items-end">
+                          <div className="flex flex-col">
+                            <span className="text-xs text-slate-400">Total Fee ({selectedVIPLabel ? '4' : '10'}฿/km)</span>
+                            <span className="text-[10px] text-slate-500">Min 30฿</span>
+                          </div>
+                          <div className="text-right">
+                            {isFreeDelivery && <span className="text-sm line-through text-slate-500 mr-2">฿{baseFee.toFixed(0)}</span>}
+                            <span className={`text-2xl font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-white'}`}>฿{fee.toFixed(0)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  </div>
                 </div>
-                <DialogFooter className="mt-0 pt-2 border-t border-slate-100">
-                  <Button variant="outline" size="sm" onClick={() => setDialogOpen(false)} className="cursor-pointer h-8 text-xs">
-                    Cancel
-                  </Button>
-                  <Button size="sm" onClick={handleCreate} className="bg-slate-900 hover:bg-slate-800 text-white cursor-pointer h-8 text-xs">
-                    Create Job
-                  </Button>
+                <DialogFooter className="mt-0 p-4 border-t border-slate-200 bg-white shrink-0">
+                  <div className="flex gap-3">
+                    <Button variant="outline" className="flex-1" onClick={() => setDialogOpen(false)} disabled={isSubmitting}>
+                      Cancel
+                    </Button>
+                    <Button 
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
+                      onClick={handleCreate}
+                      disabled={isSubmitting || (!customerName || !pickupLoc || !deliveryLoc)}
+                    >
+                      {isSubmitting ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin mr-2" />
+                          Uploading & Saving...
+                        </>
+                      ) : (
+                        "Create Job"
+                      )}
+                    </Button>
+                  </div>
                 </DialogFooter>
                 </DialogContent>
               </Dialog>

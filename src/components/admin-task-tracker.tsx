@@ -101,6 +101,25 @@ export function AdminTaskTracker({ job }: { job: Job }) {
             </Badge>
             <p className="text-xs font-medium text-slate-500">Commission: <span className="text-emerald-600 font-bold ml-1">฿{job.fee.toFixed(0)}</span></p>
           </div>
+          
+          {job.bagImageUrl && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {(() => {
+                let urls = [];
+                try {
+                  urls = JSON.parse(job.bagImageUrl);
+                } catch {
+                  urls = [job.bagImageUrl];
+                }
+                return urls.map((url: string, idx: number) => (
+                  <div key={idx} className="w-12 h-12 rounded-md border border-slate-200 overflow-hidden shadow-sm">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt="Laundry Bag" className="w-full h-full object-cover" />
+                  </div>
+                ));
+              })()}
+            </div>
+          )}
         </div>
       </div>
 
