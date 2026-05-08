@@ -332,8 +332,8 @@
     }
   ],
   "settings": {
-    "googleMapsApiKey": "AIzaSyAQGS8ZA1BMv_jWl3eptJYcne3pj2WY8nY",
-    "enableGoogleApi": "true"
+    "googleMapsApiKey": "",
+    "enableGoogleApi": "false"
   },
   "pois": [
     {

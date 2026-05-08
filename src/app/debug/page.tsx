@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { GcsDebugger } from "@/components/gcs-debugger";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,7 @@ export default async function DebugPage() {
           </div>
         </div>
       </div>
+      <GcsDebugger />
     </div>
   );
 }

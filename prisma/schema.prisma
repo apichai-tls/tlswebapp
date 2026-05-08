@@ -49,6 +49,7 @@ model Job {
   proofImageUrl       String?
   riderId             String?
   bagImageUrl         String?
+  billImageUrl        String?
   serviceType         String?   // "wash_fold" | "wash_iron_fold"
   source              String?   // "app" | "pos"
   totalAmount         Float?

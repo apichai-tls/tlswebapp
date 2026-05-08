@@ -35,6 +35,7 @@ import { AdminCRM } from "@/components/admin-crm";
 import { AdminSettings } from "@/components/admin-settings";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminUsers } from "@/components/admin-users";
+import { AdminVerify } from "@/components/admin-verify";
 import { useRiders } from "@/lib/use-riders";
 import {
   Plus,
@@ -129,7 +130,7 @@ export default function AdminPage() {
   const riders = useRiders();
   const customers = useCustomers();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify">("dashboard");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -325,6 +326,18 @@ export default function AdminPage() {
                 All Jobs
               </motion.div>
             )}
+
+            {hasAccess("jobs") && (
+              <motion.div
+                onClick={() => setActiveTab("verify")}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "verify" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              >
+                <CheckCircle2 size={18} />
+                Order Verification
+              </motion.div>
+            )}
+
             {hasAccess("customers") && (
               <motion.div
                 onClick={() => setActiveTab("customers")}
@@ -832,6 +845,7 @@ export default function AdminPage() {
           {activeTab === "customers" && hasAccess("customers") && <AdminCRM />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
+          {activeTab === "verify" && hasAccess("jobs") && <AdminVerify />}
 
           {/* Fallback for no access to current tab */}
           {!hasAccess(activeTab) && (

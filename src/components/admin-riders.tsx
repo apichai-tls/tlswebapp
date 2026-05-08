@@ -22,6 +22,7 @@ import { useRiders } from "@/lib/use-riders";
 import { useJobs } from "@/lib/use-jobs";
 import { toast } from "sonner";
 import Image from "next/image";
+import { ImageUploader } from "@/components/ui/image-uploader";
 
 const statusColorMap = {
   online: "bg-emerald-500",
@@ -35,6 +36,7 @@ export function AdminRiders() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reportRiderId, setReportRiderId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [tempId, setTempId] = useState<string>("");
 
   const riderStats = useMemo(() => {
     const stats: Record<string, { monthEarnings: number, totalEarnings: number }> = {};
@@ -69,6 +71,7 @@ export function AdminRiders() {
 
   function openCreate() {
     setEditingId(null);
+    setTempId(crypto.randomUUID());
     setName("");
     setPhone("");
     setStatus("offline");
@@ -81,6 +84,7 @@ export function AdminRiders() {
 
   function openEdit(rider: Rider) {
     setEditingId(rider.id);
+    setTempId(rider.id);
     setName(rider.name);
     setNickname(rider.nickname || "");
     setPhone(rider.phone);
@@ -108,6 +112,7 @@ export function AdminRiders() {
     } else {
       riderStore.addRider({
         ...payload,
+        id: tempId, // Use the generated UUID so the image path matches the record
         rating: 5.0, // Default for new
         completedJobs: 0,
         avatarUrl: avatarUrl || `https://i.pravatar.cc/150?u=${Date.now()}`,
@@ -185,30 +190,17 @@ export function AdminRiders() {
                   <Input id="vehiclePlate" value={vehiclePlate} onChange={(e) => setVehiclePlate(e.target.value)} placeholder="e.g. 1กข 1234 กทม" />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="avatarUpload">Profile Picture (Upload)</Label>
-                  <div className="flex items-center gap-4">
-                    {avatarUrl ? (
-                      <div className="w-12 h-12 rounded-full border border-slate-200 overflow-hidden shrink-0">
-                        <img src={avatarUrl} alt="Preview" className="w-full h-full object-cover" />
-                      </div>
-                    ) : (
-                      <div className="w-12 h-12 rounded-full border border-dashed border-slate-300 bg-slate-50 shrink-0" />
-                    )}
-                    <Input 
-                      id="avatarUpload"
-                      type="file" 
-                      accept="image/*" 
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onloadend = () => {
-                            setAvatarUrl(reader.result as string);
-                          };
-                          reader.readAsDataURL(file);
-                        }
+                  <Label>Profile Picture (Cloud Upload)</Label>
+                  <div className="w-32">
+                    <ImageUploader 
+                      entityType="rider"
+                      entityId={tempId}
+                      currentImageUrl={avatarUrl}
+                      onUploadSuccess={(url) => {
+                        setAvatarUrl(url);
+                        toast.success("Profile picture uploaded successfully");
                       }}
-                      className="cursor-pointer text-xs"
+                      onError={(err) => toast.error(`Upload failed: ${err}`)}
                     />
                   </div>
                 </div>
