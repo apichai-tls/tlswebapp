@@ -49,6 +49,14 @@ export default function FeeCalculatorPage() {
     return shops[0];
   }, [shops, selectedShopId]);
 
+  const getGoogleMapsUrl = (loc: { name: string; address: string; coords: LatLng; placeId?: string }) => {
+    if (loc.address?.startsWith('http')) return loc.address;
+    if (loc.placeId) {
+      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.name)}&query_place_id=${loc.placeId}`;
+    }
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.name)}`;
+  };
+
   const roundHalfUp = (val: number) => Math.ceil(val * 2) / 2;
 
   const fee = useMemo(() => {
@@ -329,7 +337,7 @@ export default function FeeCalculatorPage() {
                         <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{pickupLoc.address}</p>
                       )}
                       <a 
-                        href={pickupLoc.address?.startsWith('http') ? pickupLoc.address : `https://www.google.com/maps/search/?api=1&query=${pickupLoc.coords.lat},${pickupLoc.coords.lng}`} 
+                        href={getGoogleMapsUrl(pickupLoc)} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors w-full justify-center"
@@ -373,7 +381,7 @@ export default function FeeCalculatorPage() {
                         <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{deliveryLoc.address}</p>
                       )}
                       <a 
-                        href={deliveryLoc.address?.startsWith('http') ? deliveryLoc.address : `https://www.google.com/maps/search/?api=1&query=${deliveryLoc.coords.lat},${deliveryLoc.coords.lng}`} 
+                        href={getGoogleMapsUrl(deliveryLoc)} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors w-full justify-center"
