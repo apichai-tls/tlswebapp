@@ -325,7 +325,17 @@ export default function FeeCalculatorPage() {
                     </div>
                     <div className="flex-1">
                       <h4 className="font-bold text-slate-900 text-sm leading-tight">Pickup: {pickupLoc.name}</h4>
-                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{pickupLoc.address}</p>
+                      {!pickupLoc.address?.startsWith('http') && (
+                        <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{pickupLoc.address}</p>
+                      )}
+                      <a 
+                        href={pickupLoc.address?.startsWith('http') ? pickupLoc.address : `https://www.google.com/maps/search/?api=1&query=${pickupLoc.coords.lat},${pickupLoc.coords.lng}`} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors w-full justify-center"
+                      >
+                        <MapPin size={12} /> Open in Google Maps
+                      </a>
                       
                       {!pois.some(p => p.name === pickupLoc.name) && (
                         <Button 
@@ -359,7 +369,17 @@ export default function FeeCalculatorPage() {
                     </div>
                     <div className="flex-1">
                       <h4 className="font-bold text-slate-900 text-sm leading-tight">Delivery: {deliveryLoc.name}</h4>
-                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{deliveryLoc.address}</p>
+                      {!deliveryLoc.address?.startsWith('http') && (
+                        <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 break-all">{deliveryLoc.address}</p>
+                      )}
+                      <a 
+                        href={deliveryLoc.address?.startsWith('http') ? deliveryLoc.address : `https://www.google.com/maps/search/?api=1&query=${deliveryLoc.coords.lat},${deliveryLoc.coords.lng}`} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors w-full justify-center"
+                      >
+                        <MapPin size={12} /> Open in Google Maps
+                      </a>
                       
                       {!pois.some(p => p.name === deliveryLoc.name) && (
                         <Button 
