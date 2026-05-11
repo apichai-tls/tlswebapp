@@ -104,7 +104,7 @@ export function LocationInput({ id, placeholder, value, onChange, onSelectLocati
       {isOpen && (localResults.length > 0 || googleResults.length > 0 || (localData && value.length >= 3 && !hasSearchedGoogle)) && (
         <div className="absolute top-full left-0 z-[100] mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg overflow-hidden">
           <ul className="max-h-60 overflow-auto py-1 text-sm">
-            {[...localResults, ...googleResults].map((result, idx) => (
+            {[...localResults, ...googleResults].map((result: SearchResult & { isLocal?: boolean }, idx) => (
               <li
                 key={result.placeId || idx}
                 onClick={() => {

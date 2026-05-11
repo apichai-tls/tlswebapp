@@ -278,12 +278,12 @@ export const api = {
     return updatedRider;
   },
 
-  async addRider(rider: Omit<Rider, 'id'>): Promise<Rider> {
+  async addRider(rider: Omit<Rider, 'id'> & { id?: string }): Promise<Rider> {
     
     const db = initDb();
     const newRider = {
       ...rider,
-      id: `RIDER-${String(db.riders.length + 1).padStart(3, "0")}`,
+      id: rider.id || `RIDER-${String(db.riders.length + 1).padStart(3, "0")}`,
     } as Rider;
     db.riders = [newRider, ...db.riders];
     await dbActions.addRiderAction(newRider);

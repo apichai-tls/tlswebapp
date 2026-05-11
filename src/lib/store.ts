@@ -79,6 +79,7 @@ export interface Job {
   scheduledAt: Date;
   completedAt?: Date;
   proofImageUrl?: string;
+  billImageUrl?: string;
   riderId?: string; // Legacy assigned rider
   bagImageUrl?: string;
   serviceType?: ServiceType;
@@ -205,7 +206,7 @@ export const riderStore = {
     await api.updateRider(id, updates);
     emitRiderChange();
   },
-  async addRider(rider: Omit<Rider, 'id'>) {
+  async addRider(rider: Omit<Rider, 'id'> & { id?: string }) {
     const newRider = await api.addRider(rider);
     emitRiderChange();
     return newRider;
