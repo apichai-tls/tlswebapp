@@ -33,17 +33,21 @@ export async function GET(request: NextRequest) {
     }
 
     // Extract the distances
-    const distancesKm = [];
-    if (data.rows && data.rows[0] && data.rows[0].elements) {
-      for (const element of data.rows[0].elements) {
-        if (element.status === "OK" && element.distance) {
-          const distanceMeters = element.distance.value;
-          distancesKm.push(Math.round((distanceMeters / 1000) * 10) / 10);
-        } else {
-          distancesKm.push(Infinity);
+    const distancesKm: number[] = [];
+    if (data.rows) {
+      for (const row of data.rows) {
+        for (const element of row.elements) {
+          if (element.status === "OK" && element.distance) {
+            const distanceMeters = element.distance.value;
+            distancesKm.push(Math.round((distanceMeters / 1000) * 10) / 10);
+          } else {
+            distancesKm.push(Infinity);
+          }
         }
       }
-    } else {
+    }
+
+    if (distancesKm.length === 0) {
       return NextResponse.json({ error: "No distance data found" }, { status: 404 });
     }
 

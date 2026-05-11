@@ -144,8 +144,9 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
     // 1. Try Google Distance Matrix API
     if (settings.enableGoogleApi === "true" && settings.googleMapsApiKey) {
       const apiKey = settings.googleMapsApiKey;
-      const origins = `${targetCoords.lat},${targetCoords.lng}`;
-      const destinations = candidateShops.map(s => `${s.coords.lat},${s.coords.lng}`).join("|");
+      // Calculate from Shops -> Customer to match the Delivery routing direction
+      const origins = candidateShops.map(s => `${s.coords.lat},${s.coords.lng}`).join("|");
+      const destinations = `${targetCoords.lat},${targetCoords.lng}`;
 
       const res = await fetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}&key=${encodeURIComponent(apiKey)}`);
       const data = await res.json();
@@ -162,20 +163,27 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
     }
 
     // 2. Fallback to OSRM Table Service
+    // OSRM requires coordinates in longitude,latitude format
     const coordsList = [
       `${targetCoords.lng},${targetCoords.lat}`, 
       ...candidateShops.map(s => `${s.coords.lng},${s.coords.lat}`)
     ].join(";");
     
-    const osrmUrl = `https://router.project-osrm.org/table/v1/driving/${coordsList}?sources=0&annotations=distance`;
+    // We want distances FROM shops TO the customer.
+    // targetCoords is index 0. Shops are indices 1 to N.
+    // sources = 1;2;3... (shops), destinations = 0 (customer)
+    const sources = candidateShops.map((_, i) => i + 1).join(";");
+    const osrmUrl = `https://router.project-osrm.org/table/v1/driving/${coordsList}?sources=${sources}&destinations=0&annotations=distance`;
     
     try {
       const res = await fetch(osrmUrl);
       const data = await res.json();
       
-      if (data.code === "Ok" && data.distances && data.distances[0]) {
+      if (data.code === "Ok" && data.distances) {
+        // data.distances is an array of rows (one for each source).
+        // Since destinations=0, each row has 1 element (the distance to customer).
         for (let i = 0; i < candidateShops.length; i++) {
-          const distMeters = data.distances[0][i + 1];
+          const distMeters = data.distances[i]?.[0];
           if (distMeters !== undefined && distMeters !== null) {
             const distKm = distMeters / 1000;
             if (distKm < minDistance) {
