@@ -256,15 +256,8 @@ export function AdminRiders() {
                   </div>
                 )}
                 
-                <div className="grid grid-cols-4 gap-1 mt-5 pt-4 border-t border-slate-100 w-full">
+                <div className="grid grid-cols-3 gap-1 mt-5 pt-4 border-t border-slate-100 w-full">
                   <div className="text-center flex flex-col items-center justify-center">
-                    <div className="flex items-center justify-center gap-1 text-slate-700 font-semibold text-sm">
-                      <Star size={12} className="text-amber-400 fill-amber-400" />
-                      {rider.rating.toFixed(1)}
-                    </div>
-                    <p className="text-[9px] text-slate-400 uppercase tracking-widest mt-1">Rating</p>
-                  </div>
-                  <div className="text-center flex flex-col items-center justify-center border-l border-slate-100">
                     <div className="flex items-center justify-center gap-1 text-slate-700 font-semibold text-indigo-600 text-sm">
                       ฿{(riderStats[rider.id]?.monthEarnings || 0).toFixed(0)}
                     </div>
