@@ -60,11 +60,31 @@ export async function deleteCustomerAction(id: string) {
   return prisma.customer.delete({ where: { id } });
 }
 
-// JOBS
 export async function addJobAction(data: any) {
+  let jobId = data.id;
+  
+  if (!jobId) {
+    const year = new Date().getFullYear().toString();
+    const latestJob = await prisma.job.findFirst({
+      where: { id: { startsWith: year } },
+      orderBy: { id: 'desc' }
+    });
+    
+    if (latestJob && latestJob.id.length >= 10) {
+      const lastNum = parseInt(latestJob.id.substring(4), 10);
+      if (!isNaN(lastNum)) {
+        jobId = `${year}${(lastNum + 1).toString().padStart(6, '0')}`;
+      } else {
+        jobId = `${year}000001`;
+      }
+    } else {
+      jobId = `${year}000001`;
+    }
+  }
+
   return prisma.job.create({
     data: {
-      id: data.id,
+      id: jobId,
       type: data.type || 'full_service',
       customerId: data.customerId,
       customerName: data.customerName,
