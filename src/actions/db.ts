@@ -16,6 +16,15 @@ export async function addCustomerAction(data: any) {
       creditBalance: data.creditBalance || 0,
       tier: data.tier,
       isMember: data.isMember || false,
+      isVIP: data.isVIP || false,
+      email: data.email,
+      lineId: data.lineId,
+      language: data.language,
+      remark: data.remark,
+      secondaryAddress: data.secondaryAddress,
+      dob: data.dob,
+      taxId: data.taxId,
+      companyName: data.companyName,
     }
   });
   return c;
@@ -34,6 +43,15 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.creditBalance !== undefined) data.creditBalance = updates.creditBalance;
   if (updates.tier !== undefined) data.tier = updates.tier;
   if (updates.isMember !== undefined) data.isMember = updates.isMember;
+  if (updates.isVIP !== undefined) data.isVIP = updates.isVIP;
+  if (updates.email !== undefined) data.email = updates.email;
+  if (updates.lineId !== undefined) data.lineId = updates.lineId;
+  if (updates.language !== undefined) data.language = updates.language;
+  if (updates.remark !== undefined) data.remark = updates.remark;
+  if (updates.secondaryAddress !== undefined) data.secondaryAddress = updates.secondaryAddress;
+  if (updates.dob !== undefined) data.dob = updates.dob;
+  if (updates.taxId !== undefined) data.taxId = updates.taxId;
+  if (updates.companyName !== undefined) data.companyName = updates.companyName;
 
   return prisma.customer.update({ where: { id }, data });
 }
@@ -71,6 +89,10 @@ export async function addJobAction(data: any) {
       totalAmount: data.totalAmount,
       paymentMethod: data.paymentMethod,
       discount: data.discount || 0,
+      pickupDistance: data.pickupDistance,
+      deliveryDistance: data.deliveryDistance,
+      pickupCommission: data.pickupCommission,
+      deliveryCommission: data.deliveryCommission,
       pickupScheduledAt: data.pickupScheduledAt,
       deliveryScheduledAt: data.deliveryScheduledAt,
       pickupRiderId: data.pickupRiderId,
@@ -93,6 +115,84 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.pickupScheduledAt !== undefined) data.pickupScheduledAt = updates.pickupScheduledAt;
   if (updates.deliveryRiderId !== undefined) data.deliveryRiderId = updates.deliveryRiderId;
   if (updates.deliveryScheduledAt !== undefined) data.deliveryScheduledAt = updates.deliveryScheduledAt;
+
+  // Additional fields for full job edits
+  if (updates.customerName !== undefined) data.customerName = updates.customerName;
+  if (updates.customerPhone !== undefined) data.customerPhone = updates.customerPhone;
+  if (updates.pickupLocation !== undefined) data.pickupLocation = updates.pickupLocation;
+  if (updates.dropoffLocation !== undefined) data.dropoffLocation = updates.dropoffLocation;
+  if (updates.pickupCoords) {
+    data.pickupLat = updates.pickupCoords.lat;
+    data.pickupLng = updates.pickupCoords.lng;
+  }
+  if (updates.dropoffCoords) {
+    data.dropoffLat = updates.dropoffCoords.lat;
+    data.dropoffLng = updates.dropoffCoords.lng;
+  }
+  if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
+  if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
+  if (updates.fee !== undefined) data.fee = updates.fee;
+  if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
+  if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
+  if (updates.remark !== undefined) data.remark = updates.remark;
+  if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
+
+  if (updates.pickupDistance !== undefined) data.pickupDistance = updates.pickupDistance;
+  if (updates.deliveryDistance !== undefined) data.deliveryDistance = updates.deliveryDistance;
+  if (updates.pickupCommission !== undefined) data.pickupCommission = updates.pickupCommission;
+  if (updates.deliveryCommission !== undefined) data.deliveryCommission = updates.deliveryCommission;
+
+  // Check if a leg was just completed by comparing status
+  if (updates.status) {
+    const existingJob = await prisma.job.findUnique({ where: { id } });
+    if (existingJob) {
+      // Pickup completed
+      if (existingJob.status !== 'pickup_completed' && existingJob.status !== 'completed' && updates.status === 'pickup_completed' && existingJob.pickupCommission != null && existingJob.pickupRiderId) {
+        // Check if transaction already exists to avoid duplicates
+        const existingTx = await prisma.riderTransaction.findFirst({
+          where: { jobId: id, type: 'commission_pickup' }
+        });
+        if (!existingTx) {
+          await prisma.riderTransaction.create({
+            data: {
+              riderId: existingJob.pickupRiderId,
+              jobId: id,
+              amount: existingJob.pickupCommission,
+              type: 'commission_pickup',
+              detail: `Job ${id} - Pickup`
+            }
+          });
+          await prisma.rider.update({
+            where: { id: existingJob.pickupRiderId },
+            data: { commissionBalance: { increment: existingJob.pickupCommission } }
+          });
+        }
+      }
+      
+      // Delivery completed
+      if (existingJob.status !== 'completed' && updates.status === 'completed' && existingJob.deliveryCommission != null && existingJob.deliveryRiderId) {
+        // Check if transaction already exists to avoid duplicates
+        const existingTx = await prisma.riderTransaction.findFirst({
+          where: { jobId: id, type: 'commission_delivery' }
+        });
+        if (!existingTx) {
+          await prisma.riderTransaction.create({
+            data: {
+              riderId: existingJob.deliveryRiderId,
+              jobId: id,
+              amount: existingJob.deliveryCommission,
+              type: 'commission_delivery',
+              detail: `Job ${id} - Delivery`
+            }
+          });
+          await prisma.rider.update({
+            where: { id: existingJob.deliveryRiderId },
+            data: { commissionBalance: { increment: existingJob.deliveryCommission } }
+          });
+        }
+      }
+    }
+  }
 
   return prisma.job.update({ where: { id }, data });
 }
@@ -133,6 +233,13 @@ export async function updateRiderAction(id: string, updates: any) {
 
 export async function deleteRiderAction(id: string) {
   return prisma.rider.delete({ where: { id } });
+}
+
+export async function getRiderTransactionsAction(riderId: string) {
+  return prisma.riderTransaction.findMany({
+    where: { riderId },
+    orderBy: { createdAt: 'desc' }
+  });
 }
 
 // PRICE LISTS

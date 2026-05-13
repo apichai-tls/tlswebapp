@@ -21,8 +21,17 @@ model Customer {
   priceListId    String?
   creditBalance  Float    @default(0)
   tier           String?  // "regular" | "bronze" | "silver" | "gold" | "platinum"
-  isMember       Boolean  @default(false)
-  createdAt      DateTime @default(now())
+  isMember         Boolean  @default(false)
+  isVIP            Boolean  @default(false)
+  email            String?
+  lineId           String?
+  language         String?
+  remark           String?
+  secondaryAddress String?
+  dob              String?
+  taxId            String?
+  companyName      String?
+  createdAt        DateTime @default(now())
   updatedAt      DateTime @updatedAt
   
   jobs           Job[]
@@ -55,6 +64,10 @@ model Job {
   totalAmount         Float?
   paymentMethod       String?   // "cash" | "transfer" | "credit" | "card"
   discount            Float?    @default(0)
+  pickupDistance      Float?
+  deliveryDistance    Float?
+  pickupCommission    Float?
+  deliveryCommission  Float?
   pickupScheduledAt   DateTime?
   deliveryScheduledAt DateTime?
   pickupRiderId       String?
@@ -87,9 +100,24 @@ model Rider {
   avatarUrl      String?
   rating         Float    @default(5.0)
   completedJobs  Int      @default(0)
+  commissionBalance Float   @default(0)
   nationalId     String?
   vehicleType    String?  // "motorcycle" | "car" | "truck"
   vehiclePlate   String?
+  
+  transactions   RiderTransaction[]
+}
+
+model RiderTransaction {
+  id        String   @id @default(uuid())
+  riderId   String
+  jobId     String?
+  amount    Float
+  type      String   // "commission_pickup" | "commission_delivery" | "payout"
+  detail    String?  // e.g. "Job 001 - ไปรับผ้า"
+  createdAt DateTime @default(now())
+
+  rider     Rider    @relation(fields: [riderId], references: [id])
 }
 
 model PriceList {

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { useAuth } from "@/providers/auth-provider";
@@ -14,7 +14,18 @@ import { toast } from "sonner";
 function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    const savedEmail = localStorage.getItem("rememberedEmail");
+    const savedPassword = localStorage.getItem("rememberedPassword");
+    if (savedEmail && savedPassword) {
+      setEmail(savedEmail);
+      setPassword(savedPassword);
+      setRememberMe(true);
+    }
+  }, []);
   const { login } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -37,6 +48,15 @@ function LoginForm() {
 
     try {
       const user = await login(email, password);
+      
+      if (rememberMe) {
+        localStorage.setItem("rememberedEmail", email);
+        localStorage.setItem("rememberedPassword", password);
+      } else {
+        localStorage.removeItem("rememberedEmail");
+        localStorage.removeItem("rememberedPassword");
+      }
+
       toast.success(`Welcome back, ${user.role}!`);
       
       const redirectPath = searchParams.get("redirect");
@@ -90,6 +110,19 @@ function LoginForm() {
             className="pl-10 h-12 bg-slate-50 border-transparent focus:bg-white focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition-all rounded-xl shadow-sm text-base"
           />
         </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-2">
+        <input 
+          type="checkbox" 
+          id="rememberMe" 
+          checked={rememberMe}
+          onChange={(e) => setRememberMe(e.target.checked)}
+          className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 accent-slate-900"
+        />
+        <Label htmlFor="rememberMe" className="text-sm font-medium text-slate-600 cursor-pointer select-none">
+          Remember Me
+        </Label>
       </div>
 
       <Button 

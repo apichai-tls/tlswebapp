@@ -32,13 +32,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     // Hydrate from localStorage on client side
     const savedUser = localStorage.getItem('authUser');
-    if (savedUser) {
+    const lastLoginDate = localStorage.getItem('lastLoginDate');
+    const today = new Date().toDateString();
+
+    if (savedUser && lastLoginDate === today) {
       try {
         // eslint-disable-next-line
         setUser(JSON.parse(savedUser));
       } catch (e) {
         console.error("Failed to parse auth user", e);
       }
+    } else if (savedUser && lastLoginDate !== today) {
+      // Clear session if it's a new day
+      localStorage.removeItem('authUser');
+      localStorage.removeItem('lastLoginDate');
+      setUser(null);
     }
     setIsLoading(false);
   }, []);
@@ -62,6 +70,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         };
         setUser(userData);
         localStorage.setItem('authUser', JSON.stringify(userData));
+        localStorage.setItem('lastLoginDate', new Date().toDateString());
         return userData;
       }
     }
@@ -75,12 +84,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     
     setUser(userData);
     localStorage.setItem('authUser', JSON.stringify(userData));
+    localStorage.setItem('lastLoginDate', new Date().toDateString());
     return userData;
   };
 
   const logout = () => {
     setUser(null);
     localStorage.removeItem('authUser');
+    localStorage.removeItem('lastLoginDate');
   };
 
   return (

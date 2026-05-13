@@ -116,7 +116,25 @@ export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
   // Initialize simulation
   useEffect(() => {
     setIsMounted(true);
-    setSimulatedRiders(riders.map((r, i) => {
+    
+    const activeRiders = riders.filter(r => r.status === 'online' || r.status === 'busy');
+
+    setSimulatedRiders(activeRiders.map((r, i) => {
+      // Preserve existing simulation state to prevent jumping when status changes
+      const existing = simulatedRidersRef.current.find((sr: any) => sr.id === r.id) as any;
+      if (existing) {
+        return {
+          ...existing,
+          ...r, // Update with latest DB info like status
+          currentLocation: existing.currentLocation,
+          _path: existing._path,
+          _startWaypoint: existing._startWaypoint,
+          _targetWaypoint: existing._targetWaypoint,
+          _distanceTraveled: existing._distanceTraveled,
+          _speed: existing._speed
+        };
+      }
+
       const idx = (i * 2) % waypoints.length;
       return {
         ...r,
@@ -244,7 +262,7 @@ export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
         className="h-full w-full z-0"
         zoomControl={true}
         dragging={true}
-        scrollWheelZoom={true}
+        scrollWheelZoom={!minimal}
       >
         <TileLayer
           attribution='&copy; <a href="https://maps.google.com">Google Maps</a>'

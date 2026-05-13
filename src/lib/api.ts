@@ -27,17 +27,52 @@ export const ensureDbLoaded = async () => {
   if (isDbLoaded) return;
   if (typeof window === 'undefined') return;
 
+  // Optimistic UI: Try to load from Cache Storage first for instant rendering
+  try {
+    const cache = await caches.open('tls-cache');
+    const cachedRes = await cache.match('/api/db-cache');
+    if (cachedRes) {
+      const cached = await cachedRes.json();
+      const parsed = JSON.parse(JSON.stringify(cached), dateReviver);
+      memoryDb = parseMockDb(parsed);
+      isDbLoaded = true;
+      import('./store').then(m => m.emitAllChanges());
+    }
+  } catch(e) {
+    console.error('Failed to load from Cache API', e);
+  }
+
   try {
     const res = await fetch('/api/db');
     if (res.ok) {
       const data = await res.json();
+      
+      // Save to Cache Storage for next refresh
+      try {
+        const cache = await caches.open('tls-cache');
+        await cache.put('/api/db-cache', new Response(JSON.stringify(data)));
+      } catch (e) {
+        console.error('Failed to save to Cache API', e);
+      }
+
       const parsed = JSON.parse(JSON.stringify(data), dateReviver);
       memoryDb = parseMockDb(parsed);
       isDbLoaded = true;
       
       // Trigger a re-render for all components using useSyncExternalStore
-      // We do this by importing emitAllChanges dynamically to avoid circular dependency issues during load
       import('./store').then(m => m.emitAllChanges());
+
+      // Background lazy load POIs
+      fetch('/api/pois')
+        .then(r => r.json())
+        .then(poiData => {
+          if (memoryDb) {
+            const parsedPois = JSON.parse(JSON.stringify(poiData), dateReviver);
+            memoryDb.pois = parsedPois;
+            import('./store').then(m => m.emitAllChanges());
+          }
+        })
+        .catch(err => console.error("Failed to load POIs in background", err));
     }
   } catch (error) {
     console.error('Failed to load DB from server', error);
@@ -184,6 +219,10 @@ export const api = {
       source: jobDetails.source || "app",
       totalAmount: jobDetails.totalAmount || ((jobDetails.fee || 0) * 2.5),
       discount: jobDetails.discount || 0,
+      pickupDistance: jobDetails.pickupDistance,
+      deliveryDistance: jobDetails.deliveryDistance,
+      pickupCommission: jobDetails.pickupCommission,
+      deliveryCommission: jobDetails.deliveryCommission,
       items: jobDetails.items || [],
       riderId: pRider,
       legs: {

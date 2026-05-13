@@ -22,7 +22,10 @@ import { useRiders } from "@/lib/use-riders";
 import { useJobs } from "@/lib/use-jobs";
 import { toast } from "sonner";
 import Image from "next/image";
+import Link from "next/link";
 import { ImageUploader } from "@/components/ui/image-uploader";
+import { getRiderTransactionsAction } from "@/actions/db";
+import { useEffect } from "react";
 
 const statusColorMap = {
   online: "bg-emerald-500",
@@ -44,20 +47,11 @@ export function AdminRiders() {
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
-    jobs.forEach(j => {
-      if (j.status !== 'completed' || !j.riderId) return;
-      if (!stats[j.riderId]) stats[j.riderId] = { monthEarnings: 0, totalEarnings: 0 };
-      
-      const earning = j.distance * 2;
-      stats[j.riderId].totalEarnings += earning;
-      
-      const date = new Date(j.completedAt || j.createdAt);
-      if (date.getMonth() === currentMonth && date.getFullYear() === currentYear) {
-        stats[j.riderId].monthEarnings += earning;
-      }
+    riders.forEach(r => {
+      stats[r.id] = { monthEarnings: 0, totalEarnings: r.commissionBalance || 0 };
     });
     return stats;
-  }, [jobs]);
+  }, [riders]);
 
   // Form State
   const [name, setName] = useState("");
@@ -169,8 +163,14 @@ export function AdminRiders() {
                   <Label>Current Status</Label>
                   <div className="flex gap-2">
                     <Badge variant={status === "online" ? "default" : "outline"} className={`cursor-pointer ${status === 'online' ? 'bg-emerald-600 hover:bg-emerald-700' : ''}`} onClick={() => setStatus("online")}>Online</Badge>
-                    <Badge variant={status === "busy" ? "default" : "outline"} className={`cursor-pointer ${status === 'busy' ? 'bg-amber-500 hover:bg-amber-600' : ''}`} onClick={() => setStatus("busy")}>Busy</Badge>
                     <Badge variant={status === "offline" ? "default" : "outline"} className={`cursor-pointer ${status === 'offline' ? 'bg-slate-600 hover:bg-slate-700' : ''}`} onClick={() => setStatus("offline")}>Offline</Badge>
+                    <Badge 
+                      variant={status === "busy" ? "default" : "outline"} 
+                      className={`${status === 'busy' ? 'bg-amber-500 hover:bg-amber-600 cursor-default' : 'opacity-40 cursor-not-allowed'}`} 
+                      title="Busy status is set automatically when a rider starts a job"
+                    >
+                      Busy
+                    </Badge>
                   </div>
                 </div>
               </div>
@@ -337,16 +337,31 @@ function MonthlyReportModal({
   onClose: () => void 
 }) {
   const [expandedMonth, setExpandedMonth] = useState<string | null>(null);
+  const [transactions, setTransactions] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (rider) {
+      setIsLoading(true);
+      getRiderTransactionsAction(rider.id).then(data => {
+        setTransactions(data);
+      }).catch(err => {
+        console.error(err);
+        toast.error("Failed to load transactions");
+      }).finally(() => {
+        setIsLoading(false);
+      });
+    } else {
+      setTransactions([]);
+    }
+  }, [rider]);
 
   if (!rider) return null;
 
-  // Group completed jobs by month
-  const riderJobs = jobs.filter(j => j.riderId === rider.id && j.status === 'completed');
-  
-  const grouped = riderJobs.reduce((acc, job: Job) => {
-    const monthYear = format(new Date(job.completedAt || job.createdAt), 'MMMM yyyy');
+  const grouped = transactions.reduce((acc, t) => {
+    const monthYear = format(new Date(t.createdAt), 'MMMM yyyy');
     if (!acc[monthYear]) acc[monthYear] = [];
-    acc[monthYear].push(job);
+    acc[monthYear].push(t);
     return acc;
   }, {} as Record<string, any[]>);
 
@@ -388,30 +403,30 @@ function MonthlyReportModal({
         </DialogHeader>
         
         <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6 bg-slate-50/80 print:bg-white print:p-0">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2 print:hidden">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2 print:hidden">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Total Jobs Completed</p>
-              <p className="text-2xl font-bold text-slate-900">{riderJobs.length}</p>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Total Transactions</p>
+              <p className="text-2xl font-bold text-slate-900">{transactions.length}</p>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Total Distance Traveled</p>
-              <p className="text-2xl font-bold text-slate-900">{riderJobs.reduce((sum, j) => sum + j.distance, 0).toFixed(1)} km</p>
-            </div>
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Lifetime Commission</p>
-              <p className="text-2xl font-bold text-indigo-600">฿{riderJobs.reduce((sum, j) => sum + (j.distance * 2), 0).toFixed(0)}</p>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Current Balance</p>
+              <p className="text-2xl font-bold text-indigo-600">฿{(rider.commissionBalance || 0).toFixed(2)}</p>
             </div>
           </div>
 
-          {months.length === 0 ? (
+          {isLoading ? (
+            <div className="text-center py-12">
+              <p className="text-slate-500">Loading transactions...</p>
+            </div>
+          ) : months.length === 0 ? (
             <div className="text-center py-12 bg-white rounded-xl border border-dashed border-slate-200">
               <Calendar className="mx-auto text-slate-300 mb-3" size={40} />
-              <p className="text-slate-500 font-medium">No completed jobs found for this rider.</p>
+              <p className="text-slate-500 font-medium">No transactions found for this rider.</p>
             </div>
           ) : (
             months.map((month) => {
-              const monthJobs = grouped[month];
-              const monthEarnings = monthJobs.reduce((sum: number, j: Job) => sum + (j.distance * 2), 0);
+              const monthTrans = grouped[month];
+              const monthEarnings = monthTrans.reduce((sum: number, t: any) => sum + t.amount, 0);
               const isExpanded = expandedMonth === month;
               
               return (
@@ -426,13 +441,13 @@ function MonthlyReportModal({
                       </div>
                       <div>
                         <h4 className="font-bold text-slate-900">{month}</h4>
-                        <p className="text-xs text-slate-500">{monthJobs.length} assignments completed</p>
+                        <p className="text-xs text-slate-500">{monthTrans.length} transactions</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-6">
                       <div className="text-right">
                         <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Total Earned</p>
-                        <p className="text-lg font-bold text-indigo-600">฿{monthEarnings.toFixed(0)}</p>
+                        <p className="text-lg font-bold text-indigo-600">฿{monthEarnings.toFixed(2)}</p>
                       </div>
                       {isExpanded ? <ChevronDown size={20} className="text-slate-400" /> : <ChevronRight size={20} className="text-slate-400" />}
                     </div>
@@ -448,27 +463,31 @@ function MonthlyReportModal({
                       >
                         <div className="p-4 space-y-2">
                            <div className="grid grid-cols-4 px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50 rounded-lg">
-                            <span>Job ID / Date</span>
-                            <span>Distance</span>
-                            <span>Customer Fee</span>
-                            <span className="text-right">Commission</span>
+                            <span>Job / Detail</span>
+                            <span>Type</span>
+                            <span>Date</span>
+                            <span className="text-right">Amount</span>
                           </div>
-                          {monthJobs.map((job: Job) => (
-                            <div key={job.id} className="grid grid-cols-4 items-center px-3 py-3 text-sm border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors rounded-lg">
+                          {monthTrans.map((t: any) => (
+                            <div key={t.id} className="grid grid-cols-4 items-center px-3 py-3 text-sm border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors rounded-lg">
                               <div className="flex flex-col">
-                                <span className="font-mono font-bold text-slate-700">{job.id}</span>
-                                <span className="text-[10px] text-slate-400">{format(new Date(job.completedAt || job.createdAt), "MMM d, HH:mm")}</span>
+                                {t.jobId ? (
+                                  <Link href={`/admin?jobId=${t.jobId}`} className="font-mono font-bold text-indigo-600 hover:underline">
+                                    {t.jobId}
+                                  </Link>
+                                ) : (
+                                  <span className="font-mono font-bold text-slate-700">-</span>
+                                )}
+                                <span className="text-[10px] text-slate-500 line-clamp-1">{t.detail}</span>
                               </div>
                               <div className="flex items-center gap-1.5 text-slate-600">
-                                <Activity size={14} className="text-slate-400" />
-                                {job.distance} km
+                                <Badge variant="outline" className="text-[10px]">{t.type.replace('commission_', '')}</Badge>
                               </div>
-                              <div className="flex items-center gap-1.5 text-slate-600">
-                                <Banknote size={14} className="text-emerald-500" />
-                                ฿{job.fee.toFixed(0)}
+                              <div className="flex items-center gap-1.5 text-slate-500 text-xs">
+                                {format(new Date(t.createdAt), "MMM d, HH:mm")}
                               </div>
-                              <div className="text-right font-bold text-indigo-600">
-                                ฿{(job.distance * 2).toFixed(0)}
+                              <div className={`text-right font-bold ${t.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {t.amount >= 0 ? '+' : ''}฿{Math.abs(t.amount).toFixed(2)}
                               </div>
                             </div>
                           ))}

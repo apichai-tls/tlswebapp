@@ -1,13 +1,15 @@
 import { motion } from "framer-motion";
 import { type Job, jobStore, type JobLegs } from "@/lib/store";
 import { useRiders } from "@/lib/use-riders";
-import { CheckCircle2, Circle, Truck, Package, Timer, ArrowRight, Home } from "lucide-react";
+import { CheckCircle2, Circle, Truck, Package, Timer, ArrowRight, Home, Edit2, Check, X, Copy } from "lucide-react";
 import { format } from "date-fns";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
+import { TimePicker } from "@/components/ui/time-picker";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function Step({ title, desc, legKey, leg, icon, toggleLegStatus, getRiderName }: any) {
@@ -52,6 +54,33 @@ export function AdminTaskTracker({ job }: { job: Job }) {
   const [deliveryTime, setDeliveryTime] = useState(
     job.legs?.deliveryOutbound.scheduledAt ? format(new Date(job.legs.deliveryOutbound.scheduledAt), "HH:mm") : ""
   );
+  
+
+
+  const handleDuplicateJob = async () => {
+    try {
+      const newJobData = { ...job };
+      delete (newJobData as any).id;
+      delete (newJobData as any).createdAt;
+      delete (newJobData as any).completedAt;
+      delete (newJobData as any).customer;
+      delete (newJobData as any).legs;
+      
+      await jobStore.addJob({
+        ...newJobData,
+        status: "pending",
+        pickupRiderId: undefined,
+        deliveryRiderId: undefined,
+        bagImageUrl: undefined,
+        billImageUrl: undefined,
+        proofImageUrl: undefined,
+      } as any);
+
+      toast.success("Job duplicated and sent to Order Verify.");
+    } catch (e: any) {
+      toast.error(`Error duplicating job: ${e.message}`);
+    }
+  };
 
   if (!job.legs) return (
     <div className="p-4 text-center text-slate-500">Legacy Job without full 4-trip details.</div>
@@ -99,27 +128,10 @@ export function AdminTaskTracker({ job }: { job: Job }) {
             <Badge variant="outline" className="text-[10px] bg-purple-50 text-purple-700 border-purple-100 py-0 h-5">
               {job.serviceType === 'wash_iron_fold' ? 'Wash/Iron/Fold' : 'Wash/Fold'}
             </Badge>
-            <p className="text-xs font-medium text-slate-500">Commission: <span className="text-emerald-600 font-bold ml-1">฿{job.fee.toFixed(0)}</span></p>
+            <p className="text-xs font-medium text-slate-500">Commission: <span className="text-emerald-600 font-bold ml-1">฿{((job.pickupCommission || 0) + (job.deliveryCommission || 0)).toFixed(0)}</span></p>
           </div>
           
-          {job.bagImageUrl && (
-            <div className="mt-4 flex flex-wrap gap-2">
-              {(() => {
-                let urls = [];
-                try {
-                  urls = JSON.parse(job.bagImageUrl);
-                } catch {
-                  urls = [job.bagImageUrl];
-                }
-                return urls.map((url: string, idx: number) => (
-                  <div key={idx} className="w-12 h-12 rounded-md border border-slate-200 overflow-hidden shadow-sm">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={url} alt="Laundry Bag" className="w-full h-full object-cover" />
-                  </div>
-                ));
-              })()}
-            </div>
-          )}
+
         </div>
       </div>
 
@@ -151,7 +163,7 @@ export function AdminTaskTracker({ job }: { job: Job }) {
            <h3 className="text-xs font-bold text-indigo-500 uppercase tracking-widest flex items-center gap-2">
             <Timer size={14} /> Shop Phase (Washing/Cleaning)
           </h3>
-          <p className="text-[10px] text-slate-400 mt-1 pl-6">Waiting at {job.dropoffLocation}</p>
+          <p className="text-[10px] text-slate-400 mt-1 pl-6">Waiting at Store Branch</p>
         </div>
 
         <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mt-6 mb-4 flex items-center gap-2">
@@ -177,11 +189,9 @@ export function AdminTaskTracker({ job }: { job: Job }) {
             </div>
             <div className="space-y-1">
               <Label className="text-[10px] text-slate-500">Time</Label>
-              <Input
-                type="time"
-                className="h-8 text-xs px-2"
+              <TimePicker
                 value={deliveryTime}
-                onChange={(e) => setDeliveryTime(e.target.value)}
+                onChange={setDeliveryTime}
               />
             </div>
           </div>
@@ -199,7 +209,7 @@ export function AdminTaskTracker({ job }: { job: Job }) {
           toggleLegStatus={toggleLegStatus}
           getRiderName={getRiderName} 
           title="Outbound Delivery" 
-          desc={`Delivering clean laundry to ${job.pickupLocation}`}
+          desc={`Delivering clean laundry to ${job.dropoffLocation}`}
           legKey="deliveryOutbound"
           leg={job.legs.deliveryOutbound}
           icon={<Truck size={16} />} 
@@ -213,6 +223,17 @@ export function AdminTaskTracker({ job }: { job: Job }) {
           leg={job.legs.deliveryInbound}
           icon={<Home size={16} />} 
         />
+        
+        <div className="pt-4 mt-6 border-t border-slate-200">
+          <Button 
+            variant="outline" 
+            onClick={handleDuplicateJob} 
+            className="w-full text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+          >
+            <Copy size={16} className="mr-2" />
+            Duplicate Job
+          </Button>
+        </div>
       </div>
     </div>
   );

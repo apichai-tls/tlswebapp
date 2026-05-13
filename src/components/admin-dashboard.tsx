@@ -23,6 +23,10 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
     label: "Delivery",
     className: "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-50",
   },
+  pickup_completed: {
+    label: "Pickup Completed",
+    className: "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50",
+  },
   accepted: {
     label: "Accepted",
     className: "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-50",
@@ -35,15 +39,21 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
     label: "Completed",
     className: "bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-50",
   },
+  cancelled: {
+    label: "Cancelled",
+    className: "bg-red-50 text-red-700 border-red-200 hover:bg-red-50",
+  },
 };
 
 const statusIcon: Record<JobStatus, React.ReactNode> = {
   pending: <Clock size={13} />,
   pickup: <Truck size={13} />,
+  pickup_completed: <CheckCircle2 size={13} />,
   delivery: <Truck size={13} />,
   accepted: <Truck size={13} />,
   active: <Zap size={13} />,
   completed: <CheckCircle2 size={13} />,
+  cancelled: <CheckCircle2 size={13} />,
 };
 
 const staggerContainer = {
@@ -103,7 +113,10 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   });
   
   const monthlyRevenue = filteredCompletedJobs.reduce((sum, j) => sum + (j.totalAmount || 0), 0);
-  const monthlyRiderPayout = filteredCompletedJobs.reduce((sum, j) => sum + (j.fee || 0), 0);
+  const monthlyRiderPayout = filteredCompletedJobs.reduce((sum, j) => {
+    const comm = (j.pickupCommission || 0) + (j.deliveryCommission || 0);
+    return sum + (comm > 0 ? comm : (j.fee || 0));
+  }, 0);
   const platformProfit = monthlyRevenue - monthlyRiderPayout;
 
   return (
@@ -246,59 +259,63 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                     transition={{ delay: i * 0.05, duration: 0.2 }}
                     className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors cursor-pointer"
                   >
-                    <TableCell className="pl-6">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="font-mono text-xs font-semibold text-slate-900">{job.id}</div>
-                        <Badge variant="outline" className={`text-[9px] uppercase font-bold py-0 h-4 ${job.type === 'pickup' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
+                    <TableCell className="pl-6 py-2">
+                      <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                        <div className="font-mono text-xs font-semibold text-slate-900">{job.id.split('-')[0].toUpperCase()}</div>
+                        <Badge variant="outline" className={`text-[9px] uppercase font-bold px-1.5 py-0 h-4 ${job.type === 'pickup' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
                           {job.type}
                         </Badge>
                         {job.source === 'pos' && (
-                          <Badge className="text-[9px] uppercase font-bold py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">
+                          <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">
                             POS
                           </Badge>
                         )}
-                      </div>
-                      <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
-                        <Clock size={12} className="text-amber-500" />
-                        Sch: {format(new Date(job.scheduledAt), "HH:mm")}
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
-                        <CalendarDays size={12} />
-                        {format(new Date(job.scheduledAt), "MMM d")}
-                      </div>
-                      <div className="mt-1.5 flex flex-wrap gap-1">
-                        <Badge variant="secondary" className="text-[9px] bg-purple-50 text-purple-700 border-purple-100 py-0 h-4">
-                          {job.serviceType === 'wash_iron_fold' ? 'Wash/Iron/Fold' : 'Wash/Fold'}
+                        <Badge variant="secondary" className="text-[9px] bg-purple-50 text-purple-700 border-purple-100 px-1.5 py-0 h-4">
+                          {job.serviceType === 'wash_iron_fold' ? 'W/I/F' : 'W/F'}
                         </Badge>
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-1.5 flex items-center gap-1.5">
-                        <User size={12} className="shrink-0 text-slate-400" />
-                        <span className="truncate max-w-[120px] font-medium text-slate-700">{job.customerName || "Guest"}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-2 py-1">
-                        <div className="flex items-start gap-1.5">
-                          <MapPin size={13} className="mt-0.5 shrink-0 text-emerald-600" />
-                          <span className="text-xs text-slate-700 leading-tight line-clamp-1">{job.pickupLocation}</span>
+                      <div className="flex items-center gap-3">
+                        <div className="text-[11px] text-slate-600 flex items-center gap-1 font-medium">
+                          <User size={11} className="text-slate-400" />
+                          <span className="truncate max-w-[100px]">{job.customerName || "Guest"}</span>
                         </div>
-                        <div className="flex items-start gap-1.5">
-                          <Navigation size={13} className="mt-0.5 shrink-0 text-red-500" />
-                          <span className="text-xs text-slate-700 leading-tight line-clamp-1">{job.dropoffLocation}</span>
+                        <div className="text-[10px] text-slate-500 flex items-center gap-1 font-medium bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100">
+                          <Clock size={10} className="text-amber-500" />
+                          {format(new Date(job.scheduledAt), "dd MMM, HH:mm")}
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="align-top py-4 text-right">
-                      <div className="font-semibold text-sm text-slate-900">฿{(job.totalAmount || job.fee).toLocaleString()}</div>
-                      <div className="text-[11px] text-slate-400 mt-1.5">{job.distance} km</div>
-                      {job.proofImageUrl && (
-                        <div className="mt-2 flex justify-end">
-                          <img src={job.proofImageUrl} alt="Proof" className="w-10 h-10 rounded border border-slate-200" />
+                    <TableCell className="py-2">
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <MapPin size={12} className="shrink-0 text-emerald-600" />
+                          <span className="text-[11px] text-slate-600 leading-tight truncate max-w-[160px]">{job.pickupLocation}</span>
                         </div>
-                      )}
+                        <div className="flex items-center gap-1.5">
+                          <Navigation size={12} className="shrink-0 text-red-500" />
+                          <span className="text-[11px] text-slate-600 leading-tight truncate max-w-[160px]">{job.dropoffLocation}</span>
+                        </div>
+                      </div>
                     </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="outline" className={`gap-1 w-full justify-center ${statusConfig[job.status].className}`}>
+                    <TableCell className="align-middle py-2 text-right">
+                      <div className="flex flex-col items-end justify-center">
+                        { (job.totalAmount || 0) - (job.fee || 0) > 0 ? (
+                          <div className="font-bold text-xs text-indigo-700">
+                            ฿{(job.totalAmount || 0).toLocaleString()}
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] text-slate-600 font-medium">฿{job.fee}</span>
+                            <Badge variant="outline" className="text-[9px] px-1 bg-amber-50 text-amber-600 border-amber-200 py-0 h-4">
+                              TBD
+                            </Badge>
+                          </div>
+                        )}
+                        <div className="text-[10px] text-slate-400 mt-0.5 font-medium">{job.distance} km</div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-center py-2 align-middle">
+                      <Badge variant="outline" className={`gap-1 w-full justify-center py-0.5 h-auto text-[10px] ${statusConfig[job.status].className}`}>
                         {statusIcon[job.status]}
                         {statusConfig[job.status].label}
                       </Badge>
@@ -326,7 +343,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
 
         {/* Map (Right — 2 cols) */}
         <motion.div
-          className="xl:col-span-2 h-[420px] xl:h-auto xl:min-h-[420px]"
+          className="xl:col-span-2 h-[420px] xl:h-[600px] xl:min-h-[600px]"
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5, delay: 0.35 }}

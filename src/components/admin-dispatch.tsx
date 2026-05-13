@@ -6,7 +6,7 @@ import { useRiders } from "@/lib/use-riders";
 import { jobStore, type Job } from "@/lib/store";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Truck, MapPin, User, X } from "lucide-react";
+import { Truck, MapPin, User, X, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
@@ -76,7 +76,7 @@ export function AdminDispatch() {
 
   // Filter & Map Jobs to Events
   const events = useMemo(() => {
-    let jobs = allJobs;
+    let jobs = allJobs.filter(j => j.status !== "pending" && j.status !== "cancelled");
     
     if (!showCompleted) {
       jobs = jobs.filter(j => j.status !== "completed");
@@ -161,6 +161,36 @@ export function AdminDispatch() {
       setEditingEvent(null);
     } catch (error) {
       toast.error("Failed to reassign rider");
+    }
+  };
+
+  const handleDuplicateJob = async () => {
+    if (!editingEvent) return;
+    const jobToDup = allJobs.find(j => j.id === editingEvent.jobId);
+    if (!jobToDup) return;
+
+    try {
+      const newJobData = { ...jobToDup };
+      delete (newJobData as any).id;
+      delete (newJobData as any).createdAt;
+      delete (newJobData as any).completedAt;
+      delete (newJobData as any).customer;
+      delete (newJobData as any).legs;
+      
+      await jobStore.addJob({
+        ...newJobData,
+        status: "pending",
+        pickupRiderId: undefined,
+        deliveryRiderId: undefined,
+        bagImageUrl: undefined,
+        billImageUrl: undefined,
+        proofImageUrl: undefined,
+      } as any);
+
+      toast.success("Job duplicated and sent to Order Verify.");
+      setEditingEvent(null);
+    } catch (e: any) {
+      toast.error(`Error duplicating job: ${e.message}`);
     }
   };
 
@@ -315,9 +345,14 @@ export function AdminDispatch() {
               </select>
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingEvent(null)} className="cursor-pointer">Cancel</Button>
-            <Button onClick={handleSaveEdit} className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">Save Changes</Button>
+          <DialogFooter className="sm:justify-between flex-row gap-2">
+            <Button variant="outline" onClick={handleDuplicateJob} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
+              <Copy size={14} className="mr-2" /> Duplicate Job
+            </Button>
+            <div className="flex gap-2 justify-end w-full sm:w-auto">
+              <Button variant="outline" onClick={() => setEditingEvent(null)} className="cursor-pointer">Cancel</Button>
+              <Button onClick={handleSaveEdit} className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">Save Changes</Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

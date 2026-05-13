@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, calculateFee, shopStore, getClosestShopIndex, type JobStatus, type LatLng, type ServiceType } from "@/lib/store";
+import { jobStore, calculateFee, shopStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
 import type { MapMarker } from "@/components/map-component";
@@ -28,6 +28,7 @@ import { LocationInput } from "@/components/location-input";
 import { AdminDashboard } from "@/components/admin-dashboard";
 import { AdminAllJobs } from "@/components/admin-all-jobs";
 import { AdminRiders } from "@/components/admin-riders";
+import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { AdminLiveMap } from "@/components/map-loader";
 import { AdminPOS } from "@/components/admin-pos";
 import { AdminServiceMenu } from "@/components/admin-service-menu";
@@ -97,6 +98,14 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
     label: "Active",
     className: "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-50",
   },
+  pickup_completed: {
+    label: "Pickup Completed",
+    className: "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50",
+  },
+  cancelled: {
+    label: "Cancelled",
+    className: "bg-red-50 text-red-700 border-red-200 hover:bg-red-50",
+  },
 };
 
 const statusIcon: Record<JobStatus, React.ReactNode> = {
@@ -106,6 +115,8 @@ const statusIcon: Record<JobStatus, React.ReactNode> = {
   delivery: <Navigation size={13} />,
   completed: <CheckCircle2 size={13} />,
   active: <Zap size={13} />,
+  pickup_completed: <CheckCircle2 size={13} />,
+  cancelled: <Clock size={13} />,
 };
 
 // Framer Motion variants
@@ -133,7 +144,22 @@ export default function AdminPage() {
   const customers = useCustomers();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify">("dashboard");
+
+  // Restore tab from URL hash
+  useEffect(() => {
+    const hash = window.location.hash.replace('#', '');
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify"];
+    if (validTabs.includes(hash)) {
+      setActiveTab(hash as any);
+    }
+  }, []);
+
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify") => {
+    setActiveTab(tab);
+    window.history.replaceState(null, '', `#${tab}`);
+  };
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
@@ -163,18 +189,25 @@ export default function AdminPage() {
 
   const [selectedStoreIndex, setSelectedStoreIndex] = useState(0);
   const [serviceType, setServiceType] = useState<ServiceType>("wash_fold");
-  const [deliveryScheduledTime, setDeliveryScheduledTime] = useState(format(new Date(Date.now() + 86400000), "yyyy-MM-dd'T'HH:mm"));
+  const roundToNearest5 = (date: Date) => {
+    const ms = 1000 * 60 * 5;
+    return new Date(Math.round(date.getTime() / ms) * ms);
+  };
+
+  const [pickupScheduledTime, setPickupScheduledTime] = useState(format(roundToNearest5(new Date()), "yyyy-MM-dd'T'HH:mm"));
+  const [deliveryScheduledTime, setDeliveryScheduledTime] = useState(format(roundToNearest5(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [pickupRiderId, setPickupRiderId] = useState("");
   const [deliveryRiderId, setDeliveryRiderId] = useState("");
   const [bagImageUrls, setBagImageUrls] = useState<string[]>([]);
-  const [pickupScheduledTime, setPickupScheduledTime] = useState(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
   const [isFreeDelivery, setIsFreeDelivery] = useState(false);
   const [adminNote, setAdminNote] = useState("");
   const [showAdminNote, setShowAdminNote] = useState(false);
   const [handoverType, setHandoverType] = useState<"meet" | "lobby">("meet");
   const [serviceSpeed, setServiceSpeed] = useState<"standard" | "express_50" | "express_100">("standard");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [laundryPrice, setLaundryPrice] = useState(0);
+  const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
 
   const handleLogout = () => {
@@ -212,7 +245,7 @@ export default function AdminPage() {
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
   };
 
-  const baseFee = calculateTotalFee();
+  const baseFee = editingFeeLock !== null ? editingFeeLock : calculateTotalFee();
   const fee = isFreeDelivery ? 0 : baseFee;
 
   const pendingCount = jobs.filter((j) => j.status === "pending").length;
@@ -231,6 +264,102 @@ export default function AdminPage() {
       dropoffLabel: j.dropoffLocation,
       status: j.status,
     }));
+
+  const handleCreateNewJob = () => {
+    setEditingJobId(null);
+    setCustomerName("");
+    setCustomerPhone("");
+    setPickupLoc("");
+    setPickupCoords(null);
+    setDeliveryLoc("");
+    setDeliveryCoords(null);
+    setIsPickup(true);
+    setIsDelivery(true);
+    setServiceType("wash_fold");
+    setPaymentMethod("unpaid");
+    setLaundryPrice(0);
+    setEditingFeeLock(null);
+    setSelectedVIPLabel("");
+    setBagImageUrls([]);
+    setAdminNote("");
+    setPickupRiderId("");
+    setDeliveryRiderId("");
+    setPickupDist(0);
+    setDeliveryDist(0);
+    setPickupScheduledTime(format(roundToNearest5(new Date()), "yyyy-MM-dd'T'HH:mm"));
+    setDeliveryScheduledTime(format(roundToNearest5(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+    setDialogOpen(true);
+  };
+
+  const handleEditFullJob = (job: Job) => {
+    setCustomerName(job.customerName || "");
+    setCustomerPhone(job.customerPhone || "");
+    const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation);
+    const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation);
+
+    setPickupLoc(isPickupService ? job.pickupLocation || "" : "");
+    if (isPickupService && job.pickupCoords) setPickupCoords(job.pickupCoords);
+    else setPickupCoords(null);
+    
+    setDeliveryLoc(isDeliveryService ? job.dropoffLocation || "" : "");
+    if (isDeliveryService && job.dropoffCoords) setDeliveryCoords(job.dropoffCoords);
+    else setDeliveryCoords(null);
+    setPickupDist(job.pickupDistance || 0);
+    setDeliveryDist(job.deliveryDistance || 0);
+    setServiceType((job.serviceType as ServiceType) || "wash_fold");
+    setPaymentMethod(job.paymentMethod || "unpaid");
+    setLaundryPrice(Math.max(0, (job.totalAmount || 0) - (job.fee || 0)));
+    setEditingFeeLock(job.fee);
+    
+    const matchedCustomer = customers.find(c => 
+      (job.customerId && c.id === job.customerId) || 
+      (job.customerName && c.name === job.customerName) || 
+      (job.customerPhone && c.phone === job.customerPhone)
+    );
+    setSelectedVIPLabel(matchedCustomer?.isVIP ? "VIP" : "");
+    
+    setBagImageUrls([]);
+    fetch(`/api/jobs/${job.id}/details`)
+      .then(r => r.json())
+      .then(data => {
+        let bags: string[] = [];
+        if (data.bagImageUrl) {
+          try {
+            const parsed = JSON.parse(data.bagImageUrl);
+            const rawBags = Array.isArray(parsed) ? parsed : [parsed];
+            bags = rawBags.map((url: string) => {
+              if (typeof url === 'string' && !url.startsWith('http') && !url.startsWith('/')) {
+                const cleanPath = url.replace(/^["'\\]+|["'\\]+$/g, '');
+                return `https://storage.googleapis.com/tls-images-test/${cleanPath}`;
+              }
+              return url;
+            });
+          } catch {
+            const url = data.bagImageUrl;
+            if (typeof url === 'string' && !url.startsWith('http') && !url.startsWith('/')) {
+              const cleanPath = url.replace(/^["'\\]+|["'\\]+$/g, '');
+              bags = [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
+            } else {
+              bags = [url];
+            }
+          }
+        }
+        setBagImageUrls(bags);
+      })
+      .catch(e => console.error("Failed to fetch bag images", e));
+    
+    setAdminNote(job.remark || "");
+    setPickupScheduledTime(format(roundToNearest5(new Date(job.pickupScheduledAt || job.scheduledAt || Date.now())), "yyyy-MM-dd'T'HH:mm"));
+    setDeliveryScheduledTime(format(roundToNearest5(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+    setPickupRiderId(job.pickupRiderId || "");
+    setDeliveryRiderId(job.deliveryRiderId || "");
+
+    setIsPickup(isPickupService);
+    setIsDelivery(isDeliveryService);
+
+    setEditingJobId(job.id);
+    setDialogOpen(true);
+  };
 
   async function handleCreate() {
     if (isPickup && !pickupLoc.trim()) {
@@ -262,50 +391,75 @@ export default function AdminPage() {
       return; // Stop creation if upload fails
     }
 
-    const job = await jobStore.addJob({
+    const newJobData = {
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       pickupLocation: isPickup ? pickupLoc.trim() : shop.address,
       dropoffLocation: isDelivery ? deliveryLoc.trim() : shop.address,
       pickupCoords: isPickup && pickupCoords ? pickupCoords : shop.coords,
       dropoffCoords: isDelivery && deliveryCoords ? deliveryCoords : shop.coords,
-      scheduledAt: pDate || undefined,
-      pickupScheduledAt: pDate || undefined,
-      deliveryScheduledAt: isDelivery ? (deliveryScheduledTime ? parseTime(deliveryScheduledTime) : undefined) : undefined,
-      pickupRiderId: isPickup ? pickupRiderId || undefined : undefined,
-      deliveryRiderId: isDelivery ? deliveryRiderId || undefined : undefined,
-      bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : undefined,
-      paymentMethod: paymentMethod === 'unpaid' ? undefined : (paymentMethod as any),
+      scheduledAt: pDate || null,
+      pickupScheduledAt: pDate || null,
+      deliveryScheduledAt: isDelivery ? (deliveryScheduledTime ? parseTime(deliveryScheduledTime) : null) : null,
+      pickupRiderId: isPickup ? pickupRiderId || null : null,
+      deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
+      bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null,
+      paymentMethod: paymentMethod === 'unpaid' ? null : (paymentMethod as any),
       fee,
+      totalAmount: laundryPrice + fee,
       serviceType,
+      pickupDistance: isPickup ? pickupDist : 0,
+      deliveryDistance: isDelivery ? deliveryDist : 0,
+      pickupCommission: (isPickup && !selectedVIPLabel) ? Math.floor(pickupDist * 2) * 2 : 0,
+      deliveryCommission: (isDelivery && !selectedVIPLabel) ? Math.floor(deliveryDist) * 2 : 0,
       remark: [
         isFreeDelivery ? "ส่งฟรี" : "",
         serviceSpeed === "express_50" ? "ด่วน Express 50%" : "",
         serviceSpeed === "express_100" ? "ด่วนพิเศษ Express 100%" : "",
         handoverType === "lobby" ? "ฝากไว้ที่ Lobby / Concierge" : "นัดรับ/เจอตัว",
         adminNote ? `Note: ${adminNote}` : ""
-      ].filter(Boolean).join(" | ") || undefined,
-    });
+      ].filter(Boolean).join(" | ") || null,
+    };
 
-    toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
-    setPickupLoc("");
-    setDeliveryLoc("");
-    setIsDeliveryDirty(false);
-    setIsFreeDelivery(false);
-    setPickupScheduledTime(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
-    setDeliveryScheduledTime(format(new Date(Date.now() + 86400000), "yyyy-MM-dd'T'HH:mm"));
-    setPaymentMethod("unpaid");
-    setPickupRiderId("");
-    setDeliveryRiderId("");
-    setBagImageUrls([]);
-    setServiceType("wash_fold");
-    setServiceSpeed("standard");
-    setSelectedVIPLabel("");
-    setAdminNote("");
-    setShowAdminNote(false);
-    setHandoverType("meet");
-    setIsSubmitting(false);
-    setDialogOpen(false);
+    // Clean up nulls to avoid passing explicit nulls where the schema might not expect them, 
+    // or just pass as is if schema allows. Actually, `api.updateJob` uses Object.assign.
+    // It's safer to delete properties that are null if we don't want to explicitly set them,
+    // but in an edit form, we DO want to clear them if they were removed!
+    // So we'll pass null, and let `updateJobAction` handle `null` properly.
+
+    try {
+      if (editingJobId) {
+        await jobStore.updateJobDetails(editingJobId, newJobData as any);
+        toast.success(`Job updated successfully!`);
+      } else {
+        const job = await jobStore.addJob(newJobData as any);
+        toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+      }
+
+      setPickupLoc("");
+      setDeliveryLoc("");
+      setIsDeliveryDirty(false);
+      setIsFreeDelivery(false);
+      setPickupScheduledTime(format(roundToNearest5(new Date()), "yyyy-MM-dd'T'HH:mm"));
+      setDeliveryScheduledTime(format(roundToNearest5(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+      setPaymentMethod("unpaid");
+      setPickupRiderId("");
+      setDeliveryRiderId("");
+      setBagImageUrls([]);
+      setServiceType("wash_fold");
+      setServiceSpeed("standard");
+      setSelectedVIPLabel("");
+      setAdminNote("");
+      setShowAdminNote(false);
+      setHandoverType("meet");
+      setEditingJobId(null);
+      setDialogOpen(false);
+    } catch (err: any) {
+      console.error("Job Save Error:", err);
+      toast.error(`Failed to save job: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -327,7 +481,7 @@ export default function AdminPage() {
           <nav className="flex-1 px-4 py-6 space-y-1">
             {hasAccess("dashboard") && (
               <motion.div
-                onClick={() => setActiveTab("dashboard")}
+                onClick={() => handleTabChange("dashboard")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -338,7 +492,7 @@ export default function AdminPage() {
             
             {hasAccess("services") && (
               <motion.div
-                onClick={() => setActiveTab("services")}
+                onClick={() => handleTabChange("services")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "services" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -349,7 +503,7 @@ export default function AdminPage() {
 
             {hasAccess("pos") && (
               <motion.div
-                onClick={() => setActiveTab("pos")}
+                onClick={() => handleTabChange("pos")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -360,7 +514,7 @@ export default function AdminPage() {
 
             {hasAccess("jobs") && (
               <motion.div
-                onClick={() => setActiveTab("jobs")}
+                onClick={() => handleTabChange("jobs")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -369,20 +523,10 @@ export default function AdminPage() {
               </motion.div>
             )}
 
-            {hasAccess("jobs") && (
-              <motion.div
-                onClick={() => setActiveTab("verify")}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "verify" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-              >
-                <CheckCircle2 size={18} />
-                Order Verification
-              </motion.div>
-            )}
 
             {hasAccess("customers") && (
               <motion.div
-                onClick={() => setActiveTab("customers")}
+                onClick={() => handleTabChange("customers")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -392,7 +536,7 @@ export default function AdminPage() {
             )}
             {hasAccess("dispatch") && (
               <motion.div
-                onClick={() => setActiveTab("dispatch")}
+                onClick={() => handleTabChange("dispatch")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -403,7 +547,7 @@ export default function AdminPage() {
 
             {hasAccess("riders") && (
               <motion.div
-                onClick={() => setActiveTab("riders")}
+                onClick={() => handleTabChange("riders")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -414,7 +558,7 @@ export default function AdminPage() {
 
             {hasAccess("map") && (
               <motion.div
-                onClick={() => setActiveTab("map")}
+                onClick={() => handleTabChange("map")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -437,7 +581,7 @@ export default function AdminPage() {
 
             {hasAccess("settings") && (
               <motion.div
-                onClick={() => setActiveTab("settings")}
+                onClick={() => handleTabChange("settings")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -448,7 +592,7 @@ export default function AdminPage() {
             
             {hasAccess("users") && (
               <motion.div
-                onClick={() => setActiveTab("users")}
+                onClick={() => handleTabChange("users")}
                 whileHover={{ x: 2 }}
                 className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "users" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
               >
@@ -496,22 +640,21 @@ export default function AdminPage() {
               {user?.role === 'admin' && (
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                   <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                    <DialogTrigger
-                      render={
-                        <Button className="gap-2 bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-sm cursor-pointer border-none">
-                          <Plus size={16} />
-                          <span className="hidden sm:inline">Create New Job</span>
-                          <span className="sm:hidden">New Job</span>
-                        </Button>
-                      }
-                    />
+                    <Button 
+                      onClick={handleCreateNewJob}
+                      className="gap-2 bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-sm cursor-pointer border-none"
+                    >
+                      <Plus size={16} />
+                      <span className="hidden sm:inline">Create New Job</span>
+                      <span className="sm:hidden">New Job</span>
+                    </Button>
                   </motion.div>
-              <DialogContent className="w-full max-w-[95vw] lg:max-w-7xl p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
+              <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
                 <DialogHeader className="p-4 pb-3 border-b border-slate-200 bg-white shrink-0">
                   <DialogTitle className="flex items-center text-lg pr-6">
                     <div className="flex items-center gap-2">
                       <Package size={18} />
-                      Create New Job
+                      {editingJobId ? "Edit Job Details" : "Create New Job"}
                     </div>
                     {selectedVIPLabel && (
                       <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-auto mt-0">
@@ -522,18 +665,18 @@ export default function AdminPage() {
                 </DialogHeader>
 
                 {/* Main Content Grid */}
-                <div className="flex-1 overflow-y-auto lg:overflow-hidden p-4">
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-full">
+                <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3">
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-full">
                     
                     {/* COL 1: Basic Info (span 3) */}
                     <motion.div
-                      className="lg:col-span-3 flex flex-col gap-4 overflow-y-auto pr-1 pb-4 lg:pb-0"
+                      className="lg:col-span-3 flex flex-col gap-2 overflow-y-auto pr-1 pb-4 lg:pb-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.1, duration: 0.3 }}
                     >
                       {/* Customer Info Card */}
-                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-2">
                         <div className="space-y-2 relative">
                           <Label htmlFor="customer-search" className="flex items-center gap-1.5 text-sm font-medium">
                             <Search size={14} className="text-blue-600" />
@@ -543,6 +686,7 @@ export default function AdminPage() {
                             id="customer-search"
                             placeholder="Search by name or phone..."
                             value={customerSearchQuery}
+                            disabled={!!editingJobId}
                             onChange={(e) => {
                               setCustomerSearchQuery(e.target.value);
                               setShowCustomerDropdown(true);
@@ -573,9 +717,10 @@ export default function AdminPage() {
                                       setDeliveryCoords(c.defaultCoords);
                                       setIsDeliveryDirty(false);
                                       setSelectedStoreIndex(getClosestShopIndex(c.defaultCoords, shopLocations));
+                                      setEditingFeeLock(null);
                                       
-                                      if (c.tier === "gold" || c.tier === "platinum" || c.isMember) {
-                                        setSelectedVIPLabel(c.tier ? c.tier.toUpperCase() : "MEMBER");
+                                      if (c.isVIP) {
+                                        setSelectedVIPLabel("VIP");
                                       } else {
                                         setSelectedVIPLabel("");
                                       }
@@ -588,9 +733,9 @@ export default function AdminPage() {
                                       <p className="font-semibold text-slate-800">{c.name}</p>
                                       <p className="text-[10px] text-slate-500">{c.phone}</p>
                                     </div>
-                                    {(c.tier === "gold" || c.tier === "platinum" || c.isMember) && (
+                                    {c.isVIP && (
                                       <Badge variant="outline" className="text-[9px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
-                                        VIP {c.tier ? c.tier.toUpperCase() : "MEMBER"}
+                                        VIP
                                       </Badge>
                                     )}
                                   </div>
@@ -603,7 +748,7 @@ export default function AdminPage() {
                             </div>
                           )}
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-2 gap-2 mt-2">
                           <div className="space-y-2">
                             <div className="flex items-center justify-between">
                               <Label htmlFor="custName" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
@@ -615,6 +760,7 @@ export default function AdminPage() {
                               id="custName"
                               placeholder="Name"
                               value={customerName}
+                              disabled={!!editingJobId}
                               onChange={(e) => {
                                 setCustomerName(e.target.value);
                                 setSelectedVIPLabel("");
@@ -631,6 +777,7 @@ export default function AdminPage() {
                               id="custPhone"
                               placeholder="Phone number"
                               value={customerPhone}
+                              disabled={!!editingJobId}
                               onChange={(e) => setCustomerPhone(e.target.value)}
                               className="h-8 text-xs"
                             />
@@ -639,7 +786,7 @@ export default function AdminPage() {
                       </div>
 
                       {/* Service Info Card */}
-                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-3">
                         <div className="space-y-2">
                           <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
                             <Store size={14} className="text-blue-600" />
@@ -649,7 +796,10 @@ export default function AdminPage() {
                             id="store-select"
                             className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
                             value={selectedStoreIndex}
-                            onChange={(e) => setSelectedStoreIndex(Number(e.target.value))}
+                            onChange={(e) => {
+                              setSelectedStoreIndex(Number(e.target.value));
+                              setEditingFeeLock(null);
+                            }}
                           >
                             {shopLocations.map((shop, idx) => (
                               <option key={shop.id} value={idx}>{shop.name}</option>
@@ -691,11 +841,12 @@ export default function AdminPage() {
                           </div>
                         </div>
                       </div>
+
                     </motion.div>
 
                     {/* COL 2: Logistics & Map (span 5) */}
                     <motion.div
-                      className="lg:col-span-5 flex flex-col gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+                      className="lg:col-span-5 flex flex-col gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.15, duration: 0.3 }}
@@ -705,7 +856,10 @@ export default function AdminPage() {
                           <input 
                             type="checkbox" 
                             checked={isPickup}
-                            onChange={(e) => setIsPickup(e.target.checked)}
+                            onChange={(e) => {
+                              setIsPickup(e.target.checked);
+                              setEditingFeeLock(null);
+                            }}
                             className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
                           />
                           <span className="text-sm font-medium text-slate-700">บริการไปรับ (Pickup)</span>
@@ -714,7 +868,10 @@ export default function AdminPage() {
                           <input 
                             type="checkbox" 
                             checked={isDelivery}
-                            onChange={(e) => setIsDelivery(e.target.checked)}
+                            onChange={(e) => {
+                              setIsDelivery(e.target.checked);
+                              setEditingFeeLock(null);
+                            }}
                             className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
                           />
                           <span className="text-sm font-medium text-slate-700">บริการไปส่ง (Delivery)</span>
@@ -739,6 +896,7 @@ export default function AdminPage() {
                                 const newCoords = { lat: loc.lat, lng: loc.lng };
                                 setPickupCoords(newCoords);
                                 setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                                setEditingFeeLock(null);
                                 if (!isDeliveryDirty) {
                                   setDeliveryLoc(loc.name);
                                   setDeliveryCoords(newCoords);
@@ -766,6 +924,7 @@ export default function AdminPage() {
                                 const newCoords = { lat: loc.lat, lng: loc.lng };
                                 setDeliveryCoords(newCoords);
                                 setIsDeliveryDirty(true);
+                                setEditingFeeLock(null);
                                 if (!isPickup) {
                                   setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
                                 }
@@ -776,12 +935,13 @@ export default function AdminPage() {
                       </div>
 
                       {/* Interactive Map */}
-                      <div className="flex-1 min-h-[250px] lg:h-auto rounded-lg overflow-hidden border border-slate-200 mt-1 relative">
+                      <div className="flex-1 min-h-[160px] lg:h-auto rounded-lg overflow-hidden border border-slate-200 mt-1 relative">
                         <CreateJobMap 
                           branchCoords={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
                           pickupCoords={isPickup ? pickupCoords : null}
                           deliveryCoords={isDelivery ? deliveryCoords : null}
                           onMarkerDrag={(type, coords) => {
+                            setEditingFeeLock(null);
                             if (type === 'pickup') {
                               setPickupCoords(coords);
                               setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
@@ -802,29 +962,20 @@ export default function AdminPage() {
                           }}
                         />
                       </div>
-                    </motion.div>
 
-                    {/* COL 3: Fulfillment & Summary (span 4) */}
-                    <motion.div
-                      className="lg:col-span-4 flex flex-col gap-4 overflow-y-auto pl-1 pb-4 lg:pb-0"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.2, duration: 0.3 }}
-                    >
-                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4 flex-1 flex flex-col">
-                        <div className="space-y-3">
+                      {/* Scheduling Block moved from Col 3 */}
+                      <div className="space-y-2 pt-1 border-t border-slate-100">
+                        {isPickup && (
                           <div className="space-y-2">
                             <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-xs font-medium">
                               <Clock size={14} className="text-amber-500" />
                               Pickup Scheduled Time & Rider
                             </Label>
-                            <div className="grid grid-cols-2 gap-3">
-                              <Input
+                            <div className="grid grid-cols-[1.6fr_1fr] gap-2">
+                              <DateTimePicker
                                 id="schedule-pickup"
-                                type="datetime-local"
                                 value={pickupScheduledTime}
-                                onChange={(e) => setPickupScheduledTime(e.target.value)}
-                                className="h-8 text-xs"
+                                onChange={setPickupScheduledTime}
                               />
                               <select
                                 className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
@@ -838,40 +989,63 @@ export default function AdminPage() {
                               </select>
                             </div>
                           </div>
+                        )}
 
-                          <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-100">
-                            <div className="space-y-2">
-                              <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-xs font-medium">
-                                <CalendarClock size={14} className="text-blue-500" />
-                                Est. Return Date
-                              </Label>
-                              <Input
+                        <div className={`grid grid-cols-[1.6fr_1fr] gap-2 ${isPickup ? 'pt-2 border-t border-slate-100' : ''}`}>
+                          <div className="space-y-2">
+                            <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-xs font-medium">
+                              <CalendarClock size={14} className="text-blue-500" />
+                              {isDelivery ? "Delivery Time & Rider" : "Est. Return Date"}
+                            </Label>
+                            <div className="flex flex-col gap-2">
+                              <DateTimePicker
                                 id="schedule-delivery"
-                                type="datetime-local"
                                 value={deliveryScheduledTime}
-                                onChange={(e) => setDeliveryScheduledTime(e.target.value)}
-                                className="h-8 text-xs"
+                                onChange={setDeliveryScheduledTime}
                               />
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="payment-method" className="flex items-center gap-1.5 text-xs font-medium">
-                                <CreditCard size={14} className="text-slate-600" />
-                                Payment Status
-                              </Label>
-                              <select
-                                id="payment-method"
-                                className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                                value={paymentMethod}
-                                onChange={(e) => setPaymentMethod(e.target.value)}
-                              >
-                                <option value="unpaid">Unpaid (เก็บปลายทาง)</option>
-                                <option value="transfer">โอนเงิน (PromptPay)</option>
-                                <option value="cash">จ่ายแล้ว (Cash)</option>
-                                <option value="credit">หักเครดิต (Member)</option>
-                              </select>
+                              {isDelivery && (
+                                <select
+                                  className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                                  value={deliveryRiderId}
+                                  onChange={(e) => setDeliveryRiderId(e.target.value)}
+                                >
+                                  <option value="">-- Assign Delivery Rider --</option>
+                                  {riders.map(r => (
+                                    <option key={`d-${r.id}`} value={r.id}>{r.name}</option>
+                                  ))}
+                                </select>
+                              )}
                             </div>
                           </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="payment-method" className="flex items-center gap-1.5 text-xs font-medium">
+                              <CreditCard size={14} className="text-slate-600" />
+                              Payment Status
+                            </Label>
+                            <select
+                              id="payment-method"
+                              className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                              value={paymentMethod}
+                              onChange={(e) => setPaymentMethod(e.target.value)}
+                            >
+                              <option value="unpaid">ยังไม่จ่าย (Unpaid)</option>
+                              <option value="transfer">โอนเงิน (PromptPay)</option>
+                              <option value="cash">จ่ายแล้ว (Cash)</option>
+                              <option value="credit">หักเครดิต (Member)</option>
+                            </select>
+                          </div>
                         </div>
+                      </div>
+                    </motion.div>
+
+                    {/* COL 3: Fulfillment & Summary (span 4) */}
+                    <motion.div
+                      className="lg:col-span-4 flex flex-col gap-2 overflow-y-auto pl-1 pb-4 lg:pb-0"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.2, duration: 0.3 }}
+                    >
+                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-3 flex-1 flex flex-col">
 
                         {/* Laundry Bag Photo Upload */}
                         <div className="space-y-2 pt-2 border-t border-slate-100">
@@ -890,9 +1064,10 @@ export default function AdminPage() {
                           />
                         </div>
 
+
                         {/* Admin Notes & Options */}
-                        <div className="space-y-3 pt-4 border-t border-slate-100 mt-auto">
-                          <div className="grid grid-cols-2 gap-3 mt-1">
+                        <div className="space-y-2 pt-2 border-t border-slate-100 mt-auto">
+                          <div className="grid grid-cols-2 gap-2 mt-1">
                             <Label className={`flex items-center justify-center gap-2 cursor-pointer p-2 border rounded-lg transition-colors ${handoverType === "meet" ? 'border-indigo-600 bg-indigo-50 font-medium' : 'border-slate-200 hover:bg-slate-50'}`}>
                               <input 
                                 type="radio" 
@@ -940,7 +1115,7 @@ export default function AdminPage() {
                       </div>
 
                       {/* Summary Card */}
-                      <div className="bg-slate-900 text-white rounded-xl p-4 shadow-md shrink-0">
+                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md shrink-0">
                         <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-700">
                           {isPickup && (
                             <div className="flex justify-between items-center">
@@ -954,6 +1129,21 @@ export default function AdminPage() {
                               <span className="text-xs font-medium">{deliveryDist} km</span>
                             </div>
                           )}
+                        </div>
+
+                        {/* Editable Laundry Price */}
+                        <div className="flex justify-between items-center mb-3 pb-2 border-b border-slate-700">
+                          <Label className="text-sm font-medium text-slate-300">Laundry Price (ราคาซัก)</Label>
+                          <div className="relative w-24">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                            <Input 
+                              type="number"
+                              className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
+                              value={laundryPrice || ""}
+                              onChange={e => setLaundryPrice(parseFloat(e.target.value) || 0)}
+                              placeholder="0"
+                            />
+                          </div>
                         </div>
                         
                         <div className="flex justify-between items-center mb-2">
@@ -970,14 +1160,33 @@ export default function AdminPage() {
 
                         <div className="flex justify-between items-end">
                           <div className="flex flex-col">
-                            <span className="text-xs text-slate-400">Total Fee ({selectedVIPLabel ? '4' : '10'}฿/km)</span>
+                            <span className="text-xs text-slate-400">Delivery Fee ({selectedVIPLabel ? '4' : '10'}฿/km)</span>
                             <span className="text-[10px] text-slate-500">Min 30฿</span>
                           </div>
                           <div className="text-right">
                             {isFreeDelivery && <span className="text-sm line-through text-slate-500 mr-2">฿{baseFee.toFixed(0)}</span>}
-                            <span className={`text-2xl font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-white'}`}>฿{fee.toFixed(0)}</span>
+                            <span className={`text-lg font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>฿{fee.toFixed(0)}</span>
                           </div>
                         </div>
+
+                        <div className="flex justify-between items-end mt-2 pt-2 border-t border-slate-600">
+                          <span className="text-sm font-bold text-slate-300 uppercase">Grand Total</span>
+                          <span className="text-3xl font-black text-indigo-400">฿{(laundryPrice + fee).toFixed(0)}</span>
+                        </div>
+
+                        {(isPickup || isDelivery) && (
+                          <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
+                            <div className="flex flex-col">
+                              <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
+                              <span className="text-[10px] text-slate-500">Distance × 2฿</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-lg font-bold text-amber-400">
+                                ฿{selectedVIPLabel ? "0" : ((isPickup ? Math.floor(pickupDist * 2) * 2 : 0) + (isDelivery ? Math.floor(deliveryDist) * 2 : 0)).toFixed(0)}
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   </div>
@@ -990,7 +1199,7 @@ export default function AdminPage() {
                     <Button 
                       className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
                       onClick={handleCreate}
-                      disabled={isSubmitting || (!customerName || !pickupLoc || !deliveryLoc)}
+                      disabled={isSubmitting || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
                     >
                       {isSubmitting ? (
                         <>
@@ -998,7 +1207,7 @@ export default function AdminPage() {
                           Uploading & Saving...
                         </>
                       ) : (
-                        "Create Job"
+                        editingJobId ? "Save Changes" : "Create Job"
                       )}
                     </Button>
                   </div>
@@ -1011,7 +1220,7 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={handleEditFullJob} />}
           {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
@@ -1020,7 +1229,6 @@ export default function AdminPage() {
           {activeTab === "customers" && hasAccess("customers") && <AdminCRM />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
-          {activeTab === "verify" && hasAccess("jobs") && <AdminVerify />}
 
           {/* Fallback for no access to current tab */}
           {!hasAccess(activeTab) && (

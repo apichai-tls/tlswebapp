@@ -6,11 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database } from "lucide-react";
 import { format } from "date-fns";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
-import { customerStore, priceListStore, type Customer } from "@/lib/store";
+import { customerStore, priceListStore, poiStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { LocationInput } from "@/components/location-input";
 import { toast } from "sonner";
@@ -32,6 +32,18 @@ export function AdminCRM() {
   const customers = useCustomers();
   const jobs = useJobs();
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
+  const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
+
+  const localDataForSearch = useMemo(() => {
+    return pois.map(p => ({
+      name: p.name,
+      address: p.address,
+      lat: p.coords.lat,
+      lng: p.coords.lng,
+      placeId: p.placeId || p.id,
+      isLocal: true
+    }));
+  }, [pois]);
   
   const [searchTerm, setSearchTerm] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -65,28 +77,86 @@ export function AdminCRM() {
 
   // Form State
   const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [countryCode, setCountryCode] = useState("+66");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [address, setAddress] = useState("");
   const [coords, setCoords] = useState({ lat: 13.736717, lng: 100.523186 });
   const [priceListId, setPriceListId] = useState("regular");
 
+  // Optional Fields
+  const [email, setEmail] = useState("");
+  const [lineId, setLineId] = useState("");
+  const [language, setLanguage] = useState("th");
+  const [remark, setRemark] = useState("");
+  const [secondaryAddress, setSecondaryAddress] = useState("");
+  const [dob, setDob] = useState("");
+  const [taxId, setTaxId] = useState("");
+  const [companyName, setCompanyName] = useState("");
+  const [isVIP, setIsVIP] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
+
   const resetForm = () => {
     setName("");
-    setPhone("");
+    setCountryCode("+66");
+    setPhoneNumber("");
     setAddress("");
     setCoords({ lat: 13.736717, lng: 100.523186 });
     setPriceListId("regular");
+    setEmail("");
+    setLineId("");
+    setLanguage("th");
+    setRemark("");
+    setSecondaryAddress("");
+    setDob("");
+    setTaxId("");
+    setCompanyName("");
+    setIsVIP(false);
+    setAdvancedOpen(false);
     setEditingCustomer(null);
+    setSelectedLocation(null);
   };
 
   const openForm = (customer?: Customer) => {
     if (customer) {
       setEditingCustomer(customer);
       setName(customer.name);
-      setPhone(customer.phone);
+      
+      let matchedCode = "+66";
+      let num = customer.phone;
+      
+      if (num.startsWith("+")) {
+        const match = num.match(/^(\+\d{1,4})\s*(.*)$/);
+        if (match) {
+          matchedCode = match[1];
+          num = match[2];
+        }
+      } else if (num.startsWith("0")) {
+        matchedCode = "+66";
+        num = num.substring(1);
+      }
+      
+      setCountryCode(matchedCode);
+      setPhoneNumber(num);
+      
       setAddress(customer.defaultAddress);
       setCoords(customer.defaultCoords);
       setPriceListId(customer.priceListId || "regular");
+      
+      setEmail(customer.email || "");
+      setLineId(customer.lineId || "");
+      setLanguage(customer.language || "th");
+      setRemark(customer.remark || "");
+      setSecondaryAddress(customer.secondaryAddress || "");
+      setDob(customer.dob || "");
+      setTaxId(customer.taxId || "");
+      setCompanyName(customer.companyName || "");
+      setIsVIP(customer.isVIP || false);
+      
+      setAdvancedOpen(
+        !!(customer.email || customer.lineId || customer.remark || customer.secondaryAddress || customer.taxId || customer.companyName)
+      );
+      setSelectedLocation(null);
     } else {
       resetForm();
     }
@@ -94,28 +164,37 @@ export function AdminCRM() {
   };
 
   const handleSave = () => {
-    if (!name.trim() || !phone.trim() || !address.trim()) {
+    if (!name.trim() || !phoneNumber.trim() || !address.trim()) {
       toast.error("Please fill in all required fields.");
       return;
     }
 
+    // Format final phone number, stripping leading zero if user accidentally typed it
+    const cleanNumber = phoneNumber.replace(/^0+/, '');
+    const finalPhone = `${countryCode} ${cleanNumber}`.trim();
+
+    const customerData = {
+      name,
+      phone: finalPhone,
+      defaultAddress: address,
+      defaultCoords: coords,
+      priceListId,
+      email: email.trim() || undefined,
+      lineId: lineId.trim() || undefined,
+      language,
+      remark: remark.trim() || undefined,
+      secondaryAddress: secondaryAddress.trim() || undefined,
+      dob: dob || undefined,
+      taxId: taxId.trim() || undefined,
+      companyName: companyName.trim() || undefined,
+      isVIP: isVIP,
+    };
+
     if (editingCustomer) {
-      customerStore.updateCustomer(editingCustomer.id, {
-        name,
-        phone,
-        defaultAddress: address,
-        defaultCoords: coords,
-        priceListId
-      });
+      customerStore.updateCustomer(editingCustomer.id, customerData);
       toast.success(`Updated customer: ${name}`);
     } else {
-      customerStore.addCustomer({
-        name,
-        phone,
-        defaultAddress: address,
-        defaultCoords: coords,
-        priceListId
-      });
+      customerStore.addCustomer(customerData);
       toast.success(`Added new customer: ${name}`);
     }
     setDialogOpen(false);
@@ -247,7 +326,7 @@ export function AdminCRM() {
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center gap-2">
                             <span className="font-semibold text-sm text-slate-900">{customer.name}</span>
-                            {stats.ltv >= 2000 || stats.jobsCount >= 5 ? (
+                            {customer.isVIP ? (
                               <Badge className="bg-amber-100 text-amber-800 border-none shadow-sm py-0 px-1.5 h-5 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
                                 <Star size={10} className="text-amber-600 fill-amber-600" />
                                 VIP
@@ -346,7 +425,7 @@ export function AdminCRM() {
       </motion.div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md p-6 bg-white overflow-hidden">
+        <DialogContent className="sm:max-w-2xl p-6 bg-white overflow-y-auto max-h-[90vh]">
           <DialogHeader className="mb-4">
             <DialogTitle className="flex items-center gap-2 text-xl">
               {editingCustomer ? <Edit className="text-indigo-500" size={24} /> : <UserPlus className="text-indigo-500" size={24} />}
@@ -357,40 +436,157 @@ export function AdminCRM() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="name" className="text-sm font-semibold">Full Name</Label>
-              <Input id="name" placeholder="John Doe" value={name} onChange={e => setName(e.target.value)} className="h-10 border-slate-200" />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 py-1">
+            <div className="space-y-1 col-span-2">
+              <Label htmlFor="name" className="text-xs font-semibold">Full Name *</Label>
+              <Input id="name" placeholder="John Doe" value={name} onChange={e => setName(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
             
-            <div className="space-y-2">
-              <Label htmlFor="phone" className="text-sm font-semibold">Phone Number</Label>
-              <Input id="phone" placeholder="+66 8X XXX XXXX" value={phone} onChange={e => setPhone(e.target.value)} className="h-10 border-slate-200" />
+            <div className="space-y-1">
+              <Label htmlFor="phone" className="text-xs font-semibold">Phone Number *</Label>
+              <div className="flex">
+                <Input 
+                  list="country-codes"
+                  className="h-8 px-1.5 rounded-l-md border border-slate-200 border-r-0 bg-slate-50 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 z-10 w-[80px] text-center"
+                  value={countryCode}
+                  onChange={e => {
+                    let val = e.target.value.replace(/[^0-9+]/g, '');
+                    if (val.length > 0 && !val.startsWith('+')) val = '+' + val;
+                    setCountryCode(val);
+                  }}
+                  placeholder="+66"
+                />
+                <datalist id="country-codes">
+                  <option value="+66" />
+                  <option value="+1" />
+                  <option value="+44" />
+                  <option value="+65" />
+                  <option value="+81" />
+                  <option value="+86" />
+                  <option value="+886" />
+                </datalist>
+                <Input 
+                  id="phone" 
+                  type="tel"
+                  placeholder="8X XXX XXXX or (404) 985-3708" 
+                  value={phoneNumber} 
+                  onChange={e => setPhoneNumber(e.target.value.replace(/[^0-9\s()\-]/g, ''))} 
+                  className="h-8 text-xs border-slate-200 rounded-l-none flex-1" 
+                />
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <Label className="text-sm font-semibold">Default Address</Label>
-              <LocationInput
-                id="default-address"
-                placeholder="Search or enter full address..."
-                value={address}
-                onChange={setAddress}
-                onSelectLocation={(loc) => setCoords({ lat: loc.lat, lng: loc.lng })}
-              />
+            <div className="space-y-1 col-span-2">
+              <Label className="text-xs font-semibold">Default Address *</Label>
+              <div className="flex items-center gap-2 h-8">
+                <LocationInput
+                  id="default-address"
+                  placeholder="Search or enter full address..."
+                  value={address}
+                  localData={localDataForSearch}
+                  onChange={setAddress}
+                  onSelectLocation={(loc) => {
+                    setCoords({ lat: loc.lat, lng: loc.lng });
+                    setSelectedLocation(loc);
+                  }}
+                  className="flex-1"
+                />
+                {selectedLocation && !selectedLocation.isLocal && (
+                  <Button 
+                    type="button" 
+                    onClick={() => {
+                      poiStore.addPOI({
+                        name: selectedLocation.name,
+                        address: selectedLocation.address || selectedLocation.name,
+                        coords: { lat: selectedLocation.lat, lng: selectedLocation.lng },
+                        placeId: selectedLocation.placeId
+                      });
+                      toast.success(`Saved location: ${selectedLocation.name}`);
+                      setSelectedLocation(prev => prev ? { ...prev, isLocal: true } : null);
+                    }}
+                    variant="outline" 
+                    className="h-8 px-3 whitespace-nowrap text-xs bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                    title="Save this Google Maps location to Database"
+                  >
+                    <Database size={14} className="mr-1.5" />
+                    Save to DB
+                  </Button>
+                )}
+              </div>
             </div>
             
-            <div className="space-y-2 pt-2">
-              <Label className="text-sm font-semibold flex items-center gap-1.5"><Crown size={14} className="text-indigo-500"/> Associated Price List</Label>
-              <select 
-                className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                value={priceListId}
-                onChange={e => setPriceListId(e.target.value)}
-              >
-                {priceLists.map(pl => (
-                  <option key={pl.id} value={pl.id}>{pl.name}</option>
-                ))}
-              </select>
-              <p className="text-[11px] text-slate-500 mt-1">Select a custom price list to automatically apply special rates during POS checkout.</p>
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">Secondary Address</Label>
+              <Input placeholder="e.g. Office / Lobby" value={secondaryAddress} onChange={e => setSecondaryAddress(e.target.value)} className="h-8 text-xs border-slate-200" />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">Email Address</Label>
+              <Input type="email" placeholder="customer@email.com" value={email} onChange={e => setEmail(e.target.value)} className="h-8 text-xs border-slate-200" />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">LINE ID / WhatsApp</Label>
+              <Input placeholder="@lineid" value={lineId} onChange={e => setLineId(e.target.value)} className="h-8 text-xs border-slate-200" />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">Date of Birth</Label>
+              <Input type="date" value={dob} onChange={e => setDob(e.target.value)} className="h-8 text-xs border-slate-200" />
+            </div>
+
+            <div className="space-y-1 col-span-3">
+              <Label className="text-xs font-semibold text-rose-600">Special Instructions / Remarks</Label>
+              <Input placeholder="e.g. Allergic to softener, fold shirts" value={remark} onChange={e => setRemark(e.target.value)} className="h-8 text-xs border-rose-200 focus-visible:ring-rose-500" />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">Company Name</Label>
+              <Input placeholder="For B2B Billing" value={companyName} onChange={e => setCompanyName(e.target.value)} className="h-8 text-xs border-slate-200" />
+            </div>
+            
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">Tax ID</Label>
+              <Input placeholder="13-digit Tax ID" value={taxId} onChange={e => setTaxId(e.target.value)} className="h-8 text-xs border-slate-200" />
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold text-indigo-600 flex items-center gap-1"><Crown size={12}/> Price List / Lang</Label>
+              <div className="flex gap-2">
+                <select 
+                  className="w-2/3 h-8 px-2 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={priceListId}
+                  onChange={e => setPriceListId(e.target.value)}
+                >
+                  {priceLists.map(pl => (
+                    <option key={pl.id} value={pl.id}>{pl.name}</option>
+                  ))}
+                </select>
+                <select 
+                  className="w-1/3 h-8 px-1 rounded-md border border-slate-200 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+                  value={language} 
+                  onChange={e => setLanguage(e.target.value)}
+                >
+                  <option value="th">🇹🇭</option>
+                  <option value="en">🇬🇧</option>
+                  <option value="zh">🇨🇳</option>
+                </select>
+              </div>
+            </div>
+            
+            <div className="col-span-1 md:col-span-3 mt-2">
+              <label className="flex items-center gap-3 p-3 bg-indigo-50/80 rounded-lg border border-indigo-200 cursor-pointer hover:bg-indigo-50 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={isVIP} 
+                  onChange={e => setIsVIP(e.target.checked)}
+                  className="h-5 w-5 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-600 bg-white"
+                />
+                <div>
+                  <p className="text-sm font-bold text-indigo-800 flex items-center gap-1.5"><Crown size={16} className="text-indigo-600" /> VIP Customer</p>
+                  <p className="text-xs text-indigo-600/80">Enable special delivery rates (฿4/km) and disable rider commission</p>
+                </div>
+              </label>
             </div>
           </div>
 
@@ -499,6 +695,29 @@ export function AdminCRM() {
                     </div>
                   </div>
                 </div>
+
+                {(selectedProfileCustomer.email || selectedProfileCustomer.lineId || selectedProfileCustomer.remark || selectedProfileCustomer.secondaryAddress || selectedProfileCustomer.companyName || selectedProfileCustomer.taxId || selectedProfileCustomer.dob || (selectedProfileCustomer.language && selectedProfileCustomer.language !== 'th')) && (
+                  <div>
+                     <h3 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+                       <FileText size={16} className="text-indigo-500" />
+                       Additional Details
+                     </h3>
+                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-sm space-y-2">
+                        {selectedProfileCustomer.email && <div><span className="text-slate-500 w-24 inline-block">Email:</span> <span className="font-medium text-slate-900">{selectedProfileCustomer.email}</span></div>}
+                        {selectedProfileCustomer.lineId && <div><span className="text-slate-500 w-24 inline-block">LINE ID:</span> <span className="font-medium text-slate-900">{selectedProfileCustomer.lineId}</span></div>}
+                        {selectedProfileCustomer.language && selectedProfileCustomer.language !== 'th' && <div><span className="text-slate-500 w-24 inline-block">Language:</span> <span className="font-medium text-slate-900">{selectedProfileCustomer.language === 'en' ? '🇬🇧 English' : selectedProfileCustomer.language === 'zh' ? '🇨🇳 Chinese' : '🇹🇭 Thai'}</span></div>}
+                        {selectedProfileCustomer.dob && <div><span className="text-slate-500 w-24 inline-block">Birthday:</span> <span className="font-medium text-slate-900">{selectedProfileCustomer.dob}</span></div>}
+                        {selectedProfileCustomer.secondaryAddress && <div><span className="text-slate-500 w-24 inline-block align-top">2nd Address:</span> <span className="font-medium text-slate-900 inline-block w-[calc(100%-6rem)]">{selectedProfileCustomer.secondaryAddress}</span></div>}
+                        {selectedProfileCustomer.remark && <div><span className="text-slate-500 w-24 inline-block align-top">Remarks:</span> <span className="font-medium text-rose-600 inline-block w-[calc(100%-6rem)]">{selectedProfileCustomer.remark}</span></div>}
+                        {(selectedProfileCustomer.companyName || selectedProfileCustomer.taxId) && (
+                          <div className="pt-2 mt-2 border-t border-slate-200">
+                             {selectedProfileCustomer.companyName && <div><span className="text-slate-500 w-24 inline-block">Company:</span> <span className="font-medium text-slate-900">{selectedProfileCustomer.companyName}</span></div>}
+                             {selectedProfileCustomer.taxId && <div><span className="text-slate-500 w-24 inline-block">Tax ID:</span> <span className="font-medium text-slate-900">{selectedProfileCustomer.taxId}</span></div>}
+                          </div>
+                        )}
+                     </div>
+                  </div>
+                )}
 
                 <div>
                   <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">

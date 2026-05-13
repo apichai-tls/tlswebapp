@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { format } from "date-fns";
+import { useState, useEffect } from "react";
+import { format, isToday } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
@@ -17,6 +17,14 @@ import {
   CardHeader,
 } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   MapPin,
   Navigation,
@@ -68,37 +76,148 @@ const cardVariants = {
 import { useRiders } from "@/lib/use-riders";
 import { riderStore } from "@/lib/store";
 
+
+
+const RiderBagImages = ({ jobId }: { jobId: string }) => {
+  const [images, setImages] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`/api/jobs/${jobId}/details`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.bagImageUrl) return;
+        let urls: string[] = [];
+        try {
+          const parsed = JSON.parse(data.bagImageUrl);
+          const rawUrls = Array.isArray(parsed) ? parsed : [parsed];
+          urls = rawUrls.map((u: string) => {
+            if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
+              const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
+              return `https://storage.googleapis.com/tls-images-test/${cleanPath}`;
+            }
+            return u;
+          });
+        } catch {
+          const u = data.bagImageUrl;
+          if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
+            const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
+            urls = [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
+          } else {
+            urls = [u];
+          }
+        }
+        setImages(urls);
+      })
+      .catch(e => console.error("Failed to load bag images", e))
+      .finally(() => setLoading(false));
+  }, [jobId]);
+
+  if (loading) return <div className="text-xs text-slate-400 mt-2">Loading images...</div>;
+  if (images.length === 0) return null;
+
+  return (
+    <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+      {images.map((url, idx) => (
+        <div key={idx} className="w-16 h-16 rounded-lg border border-slate-200 overflow-hidden shadow-sm shrink-0 bg-slate-100">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url} alt={`Bag ${idx}`} className="w-full h-full object-cover" />
+        </div>
+      ))}
+    </div>
+  );
+};
+
 export default function RiderPage() {
   const jobs = useJobs();
   const riders = useRiders();
-  const [activeTab, setActiveTab] = useState("available");
+  const [activeTab, setActiveTab] = useState("myjobs");
   const [expandedMap, setExpandedMap] = useState<string | null>(null);
   const [capturedImages, setCapturedImages] = useState<Record<string, string>>({});
-  const { logout } = useAuth();
+  const [showOnlinePopup, setShowOnlinePopup] = useState(false);
+  const { user, logout } = useAuth();
 
   const handleLogout = () => {
     logout();
     window.location.href = "/login";
   };
 
-  // Active Rider context (Use RIDER-01 for demo)
-  const activeRider = riders.find(r => r.id === "RIDER-01");
+  // Active Rider context
+  const activeRider = riders.find(r => r.id === user?.id) || riders.find(r => r.id === "RIDER-01");
 
-  const availableJobs = jobs.filter((j) => j.status === "pending");
-  const myJobs = jobs.filter((j) => 
-    (j.status === "accepted" || j.status === "active" || j.status === "completed") &&
-    (j.riderId === activeRider?.id || j.pickupRiderId === activeRider?.id || j.deliveryRiderId === activeRider?.id)
-  );
+  useEffect(() => {
+    if (activeRider && activeRider.status === "offline") {
+      const hasSeenPopup = sessionStorage.getItem("riderWelcomed");
+      if (!hasSeenPopup) {
+        setShowOnlinePopup(true);
+      }
+    }
+  }, [activeRider]);
+
+  function handleGoOnline() {
+    if (activeRider) {
+      riderStore.updateRider(activeRider.id, { status: "online" });
+      sessionStorage.setItem("riderWelcomed", "true");
+      setShowOnlinePopup(false);
+      toast.success("You are now online!");
+    }
+  }
+
+  const myJobs = jobs.filter((j) => {
+    if (!activeRider) return false;
+    const isPickupRider = j.pickupRiderId === activeRider.id || j.riderId === activeRider.id;
+    const isDeliveryRider = j.deliveryRiderId === activeRider.id;
+
+    if (isPickupRider && !isDeliveryRider) {
+      return ["pending", "accepted", "pickup"].includes(j.status);
+    }
+    if (isDeliveryRider && !isPickupRider) {
+      return ["ready_for_delivery", "delivery"].includes(j.status);
+    }
+    if (isPickupRider && isDeliveryRider) {
+      return ["pending", "accepted", "pickup", "ready_for_delivery", "delivery"].includes(j.status);
+    }
+    return false;
+  });
+
+  const historyJobs = jobs.filter((j) => {
+    if (!activeRider) return false;
+    const isPickupRider = j.pickupRiderId === activeRider.id || j.riderId === activeRider.id;
+    const isDeliveryRider = j.deliveryRiderId === activeRider.id;
+
+    // Check if the job was completed TODAY (either scheduled today or completed today)
+    // For jobs that are completely finished, we only show them if they finished today.
+    // For jobs still in progress at the shop (active, pickup_completed, ready_for_delivery),
+    // we always show them to the pickup rider so they don't lose track of their pending commissions.
+    const isTerminal = ["completed", "cancelled"].includes(j.status);
+    if (isTerminal) {
+      const jobDate = j.completedAt ? new Date(j.completedAt) : new Date(j.scheduledAt);
+      if (!isToday(jobDate)) return false;
+    }
+
+    if (isPickupRider && !isDeliveryRider) {
+      return ["pickup_completed", "active", "ready_for_delivery", "delivery", "completed", "cancelled"].includes(j.status);
+    }
+    if (isDeliveryRider && !isPickupRider) {
+      return ["completed", "cancelled"].includes(j.status);
+    }
+    if (isPickupRider && isDeliveryRider) {
+      return ["completed", "cancelled"].includes(j.status);
+    }
+    return false;
+  }).sort((a, b) => {
+    const aTime = a.completedAt ? new Date(a.completedAt).getTime() : new Date(a.scheduledAt).getTime();
+    const bTime = b.completedAt ? new Date(b.completedAt).getTime() : new Date(b.scheduledAt).getTime();
+    return bTime - aTime;
+  });
 
   function handleAccept(jobId: string) {
     if (!activeRider) return;
     jobStore.acceptJob(jobId, activeRider.id);
-    toast.success("Job accepted! Check My Jobs tab.", {
+    toast.success("Job started! You are now busy.", {
       icon: <CheckCircle2 size={18} className="text-emerald-500" />,
     });
     setExpandedMap(null);
-    setActiveTab("myjobs");
-    // Also auto-update rider to busy
     if (activeRider) {
        riderStore.updateRider(activeRider.id, { status: "busy" });
     }
@@ -136,9 +255,17 @@ export default function RiderPage() {
 
   function toggleRiderStatus() {
     if (!activeRider) return;
-    const states: ("online" | "busy" | "offline")[] = ["online", "busy", "offline"];
-    const nextIdx = (states.indexOf(activeRider.status) + 1) % states.length;
-    riderStore.updateRider(activeRider.id, { status: states[nextIdx] });
+    if (activeRider.status === "busy") {
+      toast.error("You cannot change status while working on an active job.");
+      return;
+    }
+    const newStatus = activeRider.status === "online" ? "offline" : "online";
+    riderStore.updateRider(activeRider.id, { status: newStatus });
+    if (newStatus === "online") {
+      toast.success("You are now online!");
+    } else {
+      toast("You are now offline.", { icon: "💤" });
+    }
   }
 
   return (
@@ -211,18 +338,6 @@ export default function RiderPage() {
             <div className="sticky top-[73px] z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 pt-3 pb-3">
               <TabsList className="grid w-full grid-cols-2 h-12 bg-slate-100 rounded-lg p-1">
                 <TabsTrigger
-                  value="available"
-                  className="gap-1.5 text-sm font-medium data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-slate-900 cursor-pointer rounded-md"
-                >
-                  <Package size={15} />
-                  Available
-                  {availableJobs.length > 0 && (
-                    <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
-                      {availableJobs.length}
-                    </span>
-                  )}
-                </TabsTrigger>
-                <TabsTrigger
                   value="myjobs"
                   className="gap-1.5 text-sm font-medium data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-slate-900 cursor-pointer rounded-md"
                 >
@@ -234,186 +349,20 @@ export default function RiderPage() {
                     </span>
                   )}
                 </TabsTrigger>
+                <TabsTrigger
+                  value="history"
+                  className="gap-1.5 text-sm font-medium data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-slate-900 cursor-pointer rounded-md"
+                >
+                  <CheckCircle2 size={15} />
+                  Job History
+                  {historyJobs.length > 0 && (
+                    <span className="ml-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
+                      {historyJobs.length}
+                    </span>
+                  )}
+                </TabsTrigger>
               </TabsList>
             </div>
-
-            {/* Available Jobs */}
-            <TabsContent value="available" className="flex-1 px-4 py-4 space-y-3 mt-0">
-              {availableJobs.length === 0 ? (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="flex flex-col items-center justify-center py-16 text-slate-400"
-                >
-                  <Package size={48} strokeWidth={1} />
-                  <p className="mt-3 text-sm font-medium">No available jobs</p>
-                  <p className="text-xs text-slate-400 mt-1">Check back shortly for new jobs!</p>
-                </motion.div>
-              ) : (
-                <AnimatePresence mode="popLayout">
-                  {availableJobs.map((job, i) => (
-                    <motion.div
-                      key={job.id}
-                      custom={i}
-                      variants={cardVariants}
-                      initial="initial"
-                      animate="animate"
-                      exit="exit"
-                      layout
-                      whileHover={{ scale: 1.01, y: -2 }}
-                      transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                    >
-                      <Card className="overflow-hidden border-slate-200 shadow-sm">
-                        <CardHeader className="pb-3 pt-4 px-4">
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex flex-col">
-                              <span className="font-mono text-xs font-bold tracking-wider text-slate-400 mb-1">
-                                {job.id}
-                              </span>
-                              <div className="flex items-center gap-3">
-                                <h3 className="text-base font-bold text-slate-900 leading-none">{job.customerName || "Customer Guest"}</h3>
-                                <a href="tel:0812345678" className="flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-900 transition-colors" title="Call Customer">
-                                  <Phone size={14} />
-                                </a>
-                                <a href="https://line.me" target="_blank" className="flex items-center justify-center w-8 h-8 rounded-full bg-[#00B900]/10 text-[#00B900] hover:bg-[#00B900]/20 transition-colors" title="Message via Line">
-                                  <MessageCircle size={14} />
-                                </a>
-                              </div>
-                            </div>
-                            <div className="flex flex-col items-end gap-1">
-                              <Badge
-                                variant="outline"
-                                className={`gap-1 text-xs py-0.5 ${job.type === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
-                              >
-                                {job.type === 'pickup' ? <Package size={12} /> : <Truck size={12} />}
-                                {job.type.toUpperCase()}
-                              </Badge>
-                              <Badge
-                                variant="outline"
-                                className="bg-amber-50 text-amber-700 border-amber-200 gap-1 text-xs py-0.5"
-                              >
-                                <Clock size={12} />
-                                {format(new Date(job.scheduledAt), "HH:mm")}
-                              </Badge>
-                            </div>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="px-4 pb-3 space-y-3">
-                          <div className="p-3 bg-white border border-slate-100 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] rounded-xl relative">
-                            <div className="absolute left-[20px] top-8 bottom-8 border-l-2 border-dashed border-slate-200"></div>
-                            
-                            <div className="flex flex-col gap-4 relative z-10">
-                              <div className="flex items-start gap-4">
-                                <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-emerald-400 bg-white"></div>
-                                <div className="min-w-0">
-                                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Pickup</p>
-                                  <p className="text-sm font-semibold text-slate-700 leading-snug pr-2">{job.pickupLocation}</p>
-                                </div>
-                              </div>
-                              
-                              <div className="flex items-start gap-4">
-                                <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-red-500 bg-white"></div>
-                                <div className="flex-1 min-w-0 flex items-center gap-2 justify-between">
-                                  <div className="min-w-0">
-                                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Drop-off</p>
-                                    <p className="text-sm font-semibold text-slate-700 leading-snug">{job.dropoffLocation}</p>
-                                  </div>
-                                  <a 
-                                    href={`https://www.google.com/maps/dir/?api=1&destination=${job.dropoffCoords.lat},${job.dropoffCoords.lng}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="shrink-0 flex flex-col items-center justify-center bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 p-3 rounded-xl transition-all shadow-sm active:scale-95 border border-blue-100"
-                                    title="Navigate to destination"
-                                  >
-                                    <Navigation size={18} className="mb-1" />
-                                    <span className="text-[10px] font-bold uppercase tracking-widest leading-none">Nav</span>
-                                  </a>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                          {/* Distance & Fee */}
-                          <div className="flex items-center gap-3 pt-1">
-                            <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5">
-                              <Route size={16} className="text-slate-500" />
-                              <span className="text-sm font-semibold text-slate-700">{job.distance} km</span>
-                            </div>
-                            <div className="flex items-center gap-2 rounded-lg bg-indigo-50 px-3 py-1.5 border border-indigo-100">
-                              <span className="text-xs font-bold text-indigo-400 uppercase tracking-tighter">Earnings</span>
-                              <span className="text-sm font-bold text-indigo-700">฿{(job.distance * 2).toFixed(0)}</span>
-                            </div>
-                          </div>
-
-                          {/* Expandable Mini Map */}
-                          <AnimatePresence>
-                            {expandedMap === job.id && (
-                              <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: "auto" }}
-                                exit={{ opacity: 0, height: 0 }}
-                                transition={{ duration: 0.3, ease: "easeInOut" }}
-                                className="overflow-hidden"
-                              >
-                                <div className="pt-2">
-                                  <MiniMap
-                                    pickup={job.pickupCoords}
-                                    dropoff={job.dropoffCoords}
-                                    pickupLabel={job.pickupLocation}
-                                    dropoffLabel={job.dropoffLocation}
-                                  />
-                                </div>
-                              </motion.div>
-                            )}
-
-                            {job.bagImageUrl && (
-                              <div className="mt-3 p-2 bg-slate-50 rounded-lg border border-slate-100">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                  <ImageIcon size={10} />
-                                  Bag Identification Photo
-                                </p>
-                                <div className="aspect-[4/3] w-full rounded-md overflow-hidden border border-slate-200 shadow-sm">
-                                  <img src={job.bagImageUrl} alt="Laundry Bag" className="w-full h-full object-cover" />
-                                </div>
-                              </div>
-                            )}
-                          </AnimatePresence>
-                        </CardContent>
-                        <CardFooter className="px-4 pb-4 pt-0 gap-2">
-                          <motion.div className="flex-1" whileTap={{ scale: 0.98 }}>
-                            <Button
-                              variant="outline"
-                              className="w-full gap-1.5 text-slate-600 border-slate-200 hover:bg-slate-50 h-12 cursor-pointer font-medium text-sm rounded-xl"
-                              onClick={() => toggleMap(job.id)}
-                            >
-                              {expandedMap === job.id ? (
-                                <>
-                                  <X size={16} />
-                                  Hide Map
-                                </>
-                              ) : (
-                                <>
-                                  <MapIcon size={16} />
-                                  View Map
-                                </>
-                              )}
-                            </Button>
-                          </motion.div>
-                          <motion.div className="flex-1" whileTap={{ scale: 0.98 }}>
-                            <Button
-                              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold shadow-sm h-12 cursor-pointer text-sm rounded-xl"
-                              onClick={() => handleAccept(job.id)}
-                            >
-                              <CheckCircle2 size={18} className="mr-2" />
-                              Accept Job
-                            </Button>
-                          </motion.div>
-                        </CardFooter>
-                      </Card>
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              )}
-            </TabsContent>
 
             {/* My Jobs */}
             <TabsContent value="myjobs" className="flex-1 px-4 py-4 space-y-3 mt-0">
@@ -429,7 +378,9 @@ export default function RiderPage() {
                 </motion.div>
               ) : (
                 <AnimatePresence mode="popLayout">
-                  {myJobs.map((job, i) => (
+                  {myJobs.map((job, i) => {
+                    const legType = ["pending", "accepted", "active", "pickup"].includes(job.status) ? "pickup" : "delivery";
+                    return (
                     <motion.div
                       key={job.id}
                       custom={i}
@@ -442,7 +393,7 @@ export default function RiderPage() {
                     >
                       <Card
                         className={`overflow-hidden border-slate-200 shadow-sm ${
-                          job.status === "completed" ? "opacity-70" : ""
+                          (job.status === "completed" || job.status === "pickup_completed") ? "opacity-70" : ""
                         }`}
                       >
                         <CardHeader className="pb-3 pt-4 px-4">
@@ -464,22 +415,22 @@ export default function RiderPage() {
                             <div className="flex flex-col items-end gap-1">
                               <Badge
                                 variant="outline"
-                                className={`gap-1 text-xs py-0.5 ${job.type === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+                                className={`gap-1 text-xs py-0.5 ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
                               >
-                                {job.type === 'pickup' ? <Package size={12} /> : <Truck size={12} />}
-                                {job.type.toUpperCase()}
+                                {legType === 'pickup' ? <Package size={12} /> : <Truck size={12} />}
+                                {legType.toUpperCase()}
                               </Badge>
                               <Badge
                                 variant="outline"
                                 className={`gap-1 text-xs py-0.5 ${
-                                  job.status !== "completed"
+                                  (job.status !== "completed" && job.status !== "pickup_completed")
                                     ? "bg-blue-50 text-blue-700 border-blue-200"
                                     : "bg-emerald-50 text-emerald-700 border-emerald-200"
                                 }`}
                               >
-                                {job.status !== "completed" ? <Truck size={12} /> : <CheckCircle2 size={12} />}
-                              {job.status !== "completed" ? "In Progress" : "Completed"}
-                            </Badge>
+                                {(job.status !== "completed" && job.status !== "pickup_completed") ? <Truck size={12} /> : <CheckCircle2 size={12} />}
+                              {(job.status !== "completed" && job.status !== "pickup_completed") ? "In Progress" : "Completed"}
+                              </Badge>
                             </div>
                           </div>
                         </CardHeader>
@@ -492,7 +443,9 @@ export default function RiderPage() {
                                 <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-emerald-400 bg-white"></div>
                                 <div className="min-w-0">
                                   <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Pickup</p>
-                                  <p className="text-sm font-semibold text-slate-700 leading-snug pr-2">{job.pickupLocation}</p>
+                                  <p className="text-sm font-semibold text-slate-700 leading-snug pr-2">
+                                    {legType === 'delivery' ? 'Store Branch' : job.pickupLocation}
+                                  </p>
                                 </div>
                               </div>
                               
@@ -501,10 +454,12 @@ export default function RiderPage() {
                                 <div className="flex-1 min-w-0 flex items-center gap-2 justify-between">
                                   <div className="min-w-0">
                                     <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Drop-off</p>
-                                    <p className="text-sm font-semibold text-slate-700 leading-snug">{job.dropoffLocation}</p>
+                                    <p className="text-sm font-semibold text-slate-700 leading-snug">
+                                      {legType === 'pickup' ? 'Store Branch (Return)' : job.dropoffLocation}
+                                    </p>
                                   </div>
                                   <a 
-                                    href={`https://www.google.com/maps/dir/?api=1&destination=${job.dropoffCoords.lat},${job.dropoffCoords.lng}`}
+                                    href={`https://www.google.com/maps/dir/?api=1&destination=${legType === 'pickup' ? `${job.pickupCoords.lat},${job.pickupCoords.lng}` : `${job.dropoffCoords.lat},${job.dropoffCoords.lng}`}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="shrink-0 flex flex-col items-center justify-center bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 p-3 rounded-xl transition-all shadow-sm active:scale-95 border border-blue-100"
@@ -520,15 +475,26 @@ export default function RiderPage() {
                           <div className="flex items-center gap-3 pt-1">
                             <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5">
                               <Route size={16} className="text-slate-500" />
-                              <span className="text-sm font-semibold text-slate-700">{job.distance} km</span>
+                              <span className="text-sm font-semibold text-slate-700">
+                                {legType === 'pickup' ? (job.pickupDistance || job.distance || 0) : (job.deliveryDistance || job.distance || 0)} km
+                              </span>
                             </div>
-                            <div className="flex items-center gap-2 rounded-lg bg-indigo-50 px-3 py-1.5 border border-indigo-100">
-                              <span className="text-xs font-bold text-indigo-400 uppercase tracking-tighter">Earnings</span>
-                              <span className="text-sm font-bold text-indigo-700">฿{(job.distance * 2).toFixed(0)}</span>
-                            </div>
+
                           </div>
                         </CardContent>
-                        {job.status !== "completed" && (
+                        {(job.status === "pending" || job.status === "accepted") ? (
+                          <CardFooter className="px-4 pb-4 pt-0">
+                            <motion.div className="w-full" whileTap={{ scale: 0.98 }}>
+                              <Button
+                                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold shadow-sm h-14 cursor-pointer text-base rounded-xl"
+                                onClick={() => handleAccept(job.id)}
+                              >
+                                <Truck size={20} className="mr-2" />
+                                Accept & Start Job
+                              </Button>
+                            </motion.div>
+                          </CardFooter>
+                        ) : (job.status !== "completed" && job.status !== "pickup_completed") && (
                           <div className="px-4 pb-4 space-y-3">
                             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Proof of Completion</p>
                             <div className="relative aspect-video rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 overflow-hidden group">
@@ -567,20 +533,18 @@ export default function RiderPage() {
                             </div>
                           </div>
                         )}
-                        {job.bagImageUrl && (
                           <div className="px-4 pb-4">
                             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
                               <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                                 <ImageIcon size={14} />
                                 Bag Identification Photo
                               </p>
-                              <div className="aspect-[4/3] w-full rounded-md overflow-hidden border border-slate-200 shadow-sm">
-                                <img src={job.bagImageUrl} alt="Laundry Bag" className="w-full h-full object-cover" />
+                              <div className="grid">
+                                <RiderBagImages jobId={job.id} />
                               </div>
                             </div>
                           </div>
-                        )}
-                        {job.status !== "completed" && (
+                        {(job.status === "active" || job.status === "pickup" || job.status === "delivery") && (
                           <CardFooter className="px-4 pb-4 pt-0">
                             <motion.div className="w-full" whileTap={{ scale: 0.98 }}>
                               <Button
@@ -595,7 +559,110 @@ export default function RiderPage() {
                         )}
                       </Card>
                     </motion.div>
-                  ))}
+                    );
+                  })}
+                </AnimatePresence>
+              )}
+            </TabsContent>
+
+            {/* Job History */}
+            <TabsContent value="history" className="flex-1 px-4 py-4 space-y-3 mt-0">
+              {historyJobs.length === 0 ? (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex flex-col items-center justify-center py-16 text-slate-400"
+                >
+                  <CheckCircle2 size={48} strokeWidth={1} />
+                  <p className="mt-3 text-sm font-medium">No completed jobs today</p>
+                  <p className="text-xs text-slate-400 mt-1">Completed jobs will appear here</p>
+                </motion.div>
+              ) : (
+                <AnimatePresence mode="popLayout">
+                  {historyJobs.map((job, i) => {
+                    const legType = (job.status === "completed" && job.deliveryRiderId === activeRider?.id) ? "delivery" : "pickup";
+                    return (
+                    <motion.div
+                      key={job.id}
+                      custom={i}
+                      variants={cardVariants}
+                      initial="initial"
+                      animate="animate"
+                      exit="exit"
+                      layout
+                      whileHover={{ scale: 1.01 }}
+                    >
+                      <Card className="overflow-hidden border-slate-200 shadow-sm opacity-70">
+                        <CardHeader className="pb-3 pt-4 px-4">
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex flex-col">
+                              <span className="font-mono text-xs font-bold tracking-wider text-slate-400 mb-1">
+                                {job.id}
+                              </span>
+                              <div className="flex items-center gap-3">
+                                <h3 className="text-base font-bold text-slate-900 leading-none">{job.customerName || "Customer Guest"}</h3>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-1">
+                              <Badge
+                                variant="outline"
+                                className={`gap-1 text-xs py-0.5 ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+                              >
+                                {legType === 'pickup' ? <Package size={12} /> : <Truck size={12} />}
+                                {legType.toUpperCase()}
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                className="bg-emerald-50 text-emerald-700 border-emerald-200 gap-1 text-xs py-0.5"
+                              >
+                                <CheckCircle2 size={12} />
+                                Completed
+                              </Badge>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="px-4 pb-3 space-y-3">
+                          <div className="p-3 bg-white border border-slate-100 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] rounded-xl relative">
+                            <div className="absolute left-[20px] top-8 bottom-8 border-l-2 border-dashed border-slate-200"></div>
+                            
+                            <div className="flex flex-col gap-4 relative z-10">
+                              <div className="flex items-start gap-4">
+                                <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-emerald-400 bg-white"></div>
+                                <div className="min-w-0">
+                                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Pickup</p>
+                                  <p className="text-sm font-semibold text-slate-700 leading-snug pr-2">
+                                    {legType === 'delivery' ? 'Store Branch' : job.pickupLocation}
+                                  </p>
+                                </div>
+                              </div>
+                              
+                              <div className="flex items-start gap-4">
+                                <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-red-500 bg-white"></div>
+                                <div className="flex-1 min-w-0 flex items-center gap-2 justify-between">
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Drop-off</p>
+                                    <p className="text-sm font-semibold text-slate-700 leading-snug">
+                                      {legType === 'pickup' ? 'Store Branch (Return)' : job.dropoffLocation}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 pt-1">
+                            <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5">
+                              <Route size={16} className="text-slate-500" />
+                              <span className="text-sm font-semibold text-slate-700">
+                                {legType === 'pickup' ? (job.pickupDistance || job.distance || 0) : (job.deliveryDistance || job.distance || 0)} km
+                              </span>
+                            </div>
+
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </motion.div>
+                    );
+                  })}
                 </AnimatePresence>
               )}
             </TabsContent>
@@ -609,6 +676,38 @@ export default function RiderPage() {
           </div>
         </div>
       </motion.div>
+
+      <Dialog open={showOnlinePopup} onOpenChange={setShowOnlinePopup}>
+        <DialogContent className="sm:max-w-md w-[90vw] rounded-2xl mx-auto p-6 bg-white border-none shadow-2xl">
+          <DialogHeader className="space-y-4 text-center sm:text-center flex flex-col items-center">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100">
+              <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+            </div>
+            <DialogTitle className="text-xl font-bold text-slate-900">Go Online?</DialogTitle>
+            <DialogDescription className="text-sm text-slate-500 font-medium px-4 leading-relaxed">
+              You are currently offline. Would you like to go online now to start receiving and processing laundry jobs?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowOnlinePopup(false);
+                sessionStorage.setItem("riderWelcomed", "true");
+              }}
+              className="w-full h-12 rounded-xl text-slate-600 border-slate-200 font-bold hover:bg-slate-50"
+            >
+              Stay Offline
+            </Button>
+            <Button
+              onClick={handleGoOnline}
+              className="w-full h-12 rounded-xl bg-emerald-600 text-white font-bold hover:bg-emerald-700 shadow-md shadow-emerald-600/20"
+            >
+              Go Online Now
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </AnimatePresence>
     </ProtectedRoute>
   );

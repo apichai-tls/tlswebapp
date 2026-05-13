@@ -5,14 +5,61 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const customers = await prisma.customer.findMany();
-    const jobsRaw = await prisma.job.findMany();
-    const riders = await prisma.rider.findMany();
-    const services = await prisma.serviceItem.findMany();
-    const priceListsRaw = await prisma.priceList.findMany();
-    const shopLocations = await prisma.shopLocation.findMany();
-    const pois = await prisma.pOI.findMany();
-    const settingsRaw = await prisma.setting.findMany();
+    const [
+      customers,
+      jobsRaw,
+      riders,
+      services,
+      priceListsRaw,
+      shopLocations,
+      settingsRaw
+    ] = await Promise.all([
+      prisma.customer.findMany(),
+      prisma.job.findMany({
+        select: {
+          id: true,
+          type: true,
+          customerId: true,
+          customerName: true,
+          customerPhone: true,
+          pickupLocation: true,
+          dropoffLocation: true,
+          pickupLat: true,
+          pickupLng: true,
+          dropoffLat: true,
+          dropoffLng: true,
+          distance: true,
+          fee: true,
+          status: true,
+          createdAt: true,
+          scheduledAt: true,
+          completedAt: true,
+          riderId: true,
+          serviceType: true,
+          source: true,
+          totalAmount: true,
+          paymentMethod: true,
+          discount: true,
+          pickupDistance: true,
+          deliveryDistance: true,
+          pickupCommission: true,
+          deliveryCommission: true,
+          pickupScheduledAt: true,
+          deliveryScheduledAt: true,
+          pickupRiderId: true,
+          deliveryRiderId: true,
+          remark: true,
+          itemsJson: true,
+          legsJson: true,
+          // Exclude: bagImageUrl, billImageUrl, proofImageUrl
+        }
+      }),
+      prisma.rider.findMany(),
+      prisma.serviceItem.findMany(),
+      prisma.priceList.findMany(),
+      prisma.shopLocation.findMany(),
+      prisma.setting.findMany(),
+    ]);
 
     // Map Raw DB data back to the format expected by the frontend
     const jobs = jobsRaw.map(j => ({
@@ -43,10 +90,7 @@ export async function GET() {
       coords: { lat: s.lat, lng: s.lng }
     }));
 
-    const formattedPois = pois.map(p => ({
-      ...p,
-      coords: { lat: p.lat, lng: p.lng }
-    }));
+
     
     const formattedRiders = riders.map(r => ({
       ...r,
@@ -60,7 +104,7 @@ export async function GET() {
       services,
       priceLists,
       shopLocations: formattedShopLocations,
-      pois: formattedPois,
+      pois: [], // POIs are now lazy-loaded via /api/pois
       settings
     });
   } catch (error) {

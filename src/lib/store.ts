@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type JobStatus = "pending" | "accepted" | "pickup" | "delivery" | "completed" | "active";
+export type JobStatus = "pending" | "accepted" | "pickup" | "pickup_completed" | "delivery" | "completed" | "active" | "cancelled";
 export type JobType = "pickup" | "delivery" | "full_service";
 export type ServiceType = "wash_fold" | "wash_iron_fold";
 export type TripStatus = "pending" | "in_transit" | "completed";
@@ -60,6 +60,15 @@ export interface Customer {
   creditBalance?: number; // Credit Wallet
   tier?: CustomerTier; // Legacy
   isMember?: boolean; // Legacy
+  isVIP?: boolean;
+  email?: string;
+  lineId?: string;
+  language?: string;
+  remark?: string;
+  secondaryAddress?: string;
+  dob?: string;
+  taxId?: string;
+  companyName?: string;
 }
 
 export interface Job {
@@ -92,6 +101,11 @@ export interface Job {
   pickupRiderId?: string;
   deliveryRiderId?: string;
   items?: { name: string; quantity: number; price: number }[];
+  
+  pickupDistance?: number;
+  deliveryDistance?: number;
+  pickupCommission?: number;
+  deliveryCommission?: number;
 
   legs?: JobLegs;
   remark?: string;
@@ -119,6 +133,17 @@ export interface Rider {
   nationalId?: string;
   vehicleType?: "motorcycle" | "car" | "truck";
   vehiclePlate?: string;
+  commissionBalance?: number;
+}
+
+export interface RiderTransaction {
+  id: string;
+  riderId: string;
+  jobId?: string;
+  amount: number;
+  type: string; // "commission_pickup" | "commission_delivery" | "payout"
+  detail?: string;
+  createdAt: Date;
 }
 
 type Listener = () => void;
@@ -355,7 +380,15 @@ export const jobStore = {
   },
 
   async completeJob(id: string, proofImageUrl?: string) {
-    await api.updateJob(id, { status: "completed", completedAt: new Date(), proofImageUrl });
+    const jobs = api.sync.getJobs();
+    const job = jobs.find(j => j.id === id);
+    if (!job) return;
+
+    if (job.status === "pickup") {
+      await api.updateJob(id, { status: "pickup_completed", proofImageUrl });
+    } else {
+      await api.updateJob(id, { status: "completed", completedAt: new Date(), proofImageUrl });
+    }
     emitJobChange();
   },
 };
