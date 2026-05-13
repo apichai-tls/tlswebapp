@@ -114,7 +114,7 @@ export function AdminDispatch() {
             id: `${job.id}-pickup`,
             jobId: job.id,
             type: 'pickup',
-            title: `[รับผ้า] ${job.customerName || job.id}`,
+            title: `[รับผ้า] ${job.customerName || 'Guest'} (${job.id})`,
             start: pStart,
             end: addMinutes(pStart, 45), // Allocate 45 mins
             riderId: job.pickupRiderId,
@@ -134,7 +134,7 @@ export function AdminDispatch() {
               id: `${job.id}-delivery`,
               jobId: job.id,
               type: 'delivery',
-              title: `[ส่งผ้า] ${job.customerName || job.id}`,
+              title: `[ส่งผ้า] ${job.customerName || 'Guest'} (${job.id})`,
               start: dStart,
               end: addMinutes(dStart, 45),
               riderId: job.deliveryRiderId,
