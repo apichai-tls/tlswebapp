@@ -6,9 +6,10 @@ import { useRiders } from "@/lib/use-riders";
 import { jobStore, type Job } from "@/lib/store";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Truck, MapPin, User, X, Copy } from "lucide-react";
+import { Truck, MapPin, User, X, Copy, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { AdminTaskTracker } from "@/components/admin-task-tracker";
 
 import { Calendar, dateFnsLocalizer, EventProps } from 'react-big-calendar';
 import withDragAndDrop, { withDragAndDropProps } from 'react-big-calendar/lib/addons/dragAndDrop';
@@ -62,6 +63,7 @@ export function AdminDispatch() {
   
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
   const [editRiderId, setEditRiderId] = useState<string>("");
+  const [viewJobId, setViewJobId] = useState<string | null>(null);
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<any>('week');
@@ -377,8 +379,16 @@ export function AdminDispatch() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
-              <p className="text-sm font-medium text-slate-900">{editingEvent?.title}</p>
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 relative">
+              <p className="text-sm font-medium text-slate-900 pr-24">{editingEvent?.title}</p>
+              <Button 
+                variant="outline" 
+                size="sm"
+                className="absolute top-2 right-2 text-[10px] h-6 px-2 border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                onClick={() => setViewJobId(editingEvent?.jobId || null)}
+              >
+                View Details
+              </Button>
               <p className="text-xs text-slate-500 mt-1">Scheduled: {editingEvent?.start && format(editingEvent.start, 'MMM d, yyyy HH:mm')}</p>
               <p className="text-xs text-slate-400 mt-1 italic">Tip: You can drag and drop the event on the calendar to change its time.</p>
             </div>
@@ -408,6 +418,15 @@ export function AdminDispatch() {
               <Button onClick={handleSaveEdit} className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">Save Changes</Button>
             </div>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!viewJobId} onOpenChange={(v) => !v && setViewJobId(null)}>
+        <DialogContent className="max-w-md p-4 max-h-[90vh] overflow-hidden flex flex-col pt-8 z-[60]">
+          <DialogTitle className="sr-only">Task Tracker</DialogTitle>
+          {viewJobId && allJobs.find((j) => j.id === viewJobId) && (
+            <AdminTaskTracker job={allJobs.find((j) => j.id === viewJobId)!} readOnly />
+          )}
         </DialogContent>
       </Dialog>
     </div>

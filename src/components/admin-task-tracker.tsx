@@ -48,7 +48,7 @@ function Step({ title, desc, legKey, leg, icon, toggleLegStatus, getRiderName }:
   );
 }
 
-export function AdminTaskTracker({ job }: { job: Job }) {
+export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly?: boolean }) {
   const riders = useRiders();
   const [deliveryRiderId, setDeliveryRiderId] = useState(job.legs?.deliveryOutbound.riderId || "");
   const [deliveryTime, setDeliveryTime] = useState(
@@ -87,6 +87,7 @@ export function AdminTaskTracker({ job }: { job: Job }) {
   );
 
   const toggleLegStatus = (legKey: keyof JobLegs, currentStatus: string) => {
+    if (readOnly) return;
     let nextStatus: "pending" | "in_transit" | "completed" = "pending";
     if (currentStatus === "pending") nextStatus = "in_transit";
     else if (currentStatus === "in_transit") nextStatus = "completed";
@@ -171,39 +172,41 @@ export function AdminTaskTracker({ job }: { job: Job }) {
         </h3>
 
         {/* Delivery Assignment Subtask */}
-        <div className="mb-6 p-3 rounded-lg border border-indigo-100 bg-indigo-50/30 space-y-3">
-          <p className="text-[11px] font-bold text-indigo-600 uppercase">Schedule Delivery Subtask</p>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <Label className="text-[10px] text-slate-500">Rider</Label>
-              <select
-                className="w-full h-8 text-xs rounded border border-slate-200 bg-white px-2"
-                value={deliveryRiderId}
-                onChange={(e) => setDeliveryRiderId(e.target.value)}
-              >
-                <option value="">-- Assign --</option>
-                {riders.map(r => (
-                  <option key={`tracker-d-${r.id}`} value={r.id}>{r.name}</option>
-                ))}
-              </select>
+        {!readOnly && (
+          <div className="mb-6 p-3 rounded-lg border border-indigo-100 bg-indigo-50/30 space-y-3">
+            <p className="text-[11px] font-bold text-indigo-600 uppercase">Schedule Delivery Subtask</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-[10px] text-slate-500">Rider</Label>
+                <select
+                  className="w-full h-8 text-xs rounded border border-slate-200 bg-white px-2"
+                  value={deliveryRiderId}
+                  onChange={(e) => setDeliveryRiderId(e.target.value)}
+                >
+                  <option value="">-- Assign --</option>
+                  {riders.map(r => (
+                    <option key={`tracker-d-${r.id}`} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-slate-500">Time</Label>
+                <TimePicker
+                  value={deliveryTime}
+                  onChange={setDeliveryTime}
+                />
+              </div>
             </div>
-            <div className="space-y-1">
-              <Label className="text-[10px] text-slate-500">Time</Label>
-              <TimePicker
-                value={deliveryTime}
-                onChange={setDeliveryTime}
-              />
-            </div>
+            <Button 
+              size="sm" 
+              variant="secondary" 
+              className="w-full h-7 text-[10px] font-bold bg-indigo-600 text-white hover:bg-indigo-700"
+              onClick={handleScheduleDelivery}
+            >
+              Update Delivery Legs
+            </Button>
           </div>
-          <Button 
-            size="sm" 
-            variant="secondary" 
-            className="w-full h-7 text-[10px] font-bold bg-indigo-600 text-white hover:bg-indigo-700"
-            onClick={handleScheduleDelivery}
-          >
-            Update Delivery Legs
-          </Button>
-        </div>
+        )}
 
         <Step 
           toggleLegStatus={toggleLegStatus}
@@ -224,16 +227,18 @@ export function AdminTaskTracker({ job }: { job: Job }) {
           icon={<Home size={16} />} 
         />
         
-        <div className="pt-4 mt-6 border-t border-slate-200">
-          <Button 
-            variant="outline" 
-            onClick={handleDuplicateJob} 
-            className="w-full text-indigo-600 border-indigo-200 hover:bg-indigo-50"
-          >
-            <Copy size={16} className="mr-2" />
-            Duplicate Job
-          </Button>
-        </div>
+        {!readOnly && (
+          <div className="pt-4 mt-6 border-t border-slate-200">
+            <Button 
+              variant="outline" 
+              onClick={handleDuplicateJob} 
+              className="w-full text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+            >
+              <Copy size={16} className="mr-2" />
+              Duplicate Job
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

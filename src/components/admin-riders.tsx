@@ -17,6 +17,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { riderStore, type Rider, type Job } from "@/lib/store";
 import { useRiders } from "@/lib/use-riders";
 import { useJobs } from "@/lib/use-jobs";
@@ -339,6 +340,7 @@ function MonthlyReportModal({
   const [expandedMonth, setExpandedMonth] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 
   useEffect(() => {
     if (rider) {
@@ -472,9 +474,9 @@ function MonthlyReportModal({
                             <div key={t.id} className="grid grid-cols-4 items-center px-3 py-3 text-sm border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors rounded-lg">
                               <div className="flex flex-col">
                                 {t.jobId ? (
-                                  <Link href={`/admin?jobId=${t.jobId}`} className="font-mono font-bold text-indigo-600 hover:underline">
+                                  <button onClick={() => setSelectedJobId(t.jobId)} className="font-mono font-bold text-indigo-600 hover:underline text-left cursor-pointer">
                                     {t.jobId}
-                                  </Link>
+                                  </button>
                                 ) : (
                                   <span className="font-mono font-bold text-slate-700">-</span>
                                 )}
@@ -504,6 +506,15 @@ function MonthlyReportModal({
           <Button variant="outline" onClick={onClose} className="w-full sm:w-auto cursor-pointer">Close Report</Button>
         </DialogFooter>
       </DialogContent>
+
+      <Dialog open={!!selectedJobId} onOpenChange={(v) => !v && setSelectedJobId(null)}>
+        <DialogContent className="max-w-md p-4 max-h-[90vh] overflow-hidden flex flex-col pt-8 z-[60]">
+          <DialogTitle className="sr-only">Task Tracker</DialogTitle>
+          {selectedJobId && jobs.find((j) => j.id === selectedJobId) && (
+            <AdminTaskTracker job={jobs.find((j) => j.id === selectedJobId)!} readOnly />
+          )}
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
