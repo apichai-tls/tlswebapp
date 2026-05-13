@@ -42,6 +42,17 @@ interface CalendarEvent {
   jobStatus: string;
 }
 
+const RIDER_COLORS = [
+  '#3b82f6', // blue
+  '#ec4899', // pink
+  '#8b5cf6', // purple
+  '#06b6d4', // cyan
+  '#f97316', // orange
+  '#14b8a6', // teal
+  '#ef4444', // red
+  '#84cc16', // lime
+];
+
 export function AdminDispatch() {
   const allJobs = useJobs();
   const allRiders = useRiders();
@@ -96,33 +107,41 @@ export function AdminDispatch() {
 
     jobs.forEach(job => {
       // Create Pickup Event (Amber)
-      if (selectedRiderIds.size === 0 || !job.pickupRiderId || selectedRiderIds.has(job.pickupRiderId)) {
-        const pStart = new Date(job.pickupScheduledAt || job.scheduledAt || job.createdAt);
-        calendarEvents.push({
-          id: `${job.id}-pickup`,
-          jobId: job.id,
-          type: 'pickup',
-          title: `[รับผ้า] ${job.customerName || job.id}`,
-          start: pStart,
-          end: addMinutes(pStart, 45), // Allocate 45 mins
-          riderId: job.pickupRiderId,
-          jobStatus: job.status,
-        });
+      if (job.type !== 'delivery') {
+        if (selectedRiderIds.size === 0 || !job.pickupRiderId || selectedRiderIds.has(job.pickupRiderId)) {
+          const pStart = new Date(job.pickupScheduledAt || job.scheduledAt || job.createdAt);
+          calendarEvents.push({
+            id: `${job.id}-pickup`,
+            jobId: job.id,
+            type: 'pickup',
+            title: `[รับผ้า] ${job.customerName || job.id}`,
+            start: pStart,
+            end: addMinutes(pStart, 45), // Allocate 45 mins
+            riderId: job.pickupRiderId,
+            jobStatus: job.status,
+          });
+        }
       }
 
       // Create Delivery Event (Indigo)
-      if (selectedRiderIds.size === 0 || !job.deliveryRiderId || selectedRiderIds.has(job.deliveryRiderId)) {
-        const dStart = new Date(job.deliveryScheduledAt || new Date(job.createdAt).getTime() + 86400000);
-        calendarEvents.push({
-          id: `${job.id}-delivery`,
-          jobId: job.id,
-          type: 'delivery',
-          title: `[ส่งผ้า] ${job.customerName || job.id}`,
-          start: dStart,
-          end: addMinutes(dStart, 45),
-          riderId: job.deliveryRiderId,
-          jobStatus: job.status,
-        });
+      if (job.type !== 'pickup') {
+        // Only show delivery on calendar if the items have actually been picked up (Cleaning phase or ready)
+        const isPickupDone = !['pending', 'accepted', 'pickup'].includes(job.status);
+        if (isPickupDone || job.type === 'delivery') { // Always show if it's a delivery-only job
+          if (selectedRiderIds.size === 0 || !job.deliveryRiderId || selectedRiderIds.has(job.deliveryRiderId)) {
+            const dStart = new Date(job.deliveryScheduledAt || new Date(job.createdAt).getTime() + 86400000);
+            calendarEvents.push({
+              id: `${job.id}-delivery`,
+              jobId: job.id,
+              type: 'delivery',
+              title: `[ส่งผ้า] ${job.customerName || job.id}`,
+              start: dStart,
+              end: addMinutes(dStart, 45),
+              riderId: job.deliveryRiderId,
+              jobStatus: job.status,
+            });
+          }
+        }
       }
     });
 
@@ -194,19 +213,43 @@ export function AdminDispatch() {
     }
   };
 
+  const getRiderColor = (riderId?: string) => {
+    if (!riderId) return '#94a3b8'; // unassigned = slate
+    const index = allRiders.findIndex(r => r.id === riderId);
+    if (index === -1) return '#94a3b8';
+    return RIDER_COLORS[index % RIDER_COLORS.length];
+  };
+
   // Custom Event Styling
   const eventStyleGetter = (event: any) => {
-    let backgroundColor = event.type === 'pickup' ? '#f59e0b' : '#4f46e5'; // Amber vs Indigo
-    if (event.jobStatus === 'completed') {
-      backgroundColor = '#10b981'; // Emerald
+    let isEventCompleted = false;
+    
+    if (event.type === 'pickup') {
+      // Pickup is done if status has progressed past 'pickup'
+      isEventCompleted = !['pending', 'accepted', 'pickup'].includes(event.jobStatus);
+    } else if (event.type === 'delivery') {
+      // Delivery is done if status is 'completed'
+      isEventCompleted = event.jobStatus === 'completed';
     }
+
+    let backgroundColor = getRiderColor(event.riderId);
+    if (isEventCompleted) {
+      backgroundColor = '#475569'; // slate-600 (Dark Gray)
+    }
+
+    let opacity = isEventCompleted ? 0.7 : 0.95;
+    
+    // Distinguish pickup vs delivery with a left border
+    let borderLeft = event.type === 'pickup' ? '4px solid #f59e0b' : '4px solid #4f46e5';
+
     return {
       style: {
         backgroundColor,
         borderRadius: '6px',
-        opacity: 0.9,
+        opacity,
         color: 'white',
         border: 'none',
+        borderLeft,
         display: 'block',
         fontSize: '12px',
         fontWeight: 500,
@@ -260,6 +303,7 @@ export function AdminDispatch() {
                 onChange={() => toggleRider(rider.id)}
               />
               <div className="flex items-center gap-2 flex-1 min-w-0">
+                <div className="w-3 h-3 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: getRiderColor(rider.id) }} />
                 <img src={rider.avatarUrl} alt="" className="w-6 h-6 rounded-full bg-slate-200 object-cover shrink-0" />
                 <span className="text-sm font-medium truncate">{rider.name}</span>
               </div>
@@ -275,9 +319,9 @@ export function AdminDispatch() {
           <div>
             <h2 className="text-lg font-bold text-slate-900">Task Schedule Calendar</h2>
             <p className="text-xs text-slate-500 flex gap-4 mt-1">
-              <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-amber-500" /> Pickup</span>
-              <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-indigo-500" /> Delivery</span>
-              <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-emerald-500" /> Completed</span>
+              <span className="flex items-center gap-1"><div className="w-2 h-4 rounded-sm bg-amber-500" /> Pickup</span>
+              <span className="flex items-center gap-1"><div className="w-2 h-4 rounded-sm bg-indigo-500" /> Delivery</span>
+              <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-slate-400" /> Unassigned</span>
             </p>
           </div>
           <Label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
@@ -308,6 +352,16 @@ export function AdminDispatch() {
             resizable={false}
             step={30}
             timeslots={2}
+            min={new Date(new Date().setHours(8, 0, 0, 0))}
+            max={new Date(new Date().setHours(21, 0, 0, 0))}
+            formats={{
+              timeGutterFormat: 'HH:mm',
+              eventTimeRangeFormat: ({ start, end }: any, culture: any, local: any) =>
+                `${local.format(start, 'HH:mm', culture)} - ${local.format(end, 'HH:mm', culture)}`,
+              agendaTimeRangeFormat: ({ start, end }: any, culture: any, local: any) =>
+                `${local.format(start, 'HH:mm', culture)} - ${local.format(end, 'HH:mm', culture)}`,
+              dayHeaderFormat: 'EEEE, MMM d, yyyy',
+            }}
             className="font-sans flex-1"
           />
         </div>
