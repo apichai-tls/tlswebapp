@@ -810,7 +810,7 @@ export default function AdminPage() {
                 <LogOut size={16} />
               </Button>
 
-              {user?.role === 'admin' && (
+              {(user?.role === 'admin' || hasAccess('dashboard') || hasAccess('jobs') || hasAccess('dispatch')) && (
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                   <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
                     <Button 
