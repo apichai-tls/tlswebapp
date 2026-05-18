@@ -319,7 +319,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-center" onClick={(e) => e.stopPropagation()}>
-                        {user?.role === 'admin' ? (
+                        {(user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) ? (
                           <select 
                             value={job.status}
                             onChange={(e) => {
