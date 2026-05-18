@@ -7,7 +7,8 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
-    "deploy:test": "bash scripts/deploy-test.sh"
+    "deploy:test": "bash scripts/deploy-test.sh",
+    "deploy:staging": "bash scripts/deploy-staging.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
