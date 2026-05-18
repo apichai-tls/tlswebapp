@@ -65,7 +65,7 @@ const statusIcon: Record<JobStatus, React.ReactNode> = {
 
 type FilterDate = "today" | "yesterday" | "custom";
 
-export function AdminAllJobs({ jobs, onEditJob }: { jobs: Job[], onEditJob?: (job: Job) => void }) {
+export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], onEditJob?: (job: Job) => void, onCreateJob?: () => void }) {
   const riders = useRiders();
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
@@ -112,9 +112,18 @@ export function AdminAllJobs({ jobs, onEditJob }: { jobs: Job[], onEditJob?: (jo
   return (
     <div className="flex-1 overflow-auto p-6 lg:p-8 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900">Historical Jobs Log</h2>
-          <p className="text-sm text-slate-500 mt-1">Review all past and active jobs, track durations and distances.</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900">Historical Jobs Log</h2>
+            <p className="text-sm text-slate-500 mt-1">Review all past and active jobs, track durations and distances.</p>
+          </div>
+          {onCreateJob && (
+            <Button onClick={onCreateJob} className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2 shadow-sm shrink-0">
+              <Zap size={16} />
+              <span className="hidden sm:inline">Create New Job</span>
+              <span className="sm:hidden">Create</span>
+            </Button>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative">
