@@ -983,7 +983,7 @@ export default function AdminPage() {
                             />
                           </div>
                         </div>
-                        {customerName.trim() && customerPhone.trim() && !customers.some(c => c.name === customerName || c.phone === customerPhone) && (
+                        {customerName.trim() && !customers.some(c => c.name === customerName || (customerPhone && c.phone === customerPhone)) && (
                           <div className="pb-2 border-b border-slate-100 shrink-0">
                             <Button 
                               type="button" 
