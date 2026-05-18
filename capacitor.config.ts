@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'ThatLaundryShop',
   webDir: 'public',
   server: {
-    url: 'https://apptest.thatlaundryshop.com/rider',
+    url: 'https://app.thatlaundryshop.com/rider',
     cleartext: true
   }
 };
