@@ -398,7 +398,7 @@ export const jobStore = {
     const job = jobs.find(j => j.id === id);
     if (!job) return;
 
-    if (job.status === "pickup") {
+    if (["pending", "accepted", "active", "pickup"].includes(job.status)) {
       await api.updateJob(id, { status: "pickup_completed", proofImageUrl });
     } else {
       await api.updateJob(id, { status: "completed", completedAt: new Date(), proofImageUrl });

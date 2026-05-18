@@ -48,7 +48,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Calendar as CalendarIcon,
-  Crown
+  Crown,
+  Loader2
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -170,6 +171,7 @@ export default function RiderPage() {
   const [activeTab, setActiveTab] = useState("myjobs");
   const [expandedMap, setExpandedMap] = useState<string | null>(null);
   const [capturedImages, setCapturedImages] = useState<Record<string, string>>({});
+  const [capturedFiles, setCapturedFiles] = useState<Record<string, File>>({});
   const [showOnlinePopup, setShowOnlinePopup] = useState(false);
   const [gpsActive, setGpsActive] = useState(false);
   const { user, logout } = useAuth();
@@ -327,24 +329,66 @@ export default function RiderPage() {
     }
   }
 
-  function handleComplete(jobId: string) {
+  const [isUploadingProof, setIsUploadingProof] = useState(false);
+
+  async function handleComplete(jobId: string) {
     const proofUrl = capturedImages[jobId];
-    if (!proofUrl) {
+    const proofFile = capturedFiles[jobId];
+    if (!proofUrl || !proofFile) {
       toast.error("Please take a photo as proof of delivery!");
       return;
     }
     
-    jobStore.completeJob(jobId, proofUrl);
-    toast.success("Job marked as completed! 🎉");
-    // Return to online status if no other active jobs
-    if (activeRider && myJobs.filter(j => j.status !== "completed").length <= 1) {
-       riderStore.updateRider(activeRider.id, { status: "online" });
+    setIsUploadingProof(true);
+    let finalProofUrl = proofUrl; // fallback if it's somehow already a URL
+
+    try {
+      if (proofFile) {
+        // Upload to GCS
+        const response = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entityType: "job",
+            entityId: jobId,
+            subType: "proofs",
+            contentType: proofFile.type,
+          }),
+        });
+
+        if (!response.ok) throw new Error("Failed to get upload authorization");
+
+        const { uploadUrl, publicUrl } = await response.json();
+
+        const uploadResponse = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": proofFile.type },
+          body: proofFile,
+        });
+
+        if (!uploadResponse.ok) throw new Error("Upload failed");
+        
+        finalProofUrl = publicUrl;
+      }
+      
+      await jobStore.completeJob(jobId, finalProofUrl);
+      toast.success("Job marked as completed! 🎉");
+      // Return to online status if no other active jobs
+      if (activeRider && myJobs.filter(j => j.status !== "completed").length <= 1) {
+         riderStore.updateRider(activeRider.id, { status: "online" });
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to upload proof. Please try again.");
+    } finally {
+      setIsUploadingProof(false);
     }
   }
 
   function handleCapture(jobId: string, event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (file) {
+      setCapturedFiles(prev => ({ ...prev, [jobId]: file }));
       const reader = new FileReader();
       reader.onloadend = () => {
         setCapturedImages(prev => ({ ...prev, [jobId]: reader.result as string }));
@@ -936,11 +980,18 @@ export default function RiderPage() {
                       <div className="relative w-full h-full">
                         <img src={previewUrl} className="w-full h-full object-cover" alt="Proof" />
                         <button 
-                          onClick={() => setCapturedImages(prev => {
-                            const next = {...prev};
-                            delete next[jobToComplete.id];
-                            return next;
-                          })}
+                          onClick={() => {
+                            setCapturedImages(prev => {
+                              const next = {...prev};
+                              delete next[jobToComplete.id];
+                              return next;
+                            });
+                            setCapturedFiles(prev => {
+                              const next = {...prev};
+                              delete next[jobToComplete.id];
+                              return next;
+                            });
+                          }}
                           className="absolute top-3 right-3 h-10 w-10 rounded-full bg-red-500/90 text-white flex items-center justify-center shadow-lg backdrop-blur"
                         >
                           <X size={20} />
@@ -971,14 +1022,14 @@ export default function RiderPage() {
                 <DialogFooter className="p-4 pt-0">
                   <Button
                     className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-14 rounded-xl text-base disabled:opacity-50"
-                    disabled={!previewUrl}
-                    onClick={() => {
-                      handleComplete(jobToComplete.id);
+                    disabled={!previewUrl || isUploadingProof}
+                    onClick={async () => {
+                      await handleComplete(jobToComplete.id);
                       setJobToComplete(null);
                     }}
                   >
-                    <CheckCircle2 size={20} className="mr-2" />
-                    Confirm Completion
+                    {isUploadingProof ? <Loader2 size={20} className="mr-2 animate-spin" /> : <CheckCircle2 size={20} className="mr-2" />}
+                    {isUploadingProof ? "Uploading..." : "Confirm Completion"}
                   </Button>
                 </DialogFooter>
               </>
