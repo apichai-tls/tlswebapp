@@ -7,7 +7,7 @@ const globalForPrisma = globalThis as unknown as {
 const getPrismaUrl = () => {
   let url = process.env.DATABASE_URL || '';
   if (url && !url.includes('connection_limit=')) {
-    url += (url.includes('?') ? '&' : '?') + 'connection_limit=3';
+    url += (url.includes('?') ? '&' : '?') + 'connection_limit=1';
   }
   return url;
 };
