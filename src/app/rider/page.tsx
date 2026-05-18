@@ -344,6 +344,8 @@ export default function RiderPage() {
 
     try {
       if (proofFile) {
+        const actualContentType = proofFile.type || 'image/jpeg';
+        
         // Upload to GCS
         const response = await fetch("/api/upload-url", {
           method: "POST",
@@ -352,7 +354,7 @@ export default function RiderPage() {
             entityType: "job",
             entityId: jobId,
             subType: "proofs",
-            contentType: proofFile.type,
+            contentType: actualContentType,
           }),
         });
 
@@ -362,11 +364,11 @@ export default function RiderPage() {
 
         const uploadResponse = await fetch(uploadUrl, {
           method: "PUT",
-          headers: { "Content-Type": proofFile.type },
+          headers: { "Content-Type": actualContentType },
           body: proofFile,
         });
 
-        if (!uploadResponse.ok) throw new Error("Upload failed");
+        if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
         
         finalProofUrl = publicUrl;
       }
@@ -379,7 +381,7 @@ export default function RiderPage() {
       }
     } catch (error) {
       console.error(error);
-      toast.error("Failed to upload proof. Please try again.");
+      toast.error(`Failed to upload proof: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
       setIsUploadingProof(false);
     }
