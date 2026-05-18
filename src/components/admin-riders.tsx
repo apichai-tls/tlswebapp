@@ -104,7 +104,7 @@ export function AdminRiders() {
     }
 
     const payload = { 
-      name, nickname, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl, branchId: branchId || null
+      name, nickname, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl, branchId: branchId || undefined
     };
 
     if (editingId) {

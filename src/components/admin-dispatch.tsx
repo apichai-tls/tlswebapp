@@ -156,9 +156,9 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
     const e = event as CalendarEvent;
     try {
       if (e.type === 'pickup') {
-        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end, pickupRiderId: e.riderId || null });
+        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end, pickupRiderId: e.riderId || undefined });
       } else {
-        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end, deliveryRiderId: e.riderId || null });
+        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end, deliveryRiderId: e.riderId || undefined });
       }
       toast.success(`Updated ${e.type} time successfully`);
     } catch (error) {

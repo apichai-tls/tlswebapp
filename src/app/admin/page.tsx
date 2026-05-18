@@ -244,7 +244,7 @@ export default function AdminPage() {
     if (!text.trim()) return;
     const newLog: AdminNoteLog = {
       userId: isSystem ? "system" : (user?.id || "unknown"),
-      userName: isSystem ? "System (CRM)" : (user?.name || "Admin"),
+      userName: isSystem ? "System (CRM)" : (user?.email || "Admin"),
       text: text.trim(),
       timestamp: new Date().toISOString()
     };
