@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
-import { UploadCloud, Loader2, X, Image as ImageIcon } from "lucide-react";
+import { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffect } from "react";
+import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -33,7 +33,25 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
   ({ entityType, entityId, subType, value = [], onValueChange, maxFiles = 5, className = "" }, ref) => {
     const [isDragging, setIsDragging] = useState(false);
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+    const [previewIndex, setPreviewIndex] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    
+    const allImages = [...value, ...pendingFiles.map(pf => pf.previewUrl)];
+
+    useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (previewIndex === null) return;
+        if (e.key === "ArrowRight") {
+          setPreviewIndex(prev => prev !== null && prev < allImages.length - 1 ? prev + 1 : prev);
+        } else if (e.key === "ArrowLeft") {
+          setPreviewIndex(prev => prev !== null && prev > 0 ? prev - 1 : prev);
+        } else if (e.key === "Escape") {
+          setPreviewIndex(null);
+        }
+      };
+      window.addEventListener("keydown", handleKeyDown);
+      return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [previewIndex, allImages.length]);
 
     useImperativeHandle(ref, () => ({
       startUpload: async () => {
@@ -200,12 +218,19 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
             
             {/* Existing Uploads */}
             {value.map((url, index) => (
-              <div key={`val-${index}`} className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm">
-                <img src={url} alt={`Upload ${index}`} className="w-full h-full object-cover" />
+              <div 
+                key={`val-${index}`} 
+                className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm cursor-pointer"
+                onClick={() => setPreviewIndex(index)}
+              >
+                <img src={url} alt={`Upload ${index}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
                 <button
                   type="button"
-                  onClick={() => handleRemoveExisting(url)}
-                  className="absolute top-1 right-1 bg-white/90 text-slate-700 hover:text-red-600 hover:bg-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRemoveExisting(url);
+                  }}
+                  className="absolute top-1 right-1 bg-white/90 text-slate-700 hover:text-red-600 hover:bg-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10"
                 >
                   <X size={14} />
                 </button>
@@ -213,12 +238,16 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
             ))}
 
             {/* Pending Files */}
-            {pendingFiles.map((pf) => (
-              <div key={pf.id} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-50 group">
-                <img src={pf.previewUrl} alt="Preview" className={`w-full h-full object-cover transition-opacity ${pf.status === 'uploading' ? 'opacity-40 blur-[2px]' : ''}`} />
+            {pendingFiles.map((pf, index) => (
+              <div 
+                key={pf.id} 
+                className="relative aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-50 group cursor-pointer"
+                onClick={() => setPreviewIndex(value.length + index)}
+              >
+                <img src={pf.previewUrl} alt="Preview" className={`w-full h-full object-cover transition-all ${pf.status === 'uploading' ? 'opacity-40 blur-[2px]' : 'group-hover:scale-105'}`} />
                 
                 {pf.status === "uploading" && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/10">
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/10 pointer-events-none">
                     <Loader2 className="animate-spin text-indigo-600 mb-1" size={20} />
                     <span className="text-[10px] font-bold text-slate-800 bg-white/80 px-1.5 py-0.5 rounded-full">
                       {pf.progress}%
@@ -227,7 +256,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
                 )}
 
                 {pf.status === "error" && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/10">
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/10 pointer-events-none">
                     <div className="text-center p-2 bg-white/90 rounded-lg m-2">
                       <p className="text-[10px] text-red-600 font-semibold leading-tight">Failed</p>
                     </div>
@@ -238,14 +267,61 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
                 {(pf.status === "pending" || pf.status === "error") && (
                   <button
                     type="button"
-                    onClick={() => handleRemovePending(pf.id)}
-                    className="absolute top-1 right-1 bg-white/90 text-slate-700 hover:text-red-600 hover:bg-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemovePending(pf.id);
+                    }}
+                    className="absolute top-1 right-1 bg-white/90 text-slate-700 hover:text-red-600 hover:bg-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10"
                   >
                     <X size={14} />
                   </button>
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Lightbox Modal */}
+        {previewIndex !== null && (
+          <div 
+            className="fixed inset-0 z-[9999] bg-slate-900/95 flex flex-col items-center justify-center p-4 backdrop-blur-sm cursor-pointer"
+            onClick={() => setPreviewIndex(null)}
+          >
+            <button 
+              className="absolute top-4 right-4 sm:top-6 sm:right-6 text-white hover:text-red-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10"
+              onClick={() => setPreviewIndex(null)}
+            >
+              <X size={24} />
+            </button>
+            
+            {previewIndex > 0 && (
+              <button 
+                className="absolute left-4 sm:left-8 top-1/2 -translate-y-1/2 text-white hover:text-indigo-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10"
+                onClick={(e) => { e.stopPropagation(); setPreviewIndex(previewIndex - 1); }}
+              >
+                <ChevronLeft size={32} />
+              </button>
+            )}
+
+            <img 
+              src={allImages[previewIndex]} 
+              className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl border border-white/10" 
+              alt={`Preview ${previewIndex + 1}`} 
+              onClick={(e) => e.stopPropagation()} 
+            />
+
+            {previewIndex < allImages.length - 1 && (
+              <button 
+                className="absolute right-4 sm:right-8 top-1/2 -translate-y-1/2 text-white hover:text-indigo-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10"
+                onClick={(e) => { e.stopPropagation(); setPreviewIndex(previewIndex + 1); }}
+              >
+                <ChevronRight size={32} />
+              </button>
+            )}
+            
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/60 text-white text-sm px-4 py-1.5 rounded-full backdrop-blur-md pointer-events-none">
+              {previewIndex + 1} / {allImages.length}
+            </div>
           </div>
         )}
       </div>

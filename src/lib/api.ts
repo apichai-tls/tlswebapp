@@ -79,6 +79,25 @@ export const ensureDbLoaded = async () => {
   }
 };
 
+export const refreshDb = async () => {
+  if (typeof window === 'undefined') return;
+  try {
+    const res = await fetch('/api/db');
+    if (res.ok) {
+      const data = await res.json();
+      const parsed = JSON.parse(JSON.stringify(data), dateReviver);
+      if (memoryDb && memoryDb.pois.length > 0) {
+        // Preserve POIs as they are loaded separately and heavily cached
+        parsed.pois = memoryDb.pois;
+      }
+      memoryDb = parseMockDb(parsed);
+      import('./store').then(m => m.emitAllChanges());
+    }
+  } catch (error) {
+    console.error('Failed to refresh DB', error);
+  }
+};
+
 // Start loading the DB immediately if we're on the client
 if (typeof window !== 'undefined') {
   ensureDbLoaded();
@@ -233,9 +252,13 @@ export const api = {
       }
     };
 
-    db.jobs = [newJob, ...db.jobs];
-    await dbActions.addJobAction(newJob);
-    return newJob;
+    const savedJobInDb = await dbActions.addJobAction(newJob);
+    
+    // Replace the fake ID with the real ID from DB
+    const finalJob = { ...newJob, id: savedJobInDb.id };
+    
+    db.jobs = [finalJob, ...db.jobs];
+    return finalJob as Job;
   },
 
   async updateJob(id: string, updates: Partial<Job>): Promise<Job> {
@@ -398,7 +421,7 @@ export const api = {
     
     return initDb().shopLocations;
   },
-  async addShopLocation(shop: Omit<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }, 'id'>) {
+  async addShopLocation(shop: Omit<{ id: string; name: string; address: string; coords: { lat: number; lng: number }; noCommission?: boolean }, 'id'>) {
     
     const db = initDb();
     const newShop = {
@@ -409,7 +432,7 @@ export const api = {
     await dbActions.addShopLocationAction(newShop);
     return newShop;
   },
-  async updateShopLocation(id: string, updates: Partial<{ id: string; name: string; address: string; coords: { lat: number; lng: number } }>) {
+  async updateShopLocation(id: string, updates: Partial<{ id: string; name: string; address: string; coords: { lat: number; lng: number }; noCommission?: boolean }>) {
     
     const db = initDb();
     let updatedShop = null;

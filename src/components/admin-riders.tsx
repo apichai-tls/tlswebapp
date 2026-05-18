@@ -18,7 +18,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
-import { riderStore, type Rider, type Job } from "@/lib/store";
+import { riderStore, shopStore, type Rider, type Job } from "@/lib/store";
+import { useSyncExternalStore } from "react";
 import { useRiders } from "@/lib/use-riders";
 import { useJobs } from "@/lib/use-jobs";
 import { toast } from "sonner";
@@ -63,6 +64,9 @@ export function AdminRiders() {
   const [vehicleType, setVehicleType] = useState<Rider["vehicleType"]>("motorcycle");
   const [vehiclePlate, setVehiclePlate] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [branchId, setBranchId] = useState("");
+
+  const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   function openCreate() {
     setEditingId(null);
@@ -74,6 +78,7 @@ export function AdminRiders() {
     setVehicleType("motorcycle");
     setVehiclePlate("");
     setAvatarUrl("");
+    setBranchId("");
     setDialogOpen(true);
   }
 
@@ -88,6 +93,7 @@ export function AdminRiders() {
     setVehicleType(rider.vehicleType || "motorcycle");
     setVehiclePlate(rider.vehiclePlate || "");
     setAvatarUrl(rider.avatarUrl || "");
+    setBranchId(rider.branchId || "");
     setDialogOpen(true);
   }
 
@@ -98,7 +104,7 @@ export function AdminRiders() {
     }
 
     const payload = { 
-      name, nickname, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl
+      name, nickname, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl, branchId: branchId || null
     };
 
     if (editingId) {
@@ -187,6 +193,20 @@ export function AdminRiders() {
                   </div>
                 </div>
                 <div className="grid gap-2">
+                  <Label htmlFor="branchId">Branch Assignment</Label>
+                  <select
+                    id="branchId"
+                    className="flex h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                    value={branchId}
+                    onChange={(e) => setBranchId(e.target.value)}
+                  >
+                    <option value="">-- No Branch Assigned --</option>
+                    {shops.map(shop => (
+                      <option key={shop.id} value={shop.id}>{shop.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid gap-2">
                   <Label htmlFor="vehiclePlate">License Plate *</Label>
                   <Input id="vehiclePlate" value={vehiclePlate} onChange={(e) => setVehiclePlate(e.target.value)} placeholder="e.g. 1กข 1234 กทม" />
                 </div>
@@ -253,6 +273,13 @@ export function AdminRiders() {
                 {rider.vehiclePlate && (
                   <div className="mt-3 inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
                     {rider.vehicleType === 'motorcycle' ? '🏍️' : rider.vehicleType === 'truck' ? '🚚' : '🚗'} {rider.vehiclePlate}
+                  </div>
+                )}
+
+                {rider.branchId && (
+                  <div className="mt-2 text-xs font-medium text-slate-500 flex items-center justify-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-indigo-400 inline-block"></span>
+                    {shops.find(s => s.id === rider.branchId)?.name || 'Unknown Branch'}
                   </div>
                 )}
                 

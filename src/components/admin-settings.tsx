@@ -25,6 +25,7 @@ export function AdminSettings() {
   const [shopName, setShopName] = useState("");
   const [shopAddress, setShopAddress] = useState("");
   const [shopCoords, setShopCoords] = useState({ lat: 13.736717, lng: 100.523186 });
+  const [shopNoCommission, setShopNoCommission] = useState(false);
 
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [enableGoogleApi, setEnableGoogleApi] = useState(false);
@@ -92,11 +93,21 @@ export function AdminSettings() {
       return;
     }
 
+    // Clean up: If override matches the base price, remove it so it inherits naturally
+    const cleanedServicePrices: Record<string, number> = {};
+    for (const [serviceId, price] of Object.entries(servicePrices)) {
+      const baseService = services.find(s => s.id === serviceId);
+      if (baseService && baseService.price === price) {
+        continue; // Inherit from base
+      }
+      cleanedServicePrices[serviceId] = price;
+    }
+
     if (editingList) {
-      priceListStore.updatePriceList(editingList.id, { name, servicePrices });
+      priceListStore.updatePriceList(editingList.id, { name, servicePrices: cleanedServicePrices });
       toast.success("Price list updated");
     } else {
-      priceListStore.addPriceList({ name, servicePrices });
+      priceListStore.addPriceList({ name, servicePrices: cleanedServicePrices });
       toast.success("Price list created");
     }
     setIsModalOpen(false);
@@ -112,6 +123,7 @@ export function AdminSettings() {
     setShopName(shop.name);
     setShopAddress(shop.address);
     setShopCoords(shop.coords);
+    setShopNoCommission(shop.noCommission || false);
     setIsShopModalOpen(true);
   };
 
@@ -120,6 +132,7 @@ export function AdminSettings() {
     setShopName("");
     setShopAddress("");
     setShopCoords({ lat: 13.736717, lng: 100.523186 });
+    setShopNoCommission(false);
     setIsShopModalOpen(true);
   };
 
@@ -137,10 +150,10 @@ export function AdminSettings() {
       return;
     }
     if (editingShop) {
-      shopStore.updateShopLocation(editingShop.id, { name: shopName, address: shopAddress, coords: shopCoords });
+      shopStore.updateShopLocation(editingShop.id, { name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission });
       toast.success("Branch updated");
     } else {
-      shopStore.addShopLocation({ name: shopName, address: shopAddress, coords: shopCoords });
+      shopStore.addShopLocation({ name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission });
       toast.success("Branch added");
     }
     setIsShopModalOpen(false);
@@ -220,7 +233,12 @@ export function AdminSettings() {
           {shopLocations.map(shop => (
             <div key={shop.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col hover:border-emerald-200 transition-colors">
               <div className="flex justify-between items-start mb-3">
-                <h4 className="font-bold text-slate-900 text-lg">{shop.name}</h4>
+                <div className="flex flex-col gap-1">
+                  <h4 className="font-bold text-slate-900 text-lg">{shop.name}</h4>
+                  {shop.noCommission && (
+                    <Badge variant="outline" className="bg-rose-50 text-rose-600 border-rose-200 text-[10px] w-fit">ไม่มีค่าคอม</Badge>
+                  )}
+                </div>
                 <div className="flex gap-1 shrink-0">
                   <Button variant="ghost" size="icon" onClick={() => handleEditShop(shop)} className="h-8 w-8 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg">
                     <Edit3 size={14} />
@@ -418,6 +436,18 @@ export function AdminSettings() {
                     className="h-10 font-mono text-sm"
                   />
                 </div>
+              </div>
+              <div className="flex items-center gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl p-3">
+                <input 
+                  type="checkbox" 
+                  id="shopNoCommission" 
+                  checked={shopNoCommission} 
+                  onChange={(e) => setShopNoCommission(e.target.checked)}
+                  className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-600 cursor-pointer"
+                />
+                <label htmlFor="shopNoCommission" className="text-sm font-semibold text-slate-800 cursor-pointer">
+                  ไม่มีค่าคอม (No Commission)
+                </label>
               </div>
             </div>
             <DialogFooter className="p-6 border-t border-slate-100 shrink-0 bg-slate-50">

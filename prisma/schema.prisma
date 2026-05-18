@@ -22,7 +22,9 @@ model Customer {
   creditBalance  Float    @default(0)
   tier           String?  // "regular" | "bronze" | "silver" | "gold" | "platinum"
   isMember         Boolean  @default(false)
+  memberId         String?  @unique
   isVIP            Boolean  @default(false)
+  isWhatsapp       Boolean  @default(false)
   email            String?
   lineId           String?
   language         String?
@@ -69,13 +71,16 @@ model Job {
   pickupCommission    Float?
   deliveryCommission  Float?
   pickupScheduledAt   DateTime?
+  pickupScheduledEndAt DateTime?
   deliveryScheduledAt DateTime?
+  deliveryScheduledEndAt DateTime?
   pickupRiderId       String?
   deliveryRiderId     String?
   
   itemsJson           String?   // Array of { name, quantity, price }
   legsJson            String?   // JobLegs object
   remark              String?
+  adminNotesJson      String?   // Array of AdminNoteLog objects
 
   customer            Customer? @relation(fields: [customerId], references: [id])
 }
@@ -104,8 +109,10 @@ model Rider {
   nationalId     String?
   vehicleType    String?  // "motorcycle" | "car" | "truck"
   vehiclePlate   String?
+  branchId       String?  // The ShopLocation ID the rider is assigned to
   
   transactions   RiderTransaction[]
+  branch         ShopLocation? @relation(fields: [branchId], references: [id])
 }
 
 model RiderTransaction {
@@ -133,6 +140,8 @@ model ShopLocation {
   address String
   lat     Float
   lng     Float
+  noCommission Boolean @default(false)
+  riders  Rider[]
 }
 
 model POI {

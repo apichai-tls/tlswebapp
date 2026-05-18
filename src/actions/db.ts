@@ -3,7 +3,23 @@
 import { prisma } from '@/lib/prisma';
 
 // CUSTOMERS
+async function generateMemberId() {
+  const lastMember = await prisma.customer.findFirst({
+    where: { memberId: { not: null } },
+    orderBy: { memberId: 'desc' },
+  });
+  if (!lastMember || !lastMember.memberId) return "00001";
+  const num = parseInt(lastMember.memberId, 10);
+  if (isNaN(num)) return "00001";
+  return String(num + 1).padStart(5, '0');
+}
+
 export async function addCustomerAction(data: any) {
+  let memberId = null;
+  if (data.isMember) {
+    memberId = await generateMemberId();
+  }
+
   const c = await prisma.customer.create({
     data: {
       id: data.id,
@@ -16,7 +32,9 @@ export async function addCustomerAction(data: any) {
       creditBalance: data.creditBalance || 0,
       tier: data.tier,
       isMember: data.isMember || false,
+      memberId,
       isVIP: data.isVIP || false,
+      isWhatsapp: data.isWhatsapp || false,
       email: data.email,
       lineId: data.lineId,
       language: data.language,
@@ -42,8 +60,19 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.priceListId !== undefined) data.priceListId = updates.priceListId;
   if (updates.creditBalance !== undefined) data.creditBalance = updates.creditBalance;
   if (updates.tier !== undefined) data.tier = updates.tier;
-  if (updates.isMember !== undefined) data.isMember = updates.isMember;
+  
+  if (updates.isMember !== undefined) {
+    data.isMember = updates.isMember;
+    if (updates.isMember === true) {
+      const current = await prisma.customer.findUnique({ where: { id } });
+      if (current && !current.memberId) {
+        data.memberId = await generateMemberId();
+      }
+    }
+  }
+
   if (updates.isVIP !== undefined) data.isVIP = updates.isVIP;
+  if (updates.isWhatsapp !== undefined) data.isWhatsapp = updates.isWhatsapp;
   if (updates.email !== undefined) data.email = updates.email;
   if (updates.lineId !== undefined) data.lineId = updates.lineId;
   if (updates.language !== undefined) data.language = updates.language;
@@ -63,7 +92,7 @@ export async function deleteCustomerAction(id: string) {
 export async function addJobAction(data: any) {
   let jobId = data.id;
   
-  if (!jobId) {
+  if (!jobId || String(jobId).startsWith('JOB-')) {
     const year = new Date().getFullYear().toString();
     const latestJob = await prisma.job.findFirst({
       where: { id: { startsWith: year } },
@@ -114,12 +143,15 @@ export async function addJobAction(data: any) {
       pickupCommission: data.pickupCommission,
       deliveryCommission: data.deliveryCommission,
       pickupScheduledAt: data.pickupScheduledAt,
+      pickupScheduledEndAt: data.pickupScheduledEndAt,
       deliveryScheduledAt: data.deliveryScheduledAt,
+      deliveryScheduledEndAt: data.deliveryScheduledEndAt,
       pickupRiderId: data.pickupRiderId,
       deliveryRiderId: data.deliveryRiderId,
       itemsJson: data.items ? JSON.stringify(data.items) : null,
       legsJson: data.legs ? JSON.stringify(data.legs) : null,
       remark: data.remark,
+      adminNotesJson: data.adminNotesJson,
     }
   });
 }
@@ -155,6 +187,7 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
   if (updates.remark !== undefined) data.remark = updates.remark;
+  if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
 
   if (updates.pickupDistance !== undefined) data.pickupDistance = updates.pickupDistance;
@@ -294,6 +327,7 @@ export async function addShopLocationAction(data: any) {
       address: data.address,
       lat: data.coords.lat,
       lng: data.coords.lng,
+      noCommission: data.noCommission || false,
     }
   });
 }
@@ -305,6 +339,9 @@ export async function updateShopLocationAction(id: string, updates: any) {
   if (updates.coords) {
     data.lat = updates.coords.lat;
     data.lng = updates.coords.lng;
+  }
+  if (typeof updates.noCommission !== 'undefined') {
+    data.noCommission = updates.noCommission;
   }
   return prisma.shopLocation.update({ where: { id }, data });
 }

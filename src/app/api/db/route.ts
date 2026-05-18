@@ -45,12 +45,15 @@ export async function GET() {
           pickupCommission: true,
           deliveryCommission: true,
           pickupScheduledAt: true,
+          pickupScheduledEndAt: true,
           deliveryScheduledAt: true,
+          deliveryScheduledEndAt: true,
           pickupRiderId: true,
           deliveryRiderId: true,
           remark: true,
           itemsJson: true,
           legsJson: true,
+          adminNotesJson: true,
           // Exclude: bagImageUrl, billImageUrl, proofImageUrl
         }
       }),

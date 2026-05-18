@@ -19,11 +19,15 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // Detect language: if query contains Thai characters, use 'th', otherwise use 'en'
+    const hasThaiCharacters = /[ก-๙]/.test(query);
+    const language = hasThaiCharacters ? "th" : "en";
+
     // We use the Places Text Search API
     // Add location=13.7563,100.5018 (Bangkok) and radius=100000 (100km) to override Cloud Run's Singapore IP bias
     const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(
       query
-    )}&location=13.7563,100.5018&radius=100000&region=th&language=th&key=${apiKey}`;
+    )}&location=13.7563,100.5018&radius=100000&region=th&language=${language}&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();

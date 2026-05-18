@@ -2,7 +2,7 @@ import { api } from './api';
 
 export type JobStatus = "pending" | "accepted" | "pickup" | "pickup_completed" | "delivery" | "completed" | "active" | "cancelled";
 export type JobType = "pickup" | "delivery" | "full_service";
-export type ServiceType = "wash_fold" | "wash_iron_fold";
+export type ServiceType = "wash_fold" | "wash_iron_fold" | "wash_iron_hanger";
 export type TripStatus = "pending" | "in_transit" | "completed";
 
 export interface TripLeg {
@@ -31,6 +31,7 @@ export interface ShopLocation {
   name: string;
   address: string;
   coords: LatLng;
+  noCommission?: boolean;
 }
 
 export interface POI {
@@ -60,7 +61,9 @@ export interface Customer {
   creditBalance?: number; // Credit Wallet
   tier?: CustomerTier; // Legacy
   isMember?: boolean; // Legacy
+  memberId?: string;
   isVIP?: boolean;
+  isWhatsapp?: boolean;
   email?: string;
   lineId?: string;
   language?: string;
@@ -97,7 +100,9 @@ export interface Job {
   paymentMethod?: "cash" | "transfer" | "credit" | "card";
   discount?: number; // Manual adjustment/discount
   pickupScheduledAt?: Date;
+  pickupScheduledEndAt?: Date;
   deliveryScheduledAt?: Date;
+  deliveryScheduledEndAt?: Date;
   pickupRiderId?: string;
   deliveryRiderId?: string;
   items?: { name: string; quantity: number; price: number }[];
@@ -109,6 +114,14 @@ export interface Job {
 
   legs?: JobLegs;
   remark?: string;
+  adminNotesJson?: string;
+}
+
+export interface AdminNoteLog {
+  userId: string;
+  userName: string;
+  text: string;
+  timestamp: string;
 }
 
 export interface ServiceItem {
@@ -134,6 +147,7 @@ export interface Rider {
   vehicleType?: "motorcycle" | "car" | "truck";
   vehiclePlate?: string;
   commissionBalance?: number;
+  branchId?: string;
 }
 
 export interface RiderTransaction {

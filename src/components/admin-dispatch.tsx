@@ -54,7 +54,7 @@ const RIDER_COLORS = [
   '#84cc16', // lime
 ];
 
-export function AdminDispatch() {
+export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void }) {
   const allJobs = useJobs();
   const allRiders = useRiders();
   
@@ -112,13 +112,14 @@ export function AdminDispatch() {
       if (job.type !== 'delivery') {
         if (selectedRiderIds.size === 0 || !job.pickupRiderId || selectedRiderIds.has(job.pickupRiderId)) {
           const pStart = new Date(job.pickupScheduledAt || job.scheduledAt || job.createdAt);
+          const pEnd = job.pickupScheduledEndAt ? new Date(job.pickupScheduledEndAt) : addMinutes(pStart, 30);
           calendarEvents.push({
             id: `${job.id}-pickup`,
             jobId: job.id,
             type: 'pickup',
-            title: `[รับผ้า] ${job.customerName || 'Guest'} (${job.id})`,
+            title: `[รับผ้า] ${job.customerName || 'Guest'} (${job.pickupLocation})`,
             start: pStart,
-            end: addMinutes(pStart, 45), // Allocate 45 mins
+            end: pEnd, // Use custom end time if available
             riderId: job.pickupRiderId,
             jobStatus: job.status,
           });
@@ -132,13 +133,14 @@ export function AdminDispatch() {
         if (isPickupDone || job.type === 'delivery') { // Always show if it's a delivery-only job
           if (selectedRiderIds.size === 0 || !job.deliveryRiderId || selectedRiderIds.has(job.deliveryRiderId)) {
             const dStart = new Date(job.deliveryScheduledAt || new Date(job.createdAt).getTime() + 86400000);
+            const dEnd = job.deliveryScheduledEndAt ? new Date(job.deliveryScheduledEndAt) : addMinutes(dStart, 30);
             calendarEvents.push({
               id: `${job.id}-delivery`,
               jobId: job.id,
               type: 'delivery',
-              title: `[ส่งผ้า] ${job.customerName || 'Guest'} (${job.id})`,
+              title: `[ส่งผ้า] ${job.customerName || 'Guest'} (${job.dropoffLocation})`,
               start: dStart,
-              end: addMinutes(dStart, 45),
+              end: dEnd,
               riderId: job.deliveryRiderId,
               jobStatus: job.status,
             });
@@ -154,13 +156,27 @@ export function AdminDispatch() {
     const e = event as CalendarEvent;
     try {
       if (e.type === 'pickup') {
-        await jobStore.assignPickupRider(e.jobId, e.riderId || "", start);
+        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end, pickupRiderId: e.riderId || null });
       } else {
-        await jobStore.assignDeliveryRider(e.jobId, e.riderId || "", start);
+        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end, deliveryRiderId: e.riderId || null });
       }
       toast.success(`Updated ${e.type} time successfully`);
     } catch (error) {
       toast.error("Failed to update time");
+    }
+  };
+
+  const onEventResize = async ({ event, start, end }: any) => {
+    const e = event as CalendarEvent;
+    try {
+      if (e.type === 'pickup') {
+        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end });
+      } else {
+        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end });
+      }
+      toast.success(`Updated ${e.type} duration successfully`);
+    } catch (error) {
+      toast.error("Failed to update duration");
     }
   };
 
@@ -241,92 +257,76 @@ export function AdminDispatch() {
 
     let opacity = isEventCompleted ? 0.7 : 0.95;
     
-    // Distinguish pickup vs delivery with a left border
-    let borderLeft = event.type === 'pickup' ? '4px solid #f59e0b' : '4px solid #4f46e5';
-
     return {
       style: {
         backgroundColor,
-        borderRadius: '6px',
+        borderRadius: '4px',
         opacity,
         color: 'white',
-        border: 'none',
-        borderLeft,
+        border: '1px solid rgba(255,255,255,0.7)',
         display: 'block',
-        fontSize: '12px',
+        fontSize: '10px',
         fontWeight: 500,
-        boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+        boxShadow: 'none',
       }
     };
   };
 
   return (
-    <div className="flex-1 flex flex-col md:flex-row overflow-hidden h-full bg-slate-50/50">
+    <div className="flex-1 flex flex-col overflow-hidden h-full bg-slate-50/50">
       <style dangerouslySetInnerHTML={{__html: `
         .rbc-toolbar button { font-family: inherit; font-weight: 500; border-radius: 6px; }
         .rbc-toolbar button.rbc-active { background-color: #312e81; color: white; border-color: #312e81; }
         .rbc-header { padding: 8px 0; font-weight: 600; text-transform: uppercase; font-size: 11px; color: #64748b; }
         .rbc-today { background-color: #f8fafc; }
-        .rbc-event-content { padding: 2px 4px; }
+        .rbc-event { overflow: hidden; }
+        .rbc-event-label { display: none !important; }
+        .rbc-event-content { padding: 1px 3px; white-space: normal; line-height: 1.2; word-break: break-word; text-overflow: ellipsis; }
       `}} />
-
-      {/* Left Sidebar - Rider Filters */}
-      <div className="w-full md:w-64 border-r border-slate-200 bg-white flex flex-col h-full shrink-0">
-        <div className="p-4 border-b border-slate-200 bg-slate-50/50">
-          <h3 className="font-bold text-slate-900 flex items-center gap-2">
-            <Truck size={16} className="text-indigo-600" />
-            Riders Filter
-          </h3>
-          <p className="text-xs text-slate-500 mt-1">Select riders to view their schedule</p>
-        </div>
-        
-        <div className="p-4 border-b border-slate-100">
-          <Label className="flex items-center gap-2 cursor-pointer group">
-            <input 
-              type="checkbox"
-              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4 cursor-pointer"
-              checked={selectedRiderIds.size === allRiders.length && allRiders.length > 0} 
-              onChange={toggleAllRiders}
-            />
-            <span className="text-sm font-semibold group-hover:text-indigo-600 transition-colors">Select All Riders</span>
-          </Label>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {allRiders.map(rider => (
-            <Label 
-              key={rider.id}
-              className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors ${selectedRiderIds.has(rider.id) ? 'bg-indigo-50/50' : 'hover:bg-slate-50'}`}
-            >
-              <input 
-                type="checkbox"
-                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4 cursor-pointer"
-                checked={selectedRiderIds.has(rider.id)} 
-                onChange={() => toggleRider(rider.id)}
-              />
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <div className="w-3 h-3 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: getRiderColor(rider.id) }} />
-                <img src={rider.avatarUrl} alt="" className="w-6 h-6 rounded-full bg-slate-200 object-cover shrink-0" />
-                <span className="text-sm font-medium truncate">{rider.name}</span>
-              </div>
-              <div className={`w-2 h-2 rounded-full shrink-0 ${rider.status === 'online' ? 'bg-emerald-500' : rider.status === 'busy' ? 'bg-amber-500' : 'bg-slate-300'}`} />
-            </Label>
-          ))}
-        </div>
-      </div>
 
       {/* Main Calendar Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         <div className="p-4 border-b border-slate-200 bg-white flex justify-between items-center shrink-0">
-          <div>
+          <div className="shrink-0">
             <h2 className="text-lg font-bold text-slate-900">Task Schedule Calendar</h2>
-            <p className="text-xs text-slate-500 flex gap-4 mt-1">
+            <div className="text-xs text-slate-500 flex gap-4 mt-1">
               <span className="flex items-center gap-1"><div className="w-2 h-4 rounded-sm bg-amber-500" /> Pickup</span>
               <span className="flex items-center gap-1"><div className="w-2 h-4 rounded-sm bg-indigo-500" /> Delivery</span>
               <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-slate-400" /> Unassigned</span>
-            </p>
+            </div>
           </div>
-          <Label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors">
+
+          {/* Rider Filters inside header */}
+          <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar flex-1 mx-6 justify-center">
+            <div className="flex items-center gap-2 pr-4 border-r border-slate-200 shrink-0">
+              <Truck size={16} className="text-indigo-600" />
+              <span className="text-sm font-bold text-slate-900">Riders</span>
+              <Button 
+                variant={selectedRiderIds.size === allRiders.length && allRiders.length > 0 ? "default" : "outline"} 
+                size="sm" 
+                onClick={toggleAllRiders} 
+                className="h-7 text-xs ml-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                All
+              </Button>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              {allRiders.map(rider => (
+                <button 
+                  key={rider.id}
+                  onClick={() => toggleRider(rider.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors shrink-0 ${selectedRiderIds.has(rider.id) ? 'bg-indigo-50 border-indigo-200 text-indigo-700 shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                >
+                  <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: getRiderColor(rider.id) }} />
+                  <img src={rider.avatarUrl} alt="" className="w-5 h-5 rounded-full object-cover shrink-0 bg-slate-100" />
+                  <span className="text-xs font-semibold">{rider.nickname || rider.name.split(' ')[0]}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors shrink-0">
             <input 
               type="checkbox"
               className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4 cursor-pointer"
@@ -349,9 +349,11 @@ export function AdminDispatch() {
             onView={(view: any) => setCurrentView(view)}
             views={['month', 'week', 'day', 'agenda']}
             onEventDrop={onEventDrop}
+            onEventResize={onEventResize}
             onSelectEvent={onSelectEvent}
             eventPropGetter={eventStyleGetter}
-            resizable={false}
+            dayLayoutAlgorithm="no-overlap"
+            resizable={true}
             step={30}
             timeslots={2}
             min={new Date(new Date().setHours(8, 0, 0, 0))}
@@ -385,7 +387,17 @@ export function AdminDispatch() {
                 variant="outline" 
                 size="sm"
                 className="absolute top-2 right-2 text-[10px] h-6 px-2 border-indigo-200 text-indigo-600 hover:bg-indigo-50"
-                onClick={() => setViewJobId(editingEvent?.jobId || null)}
+                onClick={() => {
+                  if (onEditJob && editingEvent) {
+                    const fullJob = allJobs.find(j => j.id === editingEvent.jobId);
+                    if (fullJob) {
+                      setEditingEvent(null);
+                      onEditJob(fullJob);
+                    }
+                  } else {
+                    setViewJobId(editingEvent?.jobId || null);
+                  }
+                }}
               >
                 View Details
               </Button>

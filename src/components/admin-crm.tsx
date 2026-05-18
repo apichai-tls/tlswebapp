@@ -4,6 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database } from "lucide-react";
@@ -77,8 +78,7 @@ export function AdminCRM() {
 
   // Form State
   const [name, setName] = useState("");
-  const [countryCode, setCountryCode] = useState("+66");
-  const [phoneNumber, setPhoneNumber] = useState("");
+  const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [coords, setCoords] = useState({ lat: 13.736717, lng: 100.523186 });
   const [priceListId, setPriceListId] = useState("regular");
@@ -90,16 +90,25 @@ export function AdminCRM() {
   const [remark, setRemark] = useState("");
   const [secondaryAddress, setSecondaryAddress] = useState("");
   const [dob, setDob] = useState("");
+  const handleDobChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    let val = e.target.value.replace(/\D/g, '');
+    if (val.length > 4) {
+      val = val.substring(0, 2) + '/' + val.substring(2, 4) + '/' + val.substring(4, 8);
+    } else if (val.length > 2) {
+      val = val.substring(0, 2) + '/' + val.substring(2, 4);
+    }
+    setDob(val);
+  };
   const [taxId, setTaxId] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [isVIP, setIsVIP] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [isMember, setIsMember] = useState(false);
+  const [isWhatsapp, setIsWhatsapp] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
 
   const resetForm = () => {
     setName("");
-    setCountryCode("+66");
-    setPhoneNumber("");
+    setPhone("");
     setAddress("");
     setCoords({ lat: 13.736717, lng: 100.523186 });
     setPriceListId("regular");
@@ -112,7 +121,8 @@ export function AdminCRM() {
     setTaxId("");
     setCompanyName("");
     setIsVIP(false);
-    setAdvancedOpen(false);
+    setIsMember(false);
+    setIsWhatsapp(false);
     setEditingCustomer(null);
     setSelectedLocation(null);
   };
@@ -121,24 +131,7 @@ export function AdminCRM() {
     if (customer) {
       setEditingCustomer(customer);
       setName(customer.name);
-      
-      let matchedCode = "+66";
-      let num = customer.phone;
-      
-      if (num.startsWith("+")) {
-        const match = num.match(/^(\+\d{1,4})\s*(.*)$/);
-        if (match) {
-          matchedCode = match[1];
-          num = match[2];
-        }
-      } else if (num.startsWith("0")) {
-        matchedCode = "+66";
-        num = num.substring(1);
-      }
-      
-      setCountryCode(matchedCode);
-      setPhoneNumber(num);
-      
+      setPhone(customer.phone);
       setAddress(customer.defaultAddress);
       setCoords(customer.defaultCoords);
       setPriceListId(customer.priceListId || "regular");
@@ -152,10 +145,9 @@ export function AdminCRM() {
       setTaxId(customer.taxId || "");
       setCompanyName(customer.companyName || "");
       setIsVIP(customer.isVIP || false);
+      setIsMember(customer.isMember || false);
+      setIsWhatsapp(customer.isWhatsapp || false);
       
-      setAdvancedOpen(
-        !!(customer.email || customer.lineId || customer.remark || customer.secondaryAddress || customer.taxId || customer.companyName)
-      );
       setSelectedLocation(null);
     } else {
       resetForm();
@@ -164,21 +156,26 @@ export function AdminCRM() {
   };
 
   const handleSave = () => {
-    if (!name.trim() || !phoneNumber.trim() || !address.trim()) {
+    if (!name.trim() || !phone.trim() || !address.trim()) {
       toast.error("Please fill in all required fields.");
       return;
     }
 
-    // Format final phone number, stripping leading zero if user accidentally typed it
-    const cleanNumber = phoneNumber.replace(/^0+/, '');
-    const finalPhone = `${countryCode} ${cleanNumber}`.trim();
+    let finalPriceListId = priceListId;
+    if (isMember) {
+      const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
+      if (memberList) finalPriceListId = memberList.id;
+    } else {
+      const regList = priceLists.find(p => p.isDefault);
+      if (regList) finalPriceListId = regList.id;
+    }
 
     const customerData = {
       name,
-      phone: finalPhone,
+      phone: phone,
       defaultAddress: address,
       defaultCoords: coords,
-      priceListId,
+      priceListId: finalPriceListId,
       email: email.trim() || undefined,
       lineId: lineId.trim() || undefined,
       language,
@@ -188,6 +185,8 @@ export function AdminCRM() {
       taxId: taxId.trim() || undefined,
       companyName: companyName.trim() || undefined,
       isVIP: isVIP,
+      isMember: isMember,
+      isWhatsapp: isWhatsapp,
     };
 
     if (editingCustomer) {
@@ -207,14 +206,12 @@ export function AdminCRM() {
     }
   };
 
-  // Derived Analytics Map
   const customerAnalytics = useMemo(() => {
     const analytics: Record<string, { jobsCount: number; ltv: number }> = {};
     customers.forEach(c => {
       analytics[c.id] = { jobsCount: 0, ltv: 0 };
     });
     
-    // We try to match jobs to customer by phone or exact name in this naive implementation
     jobs.forEach(job => {
       const matchedCustomer = customers.find(c => 
         (job.customerPhone && c.phone === job.customerPhone) || 
@@ -349,6 +346,11 @@ export function AdminCRM() {
                                 ฿{customer.creditBalance?.toLocaleString()}
                               </Badge>
                             )}
+                            {customer.memberId && (
+                              <Badge className="bg-blue-100 text-blue-800 border-none shadow-sm py-0 px-1.5 h-5 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                                ID: {customer.memberId}
+                              </Badge>
+                            )}
                           </div>
                           <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
                             <Phone size={12} className="text-slate-400" />
@@ -444,36 +446,18 @@ export function AdminCRM() {
             
             <div className="space-y-1">
               <Label htmlFor="phone" className="text-xs font-semibold">Phone Number *</Label>
-              <div className="flex">
-                <Input 
-                  list="country-codes"
-                  className="h-8 px-1.5 rounded-l-md border border-slate-200 border-r-0 bg-slate-50 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 z-10 w-[80px] text-center"
-                  value={countryCode}
-                  onChange={e => {
-                    let val = e.target.value.replace(/[^0-9+]/g, '');
-                    if (val.length > 0 && !val.startsWith('+')) val = '+' + val;
-                    setCountryCode(val);
-                  }}
-                  placeholder="+66"
+              <PhoneInput value={phone} onChange={setPhone} className="h-8" />
+              <label className="flex items-center gap-1.5 mt-1 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={isWhatsapp} 
+                  onChange={e => setIsWhatsapp(e.target.checked)}
+                  className="rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 h-3 w-3"
                 />
-                <datalist id="country-codes">
-                  <option value="+66" />
-                  <option value="+1" />
-                  <option value="+44" />
-                  <option value="+65" />
-                  <option value="+81" />
-                  <option value="+86" />
-                  <option value="+886" />
-                </datalist>
-                <Input 
-                  id="phone" 
-                  type="tel"
-                  placeholder="8X XXX XXXX or (404) 985-3708" 
-                  value={phoneNumber} 
-                  onChange={e => setPhoneNumber(e.target.value.replace(/[^0-9\s()\-]/g, ''))} 
-                  className="h-8 text-xs border-slate-200 rounded-l-none flex-1" 
-                />
-              </div>
+                <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
+                  <MessageCircle size={10} className="text-emerald-500" /> WhatsApp Available
+                </span>
+              </label>
             </div>
 
             <div className="space-y-1 col-span-2">
@@ -516,8 +500,8 @@ export function AdminCRM() {
             </div>
             
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">Secondary Address</Label>
-              <Input placeholder="e.g. Office / Lobby" value={secondaryAddress} onChange={e => setSecondaryAddress(e.target.value)} className="h-8 text-xs border-slate-200" />
+              <Label className="text-xs font-semibold">Floor/Room</Label>
+              <Input placeholder="e.g. 15th Floor, Room 1502" value={secondaryAddress} onChange={e => setSecondaryAddress(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
 
             <div className="space-y-1">
@@ -526,13 +510,13 @@ export function AdminCRM() {
             </div>
 
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">LINE ID / WhatsApp</Label>
+              <Label className="text-xs font-semibold">LINE ID</Label>
               <Input placeholder="@lineid" value={lineId} onChange={e => setLineId(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
 
             <div className="space-y-1">
               <Label className="text-xs font-semibold">Date of Birth</Label>
-              <Input type="date" value={dob} onChange={e => setDob(e.target.value)} className="h-8 text-xs border-slate-200" />
+              <Input type="text" placeholder="DD/MM/YYYY" maxLength={10} value={dob} onChange={handleDobChange} className="h-8 text-xs border-slate-200" />
             </div>
 
             <div className="space-y-1 col-span-3">
@@ -551,30 +535,39 @@ export function AdminCRM() {
             </div>
 
             <div className="space-y-1">
-              <Label className="text-xs font-semibold text-indigo-600 flex items-center gap-1"><Crown size={12}/> Price List / Lang</Label>
+              <Label className="text-xs font-semibold text-indigo-600 flex items-center gap-1"><Crown size={12}/> Preferred Language</Label>
               <div className="flex gap-2">
                 <select 
-                  className="w-2/3 h-8 px-2 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={priceListId}
-                  onChange={e => setPriceListId(e.target.value)}
-                >
-                  {priceLists.map(pl => (
-                    <option key={pl.id} value={pl.id}>{pl.name}</option>
-                  ))}
-                </select>
-                <select 
-                  className="w-1/3 h-8 px-1 rounded-md border border-slate-200 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+                  className="w-full h-8 px-2 rounded-md border border-slate-200 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" 
                   value={language} 
                   onChange={e => setLanguage(e.target.value)}
                 >
-                  <option value="th">🇹🇭</option>
-                  <option value="en">🇬🇧</option>
-                  <option value="zh">🇨🇳</option>
+                  <option value="th">🇹🇭 Thai</option>
+                  <option value="en">🇬🇧 English</option>
+                  <option value="zh">🇨🇳 Chinese</option>
                 </select>
               </div>
             </div>
             
-            <div className="col-span-1 md:col-span-3 mt-2">
+            <div className="col-span-1 md:col-span-3 mt-2 flex flex-col gap-2">
+              <label className="flex items-center gap-3 p-3 bg-blue-50/80 rounded-lg border border-blue-200 cursor-pointer hover:bg-blue-50 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={isMember} 
+                  onChange={e => setIsMember(e.target.checked)}
+                  className="h-5 w-5 rounded border-blue-300 text-blue-600 focus:ring-blue-600 bg-white"
+                />
+                <div>
+                  <p className="text-sm font-bold text-blue-800 flex items-center gap-1.5">
+                    <Users size={16} className="text-blue-600" /> Member
+                    {editingCustomer?.memberId && (
+                      <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded ml-2">ID: {editingCustomer.memberId}</span>
+                    )}
+                  </p>
+                  <p className="text-xs text-blue-600/80">Apply member pricing list automatically. {editingCustomer ? '' : '(ID will be generated upon save)'}</p>
+                </div>
+              </label>
+
               <label className="flex items-center gap-3 p-3 bg-indigo-50/80 rounded-lg border border-indigo-200 cursor-pointer hover:bg-indigo-50 transition-colors">
                 <input 
                   type="checkbox" 
@@ -584,7 +577,7 @@ export function AdminCRM() {
                 />
                 <div>
                   <p className="text-sm font-bold text-indigo-800 flex items-center gap-1.5"><Crown size={16} className="text-indigo-600" /> VIP Customer</p>
-                  <p className="text-xs text-indigo-600/80">Enable special delivery rates (฿4/km) and disable rider commission</p>
+                  <p className="text-xs text-indigo-600/80">Enable special delivery rates (฿4/km) and apply VIP pricing list</p>
                 </div>
               </label>
             </div>

@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, calculateFee, shopStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
 import type { MapMarker } from "@/components/map-component";
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { LocationInput } from "@/components/location-input";
 import { AdminDashboard } from "@/components/admin-dashboard";
 import { AdminAllJobs } from "@/components/admin-all-jobs";
@@ -68,6 +69,9 @@ import {
   Calculator,
   ShieldAlert,
   Loader2,
+  ChevronLeft,
+  ChevronRight,
+  Database
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -143,7 +147,25 @@ export default function AdminPage() {
   const riders = useRiders();
   const customers = useCustomers();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
+  const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
+  
+  const washServices = useMemo(() => {
+    const filtered = services.filter(s => s.name.toLowerCase().startsWith('wash'));
+    return filtered.sort((a, b) => {
+      const getRank = (name: string) => {
+        const lower = name.toLowerCase();
+        if (lower.includes('hanger')) return 3;
+        if (lower.includes('iron')) return 2;
+        if (lower.includes('fold')) return 1;
+        return 4;
+      };
+      return getRank(a.name) - getRank(b.name);
+    });
+  }, [services]);
+
   const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify">("dashboard");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   // Restore tab from URL hash
   useEffect(() => {
@@ -152,6 +174,14 @@ export default function AdminPage() {
     if (validTabs.includes(hash)) {
       setActiveTab(hash as any);
     }
+  }, []);
+
+  // Periodic data refresh (polling for Live GPS & Status updates)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      import("@/lib/api").then(m => m.refreshDb());
+    }, 15000); // 15 seconds
+    return () => clearInterval(interval);
   }, []);
 
   const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify") => {
@@ -165,6 +195,9 @@ export default function AdminPage() {
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [selectedVIPLabel, setSelectedVIPLabel] = useState("");
+  const [selectedMemberLabel, setSelectedMemberLabel] = useState("");
+  const [selectedMemberId, setSelectedMemberId] = useState("");
+  const [customerPriceListId, setCustomerPriceListId] = useState<string | null>(null);
 
   const filteredCustomers = useMemo(() => {
     if (!customerSearchQuery) return [];
@@ -188,27 +221,90 @@ export default function AdminPage() {
   const [deliveryDist, setDeliveryDist] = useState(0);
 
   const [selectedStoreIndex, setSelectedStoreIndex] = useState(0);
-  const [serviceType, setServiceType] = useState<ServiceType>("wash_fold");
-  const roundToNearest5 = (date: Date) => {
-    const ms = 1000 * 60 * 5;
+  const [serviceType, setServiceType] = useState<string>("");
+  const roundToNearest30 = (date: Date) => {
+    const ms = 1000 * 60 * 30;
     return new Date(Math.round(date.getTime() / ms) * ms);
   };
 
-  const [pickupScheduledTime, setPickupScheduledTime] = useState(format(roundToNearest5(new Date()), "yyyy-MM-dd'T'HH:mm"));
-  const [deliveryScheduledTime, setDeliveryScheduledTime] = useState(format(roundToNearest5(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+  const [pickupScheduledTime, setPickupScheduledTime] = useState(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
+  const [deliveryScheduledTime, setDeliveryScheduledTime] = useState(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [pickupRiderId, setPickupRiderId] = useState("");
   const [deliveryRiderId, setDeliveryRiderId] = useState("");
   const [bagImageUrls, setBagImageUrls] = useState<string[]>([]);
+  const [billImageUrls, setBillImageUrls] = useState<string[]>([]);
   const [isFreeDelivery, setIsFreeDelivery] = useState(false);
   const [adminNote, setAdminNote] = useState("");
   const [showAdminNote, setShowAdminNote] = useState(false);
-  const [handoverType, setHandoverType] = useState<"meet" | "lobby">("meet");
+  const [adminLogs, setAdminLogs] = useState<AdminNoteLog[]>([]);
+  const [adminNoteInput, setAdminNoteInput] = useState("");
+
+  const handleAddAdminLog = (text: string, isSystem = false) => {
+    if (!text.trim()) return;
+    const newLog: AdminNoteLog = {
+      userId: isSystem ? "system" : (user?.id || "unknown"),
+      userName: isSystem ? "System (CRM)" : (user?.name || "Admin"),
+      text: text.trim(),
+      timestamp: new Date().toISOString()
+    };
+    setAdminLogs(prev => [...prev, newLog]);
+    setAdminNoteInput("");
+  };
+  const [isPickupLobby, setIsPickupLobby] = useState(false);
+  const [isPickupMeet, setIsPickupMeet] = useState(false);
+  const [isDeliveryLobby, setIsDeliveryLobby] = useState(false);
+  const [isDeliveryMeet, setIsDeliveryMeet] = useState(false);
   const [serviceSpeed, setServiceSpeed] = useState<"standard" | "express_50" | "express_100">("standard");
+  const [clothingItems, setClothingItems] = useState<Record<string, { selected: boolean; quantity: number }>>({
+    polo: { selected: false, quantity: 1 },
+    tshirt: { selected: false, quantity: 1 },
+    pants: { selected: false, quantity: 1 },
+    dress: { selected: false, quantity: 1 },
+    bedsheet: { selected: false, quantity: 1 },
+    other: { selected: false, quantity: 1 },
+  });
+  const [otherClothingName, setOtherClothingName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [laundryPrice, setLaundryPrice] = useState(0);
+  const [laundryPrice, setLaundryPrice] = useState(220); // Default for wash_fold
+  const [serviceWeight, setServiceWeight] = useState(2);
+  
+  const handleServiceOrSpeedChange = (newServiceId: string, newSpeed: "standard" | "express_50" | "express_100", newWeight: number, priceListId: string | null = customerPriceListId) => {
+    setServiceType(newServiceId);
+    setServiceSpeed(newSpeed);
+    setServiceWeight(newWeight);
+
+    const baseService = services.find(s => s.id === newServiceId);
+    let pricePerKg = baseService ? baseService.price : 110;
+
+    if (newServiceId === "other") {
+      if (serviceType !== "other") {
+        setLaundryPrice(0);
+      }
+      return;
+    }
+
+    if (priceListId) {
+      const customPl = priceLists.find(pl => pl.id === priceListId);
+      if (customPl && customPl.servicePrices[newServiceId] !== undefined) {
+        pricePerKg = customPl.servicePrices[newServiceId];
+      }
+    } else {
+      const defaultPl = priceLists.find(pl => pl.isDefault);
+      if (defaultPl && defaultPl.servicePrices[newServiceId] !== undefined) {
+        pricePerKg = defaultPl.servicePrices[newServiceId];
+      }
+    }
+
+    let multiplier = 1;
+    if (newSpeed === "express_50") multiplier = 1.5;
+    else if (newSpeed === "express_100") multiplier = 2;
+
+    setLaundryPrice(Math.round(pricePerKg * newWeight * multiplier));
+  };
   const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
+  const billUploaderRef = useRef<MultiImageUploaderRef>(null);
 
   const handleLogout = () => {
     logout();
@@ -275,19 +371,37 @@ export default function AdminPage() {
     setDeliveryCoords(null);
     setIsPickup(true);
     setIsDelivery(true);
-    setServiceType("wash_fold");
+    const firstWash = washServices.length > 0 ? washServices[0].id : "";
+    setServiceType(firstWash);
+    setServiceSpeed("standard");
+    setServiceWeight(2);
     setPaymentMethod("unpaid");
-    setLaundryPrice(0);
+    setCustomerPriceListId(null);
+    if (firstWash) {
+      handleServiceOrSpeedChange(firstWash, "standard", 2, null);
+    } else {
+      setLaundryPrice(0);
+    }
     setEditingFeeLock(null);
     setSelectedVIPLabel("");
-    setBagImageUrls([]);
+    setSelectedMemberLabel("");
+    setSelectedMemberId("");
     setAdminNote("");
+    setBagImageUrls([]);
+    setBillImageUrls([]);
+    setIsPickupLobby(false);
+    setIsPickupMeet(false);
+    setIsDeliveryLobby(false);
+    setIsDeliveryMeet(false);
+    setAdminNote("");
+    setAdminLogs([]);
+    setAdminNoteInput("");
     setPickupRiderId("");
     setDeliveryRiderId("");
     setPickupDist(0);
     setDeliveryDist(0);
-    setPickupScheduledTime(format(roundToNearest5(new Date()), "yyyy-MM-dd'T'HH:mm"));
-    setDeliveryScheduledTime(format(roundToNearest5(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+    setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
+    setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setDialogOpen(true);
   };
 
@@ -306,7 +420,7 @@ export default function AdminPage() {
     else setDeliveryCoords(null);
     setPickupDist(job.pickupDistance || 0);
     setDeliveryDist(job.deliveryDistance || 0);
-    setServiceType((job.serviceType as ServiceType) || "wash_fold");
+    setServiceType(job.serviceType || "wash_fold");
     setPaymentMethod(job.paymentMethod || "unpaid");
     setLaundryPrice(Math.max(0, (job.totalAmount || 0) - (job.fee || 0)));
     setEditingFeeLock(job.fee);
@@ -317,17 +431,21 @@ export default function AdminPage() {
       (job.customerPhone && c.phone === job.customerPhone)
     );
     setSelectedVIPLabel(matchedCustomer?.isVIP ? "VIP" : "");
+    setSelectedMemberLabel(matchedCustomer?.isMember ? "Member" : "");
+    setSelectedMemberId(matchedCustomer?.memberId || "");
+    setCustomerPriceListId(matchedCustomer?.priceListId || null);
     
     setBagImageUrls([]);
+    setBillImageUrls([]);
     fetch(`/api/jobs/${job.id}/details`)
       .then(r => r.json())
       .then(data => {
-        let bags: string[] = [];
-        if (data.bagImageUrl) {
+        const parseUrls = (imgUrl: any) => {
+          if (!imgUrl) return [];
           try {
-            const parsed = JSON.parse(data.bagImageUrl);
-            const rawBags = Array.isArray(parsed) ? parsed : [parsed];
-            bags = rawBags.map((url: string) => {
+            const parsed = JSON.parse(imgUrl);
+            const rawUrls = Array.isArray(parsed) ? parsed : [parsed];
+            return rawUrls.map((url: string) => {
               if (typeof url === 'string' && !url.startsWith('http') && !url.startsWith('/')) {
                 const cleanPath = url.replace(/^["'\\]+|["'\\]+$/g, '');
                 return `https://storage.googleapis.com/tls-images-test/${cleanPath}`;
@@ -335,22 +453,36 @@ export default function AdminPage() {
               return url;
             });
           } catch {
-            const url = data.bagImageUrl;
+            const url = imgUrl;
             if (typeof url === 'string' && !url.startsWith('http') && !url.startsWith('/')) {
               const cleanPath = url.replace(/^["'\\]+|["'\\]+$/g, '');
-              bags = [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
+              return [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
             } else {
-              bags = [url];
+              return [url];
             }
           }
-        }
-        setBagImageUrls(bags);
+        };
+        setBagImageUrls(parseUrls(data.bagImageUrl));
+        setBillImageUrls(parseUrls(data.billImageUrl));
       })
-      .catch(e => console.error("Failed to fetch bag images", e));
+      .catch(e => console.error("Failed to fetch job details images", e));
     
     setAdminNote(job.remark || "");
-    setPickupScheduledTime(format(roundToNearest5(new Date(job.pickupScheduledAt || job.scheduledAt || Date.now())), "yyyy-MM-dd'T'HH:mm"));
-    setDeliveryScheduledTime(format(roundToNearest5(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+    try {
+      if (job.adminNotesJson) {
+        setAdminLogs(JSON.parse(job.adminNotesJson));
+      } else {
+        setAdminLogs([]);
+      }
+    } catch (e) {
+      setAdminLogs([]);
+    }
+    setIsPickupLobby(job.remark ? job.remark.includes("ไปรับ: ฝาก Lobby") : false);
+    setIsPickupMeet(job.remark ? job.remark.includes("ไปรับ: นัดรับ") : false);
+    setIsDeliveryLobby(job.remark ? job.remark.includes("ไปส่ง: ฝาก Lobby") : false);
+    setIsDeliveryMeet(job.remark ? job.remark.includes("ไปส่ง: นัดรับ") : false);
+    setPickupScheduledTime(format(roundToNearest30(new Date(job.pickupScheduledAt || job.scheduledAt || Date.now())), "yyyy-MM-dd'T'HH:mm"));
+    setDeliveryScheduledTime(format(roundToNearest30(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setPickupRiderId(job.pickupRiderId || "");
     setDeliveryRiderId(job.deliveryRiderId || "");
 
@@ -382,9 +514,13 @@ export default function AdminPage() {
     
     setIsSubmitting(true);
     let finalBagImageUrls: string[] = [];
+    let finalBillImageUrls: string[] = [];
     try {
       if (uploaderRef.current) {
         finalBagImageUrls = await uploaderRef.current.startUpload();
+      }
+      if (billUploaderRef.current) {
+        finalBillImageUrls = await billUploaderRef.current.startUpload();
       }
     } catch (err) {
       setIsSubmitting(false);
@@ -400,25 +536,29 @@ export default function AdminPage() {
       dropoffCoords: isDelivery && deliveryCoords ? deliveryCoords : shop.coords,
       scheduledAt: pDate || null,
       pickupScheduledAt: pDate || null,
+      pickupScheduledEndAt: pDate ? new Date(pDate.getTime() + 30 * 60000) : null,
       deliveryScheduledAt: isDelivery ? (deliveryScheduledTime ? parseTime(deliveryScheduledTime) : null) : null,
+      deliveryScheduledEndAt: isDelivery && deliveryScheduledTime ? new Date(parseTime(deliveryScheduledTime).getTime() + 30 * 60000) : null,
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null,
+      billImageUrl: finalBillImageUrls.length > 0 ? JSON.stringify(finalBillImageUrls) : null,
       paymentMethod: paymentMethod === 'unpaid' ? null : (paymentMethod as any),
       fee,
       totalAmount: laundryPrice + fee,
       serviceType,
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
-      pickupCommission: (isPickup && !selectedVIPLabel) ? Math.floor(pickupDist * 2) * 2 : 0,
+      pickupCommission: (isPickup && !selectedVIPLabel) ? Math.floor(pickupDist) * 2 : 0,
       deliveryCommission: (isDelivery && !selectedVIPLabel) ? Math.floor(deliveryDist) * 2 : 0,
       remark: [
         isFreeDelivery ? "ส่งฟรี" : "",
         serviceSpeed === "express_50" ? "ด่วน Express 50%" : "",
         serviceSpeed === "express_100" ? "ด่วนพิเศษ Express 100%" : "",
-        handoverType === "lobby" ? "ฝากไว้ที่ Lobby / Concierge" : "นัดรับ/เจอตัว",
-        adminNote ? `Note: ${adminNote}` : ""
+        isPickup ? (isPickupLobby ? "ไปรับ: ฝาก Lobby/Concierge" : (isPickupMeet ? "ไปรับ: นัดรับ/เจอตัว" : "")) : "",
+        isDelivery ? (isDeliveryLobby ? "ไปส่ง: ฝาก Lobby/Concierge" : (isDeliveryMeet ? "ไปส่ง: นัดรับ/เจอตัว" : "")) : "",
       ].filter(Boolean).join(" | ") || null,
+      adminNotesJson: adminLogs.length > 0 ? JSON.stringify(adminLogs) : null,
     };
 
     // Clean up nulls to avoid passing explicit nulls where the schema might not expect them, 
@@ -440,8 +580,8 @@ export default function AdminPage() {
       setDeliveryLoc("");
       setIsDeliveryDirty(false);
       setIsFreeDelivery(false);
-      setPickupScheduledTime(format(roundToNearest5(new Date()), "yyyy-MM-dd'T'HH:mm"));
-      setDeliveryScheduledTime(format(roundToNearest5(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+      setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
+      setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
       setPaymentMethod("unpaid");
       setPickupRiderId("");
       setDeliveryRiderId("");
@@ -451,7 +591,6 @@ export default function AdminPage() {
       setSelectedVIPLabel("");
       setAdminNote("");
       setShowAdminNote(false);
-      setHandoverType("meet");
       setEditingJobId(null);
       setDialogOpen(false);
     } catch (err: any) {
@@ -474,143 +613,177 @@ export default function AdminPage() {
         key="admin-page"
       >
         {/* Sidebar */}
-        <aside className="hidden lg:flex w-64 flex-col border-r border-slate-200 bg-white">
-          <div className="flex h-20 items-center justify-center border-b border-slate-100 px-6">
-            <Logo />
+        <aside className={`hidden lg:flex flex-col border-r border-slate-200 bg-white transition-all duration-300 sticky top-0 h-screen z-20 ${isSidebarCollapsed ? "w-[72px]" : "w-64"}`}>
+          <div className="flex h-20 items-center justify-center border-b border-slate-100 px-4 overflow-hidden">
+            {isSidebarCollapsed ? (
+              <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center font-black text-white text-xl">T</div>
+            ) : (
+              <Logo />
+            )}
           </div>
-          <nav className="flex-1 px-4 py-6 space-y-1">
+          
+          <button 
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
+            className="absolute -right-4 top-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-full p-1.5 text-slate-500 hover:text-indigo-600 hover:border-indigo-200 shadow-md z-10 transition-transform"
+            title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+          >
+            {isSidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          </button>
+
+          <nav className="flex-1 px-3 py-6 space-y-1 overflow-y-auto overflow-x-hidden hide-scrollbar">
             {hasAccess("dashboard") && (
-              <motion.div
-                onClick={() => handleTabChange("dashboard")}
+              <motion.a
+                href="#dashboard"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("dashboard"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Dashboard"
               >
-                <LayoutDashboard size={18} />
-                Dashboard
-              </motion.div>
+                <LayoutDashboard size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Dashboard</span>}
+              </motion.a>
             )}
             
             {hasAccess("services") && (
-              <motion.div
-                onClick={() => handleTabChange("services")}
+              <motion.a
+                href="#services"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("services"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "services" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "services" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Service Menu"
               >
-                <Tag size={18} />
-                Service Menu
-              </motion.div>
+                <Tag size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Service Menu</span>}
+              </motion.a>
             )}
 
             {hasAccess("pos") && (
-              <motion.div
-                onClick={() => handleTabChange("pos")}
+              <motion.a
+                href="#pos"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("pos"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="POS"
               >
-                <CreditCard size={18} />
-                POS
-              </motion.div>
+                <CreditCard size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">POS</span>}
+              </motion.a>
             )}
 
             {hasAccess("jobs") && (
-              <motion.div
-                onClick={() => handleTabChange("jobs")}
+              <motion.a
+                href="#jobs"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("jobs"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="All Jobs"
               >
-                <Package size={18} />
-                All Jobs
-              </motion.div>
+                <Package size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">All Jobs</span>}
+              </motion.a>
             )}
-
 
             {hasAccess("customers") && (
-              <motion.div
-                onClick={() => handleTabChange("customers")}
+              <motion.a
+                href="#customers"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("customers"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Customers (CRM)"
               >
-                <Users size={18} />
-                Customers (CRM)
-              </motion.div>
+                <Users size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Customers (CRM)</span>}
+              </motion.a>
             )}
+            
             {hasAccess("dispatch") && (
-              <motion.div
-                onClick={() => handleTabChange("dispatch")}
+              <motion.a
+                href="#dispatch"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("dispatch"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Dispatch Schedule"
               >
-                <CalendarClock size={18} />
-                Dispatch Schedule
-              </motion.div>
+                <CalendarClock size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Dispatch Schedule</span>}
+              </motion.a>
             )}
 
             {hasAccess("riders") && (
-              <motion.div
-                onClick={() => handleTabChange("riders")}
+              <motion.a
+                href="#riders"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("riders"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Riders"
               >
-                <Truck size={18} />
-                Riders
-              </motion.div>
+                <Truck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Riders</span>}
+              </motion.a>
             )}
 
             {hasAccess("map") && (
-              <motion.div
-                onClick={() => handleTabChange("map")}
+              <motion.a
+                href="#map"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("map"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Live Map"
               >
-                <Map size={18} />
-                Live Map
-              </motion.div>
+                <Map size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Live Map</span>}
+              </motion.a>
             )}
             
             {hasAccess("calculator") && (
               <Link href="/tools/fee-calculator" className="block">
                 <motion.div
                   whileHover={{ x: 2 }}
-                  className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+                  className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+                  title="Distance Calculator"
                 >
-                  <Calculator size={18} />
-                  Distance Calculator
+                  <Calculator size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                  {!isSidebarCollapsed && <span className="truncate">Distance Calculator</span>}
                 </motion.div>
               </Link>
             )}
 
             {hasAccess("settings") && (
-              <motion.div
-                onClick={() => handleTabChange("settings")}
+              <motion.a
+                href="#settings"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("settings"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Settings"
               >
-                <Settings size={18} />
-                Settings
-              </motion.div>
+                <Settings size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Settings</span>}
+              </motion.a>
             )}
             
             {hasAccess("users") && (
-              <motion.div
-                onClick={() => handleTabChange("users")}
+              <motion.a
+                href="#users"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("users"); }}
                 whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "users" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "users" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Manage Users"
               >
-                <ShieldCheck size={18} />
-                Manage Users
-              </motion.div>
+                <ShieldCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Manage Users</span>}
+              </motion.a>
             )}
           </nav>
-          <div className="border-t border-slate-200 px-4 py-4 space-y-2">
+          <div className={`border-t border-slate-200 px-3 py-4 space-y-2`}>
             <Link href="/privacy">
-              <Button variant="ghost" size="sm" className="w-full gap-2 text-slate-500 hover:text-slate-900 cursor-pointer justify-start">
-                <ShieldCheck size={16} />
-                Privacy Policy
+              <Button variant="ghost" size="sm" className={`w-full gap-2 text-slate-500 hover:text-slate-900 cursor-pointer ${isSidebarCollapsed ? 'px-0 justify-center' : 'justify-start'}`} title="Privacy Policy">
+                <ShieldCheck size={isSidebarCollapsed ? 20 : 16} className="shrink-0" />
+                {!isSidebarCollapsed && <span>Privacy Policy</span>}
               </Button>
             </Link>
-            <Button variant="ghost" size="sm" className="w-full gap-2 text-red-500 hover:text-red-600 hover:bg-red-50 cursor-pointer justify-start" onClick={handleLogout}>
-              <LogOut size={16} />
-              Logout
+            <Button variant="ghost" size="sm" className={`w-full gap-2 text-red-500 hover:text-red-600 hover:bg-red-50 cursor-pointer ${isSidebarCollapsed ? 'px-0 justify-center' : 'justify-start'}`} onClick={handleLogout} title="Logout">
+              <LogOut size={isSidebarCollapsed ? 20 : 16} className="shrink-0" />
+              {!isSidebarCollapsed && <span>Logout</span>}
             </Button>
           </div>
         </aside>
@@ -650,110 +823,139 @@ export default function AdminPage() {
                     </Button>
                   </motion.div>
               <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
-                <DialogHeader className="p-4 pb-3 border-b border-slate-200 bg-white shrink-0">
-                  <DialogTitle className="flex items-center text-lg pr-6">
+                <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-row items-center gap-4">
+                  <DialogTitle className="flex items-center text-lg shrink-0">
                     <div className="flex items-center gap-2">
                       <Package size={18} />
                       {editingJobId ? "Edit Job Details" : "Create New Job"}
                     </div>
                     {selectedVIPLabel && (
-                      <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-auto mt-0">
+                      <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
                         VIP {selectedVIPLabel}
                       </Badge>
                     )}
                   </DialogTitle>
+
+                  <div className="relative flex-1 max-w-md mx-auto z-50 mt-0">
+                    <div className="relative">
+                      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        id="customer-search"
+                        placeholder="Search customer by name or phone..."
+                        value={customerSearchQuery}
+                        disabled={!!editingJobId}
+                        onChange={(e) => {
+                          setCustomerSearchQuery(e.target.value);
+                          setShowCustomerDropdown(true);
+                        }}
+                        onFocus={() => {
+                          if (customerSearchQuery) setShowCustomerDropdown(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => setShowCustomerDropdown(false), 200);
+                        }}
+                        className="h-9 pl-9 text-sm bg-slate-50 border-slate-200 focus-visible:ring-indigo-500 rounded-full w-full"
+                      />
+                    </div>
+                    
+                    {showCustomerDropdown && customerSearchQuery && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-60 overflow-y-auto top-[100%]">
+                        {filteredCustomers.length > 0 ? (
+                          filteredCustomers.map(c => (
+                            <div
+                              key={c.id}
+                              className="px-3 py-2 text-sm cursor-pointer hover:bg-slate-50 flex items-center justify-between border-b border-slate-50 last:border-0"
+                              onClick={() => {
+                                setCustomerName(c.name);
+                                setCustomerPhone(c.phone);
+                                setPickupLoc(c.defaultAddress);
+                                setPickupCoords(c.defaultCoords);
+                                setDeliveryLoc(c.defaultAddress);
+                                setDeliveryCoords(c.defaultCoords);
+                                setIsDeliveryDirty(false);
+                                setSelectedStoreIndex(getClosestShopIndex(c.defaultCoords, shopLocations));
+                                setEditingFeeLock(null);
+                                
+                                if (c.isVIP) {
+                                  setSelectedVIPLabel("VIP");
+                                } else {
+                                  setSelectedVIPLabel("");
+                                }
+                                if (c.isMember) {
+                                  setSelectedMemberLabel("Member");
+                                  setSelectedMemberId(c.memberId || "");
+                                } else {
+                                  setSelectedMemberLabel("");
+                                  setSelectedMemberId("");
+                                }
+                                setCustomerPriceListId(c.priceListId || null);
+                                handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
+                                
+                                setCustomerSearchQuery("");
+                                setShowCustomerDropdown(false);
+                                
+                                if (c.remark && c.remark.trim() !== "") {
+                                  handleAddAdminLog(`CRM Remark: ${c.remark}`, true);
+                                }
+                              }}
+                            >
+                              <div>
+                                <p className="font-semibold text-slate-800">{c.name}</p>
+                                <p className="text-xs text-slate-500">{c.phone}</p>
+                              </div>
+                              {c.isVIP && (
+                                <Badge variant="outline" className="text-[10px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
+                                  VIP
+                                </Badge>
+                              )}
+                              {c.isMember && (
+                                <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
+                                  Member
+                                </Badge>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="px-3 py-4 text-center text-sm text-slate-500 bg-slate-50">
+                            No customers found. Fill details manually below.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="w-8 shrink-0"></div>
                 </DialogHeader>
 
                 {/* Main Content Grid */}
                 <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3">
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-full">
                     
-                    {/* COL 1: Basic Info (span 3) */}
+                    {/* COL 1: Basic Info (span 4) */}
                     <motion.div
-                      className="lg:col-span-3 flex flex-col gap-2 overflow-y-auto pr-1 pb-4 lg:pb-0"
+                      className="lg:col-span-4 flex flex-col gap-2 overflow-y-auto pr-1 pb-4 lg:pb-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.1, duration: 0.3 }}
                     >
-                      {/* Customer Info Card */}
-                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-2">
-                        <div className="space-y-2 relative">
-                          <Label htmlFor="customer-search" className="flex items-center gap-1.5 text-sm font-medium">
-                            <Search size={14} className="text-blue-600" />
-                            Search Customer
-                          </Label>
-                          <Input
-                            id="customer-search"
-                            placeholder="Search by name or phone..."
-                            value={customerSearchQuery}
-                            disabled={!!editingJobId}
-                            onChange={(e) => {
-                              setCustomerSearchQuery(e.target.value);
-                              setShowCustomerDropdown(true);
-                            }}
-                            onFocus={() => {
-                              if (customerSearchQuery) setShowCustomerDropdown(true);
-                            }}
-                            onBlur={() => {
-                              // Small delay to allow clicking on dropdown items
-                              setTimeout(() => setShowCustomerDropdown(false), 200);
-                            }}
-                            className="h-8 text-xs"
-                          />
-                          
-                          {showCustomerDropdown && customerSearchQuery && (
-                            <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto top-[100%]">
-                              {filteredCustomers.length > 0 ? (
-                                filteredCustomers.map(c => (
-                                  <div
-                                    key={c.id}
-                                    className="px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 flex items-center justify-between border-b border-slate-50 last:border-0"
-                                    onClick={() => {
-                                      setCustomerName(c.name);
-                                      setCustomerPhone(c.phone);
-                                      setPickupLoc(c.defaultAddress);
-                                      setPickupCoords(c.defaultCoords);
-                                      setDeliveryLoc(c.defaultAddress);
-                                      setDeliveryCoords(c.defaultCoords);
-                                      setIsDeliveryDirty(false);
-                                      setSelectedStoreIndex(getClosestShopIndex(c.defaultCoords, shopLocations));
-                                      setEditingFeeLock(null);
-                                      
-                                      if (c.isVIP) {
-                                        setSelectedVIPLabel("VIP");
-                                      } else {
-                                        setSelectedVIPLabel("");
-                                      }
-                                      
-                                      setCustomerSearchQuery("");
-                                      setShowCustomerDropdown(false);
-                                    }}
-                                  >
-                                    <div>
-                                      <p className="font-semibold text-slate-800">{c.name}</p>
-                                      <p className="text-[10px] text-slate-500">{c.phone}</p>
-                                    </div>
-                                    {c.isVIP && (
-                                      <Badge variant="outline" className="text-[9px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
-                                        VIP
-                                      </Badge>
-                                    )}
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="px-3 py-4 text-center text-xs text-slate-500 bg-slate-50">
-                                  No customers found. Fill details manually below.
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 mt-2">
-                          <div className="space-y-2">
+                      {/* Customer Info & Logistics Card */}
+                      <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2 shrink-0">
+                        <div className="grid grid-cols-2 gap-2 pb-1 border-b border-slate-100">
+                          <div className="space-y-1">
                             <div className="flex items-center justify-between">
-                              <Label htmlFor="custName" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                                <User size={12} />
-                                Customer Name <span className="text-red-500">*</span>
+                              <Label htmlFor="custName" className="flex items-center gap-1 text-xs font-medium text-slate-500 whitespace-nowrap">
+                                <User size={12} className="shrink-0" />
+                                <span>Name <span className="text-red-500">*</span></span>
+                                {selectedVIPLabel && (
+                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold shrink-0">
+                                    VIP
+                                  </Badge>
+                                )}
+                                {selectedMemberLabel && (
+                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0">
+                                    {selectedMemberId ? `ID: ${selectedMemberId}` : 'Member'}
+                                  </Badge>
+                                )}
                               </Label>
                             </div>
                             <Input
@@ -768,26 +970,41 @@ export default function AdminPage() {
                               className="h-8 text-xs"
                             />
                           </div>
-                          <div className="space-y-2">
+                          <div className="space-y-1">
                             <Label htmlFor="custPhone" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
                               <Phone size={12} />
                               Phone
                             </Label>
-                            <Input
-                              id="custPhone"
+                            <PhoneInput
                               placeholder="Phone number"
                               value={customerPhone}
-                              disabled={!!editingJobId}
-                              onChange={(e) => setCustomerPhone(e.target.value)}
-                              className="h-8 text-xs"
+                              onChange={setCustomerPhone}
+                              className="w-full h-8"
                             />
                           </div>
                         </div>
-                      </div>
-
-                      {/* Service Info Card */}
-                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-3">
-                        <div className="space-y-2">
+                        {customerName.trim() && customerPhone.trim() && !customers.some(c => c.name === customerName || c.phone === customerPhone) && (
+                          <div className="pb-2 border-b border-slate-100 shrink-0">
+                            <Button 
+                              type="button" 
+                              onClick={() => {
+                                customerStore.addCustomer({
+                                  name: customerName.trim(),
+                                  phone: customerPhone.trim(),
+                                  defaultAddress: pickupLoc || "Unknown",
+                                  defaultCoords: pickupCoords || { lat: 13.736717, lng: 100.523186 },
+                                  priceListId: "regular"
+                                });
+                                toast.success("Customer saved to database!");
+                              }}
+                              className="w-full h-8 text-xs font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 gap-1.5"
+                            >
+                              <Database size={14} />
+                              Save Customer to DB
+                            </Button>
+                          </div>
+                        )}
+                        <div className="space-y-1 mb-1 pb-1 border-b border-slate-100 shrink-0">
                           <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
                             <Store size={14} className="text-blue-600" />
                             Origin Store Branch
@@ -807,236 +1024,421 @@ export default function AdminPage() {
                           </select>
                         </div>
 
-                        <div className="space-y-2">
-                          <Label htmlFor="service-select" className="flex items-center gap-1.5 text-xs font-medium">
-                            <ArrowDownUp size={14} className="text-purple-600" />
-                            Laundry Service Type
+                        <div className="flex items-center gap-4 shrink-0">
+                          <Label className="flex items-center gap-1.5 cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              checked={isPickup}
+                              onChange={(e) => {
+                                setIsPickup(e.target.checked);
+                                setEditingFeeLock(null);
+                              }}
+                              className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                            />
+                            <span className="text-sm font-medium text-slate-700">บริการไปรับ (Pickup)</span>
                           </Label>
-                          <select 
-                            id="service-select"
-                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                            value={serviceType}
-                            onChange={(e) => setServiceType(e.target.value as ServiceType)}
-                          >
-                            <option value="wash_fold">Wash/Fold</option>
-                            <option value="wash_iron_fold">Wash/Iron/Fold</option>
-                          </select>
-                        </div>
-
-                        <div className="space-y-2 pt-1">
-                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Service Speed</Label>
-                          <div className="grid grid-cols-3 gap-2">
-                            <Label className={`flex items-center justify-center text-[10px] p-2 border rounded-lg cursor-pointer transition-colors ${serviceSpeed === "standard" ? "border-indigo-600 bg-indigo-50 font-bold text-indigo-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
-                              <input type="radio" className="hidden" checked={serviceSpeed === "standard"} onChange={() => setServiceSpeed("standard")} />
-                              Standard
-                            </Label>
-                            <Label className={`flex items-center justify-center text-[10px] p-2 border rounded-lg cursor-pointer transition-colors ${serviceSpeed === "express_50" ? "border-amber-500 bg-amber-50 font-bold text-amber-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
-                              <input type="radio" className="hidden" checked={serviceSpeed === "express_50"} onChange={() => setServiceSpeed("express_50")} />
-                              Express 50%
-                            </Label>
-                            <Label className={`flex items-center justify-center text-[10px] p-2 border rounded-lg cursor-pointer transition-colors ${serviceSpeed === "express_100" ? "border-red-500 bg-red-50 font-bold text-red-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
-                              <input type="radio" className="hidden" checked={serviceSpeed === "express_100"} onChange={() => setServiceSpeed("express_100")} />
-                              Express 100%
-                            </Label>
-                          </div>
-                        </div>
-                      </div>
-
-                    </motion.div>
-
-                    {/* COL 2: Logistics & Map (span 5) */}
-                    <motion.div
-                      className="lg:col-span-5 flex flex-col gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.15, duration: 0.3 }}
-                    >
-                      <div className="flex items-center gap-4 shrink-0">
-                        <Label className="flex items-center gap-2 cursor-pointer">
-                          <input 
-                            type="checkbox" 
-                            checked={isPickup}
-                            onChange={(e) => {
-                              setIsPickup(e.target.checked);
-                              setEditingFeeLock(null);
-                            }}
-                            className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                          />
-                          <span className="text-sm font-medium text-slate-700">บริการไปรับ (Pickup)</span>
-                        </Label>
-                        <Label className="flex items-center gap-2 cursor-pointer">
-                          <input 
-                            type="checkbox" 
-                            checked={isDelivery}
-                            onChange={(e) => {
-                              setIsDelivery(e.target.checked);
-                              setEditingFeeLock(null);
-                            }}
-                            className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                          />
-                          <span className="text-sm font-medium text-slate-700">บริการไปส่ง (Delivery)</span>
-                        </Label>
-                      </div>
-
-                      <div className="flex flex-col gap-3 shrink-0">
-                        {isPickup && (
-                          <div className="space-y-2">
-                            <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
-                              <MapPin size={14} className="text-emerald-600" />
-                              ที่อยู่ไปรับ (Pickup Address) <span className="text-red-500">*</span>
-                            </Label>
-                            <LocationInput
-                              id="pickup-location"
-                              placeholder="Customer pickup address"
-                              value={pickupLoc}
-                              onChange={(v) => {
-                                setPickupLoc(v);
-                              }}
-                              onSelectLocation={(loc) => {
-                                const newCoords = { lat: loc.lat, lng: loc.lng };
-                                setPickupCoords(newCoords);
-                                setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                          <Label className="flex items-center gap-1.5 cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              checked={isDelivery}
+                              onChange={(e) => {
+                                setIsDelivery(e.target.checked);
                                 setEditingFeeLock(null);
-                                if (!isDeliveryDirty) {
-                                  setDeliveryLoc(loc.name);
-                                  setDeliveryCoords(newCoords);
-                                }
                               }}
+                              className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
                             />
-                          </div>
-                        )}
+                            <span className="text-sm font-medium text-slate-700">บริการไปส่ง (Delivery)</span>
+                          </Label>
+                        </div>
 
-                        {isDelivery && (
-                          <div className="space-y-2">
-                            <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
-                              <Navigation size={14} className="text-red-600" />
-                              ที่อยู่ไปส่ง (Delivery Address) <span className="text-red-500">*</span>
-                            </Label>
-                            <LocationInput
-                              id="delivery-location"
-                              placeholder="Customer delivery address"
-                              value={deliveryLoc}
-                              onChange={(v) => {
-                                setDeliveryLoc(v);
-                                setIsDeliveryDirty(true);
-                              }}
-                              onSelectLocation={(loc) => {
-                                const newCoords = { lat: loc.lat, lng: loc.lng };
-                                setDeliveryCoords(newCoords);
-                                setIsDeliveryDirty(true);
-                                setEditingFeeLock(null);
-                                if (!isPickup) {
+                        <div className="flex flex-col gap-2 shrink-0">
+                          {isPickup && (
+                            <div className="space-y-1">
+                              <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
+                                <MapPin size={14} className="text-emerald-600" />
+                                ที่อยู่ไปรับ (Pickup Address) <span className="text-red-500">*</span>
+                              </Label>
+                              <LocationInput
+                                id="pickup-location"
+                                placeholder="Customer pickup address"
+                                value={pickupLoc}
+                                onChange={(v) => {
+                                  setPickupLoc(v);
+                                }}
+                                onSelectLocation={(loc) => {
+                                  const newCoords = { lat: loc.lat, lng: loc.lng };
+                                  setPickupCoords(newCoords);
                                   setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
-                                }
-                              }}
-                            />
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Interactive Map */}
-                      <div className="flex-1 min-h-[160px] lg:h-auto rounded-lg overflow-hidden border border-slate-200 mt-1 relative">
-                        <CreateJobMap 
-                          branchCoords={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
-                          pickupCoords={isPickup ? pickupCoords : null}
-                          deliveryCoords={isDelivery ? deliveryCoords : null}
-                          onMarkerDrag={(type, coords) => {
-                            setEditingFeeLock(null);
-                            if (type === 'pickup') {
-                              setPickupCoords(coords);
-                              setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
-                              if (!isDeliveryDirty) {
-                                setDeliveryCoords(coords);
-                              }
-                            } else if (type === 'delivery') {
-                              setDeliveryCoords(coords);
-                              setIsDeliveryDirty(true);
-                              if (!isPickup) {
-                                setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
-                              }
-                            }
-                          }}
-                          onDistanceCalculated={(p, d) => {
-                            setPickupDist(p);
-                            setDeliveryDist(d);
-                          }}
-                        />
-                      </div>
-
-                      {/* Scheduling Block moved from Col 3 */}
-                      <div className="space-y-2 pt-1 border-t border-slate-100">
-                        {isPickup && (
-                          <div className="space-y-2">
-                            <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-xs font-medium">
-                              <Clock size={14} className="text-amber-500" />
-                              Pickup Scheduled Time & Rider
-                            </Label>
-                            <div className="grid grid-cols-[1.6fr_1fr] gap-2">
-                              <DateTimePicker
-                                id="schedule-pickup"
-                                value={pickupScheduledTime}
-                                onChange={setPickupScheduledTime}
+                                  setEditingFeeLock(null);
+                                  if (!isDeliveryDirty) {
+                                    setDeliveryLoc(loc.name);
+                                    setDeliveryCoords(newCoords);
+                                  }
+                                }}
                               />
-                              <select
-                                className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                                value={pickupRiderId}
-                                onChange={(e) => setPickupRiderId(e.target.value)}
-                              >
-                                <option value="">-- Assign Rider --</option>
-                                {riders.map(r => (
-                                  <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
-                                ))}
-                              </select>
                             </div>
-                          </div>
-                        )}
+                          )}
 
-                        <div className={`grid grid-cols-[1.6fr_1fr] gap-2 ${isPickup ? 'pt-2 border-t border-slate-100' : ''}`}>
-                          <div className="space-y-2">
+                          {isDelivery && (
+                            <div className="space-y-1">
+                              <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
+                                <Navigation size={14} className="text-red-600" />
+                                ที่อยู่ไปส่ง (Delivery Address) <span className="text-red-500">*</span>
+                              </Label>
+                              <LocationInput
+                                id="delivery-location"
+                                placeholder="Customer delivery address"
+                                value={deliveryLoc}
+                                onChange={(v) => {
+                                  setDeliveryLoc(v);
+                                  setIsDeliveryDirty(true);
+                                }}
+                                onSelectLocation={(loc) => {
+                                  const newCoords = { lat: loc.lat, lng: loc.lng };
+                                  setDeliveryCoords(newCoords);
+                                  setIsDeliveryDirty(true);
+                                  setEditingFeeLock(null);
+                                  if (!isPickup) {
+                                    setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                                  }
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Interactive Map */}
+                        <div className="min-h-[80px] h-[80px] lg:h-[90px] shrink-0 rounded-lg overflow-hidden border border-slate-200 mt-1 relative">
+                          <CreateJobMap 
+                            branchCoords={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
+                            pickupCoords={isPickup ? pickupCoords : null}
+                            deliveryCoords={isDelivery ? deliveryCoords : null}
+                            onMarkerDrag={(type, coords) => {
+                              setEditingFeeLock(null);
+                              if (type === 'pickup') {
+                                setPickupCoords(coords);
+                                setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                                if (!isDeliveryDirty) {
+                                  setDeliveryCoords(coords);
+                                }
+                              } else if (type === 'delivery') {
+                                setDeliveryCoords(coords);
+                                setIsDeliveryDirty(true);
+                                if (!isPickup) {
+                                  setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                                }
+                              }
+                            }}
+                            onDistanceCalculated={(p, d) => {
+                              setPickupDist(p);
+                              setDeliveryDist(d);
+                            }}
+                          />
+                        </div>
+
+                        {/* Scheduling Block moved from Col 3 */}
+                        <div className="space-y-1 pt-1 border-t border-slate-100">
+                          {isPickup && (
+                            <div className="space-y-1">
+                              <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-xs font-medium">
+                                <Clock size={14} className="text-amber-500" />
+                                Pickup Time & Rider
+                              </Label>
+                              <div className="grid grid-cols-[1.6fr_1fr] gap-2">
+                                <DateTimePicker
+                                  id="schedule-pickup"
+                                  value={pickupScheduledTime}
+                                  onChange={setPickupScheduledTime}
+                                />
+                                <select
+                                  className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                                  value={pickupRiderId}
+                                  onChange={(e) => setPickupRiderId(e.target.value)}
+                                >
+                                  <option value="">-- Assign Rider --</option>
+                                  {riders.map(r => (
+                                    <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="flex items-center gap-3 mt-1">
+                                <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                  <input 
+                                    type="checkbox" 
+                                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                                    checked={isPickupMeet}
+                                    onChange={(e) => {
+                                      setIsPickupMeet(e.target.checked);
+                                      if (e.target.checked) setIsPickupLobby(false);
+                                    }}
+                                  />
+                                  <span className="text-xs text-slate-700">นัดรับ/เจอตัว</span>
+                                </Label>
+                                <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                  <input 
+                                    type="checkbox" 
+                                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                                    checked={isPickupLobby}
+                                    onChange={(e) => {
+                                      setIsPickupLobby(e.target.checked);
+                                      if (e.target.checked) setIsPickupMeet(false);
+                                    }}
+                                  />
+                                  <span className="text-xs text-slate-700">ฝากไว้ที่ Lobby</span>
+                                </Label>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className={`space-y-0.5 ${isPickup ? 'pt-0.5 border-t border-slate-100' : ''}`}>
                             <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-xs font-medium">
                               <CalendarClock size={14} className="text-blue-500" />
                               {isDelivery ? "Delivery Time & Rider" : "Est. Return Date"}
                             </Label>
-                            <div className="flex flex-col gap-2">
+                            <div className={isDelivery ? "grid grid-cols-[1.6fr_1fr] gap-1" : "flex flex-col gap-1"}>
                               <DateTimePicker
-                                id="schedule-delivery"
-                                value={deliveryScheduledTime}
-                                onChange={setDeliveryScheduledTime}
-                              />
+                                  id="schedule-delivery"
+                                  value={deliveryScheduledTime}
+                                  onChange={setDeliveryScheduledTime}
+                                />
+                                {isDelivery && (
+                                  <select
+                                    className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                                    value={deliveryRiderId}
+                                    onChange={(e) => setDeliveryRiderId(e.target.value)}
+                                  >
+                                    <option value="">-- Assign Rider --</option>
+                                    {riders.map(r => (
+                                      <option key={`d-${r.id}`} value={r.id}>{r.name}</option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
                               {isDelivery && (
-                                <select
-                                  className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                                  value={deliveryRiderId}
-                                  onChange={(e) => setDeliveryRiderId(e.target.value)}
-                                >
-                                  <option value="">-- Assign Delivery Rider --</option>
-                                  {riders.map(r => (
-                                    <option key={`d-${r.id}`} value={r.id}>{r.name}</option>
-                                  ))}
-                                </select>
+                                <div className="flex items-center gap-3 mt-1">
+                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                                      checked={isDeliveryMeet}
+                                      onChange={(e) => {
+                                        setIsDeliveryMeet(e.target.checked);
+                                        if (e.target.checked) setIsDeliveryLobby(false);
+                                      }}
+                                    />
+                                    <span className="text-xs text-slate-700">นัดรับ/เจอตัว</span>
+                                  </Label>
+                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                                      checked={isDeliveryLobby}
+                                      onChange={(e) => {
+                                        setIsDeliveryLobby(e.target.checked);
+                                        if (e.target.checked) setIsDeliveryMeet(false);
+                                      }}
+                                    />
+                                    <span className="text-xs text-slate-700">ฝากไว้ที่ Lobby</span>
+                                  </Label>
+                                </div>
                               )}
                             </div>
                           </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="payment-method" className="flex items-center gap-1.5 text-xs font-medium">
-                              <CreditCard size={14} className="text-slate-600" />
-                              Payment Status
+                      </div>
+
+                    </motion.div>
+
+                    {/* COL 2: Logistics & Map (span 4) */}
+                    <motion.div
+                      className="lg:col-span-4 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.15, duration: 0.3 }}
+                    >
+                      {/* Laundry Bag Photo Upload */}
+                      <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm space-y-1">
+                        <Label className="flex items-center gap-1.5 text-xs font-medium">
+                          <Package size={14} className="text-indigo-600" />
+                          Laundry Bag Photos
+                        </Label>
+                        <MultiImageUploader
+                          ref={uploaderRef}
+                          entityType="job"
+                          entityId={Date.now().toString()} // Temp ID since job isn't created yet
+                          subType="bags"
+                          value={bagImageUrls}
+                          onValueChange={setBagImageUrls}
+                          maxFiles={5}
+                        />
+                      </div>
+
+                      {/* Laundry Service Type & Speed */}
+                      <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm space-y-1.5">
+                        <div className={`grid gap-2 ${serviceType === "other" ? "grid-cols-1" : "grid-cols-[1fr_80px]"}`}>
+                          <div className="space-y-1">
+                            <Label htmlFor="service-select" className="flex items-center gap-1.5 text-xs font-medium">
+                              <ArrowDownUp size={14} className="text-purple-600" />
+                              Laundry Service Type
                             </Label>
-                            <select
-                              id="payment-method"
+                            <select 
+                              id="service-select"
                               className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                              value={paymentMethod}
-                              onChange={(e) => setPaymentMethod(e.target.value)}
+                              value={serviceType}
+                              onChange={(e) => handleServiceOrSpeedChange(e.target.value, serviceSpeed, serviceWeight)}
                             >
-                              <option value="unpaid">ยังไม่จ่าย (Unpaid)</option>
-                              <option value="transfer">โอนเงิน (PromptPay)</option>
-                              <option value="cash">จ่ายแล้ว (Cash)</option>
-                              <option value="credit">หักเครดิต (Member)</option>
+                              <option value="" disabled>Select a service</option>
+                              {washServices.map(s => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                              <option value="other">Other (Custom Price)</option>
                             </select>
+                          </div>
+                          {serviceType !== "other" && (
+                            <div className="space-y-1">
+                              <Label htmlFor="service-weight" className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                                Weight (kg)
+                              </Label>
+                              <Input 
+                                id="service-weight"
+                                type="number" 
+                                min="2"
+                                className="h-8 text-xs text-center px-2"
+                                value={serviceWeight || ""}
+                                onChange={(e) => handleServiceOrSpeedChange(serviceType, serviceSpeed, Math.max(2, parseInt(e.target.value) || 2))}
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="space-y-1 pt-1 border-t border-slate-100">
+                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">ประเภทผ้า (Clothing Types)</Label>
+                          <div className="grid grid-cols-2 gap-1">
+                            {[
+                              { id: 'polo', label: 'เสื้อโปโล' },
+                              { id: 'tshirt', label: 'เสื้อยืด' },
+                              { id: 'pants', label: 'กางเกง' },
+                              { id: 'dress', label: 'ชุดเดรส' },
+                              { id: 'bedsheet', label: 'ผ้าปูที่นอน' },
+                            ].map(item => (
+                              <div key={item.id} className="flex items-center gap-2">
+                                <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
+                                  <input 
+                                    type="checkbox" 
+                                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-3.5 w-3.5 shrink-0"
+                                    checked={clothingItems[item.id].selected}
+                                    onChange={(e) => setClothingItems(prev => ({
+                                      ...prev,
+                                      [item.id]: { ...prev[item.id], selected: e.target.checked }
+                                    }))}
+                                  />
+                                  <span className="truncate">{item.label}</span>
+                                </Label>
+                                {clothingItems[item.id].selected && (
+                                  <Input 
+                                    type="number" 
+                                    min="1"
+                                    className="w-12 h-6 text-xs text-center p-1 shrink-0"
+                                    value={clothingItems[item.id].quantity}
+                                    onChange={(e) => setClothingItems(prev => ({
+                                      ...prev,
+                                      [item.id]: { ...prev[item.id], quantity: Math.max(1, parseInt(e.target.value) || 1) }
+                                    }))}
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-1 pt-1 border-t border-slate-100">
+                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Service Speed</Label>
+                          <div className="flex items-center gap-2">
+                            <Label className="flex items-center gap-1 cursor-pointer">
+                              <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} />
+                              <span className="text-xs">Standard</span>
+                            </Label>
+                            <Label className="flex items-center gap-1 cursor-pointer">
+                              <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} />
+                              <span className="text-xs">Exp 50%</span>
+                            </Label>
+                            <Label className="flex items-center gap-1 cursor-pointer">
+                              <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} />
+                              <span className="text-xs">Exp 100%</span>
+                            </Label>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1 pt-1 border-t border-slate-100">
+                          <Label htmlFor="payment-method" className="flex items-center gap-1.5 text-xs font-medium">
+                            <CreditCard size={14} className="text-slate-600" />
+                            Payment Status
+                          </Label>
+                          <select
+                            id="payment-method"
+                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+                            value={paymentMethod}
+                            onChange={(e) => setPaymentMethod(e.target.value)}
+                          >
+                            <option value="unpaid">ยังไม่จ่าย</option>
+                            <option value="transfer">โอนเงิน</option>
+                            <option value="cash">จ่ายแล้ว</option>
+                            <option value="credit">หักเครดิต</option>
+                          </select>
+                        </div>
+
+                        {/* Admin Notes & Options */}
+                        <div className="space-y-1 pt-2 border-t border-slate-100 mt-auto">
+                          <Label className="text-[10px] font-medium text-slate-500">Admin Note Logs</Label>
+                          <div className="flex flex-col gap-1.5">
+                            {adminLogs.length > 0 ? (
+                              <div className="max-h-24 overflow-y-auto space-y-1 bg-slate-50 p-1.5 rounded border border-slate-100 text-[10px]">
+                                {adminLogs.map((log, i) => (
+                                  <div key={i} className="flex gap-1.5 group relative pr-4">
+                                    <span className="text-slate-400 shrink-0">[{format(new Date(log.timestamp), "HH:mm")}]</span>
+                                    <span className={log.userId === 'system' ? 'text-indigo-600 font-medium' : 'text-slate-700 font-medium'}>{log.userName}:</span>
+                                    <span className="text-slate-600 break-words flex-1">{log.text}</span>
+                                    {log.userId === 'system' && (
+                                      <button 
+                                        type="button"
+                                        onClick={() => setAdminLogs(prev => prev.filter((_, idx) => idx !== i))}
+                                        className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity p-0.5"
+                                        title="Remove CRM Remark"
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-slate-400 italic px-1">No notes yet...</div>
+                            )}
+                            <div className="flex gap-1">
+                              <Input
+                                placeholder="Type a note & press Enter..."
+                                value={adminNoteInput}
+                                onChange={(e) => setAdminNoteInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleAddAdminLog(adminNoteInput);
+                                  }
+                                }}
+                                className="h-7 text-xs bg-white flex-1"
+                              />
+                              <Button 
+                                type="button" 
+                                size="sm" 
+                                className="h-7 px-2 bg-slate-800 hover:bg-slate-700"
+                                onClick={() => handleAddAdminLog(adminNoteInput)}
+                              >
+                                <Plus size={14} />
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </motion.div>
+                      </motion.div>
 
                     {/* COL 3: Fulfillment & Summary (span 4) */}
                     <motion.div
@@ -1045,133 +1447,71 @@ export default function AdminPage() {
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.2, duration: 0.3 }}
                     >
-                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-3 flex-1 flex flex-col">
-
-                        {/* Laundry Bag Photo Upload */}
-                        <div className="space-y-2 pt-2 border-t border-slate-100">
-                          <Label className="flex items-center gap-1.5 text-xs font-medium">
-                            <Package size={14} className="text-indigo-600" />
-                            Laundry Bag Photos
-                          </Label>
-                          <MultiImageUploader
-                            ref={uploaderRef}
-                            entityType="job"
-                            entityId={Date.now().toString()} // Temp ID since job isn't created yet
-                            subType="bags"
-                            value={bagImageUrls}
-                            onValueChange={setBagImageUrls}
-                            maxFiles={5}
-                          />
-                        </div>
-
-
-                        {/* Admin Notes & Options */}
-                        <div className="space-y-2 pt-2 border-t border-slate-100 mt-auto">
-                          <div className="grid grid-cols-2 gap-2 mt-1">
-                            <Label className={`flex items-center justify-center gap-2 cursor-pointer p-2 border rounded-lg transition-colors ${handoverType === "meet" ? 'border-indigo-600 bg-indigo-50 font-medium' : 'border-slate-200 hover:bg-slate-50'}`}>
-                              <input 
-                                type="radio" 
-                                name="handoverType"
-                                className="hidden"
-                                checked={handoverType === "meet"}
-                                onChange={() => setHandoverType("meet")}
-                              />
-                              <span className="text-xs text-slate-900 text-center">นัดรับ / เจอตัว<br/><span className="text-[10px] text-slate-500 font-normal">(Meet in person)</span></span>
-                            </Label>
-                            <Label className={`flex items-center justify-center gap-2 cursor-pointer p-2 border rounded-lg transition-colors ${handoverType === "lobby" ? 'border-indigo-600 bg-indigo-50 font-medium' : 'border-slate-200 hover:bg-slate-50'}`}>
-                              <input 
-                                type="radio" 
-                                name="handoverType"
-                                className="hidden"
-                                checked={handoverType === "lobby"}
-                                onChange={() => setHandoverType("lobby")}
-                              />
-                              <span className="text-xs text-slate-900 text-center">ฝาก Lobby / Concierge<br/><span className="text-[10px] text-slate-500 font-normal">(Leave at Lobby)</span></span>
-                            </Label>
-                          </div>
-
-                          {!showAdminNote ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="w-full text-xs border-dashed border-slate-300 text-slate-500 hover:text-slate-700"
-                              onClick={() => setShowAdminNote(true)}
-                            >
-                              <Plus size={14} className="mr-1" /> Add Admin Note
-                            </Button>
-                          ) : (
-                            <div className="space-y-2">
-                              <Label htmlFor="adminNote" className="text-xs font-medium text-slate-500">Admin Note</Label>
-                              <Input
-                                id="adminNote"
-                                placeholder="Enter instructions..."
-                                value={adminNote}
-                                onChange={(e) => setAdminNote(e.target.value)}
-                                className="h-8 text-xs bg-white"
-                              />
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
                       {/* Summary Card */}
                       <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md shrink-0">
                         <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-700">
                           {isPickup && (
-                            <div className="flex justify-between items-center">
-                              <span className="text-xs text-slate-400">Pickup Dist.</span>
-                              <span className="text-xs font-medium">{pickupDist} km (×2)</span>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-400">Pickup Dist.</span>
+                              <span className="font-medium">{pickupDist} km (×2)</span>
                             </div>
                           )}
                           {isDelivery && (
-                            <div className="flex justify-between items-center">
-                              <span className="text-xs text-slate-400">Delivery Dist.</span>
-                              <span className="text-xs font-medium">{deliveryDist} km</span>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-400">Delivery Dist.</span>
+                              <span className="font-medium">{deliveryDist} km</span>
                             </div>
                           )}
                         </div>
 
-                        {/* Editable Laundry Price */}
-                        <div className="flex justify-between items-center mb-3 pb-2 border-b border-slate-700">
-                          <Label className="text-sm font-medium text-slate-300">Laundry Price (ราคาซัก)</Label>
-                          <div className="relative w-24">
-                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
-                            <Input 
-                              type="number"
-                              className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
-                              value={laundryPrice || ""}
-                              onChange={e => setLaundryPrice(parseFloat(e.target.value) || 0)}
-                              placeholder="0"
-                            />
+                        <div className="flex flex-col mb-3">
+                          <div className="flex justify-between items-center mb-1">
+                            <Label className="text-xs font-medium text-slate-300">Laundry Price</Label>
+                            <div className="relative w-24">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                              <Input 
+                                type="number"
+                                className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
+                                value={laundryPrice || ""}
+                                onChange={e => setLaundryPrice(parseFloat(e.target.value) || 0)}
+                              />
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-indigo-300 font-medium">
+                            {(() => {
+                              if (serviceType === "other") return "Custom service: Enter price manually";
+                              const baseService = services.find(s => s.id === serviceType);
+                              if (!baseService) return "Please select a service";
+                              let pricePerKg = baseService.price;
+                              if (customerPriceListId) {
+                                const customPl = priceLists.find(pl => pl.id === customerPriceListId);
+                                if (customPl && customPl.servicePrices[serviceType] !== undefined) pricePerKg = customPl.servicePrices[serviceType];
+                              } else {
+                                const defaultPl = priceLists.find(pl => pl.isDefault);
+                                if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
+                              }
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${serviceWeight} = ${pricePerKg * serviceWeight}฿)`;
+                            })()}
+                          </span>
+                        </div>
+                        
+                        <div className="flex justify-between items-end mb-2">
+                          <div className="flex flex-col gap-0.5">
+                             <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
+                                <span className="text-xs text-slate-300">Free Delivery</span>
+                              </Label>
+                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
+                          </div>
+                          <div className="text-right">
+                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">฿{baseFee.toFixed(0)}</span>}
+                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>฿{fee.toFixed(0)}</span>
                           </div>
                         </div>
                         
-                        <div className="flex justify-between items-center mb-2">
-                          <Label className="flex items-center gap-2 cursor-pointer">
-                            <input 
-                              type="checkbox" 
-                              className="rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 h-4 w-4 bg-slate-800"
-                              checked={isFreeDelivery}
-                              onChange={(e) => setIsFreeDelivery(e.target.checked)}
-                            />
-                            <span className="text-sm font-medium text-slate-300">ส่งฟรี (Free)</span>
-                          </Label>
-                        </div>
-
-                        <div className="flex justify-between items-end">
-                          <div className="flex flex-col">
-                            <span className="text-xs text-slate-400">Delivery Fee ({selectedVIPLabel ? '4' : '10'}฿/km)</span>
-                            <span className="text-[10px] text-slate-500">Min 30฿</span>
-                          </div>
-                          <div className="text-right">
-                            {isFreeDelivery && <span className="text-sm line-through text-slate-500 mr-2">฿{baseFee.toFixed(0)}</span>}
-                            <span className={`text-lg font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>฿{fee.toFixed(0)}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex justify-between items-end mt-2 pt-2 border-t border-slate-600">
-                          <span className="text-sm font-bold text-slate-300 uppercase">Grand Total</span>
-                          <span className="text-3xl font-black text-indigo-400">฿{(laundryPrice + fee).toFixed(0)}</span>
+                        <div className="flex justify-between items-end border-t border-slate-700 pt-2">
+                          <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
+                          <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + fee).toFixed(0)}</span>
                         </div>
 
                         {(isPickup || isDelivery) && (
@@ -1182,11 +1522,28 @@ export default function AdminPage() {
                             </div>
                             <div className="text-right">
                               <span className="text-lg font-bold text-amber-400">
-                                ฿{selectedVIPLabel ? "0" : ((isPickup ? Math.floor(pickupDist * 2) * 2 : 0) + (isDelivery ? Math.floor(deliveryDist) * 2 : 0)).toFixed(0)}
+                                ฿{selectedVIPLabel ? "0" : ((isPickup ? Math.floor(pickupDist) * 2 : 0) + (isDelivery ? Math.floor(deliveryDist) * 2 : 0)).toFixed(0)}
                               </span>
                             </div>
                           </div>
                         )}
+                      </div>
+
+                      {/* Bill Photo Upload */}
+                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-2 shrink-0 mt-2">
+                        <Label className="flex items-center gap-1.5 text-xs font-medium">
+                          <CreditCard size={14} className="text-emerald-600" />
+                          Bill Photos (รูปใบเสร็จ)
+                        </Label>
+                        <MultiImageUploader
+                          ref={billUploaderRef}
+                          entityType="job"
+                          entityId={Date.now().toString()} // Temp ID since job isn't created yet
+                          subType="bills"
+                          value={billImageUrls}
+                          onValueChange={setBillImageUrls}
+                          maxFiles={3}
+                        />
                       </div>
                     </motion.div>
                   </div>
@@ -1221,7 +1578,7 @@ export default function AdminPage() {
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
           {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={handleEditFullJob} />}
-          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch />}
+          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={handleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
           {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}
