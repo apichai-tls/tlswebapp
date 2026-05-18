@@ -234,6 +234,7 @@ export default function AdminPage() {
   const [deliveryRiderId, setDeliveryRiderId] = useState("");
   const [bagImageUrls, setBagImageUrls] = useState<string[]>([]);
   const [billImageUrls, setBillImageUrls] = useState<string[]>([]);
+  const [proofImageUrls, setProofImageUrls] = useState<string[]>([]);
   const [isFreeDelivery, setIsFreeDelivery] = useState(false);
   const [adminNote, setAdminNote] = useState("");
   const [showAdminNote, setShowAdminNote] = useState(false);
@@ -389,6 +390,7 @@ export default function AdminPage() {
     setAdminNote("");
     setBagImageUrls([]);
     setBillImageUrls([]);
+    setProofImageUrls([]);
     setIsPickupLobby(false);
     setIsPickupMeet(false);
     setIsDeliveryLobby(false);
@@ -437,6 +439,7 @@ export default function AdminPage() {
     
     setBagImageUrls([]);
     setBillImageUrls([]);
+    setProofImageUrls([]);
     fetch(`/api/jobs/${job.id}/details`)
       .then(r => r.json())
       .then(data => {
@@ -464,6 +467,7 @@ export default function AdminPage() {
         };
         setBagImageUrls(parseUrls(data.bagImageUrl));
         setBillImageUrls(parseUrls(data.billImageUrl));
+        setProofImageUrls(parseUrls(data.proofImageUrl));
       })
       .catch(e => console.error("Failed to fetch job details images", e));
     
@@ -586,6 +590,8 @@ export default function AdminPage() {
       setPickupRiderId("");
       setDeliveryRiderId("");
       setBagImageUrls([]);
+      setBillImageUrls([]);
+      setProofImageUrls([]);
       setServiceType("wash_fold");
       setServiceSpeed("standard");
       setSelectedVIPLabel("");
@@ -1545,6 +1551,26 @@ export default function AdminPage() {
                           maxFiles={3}
                         />
                       </div>
+
+                      {/* Proof of Activity (Read-only) */}
+                      {proofImageUrls.length > 0 && (
+                        <div className="bg-white p-3 rounded-xl border border-emerald-200 shadow-sm space-y-2 shrink-0 mt-2 bg-emerald-50/30">
+                          <Label className="flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                            <CheckCircle2 size={14} className="text-emerald-600" />
+                            Proof of Activity (หลักฐานจากไรเดอร์)
+                          </Label>
+                          <div className="flex gap-2 overflow-x-auto pb-1">
+                            {proofImageUrls.map((url, idx) => (
+                              <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="relative group aspect-square h-20 rounded-xl overflow-hidden border border-emerald-200 shadow-sm hover:border-emerald-400 transition-colors shrink-0">
+                                <img src={url} alt={`Proof ${idx}`} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                  <ZoomIn size={16} className="text-white" />
+                                </div>
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </motion.div>
                   </div>
                 </div>
