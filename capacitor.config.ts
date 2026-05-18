@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'ThatLaundryShop',
   webDir: 'public',
   server: {
-    url: 'https://tls-test-xxxxx.a.run.app/rider', // TODO: เปลี่ยนเป็น URL จริงของระบบ Test
+    url: 'https://apptest.thatlaundryshop.com/rider',
     cleartext: true
   }
 };
