@@ -133,6 +133,7 @@ export async function addJobAction(data: any) {
       proofImageUrl: data.proofImageUrl,
       riderId: data.riderId,
       bagImageUrl: data.bagImageUrl,
+      billImageUrl: data.billImageUrl,
       serviceType: data.serviceType,
       source: data.source,
       totalAmount: data.totalAmount,
@@ -182,6 +183,7 @@ export async function updateJobAction(id: string, updates: any) {
     data.dropoffLng = updates.dropoffCoords.lng;
   }
   if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
+  if (updates.billImageUrl !== undefined) data.billImageUrl = updates.billImageUrl;
   if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
   if (updates.fee !== undefined) data.fee = updates.fee;
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
