@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "deploy:test": "bash scripts/deploy-test.sh",
-    "deploy:staging": "bash scripts/deploy-staging.sh"
+    "deploy:staging": "bash scripts/deploy-staging.sh",
+    "deploy:prod": "bash scripts/deploy-prod.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
