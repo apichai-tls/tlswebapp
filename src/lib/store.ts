@@ -399,9 +399,16 @@ export const jobStore = {
     if (!job) return;
 
     if (["pending", "accepted", "active", "pickup"].includes(job.status)) {
-      await api.updateJob(id, { status: "pickup_completed", proofImageUrl });
+      await api.updateJob(id, { 
+        status: "pickup_completed", 
+        bagImageUrl: proofImageUrl ? JSON.stringify([proofImageUrl]) : undefined 
+      });
     } else {
-      await api.updateJob(id, { status: "completed", completedAt: new Date(), proofImageUrl });
+      await api.updateJob(id, { 
+        status: "completed", 
+        completedAt: new Date(), 
+        proofImageUrl 
+      });
     }
     emitJobChange();
   },
