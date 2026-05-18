@@ -71,7 +71,8 @@ import {
   Loader2,
   ChevronLeft,
   ChevronRight,
-  Database
+  Database,
+  ZoomIn
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
