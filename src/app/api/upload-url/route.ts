@@ -27,8 +27,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       uploadUrl,
       filePath,
-      // Provide publicUrl if it's an avatar so the frontend can preview/save it easily
-      publicUrl: entityType === 'rider' ? `https://storage.googleapis.com/${process.env.GCS_BUCKET_NAME || 'tls-images-test'}/${filePath}` : undefined
+      // Provide publicUrl so the frontend can preview/save it easily
+      publicUrl: `https://storage.googleapis.com/${process.env.GCS_BUCKET_NAME || 'tls-images-test'}/${filePath}`
     });
   } catch (error) {
     console.error('Error generating signed URL:', error);
