@@ -1003,13 +1003,14 @@ export default function AdminPage() {
                               <Phone size={12} />
                               Phone
                             </Label>
-                            <PhoneInput
-                              placeholder="Phone number"
-                              value={customerPhone}
-                              onChange={() => {}}
-                              disabled={true}
-                              className="w-full h-8 opacity-70 cursor-not-allowed"
-                            />
+                            <div className="pointer-events-none opacity-60 select-none">
+                              <PhoneInput
+                                placeholder="Phone number"
+                                value={customerPhone}
+                                onChange={() => {}}
+                                className="w-full h-8 cursor-not-allowed"
+                              />
+                            </div>
                           </div>
                         </div>
                         
