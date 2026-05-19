@@ -876,7 +876,7 @@ export default function AdminPage() {
                         onClick={() => {
                           setDialogOpen(false);
                           setTimeout(() => {
-                            setActiveTab("crm");
+                            setActiveTab("customers");
                           }, 100);
                         }}
                         className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm rounded-full flex items-center gap-1.5 font-bold shrink-0"
