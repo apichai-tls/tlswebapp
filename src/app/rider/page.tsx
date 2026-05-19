@@ -49,7 +49,9 @@ import {
   ChevronRight,
   Calendar as CalendarIcon,
   Crown,
-  Loader2
+  Loader2,
+  Zap,
+  Info
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -86,7 +88,22 @@ import { useSyncExternalStore } from "react";
 
 
 
-const RiderJobImages = ({ jobId, imageType }: { jobId: string, imageType: 'bagImageUrl' | 'proofImageUrl' }) => {
+
+export interface RiderTask {
+  taskId: string;
+  job: Job;
+  legType: "pickup" | "delivery";
+  isCompleted: boolean;
+  isActive: boolean;
+  scheduledAt: Date;
+  completedAt?: Date;
+  targetLocation: string;
+  targetCoords?: { lat: number; lng: number };
+  distance: number;
+  commission: number;
+}
+
+const RiderJobImages = ({ jobId, imageType }: { jobId: string, imageType: 'bagImageUrl' | 'pickupProofImageUrl' | 'deliveryProofImageUrl' }) => {
   const [images, setImages] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -163,6 +180,117 @@ const RiderJobImages = ({ jobId, imageType }: { jobId: string, imageType: 'bagIm
   );
 };
 
+export interface RiderTask {
+  taskId: string;
+  job: Job;
+  legType: "pickup" | "delivery";
+  isCompleted: boolean;
+  isActive: boolean;
+  scheduledAt: Date;
+  completedAt?: Date;
+  targetLocation: string;
+  targetCoords?: { lat: number; lng: number };
+  distance: number;
+  commission: number;
+}
+
+
+function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean }) {
+  const job = task.job;
+  const legType = task.legType;
+  const customerLanguage = customer?.language || "th";
+  const customerIsVip = customer?.isVIP || false;
+  const customerIsMember = customer?.isMember || false;
+  
+  // Date parsing
+  const displayDate = task.scheduledAt ? new Date(task.scheduledAt) : new Date();
+  const formattedTime = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(displayDate);
+  const targetLocation = task.targetLocation;
+  
+  // Parse Remark for specific tags
+  const remarks = job.remark ? job.remark.split(" | ") : [];
+  const isExpress50 = remarks.some(r => r.includes("Express 50%"));
+  const isExpress100 = remarks.some(r => r.includes("Express 100%"));
+  
+  // Find Leg specific instruction (Pickup / Delivery)
+  const legInstruction = remarks.find(r => legType === 'pickup' ? r.startsWith('ไปรับ:') : r.startsWith('ไปส่ง:'));
+  
+  // Clean remark string
+  const cleanRemark = remarks.filter(r => !r.includes("Express") && !r.startsWith('ไปรับ:') && !r.startsWith('ไปส่ง:')).join(" | ");
+
+  return (
+    <div
+      onClick={onClick}
+      className={`bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm cursor-pointer hover:border-blue-300 transition-colors ${
+        (job.status === "completed" || job.status === "picked_up" || isHistory) ? "opacity-70" : ""
+      }`}
+    >
+      <div className="pb-3 pt-3 px-4">
+        <div className="flex items-start justify-between mb-2">
+          <div className="flex flex-col gap-1">
+            <h3 className="text-base font-black text-slate-900 leading-tight flex items-center gap-1.5 flex-wrap">
+              {job.customerName || "Customer Guest"}
+              {customerIsVip && <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1"><Crown size={12} className="fill-amber-500 text-amber-500"/> VIP</span>}
+              {!customerIsVip && customerIsMember && <span className="bg-indigo-100 text-indigo-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold">MEMBER</span>}
+              {customerLanguage && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-bold ${customerLanguage.toLowerCase() === 'th' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                  {customerLanguage.toUpperCase()}
+                </span>
+              )}
+            </h3>
+            
+            {/* Express Badges */}
+            {(isExpress50 || isExpress100) && (
+              <div className="flex items-center gap-1 mt-0.5">
+                {isExpress50 && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-200 flex items-center gap-1"><Zap size={10} className="fill-orange-500" /> EXP 50%</span>}
+                {isExpress100 && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-red-200 flex items-center gap-1"><Zap size={10} className="fill-red-500" /> EXP 100%</span>}
+              </div>
+            )}
+          </div>
+          
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <span
+              className={`flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+            >
+              {legType === 'pickup' ? <Package size={10} /> : <Truck size={10} />}
+              {legType.toUpperCase()}
+            </span>
+            {showCommission && (
+              <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-100 mt-0.5">
+                ฿{task.commission}
+              </span>
+            )}
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-2 text-slate-500 mt-1">
+          <Clock size={14} className="text-blue-500 shrink-0" />
+          <span className="text-xs font-bold text-slate-700">{formattedTime}</span>
+        </div>
+
+        <div className="flex flex-col gap-1 text-slate-500 mt-2">
+          {legInstruction && (
+            <div className="flex items-start gap-2 bg-blue-50 p-1.5 rounded-md border border-blue-100 mb-1">
+              <Info size={14} className="text-blue-600 shrink-0 mt-0.5" />
+              <span className="text-xs font-bold text-blue-800 leading-tight">{legInstruction}</span>
+            </div>
+          )}
+          <div className="flex items-start gap-2">
+            <MapPin size={14} className="text-red-500 shrink-0 mt-0.5" />
+            <span className="text-sm font-medium text-slate-700 line-clamp-2">{targetLocation}</span>
+          </div>
+        </div>
+        
+        {cleanRemark && (
+          <div className="flex items-start gap-2 text-slate-500 mt-2 bg-rose-50 p-2 rounded-lg border border-rose-100">
+            <span className="text-xs font-semibold text-rose-700 line-clamp-2">{cleanRemark}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function RiderPage() {
   const jobs = useJobs();
   const riders = useRiders();
@@ -176,8 +304,8 @@ export default function RiderPage() {
   const [gpsActive, setGpsActive] = useState(false);
   const { user, logout } = useAuth();
   
-  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-  const [jobToComplete, setJobToComplete] = useState<Job | null>(null);
+  const [selectedJob, setSelectedJob] = useState<RiderTask | null>(null);
+  const [jobToComplete, setJobToComplete] = useState<RiderTask | null>(null);
   const [historyDate, setHistoryDate] = useState<Date>(new Date());
   const [historyMode, setHistoryMode] = useState<"daily" | "monthly">("daily");
 
@@ -246,76 +374,67 @@ export default function RiderPage() {
     return () => navigator.geolocation.clearWatch(watcher);
   }, [activeRider?.id, activeRider?.status]);
 
-  const myJobs = jobs.filter((j) => {
-    if (!activeRider) return false;
-    const isPickupRider = j.pickupRiderId === activeRider.id || j.riderId === activeRider.id;
-    const isDeliveryRider = j.deliveryRiderId === activeRider.id;
+  const allTasks: RiderTask[] = [];
+  if (activeRider) {
+    jobs.forEach(j => {
+      if (j.pickupRiderId === activeRider.id || j.riderId === activeRider.id) {
+        const isPickupCompleted = ["picked_up", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
+        allTasks.push({
+          taskId: `${j.id}-pickup`,
+          job: j,
+          legType: "pickup",
+          isCompleted: isPickupCompleted,
+          isActive: ["pending", "accepted", "pickup"].includes(j.status),
+          scheduledAt: j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
+          completedAt: isPickupCompleted ? (j.completedAt ? new Date(j.completedAt) : new Date()) : undefined,
+          targetLocation: j.pickupLocation,
+          targetCoords: j.pickupCoords,
+          distance: j.pickupDistance || j.distance || 0,
+          commission: j.pickupCommission || 0,
+        });
+      }
+      if (j.deliveryRiderId === activeRider.id) {
+        const isTerminal = ["completed", "cancel"].includes(j.status);
+        allTasks.push({
+          taskId: `${j.id}-delivery`,
+          job: j,
+          legType: "delivery",
+          isCompleted: isTerminal,
+          isActive: ["washed", "delivery"].includes(j.status),
+          scheduledAt: j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
+          completedAt: isTerminal ? (j.completedAt ? new Date(j.completedAt) : new Date()) : undefined,
+          targetLocation: j.dropoffLocation,
+          targetCoords: j.dropoffCoords,
+          distance: j.deliveryDistance || j.distance || 0,
+          commission: j.deliveryCommission || 0,
+        });
+      }
+    });
+  }
 
-    if (isPickupRider && !isDeliveryRider) {
-      return ["pending", "accepted", "pickup"].includes(j.status);
-    }
-    if (isDeliveryRider && !isPickupRider) {
-      return ["ready_for_delivery", "delivery"].includes(j.status);
-    }
-    if (isPickupRider && isDeliveryRider) {
-      return ["pending", "accepted", "pickup", "ready_for_delivery", "delivery"].includes(j.status);
-    }
-    return false;
-  }).sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+  const myJobs = allTasks
+    .filter(t => t.isActive && !t.isCompleted)
+    .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
 
-  const historyJobs = jobs.filter((j) => {
-    if (!activeRider) return false;
-    const isPickupRider = j.pickupRiderId === activeRider.id || j.riderId === activeRider.id;
-    const isDeliveryRider = j.deliveryRiderId === activeRider.id;
-
-    // Check if the job was completed TODAY (either scheduled today or completed today)
-    // For jobs that are completely finished, we only show them if they finished today.
-    // For jobs still in progress at the shop (active, pickup_completed, ready_for_delivery),
-    // we always show them to the pickup rider so they don't lose track of their pending commissions.
-    const isTerminal = ["completed", "cancelled"].includes(j.status);
-    if (isTerminal) {
-      const jobDate = j.completedAt ? new Date(j.completedAt) : new Date(j.scheduledAt);
+  const historyJobs = allTasks
+    .filter(t => {
+      if (!t.isCompleted) return false;
+      const jobDate = t.completedAt || t.scheduledAt;
       if (historyMode === "daily") {
         if (!isSameDay(jobDate, historyDate)) return false;
       } else {
         if (!isSameMonth(jobDate, historyDate) || jobDate.getFullYear() !== historyDate.getFullYear()) return false;
       }
-    } else {
-      if (historyMode === "daily" && !isToday(historyDate)) return false;
-      if (historyMode === "monthly" && (!isSameMonth(historyDate, new Date()) || historyDate.getFullYear() !== new Date().getFullYear())) return false;
-    }
+      return true;
+    })
+    .sort((a, b) => {
+      const aTime = a.completedAt?.getTime() || a.scheduledAt.getTime();
+      const bTime = b.completedAt?.getTime() || b.scheduledAt.getTime();
+      return bTime - aTime;
+    });
 
-    if (isPickupRider && !isDeliveryRider) {
-      return ["pickup_completed", "active", "ready_for_delivery", "delivery", "completed", "cancelled"].includes(j.status);
-    }
-    if (isDeliveryRider && !isPickupRider) {
-      return ["completed", "cancelled"].includes(j.status);
-    }
-    if (isPickupRider && isDeliveryRider) {
-      return ["completed", "cancelled"].includes(j.status);
-    }
-    return false;
-  }).sort((a, b) => {
-    const aTime = a.completedAt ? new Date(a.completedAt).getTime() : new Date(a.scheduledAt).getTime();
-    const bTime = b.completedAt ? new Date(b.completedAt).getTime() : new Date(b.scheduledAt).getTime();
-    return bTime - aTime;
-  });
-
-  const totalHistoryJobs = historyJobs.filter(j => j.status !== 'cancelled').length;
-  const totalCommission = historyJobs.filter(j => j.status !== 'cancelled').reduce((acc, job) => {
-    let comm = 0;
-    const isPickupRider = job.pickupRiderId === activeRider?.id || job.riderId === activeRider?.id;
-    const isDeliveryRider = job.deliveryRiderId === activeRider?.id;
-    
-    if (isPickupRider && ["pickup_completed", "active", "ready_for_delivery", "delivery", "completed"].includes(job.status)) {
-      comm += (job.pickupCommission || 0);
-    }
-    if (isDeliveryRider && job.status === "completed") {
-      comm += (job.deliveryCommission || 0);
-    }
-    
-    return acc + comm;
-  }, 0);
+  const totalHistoryJobs = historyJobs.filter(t => t.job.status !== 'cancel').length;
+  const totalCommission = historyJobs.filter(t => t.job.status !== 'cancel').reduce((acc, t) => acc + t.commission, 0);
 
   function handleAccept(jobId: string) {
     if (!activeRider) return;
@@ -331,9 +450,10 @@ export default function RiderPage() {
 
   const [isUploadingProof, setIsUploadingProof] = useState(false);
 
-  async function handleComplete(jobId: string) {
-    const proofUrl = capturedImages[jobId];
-    const proofFile = capturedFiles[jobId];
+  async function handleComplete(taskId: string) {
+    const jobId = taskId.replace(/-pickup$|-delivery$/, '');
+    const proofUrl = capturedImages[taskId];
+    const proofFile = capturedFiles[taskId];
     if (!proofUrl || !proofFile) {
       toast.error("Please take a photo as proof of delivery!");
       return;
@@ -376,7 +496,7 @@ export default function RiderPage() {
       await jobStore.completeJob(jobId, finalProofUrl);
       toast.success("Job marked as completed! 🎉");
       // Return to online status if no other active jobs
-      if (activeRider && myJobs.filter(j => j.status !== "completed").length <= 1) {
+      if (activeRider && myJobs.filter(t => !t.isCompleted).length <= 1) {
          riderStore.updateRider(activeRider.id, { status: "online" });
       }
     } catch (error) {
@@ -387,13 +507,22 @@ export default function RiderPage() {
     }
   }
 
-  function handleCapture(jobId: string, event: React.ChangeEvent<HTMLInputElement>) {
+    function handleCapture(taskId: string, event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (file) {
-      setCapturedFiles(prev => ({ ...prev, [jobId]: file }));
+      setCapturedFiles(prev => ({ ...prev, [taskId]: file }));
       const reader = new FileReader();
       reader.onloadend = () => {
-        setCapturedImages(prev => ({ ...prev, [jobId]: reader.result as string }));
+        const dataUrl = reader.result as string;
+        setCapturedImages(prev => ({ ...prev, [taskId]: dataUrl }));
+        
+        // Auto-save logic
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = `${taskId}-proof.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
       };
       reader.readAsDataURL(file);
     }
@@ -520,7 +649,26 @@ export default function RiderPage() {
             </div>
 
             {/* My Jobs */}
-            <TabsContent value="myjobs" className="flex-1 px-4 py-4 space-y-3 mt-0">
+            <TabsContent value="myjobs" className="flex-1 px-4 py-4 space-y-3 mt-0 relative">
+              {activeRider?.status === 'offline' && (
+                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-white/60 backdrop-blur-sm rounded-xl">
+                  <div className="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center max-w-[80%] text-center border border-slate-100">
+                    <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
+                      <Truck size={32} className="text-slate-400" />
+                    </div>
+                    <h3 className="text-xl font-black text-slate-800 mb-2">You are Offline</h3>
+                    <p className="text-sm font-medium text-slate-500 mb-6">
+                      Go online to accept and manage your jobs.
+                    </p>
+                    <Button 
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-12 rounded-xl text-lg shadow-sm"
+                      onClick={handleGoOnline}
+                    >
+                      Go Online
+                    </Button>
+                  </div>
+                </div>
+              )}
               {myJobs.length === 0 ? (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
@@ -533,74 +681,26 @@ export default function RiderPage() {
                 </motion.div>
               ) : (
                 <AnimatePresence mode="popLayout">
-                  {myJobs.map((job, i) => {
-                    const legType = ["pending", "accepted", "active", "pickup"].includes(job.status) ? "pickup" : "delivery";
-                    const customer = customers.find(c => c.id === job.customerId);
-                    const customerLanguage = customer?.language || "th";
-                    const customerIsVip = customer?.isVIP || false;
-                    const formattedTime = format(job.scheduledAt ? new Date(job.scheduledAt) : new Date(), "HH:mm");
-                    const targetLocation = legType === 'pickup' ? job.pickupLocation : job.dropoffLocation;
-                    
+                  {myJobs.map((task, i) => {
+                    const customer = customers.find(c => c.id === task.job.customerId);
                     return (
-                    <motion.div
-                      key={job.id}
-                      custom={i}
-                      variants={cardVariants}
-                      initial="initial"
-                      animate="animate"
-                      exit="exit"
-                      layout
-                      whileHover={{ scale: 1.01 }}
-                    >
-                      <Card
-                        onClick={() => setSelectedJob(job)}
-                        className={`overflow-hidden border-slate-200 shadow-sm cursor-pointer hover:border-blue-300 transition-colors ${
-                          (job.status === "completed" || job.status === "pickup_completed") ? "opacity-70" : ""
-                        }`}
+                      <motion.div
+                        key={task.taskId}
+                        custom={i}
+                        variants={cardVariants}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                        layout
+                        whileHover={{ scale: 1.01 }}
                       >
-                        <CardHeader className="pb-3 pt-3 px-4">
-                          <div className="flex items-start justify-between mb-1">
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-base font-black text-slate-900 leading-tight flex items-center gap-1.5">
-                                {job.customerName || "Customer Guest"}
-                                {customerIsVip && <Crown size={16} className="text-amber-500 fill-amber-500 shrink-0" />}
-                              </h3>
-                              {customerLanguage && (
-                                <Badge variant="secondary" className={`text-[10px] px-1 py-0 h-4 ${customerLanguage.toLowerCase() === 'th' ? 'bg-blue-100 text-blue-700 hover:bg-blue-100' : 'bg-orange-100 text-orange-700 hover:bg-orange-100'}`}>
-                                  {customerLanguage.toUpperCase()}
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="flex flex-col items-end gap-1 shrink-0">
-                              <Badge
-                                variant="outline"
-                                className={`gap-1 text-[10px] py-0 px-1.5 h-5 ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
-                              >
-                                {legType === 'pickup' ? <Package size={10} /> : <Truck size={10} />}
-                                {legType.toUpperCase()}
-                              </Badge>
-                            </div>
-                          </div>
-                          
-                          <div className="flex items-center gap-2 text-slate-500 mt-1">
-                            <Clock size={14} className="text-blue-500 shrink-0" />
-                            <span className="text-sm font-bold text-slate-700">{formattedTime}</span>
-                          </div>
-
-                          <div className="flex items-start gap-2 text-slate-500 mt-2">
-                            <MapPin size={14} className="text-red-500 shrink-0 mt-0.5" />
-                            <span className="text-sm font-medium text-slate-700 line-clamp-1">{targetLocation}</span>
-                          </div>
-                          
-                          {job.remark && (
-                            <div className="flex items-start gap-2 text-slate-500 mt-2 bg-rose-50 p-2 rounded-lg border border-rose-100">
-                              <span className="text-xs font-semibold text-rose-700 line-clamp-2">{job.remark}</span>
-                            </div>
-                          )}
-
-                        </CardHeader>
-                      </Card>
-                    </motion.div>
+                        <RiderJobCard 
+                          task={task} 
+                          customer={customer} 
+                          showCommission={showCommission} 
+                          onClick={() => setSelectedJob(task)} 
+                        />
+                      </motion.div>
                     );
                   })}
                 </AnimatePresence>
@@ -707,81 +807,26 @@ export default function RiderPage() {
                 </motion.div>
               ) : (
                 <AnimatePresence mode="popLayout">
-                  {historyJobs.map((job, i) => {
-                    const legType = (job.status === "completed" && job.deliveryRiderId === activeRider?.id) ? "delivery" : "pickup";
-                    const customer = customers.find(c => c.id === job.customerId);
-                    const customerLanguage = customer?.language || "th";
-                    const customerIsVip = customer?.isVIP || false;
-                    const formattedTime = format(job.scheduledAt ? new Date(job.scheduledAt) : new Date(), "HH:mm");
-                    const targetLocation = legType === 'pickup' ? job.pickupLocation : job.dropoffLocation;
-                    const commission = legType === 'pickup' ? (job.pickupCommission || 0) : (job.deliveryCommission || 0);
-                    
+                  {historyJobs.map((task, i) => {
+                    const customer = customers.find(c => c.id === task.job.customerId);
                     return (
-                    <motion.div
-                      key={job.id}
-                      custom={i}
-                      variants={cardVariants}
-                      initial="initial"
-                      animate="animate"
-                      exit="exit"
-                      layout
-                      whileHover={{ scale: 1.01 }}
-                    >
-                      <Card 
-                        className="overflow-hidden border-slate-200 shadow-sm opacity-70 cursor-pointer hover:opacity-100 transition-opacity"
-                        onClick={() => setSelectedJob(job)}
+                      <motion.div
+                        key={task.taskId}
+                        custom={i}
+                        variants={cardVariants}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                        layout
                       >
-                        <CardHeader className="pb-3 pt-3 px-4">
-                          <div className="flex items-start justify-between mb-1">
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-base font-black text-slate-900 leading-tight flex items-center gap-1.5">
-                                {job.customerName || "Customer Guest"}
-                                {customerIsVip && <Crown size={16} className="text-amber-500 fill-amber-500 shrink-0" />}
-                              </h3>
-                              {customerLanguage && (
-                                <Badge variant="secondary" className={`text-[10px] px-1 py-0 h-4 ${customerLanguage.toLowerCase() === 'th' ? 'bg-blue-100 text-blue-700 hover:bg-blue-100' : 'bg-orange-100 text-orange-700 hover:bg-orange-100'}`}>
-                                  {customerLanguage.toUpperCase()}
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="flex flex-col items-end gap-1 shrink-0">
-                              <Badge
-                                variant="outline"
-                                className={`gap-1 text-[10px] py-0 px-1.5 h-5 ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
-                              >
-                                {legType === 'pickup' ? <Package size={10} /> : <Truck size={10} />}
-                                {legType.toUpperCase()}
-                              </Badge>
-                              <Badge
-                                variant="outline"
-                                className="bg-emerald-50 text-emerald-700 border-emerald-200 gap-1 text-[10px] py-0 px-1.5 h-5"
-                              >
-                                <CheckCircle2 size={10} />
-                                Completed
-                              </Badge>
-                            </div>
-                          </div>
-                          
-                          <div className="flex items-center justify-between mt-1">
-                            <div className="flex items-center gap-2 text-slate-500">
-                              <Clock size={14} className="text-blue-500 shrink-0" />
-                              <span className="text-sm font-bold text-slate-700">{formattedTime}</span>
-                            </div>
-                            {showCommission && (
-                              <div className="flex items-center gap-1 font-bold text-emerald-600">
-                                <span className="text-xs">+฿</span>
-                                <span className="text-sm">{commission}</span>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="flex items-start gap-2 text-slate-500 mt-2">
-                            <MapPin size={14} className="text-red-500 shrink-0 mt-0.5" />
-                            <span className="text-sm font-medium text-slate-700 line-clamp-1">{targetLocation}</span>
-                          </div>
-                        </CardHeader>
-                      </Card>
-                    </motion.div>
+                        <RiderJobCard 
+                          task={task} 
+                          customer={customer} 
+                          showCommission={showCommission} 
+                          isHistory={true}
+                          onClick={() => {}} 
+                        />
+                      </motion.div>
                     );
                   })}
                 </AnimatePresence>
@@ -835,25 +880,39 @@ export default function RiderPage() {
       <Dialog open={!!selectedJob} onOpenChange={(open) => !open && setSelectedJob(null)}>
         <DialogContent showCloseButton={false} className="sm:max-w-md w-[95vw] rounded-2xl mx-auto p-0 bg-gray-50 border-none shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
           {selectedJob && (() => {
-            const legType = ["pending", "accepted", "active", "pickup"].includes(selectedJob.status) ? "pickup" : "delivery";
-            const targetLocation = legType === 'pickup' ? selectedJob.pickupLocation : selectedJob.dropoffLocation;
-            const targetCoords = legType === 'pickup' ? selectedJob.pickupCoords : selectedJob.dropoffCoords;
-            const distance = legType === 'pickup' ? (selectedJob.pickupDistance || selectedJob.distance || 0) : (selectedJob.deliveryDistance || selectedJob.distance || 0);
-
+            const legType = selectedJob.legType;
+            const targetLocation = selectedJob.targetLocation;
+            
+            const targetCoords = selectedJob.targetCoords;
+            const distance = selectedJob.distance;
+            
+            const customer = customers.find(c => c.id === selectedJob.job.customerId);
+            const customerIsVip = customer?.isVIP || false;
+            const customerIsMember = customer?.isMember || false;
+            const remarks = selectedJob.job.remark ? selectedJob.job.remark.split(" | ") : [];
+            const isExpress50 = remarks.some(r => r.includes("Express 50%"));
+            const isExpress100 = remarks.some(r => r.includes("Express 100%"));
+            const displayDate = selectedJob.scheduledAt ? new Date(selectedJob.scheduledAt) : new Date();
+            const formattedTime = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(displayDate);
+            const legInstruction = remarks.find(r => legType === 'pickup' ? r.startsWith('ไปรับ:') : r.startsWith('ไปส่ง:'));
+            
             return (
+
               <>
                 <DialogHeader className="p-3 bg-white border-b border-slate-100 sticky top-0 z-10 shrink-0">
                   <div className="flex items-start justify-between">
                     <div className="pr-2">
-                      <DialogTitle className="text-lg font-black text-slate-900 leading-tight">
-                        {selectedJob.customerName || "Customer Guest"}
+                      <DialogTitle className="text-lg font-black text-slate-900 leading-tight flex items-center gap-1.5 flex-wrap">
+                        {selectedJob.job.customerName || "Customer Guest"}
+                        {customerIsVip && <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1"><Crown size={12} className="fill-amber-500 text-amber-500"/> VIP</span>}
+                        {!customerIsVip && customerIsMember && <span className="bg-indigo-100 text-indigo-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold">MEMBER</span>}
                       </DialogTitle>
                       <span className="font-mono text-[10px] font-bold tracking-wider text-slate-500 mt-0.5 block">
-                        {selectedJob.id}
+                        {selectedJob.job.id}
                       </span>
                       <div className="mt-1.5">
-                        <a href={`tel:${selectedJob.customerPhone || '0812345678'}`} className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition-colors font-bold text-xs">
-                          <Phone size={12} /> {selectedJob.customerPhone || 'No Phone Number'}
+                        <a href={`tel:${selectedJob.job.customerPhone || '0812345678'}`} className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition-colors font-bold text-xs">
+                          <Phone size={12} /> {selectedJob.job.customerPhone || 'No Phone Number'}
                         </a>
                       </div>
                     </div>
@@ -861,13 +920,20 @@ export default function RiderPage() {
                       <Button variant="ghost" className="h-8 w-8 p-0 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500" onClick={() => setSelectedJob(null)}>
                         <X size={18} />
                       </Button>
-                      <Badge
-                        variant="outline"
-                        className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
-                      >
-                        {legType === 'pickup' ? <Package size={14} /> : <Truck size={14} />}
-                        {legType.toUpperCase()}
-                      </Badge>
+                      <div className="flex flex-col items-end gap-1.5">
+                        <Badge
+                          variant="outline"
+                          className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+                        >
+                          {legType === 'pickup' ? <Package size={14} /> : <Truck size={14} />}
+                          {legType.toUpperCase()}
+                        </Badge>
+                        {showCommission && (
+                          <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-100">
+                            ฿{selectedJob.commission}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </DialogHeader>
@@ -897,16 +963,16 @@ export default function RiderPage() {
                     </div>
                   </div>
 
-                  {selectedJob.remark && (
+                  {selectedJob.job.remark && (
                     <div className="p-2 bg-rose-50 border border-rose-100 shadow-sm rounded-xl">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-rose-500 mb-0.5">Instructions</p>
-                      <p className="text-xs font-medium text-rose-800">{selectedJob.remark}</p>
+                      <p className="text-xs font-medium text-rose-800">{selectedJob.job.remark}</p>
                     </div>
                   )}
 
-                  {selectedJob.adminNotesJson && (() => {
+                  {selectedJob.job.adminNotesJson && (() => {
                     try {
-                      const notes = JSON.parse(selectedJob.adminNotesJson);
+                      const notes = JSON.parse(selectedJob.job.adminNotesJson);
                       if (notes.length > 0) {
                         return (
                           <div className="p-2 bg-amber-50 border border-amber-100 shadow-sm rounded-xl">
@@ -926,22 +992,28 @@ export default function RiderPage() {
                   })()}
 
                   {legType === 'pickup' && (
-                    <div className="p-2 bg-white border border-slate-100 shadow-sm rounded-xl">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Laundry Bags</p>
-                      <RiderJobImages jobId={selectedJob.id} imageType="bagImageUrl" />
+                    <div className="space-y-2">
+                      <div className="p-2 bg-white border border-slate-100 shadow-sm rounded-xl">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Laundry Bags (จากร้าน)</p>
+                        <RiderJobImages jobId={selectedJob.job.id} imageType="bagImageUrl" />
+                      </div>
+                      <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Pickup Proof (รูปตอนไปรับ)</p>
+                        <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" />
+                      </div>
                     </div>
                   )}
 
-                  {selectedJob.status === 'completed' && (
+                  {selectedJob.job.status === 'completed' && (
                     <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Proof of Activity</p>
-                      <RiderJobImages jobId={selectedJob.id} imageType="proofImageUrl" />
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Delivery Proof (รูปตอนไปส่ง)</p>
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="deliveryProofImageUrl" />
                     </div>
                   )}
                 </div>
 
                 <DialogFooter className="p-3 bg-white border-t border-slate-100 sticky bottom-0 z-10 shrink-0">
-                  {["active", "pickup", "delivery"].includes(selectedJob.status) ? (
+                  {["active", "pickup", "delivery"].includes(selectedJob.job.status) ? (
                     <Button
                       className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-12 rounded-xl text-base"
                       onClick={() => {
@@ -950,7 +1022,7 @@ export default function RiderPage() {
                       }}
                     >
                       <CheckCircle2 size={20} className="mr-2" />
-                      Mark as Completed
+                      {["pending", "accepted", "active", "pickup"].includes(selectedJob.job.status) ? "Mark as Picked Up" : "Mark as Delivered"}
                     </Button>
                   ) : null}
                 </DialogFooter>
@@ -968,7 +1040,7 @@ export default function RiderPage() {
       }}>
         <DialogContent className="sm:max-w-md w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col">
           {jobToComplete && (() => {
-            const previewUrl = capturedImages[jobToComplete.id];
+            const previewUrl = capturedImages[jobToComplete.taskId];
             return (
               <>
                 <DialogHeader className="p-4 border-b border-slate-100">
@@ -985,12 +1057,12 @@ export default function RiderPage() {
                           onClick={() => {
                             setCapturedImages(prev => {
                               const next = {...prev};
-                              delete next[jobToComplete.id];
+                              delete next[jobToComplete.taskId];
                               return next;
                             });
                             setCapturedFiles(prev => {
                               const next = {...prev};
-                              delete next[jobToComplete.id];
+                              delete next[jobToComplete.taskId];
                               return next;
                             });
                           }}
@@ -1015,7 +1087,7 @@ export default function RiderPage() {
                           accept="image/*" 
                           capture="environment" 
                           className="hidden" 
-                          onChange={(e) => handleCapture(jobToComplete.id, e)}
+                          onChange={(e) => handleCapture(jobToComplete.taskId, e)}
                         />
                       </label>
                     )}
@@ -1026,7 +1098,7 @@ export default function RiderPage() {
                     className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-14 rounded-xl text-base disabled:opacity-50"
                     disabled={!previewUrl || isUploadingProof}
                     onClick={async () => {
-                      await handleComplete(jobToComplete.id);
+                      await handleComplete(jobToComplete.taskId);
                       setJobToComplete(null);
                     }}
                   >

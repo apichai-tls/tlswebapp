@@ -102,6 +102,7 @@ export function AdminCRM() {
   const [taxId, setTaxId] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [isVIP, setIsVIP] = useState(false);
+  const [isCorporate, setIsCorporate] = useState(false);
   const [isMember, setIsMember] = useState(false);
   const [isWhatsapp, setIsWhatsapp] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
@@ -121,6 +122,7 @@ export function AdminCRM() {
     setTaxId("");
     setCompanyName("");
     setIsVIP(false);
+    setIsCorporate(false);
     setIsMember(false);
     setIsWhatsapp(false);
     setEditingCustomer(null);
@@ -145,6 +147,7 @@ export function AdminCRM() {
       setTaxId(customer.taxId || "");
       setCompanyName(customer.companyName || "");
       setIsVIP(customer.isVIP || false);
+      setIsCorporate(customer.isCorporate || false);
       setIsMember(customer.isMember || false);
       setIsWhatsapp(customer.isWhatsapp || false);
       
@@ -156,7 +159,7 @@ export function AdminCRM() {
   };
 
   const handleSave = () => {
-    if (!name.trim() || !phone.trim() || !address.trim()) {
+    if (!name.trim() || !phone.trim() || !address.trim() || !secondaryAddress.trim()) {
       toast.error("Please fill in all required fields.");
       return;
     }
@@ -334,6 +337,12 @@ export function AdminCRM() {
                                 New
                               </Badge>
                             ) : null}
+                            {customer.isCorporate && (
+                              <Badge className="bg-slate-100 text-slate-800 border-none shadow-sm py-0 px-1.5 h-5 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                                <Building size={10} className="text-slate-600" /> 
+                                CORP
+                              </Badge>
+                            )}
                             {customer.priceListId && customer.priceListId !== "regular" && (
                               <Badge className="bg-indigo-100 text-indigo-800 border-none shadow-sm py-0 px-1.5 h-5 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
                                 <Crown size={10} className="text-indigo-600" /> 
@@ -500,7 +509,7 @@ export function AdminCRM() {
             </div>
             
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">Floor/Room</Label>
+              <Label className="text-xs font-semibold text-rose-600">Floor/Room *</Label>
               <Input placeholder="e.g. 15th Floor, Room 1502" value={secondaryAddress} onChange={e => setSecondaryAddress(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
 

@@ -54,7 +54,12 @@ export async function GET() {
           itemsJson: true,
           legsJson: true,
           adminNotesJson: true,
-          // Exclude: bagImageUrl, billImageUrl, proofImageUrl
+          branchId: true,
+          pickupProofImageUrl: true,
+          deliveryProofImageUrl: true,
+          bagImageUrl: true,
+          billImageUrl: true,
+          // Exclude: proofImageUrl (deprecated)
         }
       }),
       prisma.rider.findMany(),

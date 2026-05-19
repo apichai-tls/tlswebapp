@@ -32,7 +32,8 @@ export async function loginUser(email: string, password?: string) {
         email: user.email,
         name: user.name,
         role: user.role as "admin" | "manager" | "cso" | "staff",
-        permissions: permissionsArray
+        permissions: permissionsArray,
+        area: user.area || undefined
       }
     };
   } catch (error: any) {

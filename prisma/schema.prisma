@@ -24,6 +24,7 @@ model Customer {
   isMember         Boolean  @default(false)
   memberId         String?  @unique
   isVIP            Boolean  @default(false)
+  isCorporate      Boolean  @default(false)
   isWhatsapp       Boolean  @default(false)
   email            String?
   lineId           String?
@@ -53,11 +54,13 @@ model Job {
   dropoffLng          Float
   distance            Float
   fee                 Float
-  status              String    // "pending" | "accepted" | "pickup" | "delivery" | "completed" | "active"
+  status              String    // "pending" | "pickup" | "picked_up" | "ready_to_wash" | "washed" | "delivery" | "completed" | "cancel" | "return"
   createdAt           DateTime  @default(now())
   scheduledAt         DateTime
   completedAt         DateTime?
   proofImageUrl       String?
+  pickupProofImageUrl String?
+  deliveryProofImageUrl String?
   riderId             String?
   bagImageUrl         String?
   billImageUrl        String?
@@ -65,6 +68,7 @@ model Job {
   source              String?   // "app" | "pos"
   totalAmount         Float?
   paymentMethod       String?   // "cash" | "transfer" | "credit" | "card"
+  isPaid              Boolean   @default(false)
   discount            Float?    @default(0)
   pickupDistance      Float?
   deliveryDistance    Float?
@@ -82,7 +86,10 @@ model Job {
   remark              String?
   adminNotesJson      String?   // Array of AdminNoteLog objects
 
+  branchId            String?
+
   customer            Customer? @relation(fields: [customerId], references: [id])
+  branch              ShopLocation? @relation(fields: [branchId], references: [id])
 }
 
 model ServiceItem {
@@ -141,7 +148,9 @@ model ShopLocation {
   lat     Float
   lng     Float
   noCommission Boolean @default(false)
+  area    String @default("BKK")
   riders  Rider[]
+  jobs    Job[]
 }
 
 model POI {
@@ -168,6 +177,7 @@ model AdminUser {
   name        String
   role        String   @default("staff") // "admin", "manager", "cso", "staff"
   permissions String   // JSON string array of allowed menu keys: '["jobs", "crm"]'
+  area        String?  // e.g. "BKK", "PTY"
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

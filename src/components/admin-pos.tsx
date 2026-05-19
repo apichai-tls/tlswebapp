@@ -27,6 +27,7 @@ import {
   jobStore, 
   riderStore, 
   serviceStore,
+  shopStore,
   type Customer, 
   type ServiceType,
   type ServiceItem
@@ -48,6 +49,7 @@ interface CartItem {
 
 export function AdminPOS() {
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
+  const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const customers = useCustomers();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
@@ -141,6 +143,8 @@ export function AdminPOS() {
         serviceType,
         status: "active", // Walk-ins start as active (in shop)
         fee: 0, // No rider commission for walk-in
+        branchId: shops[0]?.id,
+        isPaid: true,
       });
 
       toast.success("Order Synced Successfully", {

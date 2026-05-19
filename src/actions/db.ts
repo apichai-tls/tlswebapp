@@ -138,6 +138,7 @@ export async function addJobAction(data: any) {
       source: data.source,
       totalAmount: data.totalAmount,
       paymentMethod: data.paymentMethod,
+      isPaid: data.isPaid || false,
       discount: data.discount || 0,
       pickupDistance: data.pickupDistance,
       deliveryDistance: data.deliveryDistance,
@@ -153,6 +154,7 @@ export async function addJobAction(data: any) {
       legsJson: data.legs ? JSON.stringify(data.legs) : null,
       remark: data.remark,
       adminNotesJson: data.adminNotesJson,
+      branchId: data.branchId,
     }
   });
 }
@@ -161,7 +163,8 @@ export async function updateJobAction(id: string, updates: any) {
   const data: any = {};
   if (updates.status !== undefined) data.status = updates.status;
   if (updates.completedAt !== undefined) data.completedAt = updates.completedAt;
-  if (updates.proofImageUrl !== undefined) data.proofImageUrl = updates.proofImageUrl;
+  if (updates.pickupProofImageUrl !== undefined) data.pickupProofImageUrl = updates.pickupProofImageUrl;
+  if (updates.deliveryProofImageUrl !== undefined) data.deliveryProofImageUrl = updates.deliveryProofImageUrl;
   if (updates.riderId !== undefined) data.riderId = updates.riderId;
   if (updates.legs) data.legsJson = JSON.stringify(updates.legs);
   if (updates.pickupRiderId !== undefined) data.pickupRiderId = updates.pickupRiderId;
@@ -185,12 +188,14 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
   if (updates.billImageUrl !== undefined) data.billImageUrl = updates.billImageUrl;
   if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
+  if (updates.isPaid !== undefined) data.isPaid = updates.isPaid;
   if (updates.fee !== undefined) data.fee = updates.fee;
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
   if (updates.remark !== undefined) data.remark = updates.remark;
   if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
+  if (updates.branchId !== undefined) data.branchId = updates.branchId;
 
   if (updates.pickupDistance !== undefined) data.pickupDistance = updates.pickupDistance;
   if (updates.deliveryDistance !== undefined) data.deliveryDistance = updates.deliveryDistance;
@@ -202,7 +207,7 @@ export async function updateJobAction(id: string, updates: any) {
     const existingJob = await prisma.job.findUnique({ where: { id } });
     if (existingJob) {
       // Pickup completed
-      if (existingJob.status !== 'pickup_completed' && existingJob.status !== 'completed' && updates.status === 'pickup_completed' && existingJob.pickupCommission != null && existingJob.pickupRiderId) {
+      if (existingJob.status !== 'picked_up' && existingJob.status !== 'completed' && updates.status === 'picked_up' && existingJob.pickupCommission != null && existingJob.pickupRiderId) {
         // Check if transaction already exists to avoid duplicates
         const existingTx = await prisma.riderTransaction.findFirst({
           where: { jobId: id, type: 'commission_pickup' }
@@ -330,6 +335,7 @@ export async function addShopLocationAction(data: any) {
       lat: data.coords.lat,
       lng: data.coords.lng,
       noCommission: data.noCommission || false,
+      area: data.area || "BKK",
     }
   });
 }
@@ -345,6 +351,7 @@ export async function updateShopLocationAction(id: string, updates: any) {
   if (typeof updates.noCommission !== 'undefined') {
     data.noCommission = updates.noCommission;
   }
+  if (updates.area !== undefined) data.area = updates.area;
   return prisma.shopLocation.update({ where: { id }, data });
 }
 

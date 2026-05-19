@@ -22,6 +22,7 @@ import { riderStore, shopStore, type Rider, type Job } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { useRiders } from "@/lib/use-riders";
 import { useJobs } from "@/lib/use-jobs";
+import { useAuth } from "@/providers/auth-provider";
 import { toast } from "sonner";
 import Image from "next/image";
 import Link from "next/link";
@@ -36,8 +37,9 @@ const statusColorMap = {
 };
 
 export function AdminRiders() {
-  const riders = useRiders();
+  let riders = useRiders();
   const jobs = useJobs();
+  const { user } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reportRiderId, setReportRiderId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -67,6 +69,14 @@ export function AdminRiders() {
   const [branchId, setBranchId] = useState("");
 
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+
+  // Area Filter for Riders
+  if (user?.role === 'manager' && user.area) {
+    riders = riders.filter(r => {
+      const branch = shops.find(s => s.id === r.branchId);
+      return branch?.area === user.area;
+    });
+  }
 
   function openCreate() {
     setEditingId(null);

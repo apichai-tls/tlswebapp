@@ -9,6 +9,7 @@ export interface User {
   email: string;
   role: 'admin' | 'rider' | 'manager' | 'cso' | 'staff';
   permissions: string[];
+  area?: string;
 }
 
 interface AuthContextType {

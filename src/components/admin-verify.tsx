@@ -41,7 +41,7 @@ export function AdminVerify({ onEditJob }: { onEditJob?: (job: Job) => void }) {
     try {
       const existingRemark = cancellingJob.remark ? ` | ${cancellingJob.remark}` : '';
       await jobStore.updateJobDetails(cancellingJob.id, { 
-        status: "cancelled", 
+        status: "cancel", 
         remark: `[Cancelled: ${cancelReason}]${existingRemark}`
       });
       toast.success(`Order ${cancellingJob.id} has been cancelled.`);

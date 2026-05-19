@@ -16,51 +16,32 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { useAuth } from "@/providers/auth-provider";
-import { jobStore, type Job, type JobStatus } from "@/lib/store";
+import { jobStore, shopStore, type Job, type JobStatus } from "@/lib/store";
+import { useSyncExternalStore } from "react";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
-  pending: {
-    label: "Pending",
-    className: "bg-amber-50 text-amber-700 border-amber-200",
-  },
-  pickup: {
-    label: "Pickup",
-    className: "bg-blue-50 text-blue-700 border-blue-200",
-  },
-  delivery: {
-    label: "Delivery",
-    className: "bg-purple-50 text-purple-700 border-purple-200",
-  },
-  pickup_completed: {
-    label: "Pickup Completed",
-    className: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  },
-  accepted: {
-    label: "Accepted",
-    className: "bg-indigo-50 text-indigo-700 border-indigo-200",
-  },
-  active: {
-    label: "Active",
-    className: "bg-indigo-50 text-indigo-700 border-indigo-200",
-  },
-  completed: {
-    label: "Completed",
-    className: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  },
-  cancelled: {
-    label: "Cancelled",
-    className: "bg-red-50 text-red-700 border-red-200",
-  },
+  pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
+  pickup: { label: "Pickup", className: "bg-orange-50 text-orange-700 border-orange-200" },
+  picked_up: { label: "Picked Up", className: "bg-indigo-50 text-indigo-700 border-indigo-200" },
+  ready_to_wash: { label: "Ready to Wash", className: "bg-blue-50 text-blue-700 border-blue-200" },
+  washed: { label: "Washed", className: "bg-sky-50 text-sky-700 border-sky-200" },
+  delivery: { label: "Delivery", className: "bg-purple-50 text-purple-700 border-purple-200" },
+  completed: { label: "Completed", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  active: { label: "Active", className: "bg-indigo-50 text-indigo-700 border-indigo-200" },
+  cancel: { label: "Cancelled", className: "bg-red-50 text-red-700 border-red-200" },
+  return: { label: "Return", className: "bg-rose-50 text-rose-700 border-rose-200" },
 };
 
 const statusIcon: Record<JobStatus, React.ReactNode> = {
   pending: <Clock size={13} />,
   pickup: <Truck size={13} />,
-  pickup_completed: <CheckCircle2 size={13} />,
-  delivery: <Truck size={13} />,
-  accepted: <Truck size={13} />,
-  active: <Zap size={13} />,
+  picked_up: <CheckCircle2 size={13} />,
+  ready_to_wash: <Clock size={13} />,
+  washed: <CheckCircle2 size={13} />,
+  delivery: <Navigation size={13} />,
   completed: <CheckCircle2 size={13} />,
-  cancelled: <XCircle size={13} />,
+  active: <Zap size={13} />,
+  cancel: <XCircle size={13} />,
+  return: <Navigation size={13} />,
 };
 
 type FilterDate = "today" | "yesterday" | "custom";
@@ -69,6 +50,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const riders = useRiders();
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
+  const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
   const [startDate, setStartDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
   const [endDate, setEndDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -77,14 +59,21 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const [cancelReason, setCancelReason] = useState("");
   
   const { user } = useAuth();
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   const today = new Date();
   const yesterday = subDays(today, 1);
 
   // Filter Logic
   const filteredJobs = jobs.filter((job) => {
-    // 0. Manager Role Filter
-    if (user?.role === 'manager' && job.status === 'pending') return false;
+    // 0. Manager Role Filter & Area Filter
+    if (user?.role === 'manager') {
+      if (job.status === 'pending') return false;
+      if (user.area && user.area !== 'ALL') {
+        const branch = shopLocations.find(s => s.id === job.branchId);
+        if (branch?.area !== user.area) return false;
+      }
+    }
 
     // 1. Search Query (ID, Customer Name, or Phone)
     const matchesSearch = 
@@ -106,7 +95,12 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       matchesDate = jobDate >= start && jobDate <= end;
     }
 
-    return matchesSearch && matchesDate;
+    let matchesStatus = true;
+    if (statusFilter !== "all") {
+      matchesStatus = job.status === statusFilter;
+    }
+
+    return matchesSearch && matchesDate && matchesStatus;
   });
 
   return (
@@ -157,6 +151,26 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
             >
               Custom Range
             </button>
+          </div>
+          
+          <div className="relative">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as any)}
+              className="h-9 px-3 text-sm font-medium border border-slate-200 rounded-lg hover:bg-slate-50 bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+            >
+              <option value="all">All Statuses</option>
+              <option value="pending">Pending</option>
+              <option value="pickup">Pickup</option>
+              <option value="picked_up">Picked Up</option>
+              <option value="ready_to_wash">Ready to Wash</option>
+              <option value="washed">Washed</option>
+              <option value="delivery">Delivery</option>
+              <option value="completed">Completed</option>
+              <option value="active">Active</option>
+              <option value="cancel">Cancelled</option>
+              <option value="return">Return</option>
+            </select>
           </div>
           
           {dateFilter === "custom" && (
@@ -324,26 +338,29 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                             value={job.status}
                             onChange={(e) => {
                               const newStatus = e.target.value as JobStatus;
-                              if (newStatus === "cancelled") {
+                              if (newStatus === "cancel") {
                                 setCancellingJob(job);
                               } else {
                                 jobStore.updateJobDetails(job.id, { status: newStatus });
                               }
                             }}
-                            className={`w-full text-[10px] font-semibold rounded-md border py-1 px-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer ${statusConfig[job.status].className}`}
+                            className={`w-full text-[10px] font-semibold rounded-md border py-1 px-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer ${statusConfig[job.status]?.className || ''}`}
                           >
                             <option value="pending">Pending</option>
                             <option value="pickup">Pickup</option>
-                            <option value="pickup_completed">Pickup Completed</option>
+                            <option value="picked_up">Picked Up</option>
+                            <option value="ready_to_wash">Ready to Wash</option>
+                            <option value="washed">Washed</option>
                             <option value="delivery">Delivery</option>
                             <option value="active">Active</option>
                             <option value="completed">Completed</option>
-                            <option value="cancelled">Cancelled</option>
+                            <option value="cancel">Cancelled</option>
+                            <option value="return">Return</option>
                           </select>
                         ) : (
-                          <Badge variant="outline" className={`gap-1 w-full justify-center py-0.5 h-auto text-[10px] ${statusConfig[job.status].className}`}>
+                          <Badge variant="outline" className={`gap-1 w-full justify-center py-0.5 h-auto text-[10px] ${statusConfig[job.status]?.className || ''}`}>
                             {statusIcon[job.status]}
-                            {statusConfig[job.status].label}
+                            {statusConfig[job.status]?.label || job.status}
                           </Badge>
                         )}
                       </TableCell>
@@ -403,7 +420,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                 if (!cancellingJob) return;
                 try {
                   await jobStore.updateJobDetails(cancellingJob.id, { 
-                    status: "cancelled", 
+                    status: "cancel", 
                     remark: `${cancellingJob.remark || ''} | Cancelled Reason: ${cancelReason}`.trim() 
                   });
                   toast.success(`Job has been cancelled.`);

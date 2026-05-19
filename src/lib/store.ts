@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type JobStatus = "pending" | "accepted" | "pickup" | "pickup_completed" | "delivery" | "completed" | "active" | "cancelled";
+export type JobStatus = "pending" | "pickup" | "picked_up" | "ready_to_wash" | "washed" | "delivery" | "completed" | "active" | "cancel" | "return";
 export type JobType = "pickup" | "delivery" | "full_service";
 export type ServiceType = "wash_fold" | "wash_iron_fold" | "wash_iron_hanger";
 export type TripStatus = "pending" | "in_transit" | "completed";
@@ -32,6 +32,7 @@ export interface ShopLocation {
   address: string;
   coords: LatLng;
   noCommission?: boolean;
+  area?: string;
 }
 
 export interface POI {
@@ -63,6 +64,7 @@ export interface Customer {
   isMember?: boolean; // Legacy
   memberId?: string;
   isVIP?: boolean;
+  isCorporate?: boolean;
   isWhatsapp?: boolean;
   email?: string;
   lineId?: string;
@@ -91,6 +93,8 @@ export interface Job {
   scheduledAt: Date;
   completedAt?: Date;
   proofImageUrl?: string;
+  pickupProofImageUrl?: string;
+  deliveryProofImageUrl?: string;
   billImageUrl?: string;
   riderId?: string; // Legacy assigned rider
   bagImageUrl?: string;
@@ -98,6 +102,7 @@ export interface Job {
   source?: "app" | "pos";
   totalAmount?: number; // Customer price
   paymentMethod?: "cash" | "transfer" | "credit" | "card";
+  isPaid?: boolean;
   discount?: number; // Manual adjustment/discount
   pickupScheduledAt?: Date;
   pickupScheduledEndAt?: Date;
@@ -115,6 +120,7 @@ export interface Job {
   legs?: JobLegs;
   remark?: string;
   adminNotesJson?: string;
+  branchId?: string;
 }
 
 export interface AdminNoteLog {
@@ -400,14 +406,14 @@ export const jobStore = {
 
     if (["pending", "accepted", "active", "pickup"].includes(job.status)) {
       await api.updateJob(id, { 
-        status: "pickup_completed", 
-        bagImageUrl: proofImageUrl ? JSON.stringify([proofImageUrl]) : undefined 
+        status: "picked_up", 
+        pickupProofImageUrl: proofImageUrl ? JSON.stringify([proofImageUrl]) : undefined 
       });
     } else {
       await api.updateJob(id, { 
         status: "completed", 
         completedAt: new Date(), 
-        proofImageUrl 
+        deliveryProofImageUrl: proofImageUrl ? JSON.stringify([proofImageUrl]) : undefined 
       });
     }
     emitJobChange();

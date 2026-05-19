@@ -132,7 +132,21 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
             <p className="text-xs font-medium text-slate-500">Commission: <span className="text-emerald-600 font-bold ml-1">฿{((job.pickupCommission || 0) + (job.deliveryCommission || 0)).toFixed(0)}</span></p>
           </div>
           
-
+          <div className="mt-3 flex items-center gap-3">
+            <Badge className={`${job.isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'} border-none shadow-none`}>
+              {job.isPaid ? 'PAID' : 'UNPAID'}
+            </Badge>
+            {!readOnly && (
+              <Button 
+                variant="outline" 
+                size="sm" 
+                className="h-6 text-[10px]"
+                onClick={() => jobStore.updateJobDetails(job.id, { isPaid: !job.isPaid })}
+              >
+                Toggle Payment
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -164,7 +178,30 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
            <h3 className="text-xs font-bold text-indigo-500 uppercase tracking-widest flex items-center gap-2">
             <Timer size={14} /> Shop Phase (Washing/Cleaning)
           </h3>
-          <p className="text-[10px] text-slate-400 mt-1 pl-6">Waiting at Store Branch</p>
+          <p className="text-[10px] text-slate-400 mt-1 pl-6">Store Branch Processing Phase</p>
+          {!readOnly && (
+            <div className="flex gap-2 mt-4 ml-6">
+               {(job.status === "pickup" || job.status === "picked_up") && (
+                 <Button 
+                   size="sm" 
+                   variant="outline"
+                   className="text-blue-600 border-blue-200 hover:bg-blue-50"
+                   onClick={() => jobStore.updateJobDetails(job.id, { status: "ready_to_wash" })}
+                 >
+                   Start Processing (Ready to Wash)
+                 </Button>
+               )}
+               {job.status === "ready_to_wash" && (
+                 <Button 
+                   size="sm" 
+                   className="bg-indigo-600 text-white hover:bg-indigo-700"
+                   onClick={() => jobStore.updateJobDetails(job.id, { status: "washed" })}
+                 >
+                   Mark as Washed
+                 </Button>
+               )}
+            </div>
+          )}
         </div>
 
         <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mt-6 mb-4 flex items-center gap-2">
@@ -228,15 +265,39 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
         />
         
         {!readOnly && (
-          <div className="pt-4 mt-6 border-t border-slate-200">
-            <Button 
-              variant="outline" 
-              onClick={handleDuplicateJob} 
-              className="w-full text-indigo-600 border-indigo-200 hover:bg-indigo-50"
-            >
-              <Copy size={16} className="mr-2" />
-              Duplicate Job
-            </Button>
+          <div className="pt-4 mt-6 border-t border-slate-200 space-y-2">
+            <div className="flex gap-2">
+              <Button 
+                variant="outline" 
+                onClick={handleDuplicateJob} 
+                className="flex-1 text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+              >
+                <Copy size={16} className="mr-2" />
+                Duplicate
+              </Button>
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  if (confirm("Are you sure you want to cancel this job?")) {
+                    jobStore.updateJobDetails(job.id, { status: "cancel" });
+                  }
+                }}
+                className="flex-1 text-red-600 border-red-200 hover:bg-red-50"
+              >
+                <X size={16} className="mr-2" />
+                Cancel
+              </Button>
+            </div>
+            {job.status === "pickup" && (
+              <Button 
+                variant="outline" 
+                onClick={() => jobStore.updateJobDetails(job.id, { status: "picked_up" })}
+                className="w-full text-emerald-600 border-emerald-200 hover:bg-emerald-50"
+              >
+                <Check size={16} className="mr-2" />
+                Mark as Picked Up
+              </Button>
+            )}
           </div>
         )}
       </div>

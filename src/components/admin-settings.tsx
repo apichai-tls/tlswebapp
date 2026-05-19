@@ -26,6 +26,7 @@ export function AdminSettings() {
   const [shopAddress, setShopAddress] = useState("");
   const [shopCoords, setShopCoords] = useState({ lat: 13.736717, lng: 100.523186 });
   const [shopNoCommission, setShopNoCommission] = useState(false);
+  const [shopArea, setShopArea] = useState("BKK");
 
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [enableGoogleApi, setEnableGoogleApi] = useState(false);
@@ -124,6 +125,7 @@ export function AdminSettings() {
     setShopAddress(shop.address);
     setShopCoords(shop.coords);
     setShopNoCommission(shop.noCommission || false);
+    setShopArea(shop.area || "BKK");
     setIsShopModalOpen(true);
   };
 
@@ -133,6 +135,7 @@ export function AdminSettings() {
     setShopAddress("");
     setShopCoords({ lat: 13.736717, lng: 100.523186 });
     setShopNoCommission(false);
+    setShopArea("BKK");
     setIsShopModalOpen(true);
   };
 
@@ -150,10 +153,10 @@ export function AdminSettings() {
       return;
     }
     if (editingShop) {
-      shopStore.updateShopLocation(editingShop.id, { name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission });
+      shopStore.updateShopLocation(editingShop.id, { name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission, area: shopArea });
       toast.success("Branch updated");
     } else {
-      shopStore.addShopLocation({ name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission });
+      shopStore.addShopLocation({ name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission, area: shopArea });
       toast.success("Branch added");
     }
     setIsShopModalOpen(false);
@@ -235,9 +238,12 @@ export function AdminSettings() {
               <div className="flex justify-between items-start mb-3">
                 <div className="flex flex-col gap-1">
                   <h4 className="font-bold text-slate-900 text-lg">{shop.name}</h4>
-                  {shop.noCommission && (
-                    <Badge variant="outline" className="bg-rose-50 text-rose-600 border-rose-200 text-[10px] w-fit">ไม่มีค่าคอม</Badge>
-                  )}
+                  <div className="flex gap-1.5 flex-wrap">
+                    <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-200 text-[10px] w-fit uppercase tracking-wider">{shop.area || "BKK"}</Badge>
+                    {shop.noCommission && (
+                      <Badge variant="outline" className="bg-rose-50 text-rose-600 border-rose-200 text-[10px] w-fit">ไม่มีค่าคอม</Badge>
+                    )}
+                  </div>
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <Button variant="ghost" size="icon" onClick={() => handleEditShop(shop)} className="h-8 w-8 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg">
@@ -399,9 +405,22 @@ export function AdminSettings() {
               </DialogDescription>
             </DialogHeader>
             <div className="p-6 space-y-4">
-              <div className="space-y-2">
-                <Label className="text-sm font-semibold">Branch Name</Label>
-                <Input required value={shopName} onChange={e => setShopName(e.target.value)} placeholder="e.g. Sukhumvit Soi 11" className="h-10" />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Branch Name</Label>
+                  <Input required value={shopName} onChange={e => setShopName(e.target.value)} placeholder="e.g. Sukhumvit Soi 11" className="h-10" />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Area Zone</Label>
+                  <select 
+                    value={shopArea} 
+                    onChange={e => setShopArea(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block p-2.5 h-10"
+                  >
+                    <option value="BKK">BKK (Bangkok)</option>
+                    <option value="PTY">PTY (Pattaya)</option>
+                  </select>
+                </div>
               </div>
               <div className="space-y-2">
                 <Label className="text-sm font-semibold">Address & Map Location</Label>

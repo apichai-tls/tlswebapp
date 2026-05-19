@@ -3,14 +3,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Clock, Truck, CheckCircle2, Map, User, MapPin, Navigation, CalendarDays, Banknote, Coins, ArrowUpRight, Zap } from "lucide-react";
 import { format } from "date-fns";
-import { type Job, type JobStatus } from "@/lib/store";
+import { jobStore, shopStore, type Job, type JobStatus } from "@/lib/store";
 import { AdminLiveMap } from "@/components/map-loader";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { useAuth } from "@/providers/auth-provider";
 
-const statusConfig: Record<JobStatus, { label: string; className: string }> = {
+const statusConfig: Record<string, { label: string; className: string }> = {
   pending: {
     label: "Pending",
     className: "bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-100",
@@ -45,10 +45,10 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   },
 };
 
-const statusIcon: Record<JobStatus, React.ReactNode> = {
+const statusIcon: Record<string, React.ReactNode> = {
   pending: <Clock size={13} />,
   pickup: <Truck size={13} />,
-  pickup_completed: <CheckCircle2 size={13} />,
+  picked_up: <CheckCircle2 size={13} />,
   delivery: <Truck size={13} />,
   accepted: <Truck size={13} />,
   active: <Zap size={13} />,
@@ -80,12 +80,20 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   };
 
   const { user } = useAuth();
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Only display TODAY'S jobs for the dashboard
   let todaysJobs = jobs.filter(j => isToday(j.createdAt));
   
   if (user?.role === 'manager') {
-    todaysJobs = todaysJobs.filter(j => j.status !== 'pending');
+    todaysJobs = todaysJobs.filter(j => {
+      if (j.status === 'pending') return false;
+      if (user.area && user.area !== 'ALL') {
+        const branch = shopLocations.find(s => s.id === j.branchId);
+        if (branch?.area !== user.area) return false;
+      }
+      return true;
+    });
   }
 
   const pendingCount = todaysJobs.filter((j) => j.status === "pending").length;
@@ -97,6 +105,13 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   // Financial Summary
   const filteredCompletedJobs = jobs.filter(j => {
     if (j.status !== 'completed') return false;
+    
+    // Area Filter
+    if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
+      const branch = shopLocations.find(s => s.id === j.branchId);
+      if (branch?.area !== user.area) return false;
+    }
+    
     const date = new Date(j.completedAt || j.createdAt);
     
     if (financePeriod === "this_month") {
@@ -315,9 +330,9 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                       </div>
                     </TableCell>
                     <TableCell className="text-center py-2 align-middle">
-                      <Badge variant="outline" className={`gap-1 w-full justify-center py-0.5 h-auto text-[10px] ${statusConfig[job.status].className}`}>
-                        {statusIcon[job.status]}
-                        {statusConfig[job.status].label}
+                      <Badge variant="outline" className={`gap-1 w-full justify-center py-0.5 h-auto text-[10px] ${statusConfig[job.status]?.className || "bg-slate-100 text-slate-700 border-slate-200"}`}>
+                        {statusIcon[job.status] || <Clock size={13} />}
+                        {statusConfig[job.status]?.label || job.status}
                       </Badge>
                     </TableCell>
                     </motion.tr>

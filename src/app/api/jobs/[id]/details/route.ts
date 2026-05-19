@@ -21,6 +21,8 @@ export async function GET(
         bagImageUrl: true,
         billImageUrl: true,
         proofImageUrl: true,
+        pickupProofImageUrl: true,
+        deliveryProofImageUrl: true,
         itemsJson: true,
         legsJson: true,
       }

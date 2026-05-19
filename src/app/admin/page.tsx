@@ -60,7 +60,7 @@ import {
   X,
   CreditCard,
   Tag,
-  Search,
+  Search, UserPlus,
   ShoppingCart,
   Zap,
   LogOut,
@@ -78,7 +78,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 
-const statusConfig: Record<JobStatus, { label: string; className: string }> = {
+const statusConfig: Record<string, { label: string; className: string }> = {
   pending: {
     label: "Pending",
     className: "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-50",
@@ -103,8 +103,8 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
     label: "Active",
     className: "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-50",
   },
-  pickup_completed: {
-    label: "Pickup Completed",
+  picked_up: {
+    label: "Picked Up",
     className: "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50",
   },
   cancelled: {
@@ -113,14 +113,14 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   },
 };
 
-const statusIcon: Record<JobStatus, React.ReactNode> = {
+const statusIcon: Record<string, React.ReactNode> = {
   pending: <Clock size={13} />,
   accepted: <Truck size={13} />,
   pickup: <Package size={13} />,
   delivery: <Navigation size={13} />,
   completed: <CheckCircle2 size={13} />,
   active: <Zap size={13} />,
-  pickup_completed: <CheckCircle2 size={13} />,
+  picked_up: <CheckCircle2 size={13} />,
   cancelled: <Clock size={13} />,
 };
 
@@ -235,7 +235,8 @@ export default function AdminPage() {
   const [deliveryRiderId, setDeliveryRiderId] = useState("");
   const [bagImageUrls, setBagImageUrls] = useState<string[]>([]);
   const [billImageUrls, setBillImageUrls] = useState<string[]>([]);
-  const [proofImageUrls, setProofImageUrls] = useState<string[]>([]);
+  const [pickupProofImageUrls, setPickupProofImageUrls] = useState<string[]>([]);
+  const [deliveryProofImageUrls, setDeliveryProofImageUrls] = useState<string[]>([]);
   const [isFreeDelivery, setIsFreeDelivery] = useState(false);
   const [adminNote, setAdminNote] = useState("");
   const [showAdminNote, setShowAdminNote] = useState(false);
@@ -347,7 +348,6 @@ export default function AdminPage() {
   const fee = isFreeDelivery ? 0 : baseFee;
 
   const pendingCount = jobs.filter((j) => j.status === "pending").length;
-  const acceptedCount = jobs.filter((j) => j.status === "accepted").length;
   const completedCount = jobs.filter((j) => j.status === "completed").length;
 
   // Map markers from active jobs (non-completed)
@@ -391,7 +391,8 @@ export default function AdminPage() {
     setAdminNote("");
     setBagImageUrls([]);
     setBillImageUrls([]);
-    setProofImageUrls([]);
+    setPickupProofImageUrls([]);
+    setDeliveryProofImageUrls([]);
     setIsPickupLobby(false);
     setIsPickupMeet(false);
     setIsDeliveryLobby(false);
@@ -440,7 +441,8 @@ export default function AdminPage() {
     
     setBagImageUrls([]);
     setBillImageUrls([]);
-    setProofImageUrls([]);
+    setPickupProofImageUrls([]);
+    setDeliveryProofImageUrls([]);
     fetch(`/api/jobs/${job.id}/details`)
       .then(r => r.json())
       .then(data => {
@@ -468,7 +470,8 @@ export default function AdminPage() {
         };
         setBagImageUrls(parseUrls(data.bagImageUrl));
         setBillImageUrls(parseUrls(data.billImageUrl));
-        setProofImageUrls(parseUrls(data.proofImageUrl));
+        setPickupProofImageUrls(parseUrls(data.pickupProofImageUrl));
+        setDeliveryProofImageUrls(parseUrls(data.deliveryProofImageUrl || data.proofImageUrl)); // Fallback to old proofImageUrl if deliveryProof is empty
       })
       .catch(e => console.error("Failed to fetch job details images", e));
     
@@ -564,6 +567,8 @@ export default function AdminPage() {
         isDelivery ? (isDeliveryLobby ? "ไปส่ง: ฝาก Lobby/Concierge" : (isDeliveryMeet ? "ไปส่ง: นัดรับ/เจอตัว" : "")) : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: adminLogs.length > 0 ? JSON.stringify(adminLogs) : null,
+      branchId: shop.id,
+      isPaid: paymentMethod !== 'unpaid',
     };
 
     // Clean up nulls to avoid passing explicit nulls where the schema might not expect them, 
@@ -592,7 +597,8 @@ export default function AdminPage() {
       setDeliveryRiderId("");
       setBagImageUrls([]);
       setBillImageUrls([]);
-      setProofImageUrls([]);
+      setPickupProofImageUrls([]);
+      setDeliveryProofImageUrls([]);
       setServiceType("wash_fold");
       setServiceSpeed("standard");
       setSelectedVIPLabel("");
@@ -844,25 +850,40 @@ export default function AdminPage() {
                   </DialogTitle>
 
                   <div className="relative flex-1 max-w-md mx-auto z-50 mt-0">
-                    <div className="relative">
-                      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <Input
-                        id="customer-search"
-                        placeholder="Search customer by name or phone..."
-                        value={customerSearchQuery}
-                        disabled={!!editingJobId}
-                        onChange={(e) => {
-                          setCustomerSearchQuery(e.target.value);
-                          setShowCustomerDropdown(true);
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <Input
+                          id="customer-search"
+                          placeholder="Search customer by name or phone..."
+                          value={customerSearchQuery}
+                          disabled={!!editingJobId}
+                          onChange={(e) => {
+                            setCustomerSearchQuery(e.target.value);
+                            setShowCustomerDropdown(true);
+                          }}
+                          onFocus={() => {
+                            if (customerSearchQuery) setShowCustomerDropdown(true);
+                          }}
+                          onBlur={() => {
+                            setTimeout(() => setShowCustomerDropdown(false), 200);
+                          }}
+                          className="h-9 pl-9 text-sm bg-slate-50 border-slate-200 focus-visible:ring-indigo-500 rounded-full w-full"
+                        />
+                      </div>
+                      <Button 
+                        type="button"
+                        onClick={() => {
+                          setDialogOpen(false);
+                          setTimeout(() => {
+                            setActiveTab("crm");
+                          }, 100);
                         }}
-                        onFocus={() => {
-                          if (customerSearchQuery) setShowCustomerDropdown(true);
-                        }}
-                        onBlur={() => {
-                          setTimeout(() => setShowCustomerDropdown(false), 200);
-                        }}
-                        className="h-9 pl-9 text-sm bg-slate-50 border-slate-200 focus-visible:ring-indigo-500 rounded-full w-full"
-                      />
+                        className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm rounded-full flex items-center gap-1.5 font-bold shrink-0"
+                      >
+                        <UserPlus size={14} />
+                        <span className="text-xs">Add Customer</span>
+                      </Button>
                     </div>
                     
                     {showCustomerDropdown && customerSearchQuery && (
@@ -969,12 +990,12 @@ export default function AdminPage() {
                               id="custName"
                               placeholder="Name"
                               value={customerName}
-                              disabled={!!editingJobId}
+                              disabled={true}
                               onChange={(e) => {
                                 setCustomerName(e.target.value);
                                 setSelectedVIPLabel("");
                               }}
-                              className="h-8 text-xs"
+                              className="h-8 text-xs bg-slate-50 cursor-not-allowed text-slate-500"
                             />
                           </div>
                           <div className="space-y-1">
@@ -985,32 +1006,13 @@ export default function AdminPage() {
                             <PhoneInput
                               placeholder="Phone number"
                               value={customerPhone}
-                              onChange={setCustomerPhone}
-                              className="w-full h-8"
+                              onChange={() => {}}
+                              disabled={true}
+                              className="w-full h-8 opacity-70 cursor-not-allowed"
                             />
                           </div>
                         </div>
-                        {customerName.trim() && !customers.some(c => c.name === customerName || (customerPhone && c.phone === customerPhone)) && (
-                          <div className="pb-2 border-b border-slate-100 shrink-0">
-                            <Button 
-                              type="button" 
-                              onClick={() => {
-                                customerStore.addCustomer({
-                                  name: customerName.trim(),
-                                  phone: customerPhone.trim(),
-                                  defaultAddress: pickupLoc || "Unknown",
-                                  defaultCoords: pickupCoords || { lat: 13.736717, lng: 100.523186 },
-                                  priceListId: "regular"
-                                });
-                                toast.success("Customer saved to database!");
-                              }}
-                              className="w-full h-8 text-xs font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 gap-1.5"
-                            >
-                              <Database size={14} />
-                              Save Customer to DB
-                            </Button>
-                          </div>
-                        )}
+                        
                         <div className="space-y-1 mb-1 pb-1 border-b border-slate-100 shrink-0">
                           <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
                             <Store size={14} className="text-blue-600" />
@@ -1193,8 +1195,17 @@ export default function AdminPage() {
                                   />
                                   <span className="text-xs text-slate-700">ฝากไว้ที่ Lobby</span>
                                 </Label>
+                                </div>
+                                {pickupProofImageUrls.length > 0 && (
+                                  <div className="flex gap-2 overflow-x-auto pt-2">
+                                    {pickupProofImageUrls.map((url, idx) => (
+                                      <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="relative group w-10 h-10 rounded-lg overflow-hidden border border-emerald-200 shadow-sm hover:border-emerald-400 transition-colors shrink-0">
+                                        <img src={url} alt={`Pickup Proof ${idx}`} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
+                                      </a>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            </div>
                           )}
 
                           <div className={`space-y-0.5 ${isPickup ? 'pt-0.5 border-t border-slate-100' : ''}`}>
@@ -1249,9 +1260,18 @@ export default function AdminPage() {
                                   </Label>
                                 </div>
                               )}
+                              {deliveryProofImageUrls.length > 0 && (
+                                <div className="flex gap-2 overflow-x-auto pt-2">
+                                  {deliveryProofImageUrls.map((url, idx) => (
+                                    <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="relative group w-10 h-10 rounded-lg overflow-hidden border border-emerald-200 shadow-sm hover:border-emerald-400 transition-colors shrink-0">
+                                      <img src={url} alt={`Delivery Proof ${idx}`} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </div>
-                      </div>
+                        </div>
 
                     </motion.div>
 
@@ -1553,25 +1573,6 @@ export default function AdminPage() {
                         />
                       </div>
 
-                      {/* Proof of Activity (Read-only) */}
-                      {proofImageUrls.length > 0 && (
-                        <div className="bg-white p-3 rounded-xl border border-emerald-200 shadow-sm space-y-2 shrink-0 mt-2 bg-emerald-50/30">
-                          <Label className="flex items-center gap-1.5 text-xs font-bold text-emerald-700">
-                            <CheckCircle2 size={14} className="text-emerald-600" />
-                            Proof of Activity (หลักฐานจากไรเดอร์)
-                          </Label>
-                          <div className="flex gap-2 overflow-x-auto pb-1">
-                            {proofImageUrls.map((url, idx) => (
-                              <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="relative group aspect-square h-20 rounded-xl overflow-hidden border border-emerald-200 shadow-sm hover:border-emerald-400 transition-colors shrink-0">
-                                <img src={url} alt={`Proof ${idx}`} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
-                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                                  <ZoomIn size={16} className="text-white" />
-                                </div>
-                              </a>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </motion.div>
                   </div>
                 </div>

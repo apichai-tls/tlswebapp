@@ -15,6 +15,7 @@ interface AdminUser {
   role: string;
   password?: string;
   permissions: string;
+  area?: string | null;
 }
 
 const MENU_PERMISSIONS = [
@@ -44,6 +45,7 @@ export function AdminUsers() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState("staff");
+  const [area, setArea] = useState("BKK");
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
 
   const fetchUsers = async () => {
@@ -71,6 +73,7 @@ export function AdminUsers() {
     setPassword("");
     setName("");
     setRole("staff");
+    setArea("BKK");
     setSelectedPerms([]);
     setEditingId(null);
     setIsEditing(false);
@@ -81,6 +84,7 @@ export function AdminUsers() {
     setPassword(user.password || "");
     setName(user.name);
     setRole(user.role);
+    setArea(user.area || "BKK");
     try {
       setSelectedPerms(JSON.parse(user.permissions));
     } catch (e) {
@@ -116,16 +120,17 @@ export function AdminUsers() {
         password: password || undefined,
         name,
         role,
+        area: area || null,
         permissions: JSON.stringify(selectedPerms)
       };
 
       if (editingId) {
-        const res = await updateUser(editingId, { name, email, password: password || undefined, role, permissions: selectedPerms });
+        const res = await updateUser(editingId, { name, email, password: password || undefined, role, area: area || null, permissions: selectedPerms });
         if (!res?.success) throw new Error(res?.error || "Failed to update user");
         toast.success("User updated successfully");
       } else {
         if (!password) return toast.error("Password is required for new users");
-        const res = await createUser({ name, email, password, role, permissions: selectedPerms });
+        const res = await createUser({ name, email, password, role, area: area || null, permissions: selectedPerms });
         if (!res?.success) throw new Error(res?.error || "Failed to create user");
         toast.success("User created successfully");
       }
@@ -209,6 +214,18 @@ export function AdminUsers() {
                   <option value="rider">Rider</option>
                 </select>
               </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Area / Branch</label>
+                <select 
+                  value={area} 
+                  onChange={e => setArea(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
+                >
+                  <option value="ALL">ALL (All Branches)</option>
+                  <option value="BKK">BKK (Bangkok)</option>
+                  <option value="PTY">PTY (Pattaya)</option>
+                </select>
+              </div>
             </div>
 
             <div>
@@ -256,7 +273,7 @@ export function AdminUsers() {
             <thead className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase text-[10px] font-black tracking-wider">
               <tr>
                 <th className="px-6 py-4">User</th>
-                <th className="px-6 py-4">Role</th>
+                <th className="px-6 py-4">Role & Area</th>
                 <th className="px-6 py-4 hidden md:table-cell">Permissions</th>
                 <th className="px-6 py-4">Password</th>
                 <th className="px-6 py-4 text-right">Actions</th>
@@ -295,6 +312,11 @@ export function AdminUsers() {
                         }`}>
                           {user.role}
                         </span>
+                        {user.area && (
+                          <span className="ml-2 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-full bg-blue-100 text-blue-700">
+                            {user.area}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 hidden md:table-cell">
                         <div className="flex flex-wrap gap-1">

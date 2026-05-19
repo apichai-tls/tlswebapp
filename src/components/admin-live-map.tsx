@@ -7,6 +7,7 @@ import "leaflet/dist/leaflet.css";
 import { useRiders } from "@/lib/use-riders";
 import { shopStore, type Rider } from "@/lib/store";
 import { useSyncExternalStore } from "react";
+import { useAuth } from "@/providers/auth-provider";
 
 // Helper to create a custom div icon with the rider's avatar
 function createAvatarIcon(rider: Rider) {
@@ -62,7 +63,8 @@ function MapUpdater({ center }: { center: [number, number] }) {
 }
 
 export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
-  const riders = useRiders();
+  let riders = useRiders();
+  const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [isMounted, setIsMounted] = useState(false);
   const [mapCenter, setMapCenter] = useState<[number, number]>([13.736717, 100.523186]); // Default Bangkok
@@ -72,6 +74,14 @@ export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
   }, []);
 
   if (!isMounted) return null;
+
+  // Filter riders by area
+  if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
+    riders = riders.filter(r => {
+      const branch = shopLocations.find(s => s.id === r.branchId);
+      return branch?.area === user.area;
+    });
+  }
 
   const activeRiders = riders.filter(r => (r.status === 'online' || r.status === 'busy') && r.currentLocation);
 

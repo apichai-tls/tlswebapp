@@ -3,7 +3,9 @@
 import { useState, useMemo } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { useRiders } from "@/lib/use-riders";
-import { jobStore, type Job } from "@/lib/store";
+import { jobStore, shopStore, type Job } from "@/lib/store";
+import { useAuth } from "@/providers/auth-provider";
+import { useSyncExternalStore } from "react";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Truck, MapPin, User, X, Copy, Eye } from "lucide-react";
@@ -57,7 +59,10 @@ const RIDER_COLORS = [
 export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void }) {
   const allJobs = useJobs();
   const allRiders = useRiders();
+  const { user } = useAuth();
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   
+  const [filterArea, setFilterArea] = useState<string>("ALL");
   const [selectedRiderIds, setSelectedRiderIds] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
   
@@ -67,6 +72,15 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<any>('week');
+
+  // Filter riders by selected area
+  const filteredRiders = useMemo(() => {
+    if (filterArea === "ALL") return allRiders;
+    return allRiders.filter(r => {
+      const branch = shopLocations.find(s => s.id === r.branchId);
+      return branch?.area === filterArea;
+    });
+  }, [allRiders, filterArea, shopLocations]);
 
   // Toggle rider selection
   const toggleRider = (riderId: string) => {
@@ -80,16 +94,24 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
   };
 
   const toggleAllRiders = () => {
-    if (selectedRiderIds.size === allRiders.length) {
+    if (selectedRiderIds.size === filteredRiders.length) {
       setSelectedRiderIds(new Set());
     } else {
-      setSelectedRiderIds(new Set(allRiders.map(r => r.id)));
+      setSelectedRiderIds(new Set(filteredRiders.map(r => r.id)));
     }
   };
 
   // Filter & Map Jobs to Events
   const events = useMemo(() => {
-    let jobs = allJobs.filter(j => j.status !== "pending" && j.status !== "cancelled");
+    let jobs = allJobs.filter(j => j.status !== "pending" && j.status !== "cancel");
+    
+    // Filter jobs by selected area
+    if (filterArea !== "ALL") {
+      jobs = jobs.filter(j => {
+        const branch = shopLocations.find(s => s.id === j.branchId);
+        return branch?.area === filterArea;
+      });
+    }
     
     if (!showCompleted) {
       jobs = jobs.filter(j => j.status !== "completed");
@@ -150,7 +172,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
     });
 
     return calendarEvents;
-  }, [allJobs, selectedRiderIds, showCompleted]);
+  }, [allJobs, selectedRiderIds, showCompleted, filterArea, shopLocations]);
 
   const onEventDrop = async ({ event, start, end }: any) => {
     const e = event as CalendarEvent;
@@ -299,10 +321,24 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
           {/* Rider Filters inside header */}
           <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar flex-1 mx-6 justify-center">
             <div className="flex items-center gap-2 pr-4 border-r border-slate-200 shrink-0">
+              <select
+                className="text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700"
+                value={filterArea}
+                onChange={(e) => {
+                  setFilterArea(e.target.value);
+                  setSelectedRiderIds(new Set()); // Reset selected riders when area changes
+                }}
+              >
+                <option value="ALL">All Areas</option>
+                <option value="BKK">BKK</option>
+                <option value="PTY">PTY</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2 pr-4 border-r border-slate-200 shrink-0">
               <Truck size={16} className="text-indigo-600" />
               <span className="text-sm font-bold text-slate-900">Riders</span>
               <Button 
-                variant={selectedRiderIds.size === allRiders.length && allRiders.length > 0 ? "default" : "outline"} 
+                variant={selectedRiderIds.size === filteredRiders.length && filteredRiders.length > 0 ? "default" : "outline"} 
                 size="sm" 
                 onClick={toggleAllRiders} 
                 className="h-7 text-xs ml-2 bg-indigo-600 hover:bg-indigo-700 text-white"
@@ -312,7 +348,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
             </div>
             
             <div className="flex items-center gap-2">
-              {allRiders.map(rider => (
+              {filteredRiders.map(rider => (
                 <button 
                   key={rider.id}
                   onClick={() => toggleRider(rider.id)}
@@ -415,7 +451,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
                 onChange={(e) => setEditRiderId(e.target.value)}
               >
                 <option value="">-- Unassigned --</option>
-                {allRiders.map(r => (
+                {filteredRiders.map(r => (
                   <option key={r.id} value={r.id}>{r.name} ({r.status})</option>
                 ))}
               </select>
