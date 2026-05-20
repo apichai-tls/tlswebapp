@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Edit2, Trash2, Phone, Star, Activity, Circle, CheckCircle2, BarChart3, ChevronRight, ChevronDown, Calendar, ArrowRight, Banknote, Image as ImageIcon } from "lucide-react";
+import { Plus, Edit2, Trash2, Phone, Star, Activity, Circle, CheckCircle2, BarChart3, ChevronRight, ChevronDown, Calendar, ArrowRight, Banknote, Image as ImageIcon, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +20,7 @@ import {
 import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { riderStore, shopStore, type Rider, type Job } from "@/lib/store";
 import { useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { useRiders } from "@/lib/use-riders";
 import { useJobs } from "@/lib/use-jobs";
 import { useAuth } from "@/providers/auth-provider";
@@ -27,7 +28,7 @@ import { toast } from "sonner";
 import Image from "next/image";
 import Link from "next/link";
 import { ImageUploader } from "@/components/ui/image-uploader";
-import { getRiderTransactionsAction } from "@/actions/db";
+import { getRiderTransactionsAction, getJobsByIdsAction } from "@/actions/db";
 import { useEffect } from "react";
 
 const statusColorMap = {
@@ -369,8 +370,25 @@ function MonthlyReportModal({
 }) {
   const [expandedMonth, setExpandedMonth] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [historyJobs, setHistoryJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (transactions.length > 0) {
+      const missingIds = transactions
+        .map(t => t.jobId)
+        .filter(id => id && !jobs.find(j => j.id === id)) as string[];
+      
+      if (missingIds.length > 0) {
+        getJobsByIdsAction(Array.from(new Set(missingIds))).then(data => {
+          setHistoryJobs(data as any);
+        }).catch(err => {
+          console.error("Failed to load historical jobs for report", err);
+        });
+      }
+    }
+  }, [transactions, jobs]);
 
   useEffect(() => {
     if (rider) {
@@ -401,10 +419,56 @@ function MonthlyReportModal({
     return new Date(b).getTime() - new Date(a).getTime();
   });
 
+  const downloadCSV = () => {
+    if (!rider) return;
+    
+    // Create CSV content with BOM for Thai support
+    let csvContent = "\uFEFF";
+    csvContent += "Date,Job ID,Customer Name,Status,Type,Location,Distance (km),Amount (THB)\n";
+    
+    transactions.forEach(t => {
+      const job = jobs.find(j => j.id === t.jobId) || historyJobs.find(j => j.id === t.jobId);
+      const date = format(new Date(t.createdAt), "yyyy-MM-dd HH:mm");
+      const jobId = t.jobId || "-";
+      let customerName = "-";
+      let customerStatus = "-";
+      let type = t.type.replace('commission_', '');
+      let location = "-";
+      let distance = "0";
+      
+      if (job) {
+        customerName = job.customerName || "-";
+        customerStatus = job.customerStatus === 'vip' ? 'VIP' : job.customerStatus === 'member' ? 'Member' : 'Normal';
+        
+        if (t.type.includes('pickup')) {
+          location = job.pickupLocation?.replace(/,/g, ' ') || "-";
+          distance = (job.pickupDistance || 0).toString();
+        } else if (t.type.includes('delivery')) {
+          location = job.dropoffLocation?.replace(/,/g, ' ') || "-";
+          distance = (job.deliveryDistance || 0).toString();
+        }
+      }
+      
+      const safeCustomerName = `"${customerName.replace(/"/g, '""')}"`;
+      const safeLocation = `"${location.replace(/"/g, '""')}"`;
+      
+      csvContent += `${date},${jobId},${safeCustomerName},${customerStatus},${type},${safeLocation},${distance},${t.amount}\n`;
+    });
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `rider_report_${rider.id}_${format(new Date(), 'yyyyMMdd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <Dialog open={!!rider} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col p-0 border-0 shadow-2xl">
-        <DialogHeader className="p-8 pb-4 bg-slate-900 text-white rounded-t-lg">
+        <DialogHeader className="p-8 pb-4 bg-slate-900 text-white rounded-t-lg print:hidden">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-5">
               <div className="relative">
@@ -420,22 +484,32 @@ function MonthlyReportModal({
                 </DialogDescription>
               </div>
             </div>
-            <Button 
-              variant="outline" 
-              className="bg-white/10 border-white/20 text-white hover:bg-white/20 gap-2 cursor-pointer"
-              onClick={() => {
-                window.print();
-                toast.success("Preparing report for print...");
-              }}
-            >
-              <ArrowRight size={16} className="rotate-90" />
-              Download PDF Report
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button 
+                variant="outline" 
+                className="bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 gap-2 cursor-pointer"
+                onClick={downloadCSV}
+              >
+                <Download size={16} />
+                Export Excel
+              </Button>
+              <Button 
+                variant="outline" 
+                className="bg-white/10 border-white/20 text-white hover:bg-white/20 gap-2 cursor-pointer"
+                onClick={() => {
+                  window.print();
+                  toast.success("Preparing report for print...");
+                }}
+              >
+                <ArrowRight size={16} className="rotate-90" />
+                Download PDF
+              </Button>
+            </div>
           </div>
         </DialogHeader>
         
-        <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6 bg-slate-50/80 print:bg-white print:p-0">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2 print:hidden">
+        <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6 bg-slate-50/80 print:hidden">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Total Transactions</p>
               <p className="text-2xl font-bold text-slate-900">{transactions.length}</p>
@@ -494,35 +568,64 @@ function MonthlyReportModal({
                         className="overflow-hidden border-t border-slate-100"
                       >
                         <div className="p-4 space-y-2">
-                           <div className="grid grid-cols-4 px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50 rounded-lg">
-                            <span>Job / Detail</span>
-                            <span>Type</span>
+                           <div className="grid grid-cols-[1.5fr_1.5fr_2fr_1fr_1fr_1fr] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50 rounded-lg gap-2">
+                            <span>Job</span>
+                            <span>Customer</span>
+                            <span>Location</span>
+                            <span>Type/Dist</span>
                             <span>Date</span>
                             <span className="text-right">Amount</span>
                           </div>
-                          {monthTrans.map((t: any) => (
-                            <div key={t.id} className="grid grid-cols-4 items-center px-3 py-3 text-sm border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors rounded-lg">
-                              <div className="flex flex-col">
-                                {t.jobId ? (
-                                  <button onClick={() => setSelectedJobId(t.jobId)} className="font-mono font-bold text-indigo-600 hover:underline text-left cursor-pointer">
-                                    {t.jobId}
-                                  </button>
-                                ) : (
-                                  <span className="font-mono font-bold text-slate-700">-</span>
-                                )}
-                                <span className="text-[10px] text-slate-500 line-clamp-1">{t.detail}</span>
+                          {monthTrans.map((t: any) => {
+                            const job = jobs.find(j => j.id === t.jobId) || historyJobs.find(j => j.id === t.jobId);
+                            let location = "-";
+                            let distance = 0;
+                            let isVip = job?.customerStatus === 'vip';
+                            let isMember = job?.customerStatus === 'member';
+
+                            if (job) {
+                              if (t.type.includes('pickup')) {
+                                location = job.pickupLocation || "-";
+                                distance = job.pickupDistance || 0;
+                              } else if (t.type.includes('delivery')) {
+                                location = job.dropoffLocation || "-";
+                                distance = job.deliveryDistance || 0;
+                              }
+                            }
+
+                            return (
+                              <div key={t.id} className="grid grid-cols-[1.5fr_1.5fr_2fr_1fr_1fr_1fr] gap-2 items-center px-3 py-3 text-sm border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors rounded-lg">
+                                <div className="flex flex-col">
+                                  {t.jobId ? (
+                                    <button onClick={() => setSelectedJobId(t.jobId)} className="font-mono font-bold text-indigo-600 hover:underline text-left cursor-pointer">
+                                      {t.jobId}
+                                    </button>
+                                  ) : (
+                                    <span className="font-mono font-bold text-slate-700">-</span>
+                                  )}
+                                  <span className="text-[10px] text-slate-500 line-clamp-1">{t.detail}</span>
+                                </div>
+                                <div className="flex flex-col">
+                                  <span className="font-semibold text-slate-800 line-clamp-1">{job?.customerName || "-"}</span>
+                                  {isVip && <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded w-fit mt-0.5">VIP</span>}
+                                  {!isVip && isMember && <span className="text-[9px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded w-fit mt-0.5">MEMBER</span>}
+                                </div>
+                                <div className="flex items-center">
+                                  <span className="text-xs text-slate-600 line-clamp-2" title={location}>{location}</span>
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  <Badge variant="outline" className="text-[9px] w-fit">{t.type.replace('commission_', '')}</Badge>
+                                  {distance > 0 && <span className="text-[10px] text-slate-500 font-medium">{distance} km</span>}
+                                </div>
+                                <div className="flex items-center gap-1.5 text-slate-500 text-[11px] font-medium">
+                                  {format(new Date(t.createdAt), "MMM d, HH:mm")}
+                                </div>
+                                <div className={`text-right font-bold ${t.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                  {t.amount >= 0 ? '+' : ''}฿{Math.abs(t.amount).toFixed(2)}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-1.5 text-slate-600">
-                                <Badge variant="outline" className="text-[10px]">{t.type.replace('commission_', '')}</Badge>
-                              </div>
-                              <div className="flex items-center gap-1.5 text-slate-500 text-xs">
-                                {format(new Date(t.createdAt), "MMM d, HH:mm")}
-                              </div>
-                              <div className={`text-right font-bold ${t.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                {t.amount >= 0 ? '+' : ''}฿{Math.abs(t.amount).toFixed(2)}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </motion.div>
                     )}
@@ -532,9 +635,109 @@ function MonthlyReportModal({
             })
           )}
         </div>
-        <DialogFooter className="p-4 border-t border-slate-100 bg-white">
+        <DialogFooter className="p-4 border-t border-slate-100 bg-white print:hidden">
           <Button variant="outline" onClick={onClose} className="w-full sm:w-auto cursor-pointer">Close Report</Button>
         </DialogFooter>
+
+        {/* --- FORMAL PRINT LAYOUT (HIDDEN ON SCREEN, VISIBLE ON PRINT) --- */}
+        {typeof window !== 'undefined' && createPortal(
+          <div className="hidden print:block bg-white text-black p-4 w-full print-root" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 99999 }}>
+            {/* Header */}
+            <div className="flex items-center justify-between border-b-2 border-slate-900 pb-4 mb-4">
+              <div className="flex items-center gap-3">
+                <img src={rider.avatarUrl} alt="" className="w-12 h-12 rounded-full object-cover grayscale" />
+                <div>
+                  <h1 className="text-xl font-black uppercase tracking-tight">Rider Performance Report</h1>
+                  <p className="text-xs font-medium">Internal Ref: {rider.id}</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <h2 className="text-lg font-bold">{rider.name}</h2>
+                <p className="text-xs">Printed on: {format(new Date(), "dd MMMM yyyy, HH:mm")}</p>
+              </div>
+            </div>
+
+            {/* Summary Row */}
+            <div className="flex justify-between bg-slate-100 p-3 rounded-lg mb-6">
+              <div>
+                <p className="text-[10px] uppercase font-bold text-slate-500">Total Transactions</p>
+                <p className="text-lg font-black">{transactions.length}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] uppercase font-bold text-slate-500">Current Balance</p>
+                <p className="text-lg font-black">฿{(rider.commissionBalance || 0).toFixed(2)}</p>
+              </div>
+            </div>
+
+            {/* Transactions Table */}
+            {months.length === 0 ? (
+              <p className="text-center py-6 text-slate-500 text-sm">No transactions recorded.</p>
+            ) : (
+              months.map((month) => {
+                const monthTrans = grouped[month];
+                const monthEarnings = monthTrans.reduce((sum: number, t: any) => sum + t.amount, 0);
+
+                return (
+                  <div key={month} className="mb-6 break-inside-avoid">
+                    <div className="flex justify-between items-end border-b border-slate-300 pb-1 mb-2">
+                      <h3 className="text-base font-bold">{month}</h3>
+                      <p className="text-sm font-bold text-slate-700">Total: ฿{monthEarnings.toFixed(2)}</p>
+                    </div>
+                    
+                    <table className="w-full text-left text-[9px] leading-tight">
+                      <thead>
+                        <tr className="border-b border-slate-200">
+                          <th className="py-1.5 font-bold uppercase w-[20%]">Date & Time</th>
+                          <th className="py-1.5 font-bold uppercase w-[20%]">Job / Customer</th>
+                          <th className="py-1.5 font-bold uppercase w-[35%]">Location Details</th>
+                          <th className="py-1.5 font-bold uppercase w-[15%]">Type</th>
+                          <th className="py-1.5 font-bold uppercase text-right w-[10%]">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthTrans.map((t: any) => {
+                          const job = jobs.find(j => j.id === t.jobId) || historyJobs.find(j => j.id === t.jobId);
+                          let location = "-";
+                          let distance = 0;
+                          if (job) {
+                            if (t.type.includes('pickup')) {
+                              location = job.pickupLocation || "-";
+                              distance = job.pickupDistance || 0;
+                            } else if (t.type.includes('delivery')) {
+                              location = job.dropoffLocation || "-";
+                              distance = job.deliveryDistance || 0;
+                            }
+                          }
+
+                          return (
+                            <tr key={t.id} className="border-b border-slate-100 last:border-0 break-inside-avoid">
+                              <td className="py-1.5 pr-2 whitespace-nowrap">{format(new Date(t.createdAt), "dd MMM yy, HH:mm")}</td>
+                              <td className="py-1.5 pr-2">
+                                <div className="font-mono font-bold">{t.jobId || "-"}</div>
+                                <div className="text-slate-600 truncate max-w-[120px]">{job?.customerName || "-"}</div>
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                <div className="line-clamp-2 leading-tight">{location}</div>
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                <div>{t.type.replace('commission_', '')}</div>
+                                {distance > 0 && <div className="text-slate-500">{distance} km</div>}
+                              </td>
+                              <td className="py-1.5 text-right font-bold whitespace-nowrap">
+                                {t.amount >= 0 ? '+' : ''}฿{Math.abs(t.amount).toFixed(2)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })
+            )}
+          </div>,
+          document.body
+        )}
       </DialogContent>
 
       <Dialog open={!!selectedJobId} onOpenChange={(v) => !v && setSelectedJobId(null)}>

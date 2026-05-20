@@ -353,25 +353,60 @@ export default function RiderPage() {
     }
 
     let lastUpdate = 0;
+    let bestAccuracy = Infinity;
+    let bestCoords: GeolocationCoordinates | null = null;
+    let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const pushLocation = (coords: GeolocationCoordinates) => {
+      const now = Date.now();
+      lastUpdate = now;
+      bestAccuracy = Infinity; // reset for next batch
+      riderStore.updateRider(activeRider.id, { 
+        currentLocation: { lat: coords.latitude, lng: coords.longitude } 
+      });
+    };
+
     const watcher = navigator.geolocation.watchPosition(
       (pos) => {
         setGpsActive(true);
+        // Ignore wildly inaccurate fixes (e.g., > 100 meters, typical of cell towers)
+        if (pos.coords.accuracy > 100) return;
+
+        // Keep the best accuracy within the current time window
+        if (pos.coords.accuracy < bestAccuracy) {
+          bestAccuracy = pos.coords.accuracy;
+          bestCoords = pos.coords;
+        }
+
         const now = Date.now();
-        if (now - lastUpdate > 15000) { // 15 seconds throttle
-          lastUpdate = now;
-          riderStore.updateRider(activeRider.id, { 
-            currentLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude } 
-          });
+        if (now - lastUpdate > 10000) { // 10 seconds throttle
+          if (bestCoords) {
+            pushLocation(bestCoords);
+            if (throttleTimer) {
+              clearTimeout(throttleTimer);
+              throttleTimer = null;
+            }
+          }
+        } else if (!throttleTimer && bestCoords) {
+          // If throttled but we got a good fix, push it as soon as the throttle expires
+          throttleTimer = setTimeout(() => {
+            if (bestCoords) pushLocation(bestCoords);
+            throttleTimer = null;
+          }, 10000 - (now - lastUpdate));
         }
       },
       (err) => {
         console.error("GPS Error:", err);
         setGpsActive(false);
       },
-      { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
+      // Force fresh GPS (maximumAge: 0) and give hardware more time to lock (timeout: 27000)
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 27000 }
     );
 
-    return () => navigator.geolocation.clearWatch(watcher);
+    return () => {
+      navigator.geolocation.clearWatch(watcher);
+      if (throttleTimer) clearTimeout(throttleTimer);
+    };
   }, [activeRider?.id, activeRider?.status]);
 
   const allTasks: RiderTask[] = [];

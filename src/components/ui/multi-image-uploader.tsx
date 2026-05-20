@@ -17,6 +17,7 @@ interface MultiImageUploaderProps {
   onValueChange?: (urls: string[]) => void; // Called when existing URLs are removed
   maxFiles?: number;
   className?: string;
+  readOnly?: boolean;
 }
 
 interface PendingFile {
@@ -30,7 +31,7 @@ interface PendingFile {
 }
 
 export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUploaderProps>(
-  ({ entityType, entityId, subType, value = [], onValueChange, maxFiles = 5, className = "" }, ref) => {
+  ({ entityType, entityId, subType, value = [], onValueChange, maxFiles = 5, className = "", readOnly = false }, ref) => {
     const [isDragging, setIsDragging] = useState(false);
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
     const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -153,6 +154,10 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
       }
 
       const imageFiles = files.filter(f => f.type.startsWith("image/"));
+      if (imageFiles.length === 0) {
+        toast.error("No valid image files found.");
+        return;
+      }
       if (imageFiles.length !== files.length) {
         toast.error("Only image files are allowed.");
       }
@@ -180,21 +185,45 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
       setPendingFiles(prev => prev.filter(f => f.id !== id));
     };
 
+    const handlePaste = useCallback((e: React.ClipboardEvent) => {
+      if (readOnly) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      
+      const files: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf("image") !== -1) {
+          const file = items[i].getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      
+      if (files.length > 0) {
+        e.preventDefault(); // Prevent default paste behavior
+        processFiles(files);
+        toast.success(`Pasted ${files.length} image(s) from clipboard!`);
+      }
+    }, [readOnly, value, pendingFiles, maxFiles]);
+
     return (
-      <div className={`space-y-4 ${className}`}>
+      <div 
+        className={`space-y-4 outline-none focus-within:ring-2 focus-within:ring-indigo-50/50 rounded-xl transition-all ${className}`}
+        tabIndex={readOnly ? undefined : 0}
+        onPaste={handlePaste}
+      >
         {/* Drop Zone */}
         {(value.length + pendingFiles.length) < maxFiles && (
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`relative w-full py-8 px-4 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed transition-colors cursor-pointer
+            className={`relative w-full py-2 px-3 flex items-center justify-between gap-2 rounded-xl border border-dashed transition-colors cursor-text
               ${isDragging 
                 ? 'bg-indigo-50 border-indigo-400 text-indigo-600' 
                 : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
               }
             `}
+            title="Click here and press Ctrl+V to paste images"
           >
             <input 
               type="file"
@@ -204,36 +233,53 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
               multiple
               className="hidden"
             />
-            <UploadCloud size={28} className={isDragging ? 'text-indigo-500' : 'text-slate-400'} />
-            <div className="text-center">
-              <p className="text-sm font-semibold">Click or drag images here</p>
-              <p className="text-xs text-slate-400 mt-1">Up to {maxFiles} images (Max 5MB each)</p>
+            <div className="flex items-center gap-2">
+              <UploadCloud size={16} className={isDragging ? 'text-indigo-500' : 'text-slate-400 shrink-0'} />
+              <div>
+                <p className="text-[11px] font-medium hidden sm:block">Click to focus & paste (Ctrl+V)</p>
+                <p className="text-[11px] font-medium sm:hidden">Paste images here</p>
+              </div>
             </div>
+            
+            <Button 
+              type="button" 
+              variant="outline" 
+              size="sm" 
+              className="h-6 text-[10px] px-2 rounded-lg bg-white shrink-0"
+              onClick={(e) => {
+                e.stopPropagation();
+                fileInputRef.current?.click();
+              }}
+            >
+              Browse
+            </Button>
           </div>
         )}
 
         {/* Image Grid */}
         {(value.length > 0 || pendingFiles.length > 0) && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+          <div className="flex flex-wrap gap-2">
             
             {/* Existing Uploads */}
             {value.map((url, index) => (
               <div 
                 key={`val-${index}`} 
-                className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm cursor-pointer"
+                className="relative group w-10 h-10 sm:w-12 sm:h-12 shrink-0 rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm cursor-pointer"
                 onClick={() => setPreviewIndex(index)}
               >
                 <img src={url} alt={`Upload ${index}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleRemoveExisting(url);
-                  }}
-                  className="absolute top-1 right-1 bg-white/90 text-slate-700 hover:text-red-600 hover:bg-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10"
-                >
-                  <X size={14} />
-                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemoveExisting(url);
+                    }}
+                    className="absolute top-1 right-1 bg-white/90 text-slate-700 hover:text-red-600 hover:bg-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
               </div>
             ))}
 
@@ -241,7 +287,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
             {pendingFiles.map((pf, index) => (
               <div 
                 key={pf.id} 
-                className="relative aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-50 group cursor-pointer"
+                className="relative group w-10 h-10 sm:w-12 sm:h-12 shrink-0 rounded-xl overflow-hidden border border-slate-200 bg-slate-50 cursor-pointer"
                 onClick={() => setPreviewIndex(value.length + index)}
               >
                 <img src={pf.previewUrl} alt="Preview" className={`w-full h-full object-cover transition-all ${pf.status === 'uploading' ? 'opacity-40 blur-[2px]' : 'group-hover:scale-105'}`} />
@@ -278,6 +324,16 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Read-Only Empty State */}
+        {readOnly && value.length === 0 && (
+          <div className="flex gap-2">
+            <div className="relative w-10 h-10 sm:w-12 sm:h-12 rounded-xl overflow-hidden border border-slate-200 border-dashed bg-slate-50 flex flex-col items-center justify-center text-slate-300">
+              <ImageIcon size={16} className="mb-0.5" />
+              <span className="text-[8px] font-medium uppercase">Empty</span>
+            </div>
           </div>
         )}
 

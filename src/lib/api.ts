@@ -98,6 +98,8 @@ export const refreshDb = async () => {
   }
 };
 
+
+
 // Start loading the DB immediately if we're on the client
 if (typeof window !== 'undefined') {
   ensureDbLoaded();
@@ -155,6 +157,30 @@ export const api = {
   async getCustomers(): Promise<Customer[]> {
     
     return initDb().customers;
+  },
+  
+  async fetchHistoricalJobs(startDate: Date, endDate: Date) {
+    if (typeof window === 'undefined' || !memoryDb) return [];
+    try {
+      const res = await fetch(`/api/jobs/history?start=${startDate.toISOString()}&end=${endDate.toISOString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        const parsedJobs = JSON.parse(JSON.stringify(data), dateReviver) as Job[];
+        
+        // Merge into memoryDb.jobs uniquely by id
+        const existingIds = new Set(memoryDb.jobs.map(j => j.id));
+        const newJobs = parsedJobs.filter(j => !existingIds.has(j.id));
+        
+        if (newJobs.length > 0) {
+          memoryDb.jobs = [...memoryDb.jobs, ...newJobs];
+          import('./store').then(m => m.emitJobChange());
+        }
+        return parsedJobs;
+      }
+    } catch (error) {
+      console.error('Failed to fetch historical jobs', error);
+    }
+    return [];
   },
   
   async addCustomer(customer: Omit<Customer, 'id'>): Promise<Customer> {
@@ -244,6 +270,10 @@ export const api = {
       deliveryCommission: jobDetails.deliveryCommission,
       items: jobDetails.items || [],
       riderId: pRider,
+      remark: jobDetails.remark as string,
+      adminNotesJson: jobDetails.adminNotesJson as string,
+      branchId: jobDetails.branchId as string,
+      paymentChannel: jobDetails.paymentChannel as string,
       legs: {
         pickupOutbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
         pickupInbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },

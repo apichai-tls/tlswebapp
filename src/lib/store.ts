@@ -102,6 +102,7 @@ export interface Job {
   source?: "app" | "pos";
   totalAmount?: number; // Customer price
   paymentMethod?: "cash" | "transfer" | "credit" | "card";
+  paymentChannel?: string;
   isPaid?: boolean;
   discount?: number; // Manual adjustment/discount
   pickupScheduledAt?: Date;
@@ -193,8 +194,9 @@ export const customerStore = {
     return api.sync.getCustomers();
   },
   async addCustomer(customer: Omit<Customer, "id">) {
-    await api.addCustomer(customer);
+    const newCustomer = await api.addCustomer(customer);
     emitCustomerChange();
+    return newCustomer;
   },
   async updateCustomer(id: string, updates: Partial<Customer>) {
     await api.updateCustomer(id, updates);
@@ -365,6 +367,10 @@ export const jobStore = {
   async updateJobDetails(id: string, updates: Partial<Job>) {
     await api.updateJob(id, updates);
     emitJobChange();
+  },
+
+  async fetchHistoricalJobs(startDate: Date, endDate: Date) {
+    return await api.fetchHistoricalJobs(startDate, endDate);
   },
 
   async assignPickupRider(id: string, riderId: string, scheduledAt?: Date) {

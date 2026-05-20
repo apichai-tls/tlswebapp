@@ -37,7 +37,7 @@ export function DateTimePicker({ id, value, onChange, className = "" }: DateTime
         onChange={handleHourChange}
         className="h-8 text-xs rounded-md border border-slate-200 bg-white px-1 focus:ring-2 focus:ring-slate-900 outline-none shrink-0 w-12"
       >
-        {Array.from({ length: 24 }).map((_, i) => {
+        {[10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(i => {
           const h = i.toString().padStart(2, "0");
           return <option key={h} value={h}>{h}</option>;
         })}
@@ -48,7 +48,7 @@ export function DateTimePicker({ id, value, onChange, className = "" }: DateTime
         onChange={handleMinuteChange}
         className="h-8 text-xs rounded-md border border-slate-200 bg-white px-1 focus:ring-2 focus:ring-slate-900 outline-none shrink-0 w-12"
       >
-        {["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"].map(m => (
+        {["00", "30"].map(m => (
           <option key={m} value={m}>{m}</option>
         ))}
       </select>

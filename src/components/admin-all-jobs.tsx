@@ -11,12 +11,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { format, differenceInMinutes, isSameDay, subDays } from "date-fns";
+import { useEffect } from "react";
 import { useRiders } from "@/lib/use-riders";
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { AdminTaskTracker } from "@/components/admin-task-tracker";
 import { useAuth } from "@/providers/auth-provider";
-import { jobStore, shopStore, type Job, type JobStatus } from "@/lib/store";
+import { jobStore, shopStore, customerStore, type Job, type JobStatus } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -53,16 +53,38 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
   const [startDate, setStartDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
   const [endDate, setEndDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [showCancelled, setShowCancelled] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const customers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
 
   const today = new Date();
   const yesterday = subDays(today, 1);
+
+  useEffect(() => {
+    let start: Date;
+    let end: Date;
+    
+    if (dateFilter === "yesterday") {
+      start = yesterday;
+      end = yesterday;
+    } else if (dateFilter === "custom") {
+      start = new Date(startDate);
+      end = new Date(endDate);
+    } else {
+      return; 
+    }
+    
+    setIsLoadingHistory(true);
+    jobStore.fetchHistoricalJobs(start, end).finally(() => setIsLoadingHistory(false));
+  }, [dateFilter, startDate, endDate]);
 
   // Filter Logic
   const filteredJobs = jobs.filter((job) => {
@@ -82,8 +104,10 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       (job.customerPhone && job.customerPhone.includes(searchTerm));
 
     let matchesDate = true;
+    const isActive = !['completed', 'cancel'].includes(job.status);
+    
     if (dateFilter === "today") {
-      matchesDate = isSameDay(new Date(job.createdAt), today);
+      matchesDate = isSameDay(new Date(job.createdAt), today) || isActive;
     } else if (dateFilter === "yesterday") {
       matchesDate = isSameDay(new Date(job.createdAt), yesterday);
     } else if (dateFilter === "custom") {
@@ -98,6 +122,9 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     let matchesStatus = true;
     if (statusFilter !== "all") {
       matchesStatus = job.status === statusFilter;
+    } else {
+      if (job.status === 'completed' && !showCompleted) matchesStatus = false;
+      if (job.status === 'cancel' && !showCancelled) matchesStatus = false;
     }
 
     return matchesSearch && matchesDate && matchesStatus;
@@ -129,6 +156,19 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               className="pl-9 w-[200px] bg-white border-slate-200" 
             />
           </div>
+          
+          <div className="flex items-center gap-4 bg-white border border-slate-200 rounded-md px-3 py-1.5 h-10">
+            <Label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={showCompleted} onChange={e => setShowCompleted(e.target.checked)} className="rounded border-slate-300" />
+              <span className="text-xs font-medium text-slate-700">Show Completed</span>
+            </Label>
+            <Label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={showCancelled} onChange={e => setShowCancelled(e.target.checked)} className="rounded border-slate-300" />
+              <span className="text-xs font-medium text-slate-700">Show Cancelled</span>
+            </Label>
+            {isLoadingHistory && <span className="text-[10px] text-slate-400 ml-2 animate-pulse">Loading...</span>}
+          </div>
+
           <div className="flex rounded-md shadow-sm" role="group">
             <button
               type="button"
@@ -204,14 +244,13 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <TableHead className="text-right w-[100px]">Fee</TableHead>
               <TableHead className="w-[140px]">Rider</TableHead>
               <TableHead className="text-center w-[120px]">Status</TableHead>
-              <TableHead className="text-center w-[60px]"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             <AnimatePresence>
               {filteredJobs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-32 text-center text-slate-500">
+                  <TableCell colSpan={7} className="h-32 text-center text-slate-500">
                     <div className="align-middle py-2 text-center text-slate-300">
                         <MoreHorizontal size={16} className="mx-auto" />
                     No jobs found for the selected filters.
@@ -231,7 +270,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                   return (
                     <motion.tr
                       key={job.id}
-                      onClick={() => setSelectedJobId(job.id)}
+                      onClick={() => { if (onEditJob) onEditJob(job); }}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: i * 0.05 }}
@@ -248,6 +287,16 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           <Badge variant="secondary" className="text-[9px] bg-purple-50 text-purple-700 border-purple-100 px-1.5 py-0 h-4">
                             {job.serviceType === 'wash_iron_fold' ? 'W/I/F' : 'W/F'}
                           </Badge>
+                          {job.remark?.includes("Express 50%") && (
+                            <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-orange-50 text-orange-600 border-orange-200">
+                              EXP 50%
+                            </Badge>
+                          )}
+                          {job.remark?.includes("Express 100%") && (
+                            <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-red-50 text-red-600 border-red-200">
+                              EXP 100%
+                            </Badge>
+                          )}
                         </div>
                         <div className="text-[10px] text-slate-500 flex items-center gap-1 font-medium bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 inline-flex">
                           <Clock size={10} className="text-amber-500" />
@@ -256,7 +305,19 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       </TableCell>
                       
                       <TableCell className="align-middle py-2">
-                        <div className="font-medium text-[11px] text-slate-900">{job.customerName || "Walk-in Guest"}</div>
+                        <div className="font-medium text-[11px] text-slate-900 flex items-center gap-1 flex-wrap">
+                          {job.customerName || "Walk-in Guest"}
+                          {(() => {
+                            const c = customers.find(c => c.id === job.customerId || (job.customerPhone && c.phone === job.customerPhone));
+                            if (!c) return null;
+                            return (
+                              <>
+                                {c.isVIP && <Badge className="text-[8px] px-1 py-0 h-3 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-bold">VIP</Badge>}
+                                {c.isMember && <Badge className="text-[8px] px-1 py-0 h-3 bg-blue-100 text-blue-700 border-none font-bold">MEMBER</Badge>}
+                              </>
+                            );
+                          })()}
+                        </div>
                         <div className="text-[10px] text-slate-500 mt-0.5">{job.customerPhone || "No Phone"}</div>
                       </TableCell>
 
@@ -364,20 +425,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           </Badge>
                         )}
                       </TableCell>
-                      
-                      <TableCell className="align-top py-4 text-center" onClick={(e) => e.stopPropagation()}>
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
-                          className="h-8 w-8 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (onEditJob) onEditJob(job);
-                          }}
-                        >
-                          <Edit2 size={14} />
-                        </Button>
-                      </TableCell>
                     </motion.tr>
                   );
                 })
@@ -386,15 +433,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
           </TableBody>
         </Table>
       </div>
-
-      <Dialog open={!!selectedJobId} onOpenChange={(v) => !v && setSelectedJobId(null)}>
-        <DialogContent className="max-w-md p-4 max-h-[90vh] overflow-hidden flex flex-col pt-8">
-          <DialogTitle className="sr-only">Task Tracker</DialogTitle>
-          {selectedJobId && (
-            <AdminTaskTracker job={jobs.find((j) => j.id === selectedJobId)!} />
-          )}
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={!!cancellingJob} onOpenChange={(open) => !open && setCancellingJob(null)}>
         <DialogContent className="sm:max-w-md">

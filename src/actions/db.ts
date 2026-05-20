@@ -138,6 +138,7 @@ export async function addJobAction(data: any) {
       source: data.source,
       totalAmount: data.totalAmount,
       paymentMethod: data.paymentMethod,
+      paymentChannel: data.paymentChannel,
       isPaid: data.isPaid || false,
       discount: data.discount || 0,
       pickupDistance: data.pickupDistance,
@@ -156,6 +157,12 @@ export async function addJobAction(data: any) {
       adminNotesJson: data.adminNotesJson,
       branchId: data.branchId,
     }
+  });
+}
+
+export async function getJobsByIdsAction(ids: string[]) {
+  return prisma.job.findMany({
+    where: { id: { in: ids } }
   });
 }
 
@@ -188,6 +195,7 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
   if (updates.billImageUrl !== undefined) data.billImageUrl = updates.billImageUrl;
   if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
+  if (updates.paymentChannel !== undefined) data.paymentChannel = updates.paymentChannel;
   if (updates.isPaid !== undefined) data.isPaid = updates.isPaid;
   if (updates.fee !== undefined) data.fee = updates.fee;
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
@@ -397,3 +405,4 @@ export async function updateSettingAction(key: string, value: string) {
     create: { key, value },
   });
 }
+

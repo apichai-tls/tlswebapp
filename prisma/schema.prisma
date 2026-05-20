@@ -68,6 +68,7 @@ model Job {
   source              String?   // "app" | "pos"
   totalAmount         Float?
   paymentMethod       String?   // "cash" | "transfer" | "credit" | "card"
+  paymentChannel      String?
   isPaid              Boolean   @default(false)
   discount            Float?    @default(0)
   pickupDistance      Float?

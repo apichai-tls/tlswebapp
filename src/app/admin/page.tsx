@@ -8,6 +8,7 @@ import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
 import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog } from "@/lib/store";
+import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
 import type { MapMarker } from "@/components/map-component";
@@ -34,10 +35,12 @@ import { AdminLiveMap } from "@/components/map-loader";
 import { AdminPOS } from "@/components/admin-pos";
 import { AdminServiceMenu } from "@/components/admin-service-menu";
 import { AdminCRM } from "@/components/admin-crm";
+import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { AdminSettings } from "@/components/admin-settings";
-import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminUsers } from "@/components/admin-users";
+import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
+import FeeCalculatorPage from "./fee-calculator/page";
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
 import { useRiders } from "@/lib/use-riders";
 import {
@@ -72,7 +75,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
-  ZoomIn
+  ZoomIn,
+  Camera
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -165,31 +169,46 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   // Restore tab from URL hash
   useEffect(() => {
     const hash = window.location.hash.replace('#', '');
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator"];
     if (validTabs.includes(hash)) {
       setActiveTab(hash as any);
     }
   }, []);
 
-  // Periodic data refresh (polling for Live GPS & Status updates)
+  // Periodic data refresh based on active tab
   useEffect(() => {
-    const interval = setInterval(() => {
-      import("@/lib/api").then(m => m.refreshDb());
-    }, 15000); // 15 seconds
-    return () => clearInterval(interval);
-  }, []);
+    let intervalTime: number | null = 60000; // Default 60 seconds
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify") => {
+    if (activeTab === "map") {
+      intervalTime = 15000; // Live Map: 15 seconds
+    } else if (activeTab === "riders") {
+      intervalTime = null; // Rider Report: No auto-refresh
+      import("@/lib/api").then(m => m.refreshDb()); // Refresh once when opened
+    }
+
+    if (intervalTime !== null) {
+      const interval = setInterval(() => {
+        import("@/lib/api").then(m => m.refreshDb());
+      }, intervalTime);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab]);
+
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
+  const [laundryPrice, setLaundryPrice] = useState(0);
+  const [paymentMethod, setPaymentMethod] = useState("unpaid");
+  const [paymentChannel, setPaymentChannel] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -222,15 +241,37 @@ export default function AdminPage() {
   const [deliveryDist, setDeliveryDist] = useState(0);
 
   const [selectedStoreIndex, setSelectedStoreIndex] = useState(0);
+
+  const updateClosestStoreAsync = async (coords: LatLng) => {
+    try {
+      const closestId = await getClosestShopByRoute(coords, shopLocations);
+      if (closestId) {
+        const idx = shopLocations.findIndex(s => s.id === closestId);
+        if (idx >= 0) {
+          setSelectedStoreIndex(idx);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to get closest route, fallback to index");
+    }
+    setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+  };
   const [serviceType, setServiceType] = useState<string>("");
   const roundToNearest30 = (date: Date) => {
     const ms = 1000 * 60 * 30;
-    return new Date(Math.round(date.getTime() / ms) * ms);
+    const rounded = new Date(Math.round(date.getTime() / ms) * ms);
+    let hours = rounded.getHours();
+    if (hours < 10) {
+      rounded.setHours(10, 0, 0, 0);
+    } else if (hours > 19 || (hours === 19 && rounded.getMinutes() > 0)) {
+      rounded.setHours(19, 0, 0, 0);
+    }
+    return rounded;
   };
 
   const [pickupScheduledTime, setPickupScheduledTime] = useState(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
   const [deliveryScheduledTime, setDeliveryScheduledTime] = useState(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
-  const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [pickupRiderId, setPickupRiderId] = useState("");
   const [deliveryRiderId, setDeliveryRiderId] = useState("");
   const [bagImageUrls, setBagImageUrls] = useState<string[]>([]);
@@ -269,7 +310,6 @@ export default function AdminPage() {
   });
   const [otherClothingName, setOtherClothingName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [laundryPrice, setLaundryPrice] = useState(220); // Default for wash_fold
   const [serviceWeight, setServiceWeight] = useState(2);
   
   const handleServiceOrSpeedChange = (newServiceId: string, newSpeed: "standard" | "express_50" | "express_100", newWeight: number, priceListId: string | null = customerPriceListId) => {
@@ -299,11 +339,7 @@ export default function AdminPage() {
       }
     }
 
-    let multiplier = 1;
-    if (newSpeed === "express_50") multiplier = 1.5;
-    else if (newSpeed === "express_100") multiplier = 2;
-
-    setLaundryPrice(Math.round(pricePerKg * newWeight * multiplier));
+    setLaundryPrice(Math.round(pricePerKg * newWeight));
   };
   const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
@@ -374,11 +410,11 @@ export default function AdminPage() {
     setIsPickup(true);
     setIsDelivery(true);
     const firstWash = washServices.length > 0 ? washServices[0].id : "";
-    setServiceType(firstWash);
     setServiceSpeed("standard");
-    setServiceWeight(2);
+    setDeliveryScheduledTime("");
     setPaymentMethod("unpaid");
-    setCustomerPriceListId(null);
+    setPaymentChannel("");
+    setServiceType("wash_fold");
     if (firstWash) {
       handleServiceOrSpeedChange(firstWash, "standard", 2, null);
     } else {
@@ -424,9 +460,20 @@ export default function AdminPage() {
     else setDeliveryCoords(null);
     setPickupDist(job.pickupDistance || 0);
     setDeliveryDist(job.deliveryDistance || 0);
-    setServiceType(job.serviceType || "wash_fold");
+    const isExp50 = job.remark?.includes("Express 50%");
+    const isExp100 = job.remark?.includes("Express 100%");
+    const parsedSpeed = isExp100 ? "express_100" : (isExp50 ? "express_50" : "standard");
+    setServiceSpeed(parsedSpeed);
+    
+    const totalMinusFee = job.totalAmount ? job.totalAmount - (job.fee || 0) : 0;
+    let basePrice = totalMinusFee;
+    if (isExp100) basePrice = Math.round(totalMinusFee / 2);
+    else if (isExp50) basePrice = Math.round(totalMinusFee / 1.5);
+    
+    setLaundryPrice(basePrice);
     setPaymentMethod(job.paymentMethod || "unpaid");
-    setLaundryPrice(Math.max(0, (job.totalAmount || 0) - (job.fee || 0)));
+    setPaymentChannel(job.paymentChannel || "");
+    setServiceType(job.serviceType || "wash_fold");
     setEditingFeeLock(job.fee);
     
     const matchedCustomer = customers.find(c => 
@@ -485,10 +532,10 @@ export default function AdminPage() {
     } catch (e) {
       setAdminLogs([]);
     }
-    setIsPickupLobby(job.remark ? job.remark.includes("ไปรับ: ฝาก Lobby") : false);
-    setIsPickupMeet(job.remark ? job.remark.includes("ไปรับ: นัดรับ") : false);
-    setIsDeliveryLobby(job.remark ? job.remark.includes("ไปส่ง: ฝาก Lobby") : false);
-    setIsDeliveryMeet(job.remark ? job.remark.includes("ไปส่ง: นัดรับ") : false);
+    setIsPickupLobby(job.remark ? job.remark.includes("Pickup: Leave at Lobby") : false);
+    setIsPickupMeet(job.remark ? job.remark.includes("Pickup: Meet up") : false);
+    setIsDeliveryLobby(job.remark ? job.remark.includes("Delivery: Leave at Lobby") : false);
+    setIsDeliveryMeet(job.remark ? job.remark.includes("Delivery: Meet up") : false);
     setPickupScheduledTime(format(roundToNearest30(new Date(job.pickupScheduledAt || job.scheduledAt || Date.now())), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setPickupRiderId(job.pickupRiderId || "");
@@ -535,6 +582,19 @@ export default function AdminPage() {
       return; // Stop creation if upload fails
     }
 
+    const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
+    const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
+
+    let finalAdminLogs = [...adminLogs];
+    if (adminNoteInput.trim()) {
+      finalAdminLogs.push({
+        id: Math.random().toString(36).substring(7),
+        text: adminNoteInput.trim(),
+        createdAt: new Date().toISOString(),
+        createdBy: user?.name || "Admin",
+      });
+    }
+
     const newJobData = {
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
@@ -552,30 +612,26 @@ export default function AdminPage() {
       bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null,
       billImageUrl: finalBillImageUrls.length > 0 ? JSON.stringify(finalBillImageUrls) : null,
       paymentMethod: paymentMethod === 'unpaid' ? null : (paymentMethod as any),
+      isPaid: !['unpaid', 'cod'].includes(paymentMethod),
       fee,
-      totalAmount: laundryPrice + fee,
+      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.round(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
       serviceType,
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
       pickupCommission: (isPickup && !selectedVIPLabel) ? Math.floor(pickupDist) * 2 : 0,
       deliveryCommission: (isDelivery && !selectedVIPLabel) ? Math.floor(deliveryDist) * 2 : 0,
       remark: [
-        isFreeDelivery ? "ส่งฟรี" : "",
-        serviceSpeed === "express_50" ? "ด่วน Express 50%" : "",
-        serviceSpeed === "express_100" ? "ด่วนพิเศษ Express 100%" : "",
-        isPickup ? (isPickupLobby ? "ไปรับ: ฝาก Lobby/Concierge" : (isPickupMeet ? "ไปรับ: นัดรับ/เจอตัว" : "")) : "",
-        isDelivery ? (isDeliveryLobby ? "ไปส่ง: ฝาก Lobby/Concierge" : (isDeliveryMeet ? "ไปส่ง: นัดรับ/เจอตัว" : "")) : "",
+        ...customRemarks,
+        isFreeDelivery ? "Free Delivery" : "",
+        serviceSpeed === "express_50" ? "Express 50%" : "",
+        serviceSpeed === "express_100" ? "Express 100%" : "",
+        isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
+        isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
       ].filter(Boolean).join(" | ") || null,
-      adminNotesJson: adminLogs.length > 0 ? JSON.stringify(adminLogs) : null,
+      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs) : null,
       branchId: shop.id,
-      isPaid: paymentMethod !== 'unpaid',
+      paymentChannel: paymentChannel || null,
     };
-
-    // Clean up nulls to avoid passing explicit nulls where the schema might not expect them, 
-    // or just pass as is if schema allows. Actually, `api.updateJob` uses Object.assign.
-    // It's safer to delete properties that are null if we don't want to explicitly set them,
-    // but in an edit form, we DO want to clear them if they were removed!
-    // So we'll pass null, and let `updateJobAction` handle `null` properly.
 
     try {
       if (editingJobId) {
@@ -603,6 +659,7 @@ export default function AdminPage() {
       setServiceSpeed("standard");
       setSelectedVIPLabel("");
       setAdminNote("");
+      setAdminNoteInput("");
       setShowAdminNote(false);
       setEditingJobId(null);
       setDialogOpen(false);
@@ -749,16 +806,16 @@ export default function AdminPage() {
             )}
             
             {hasAccess("calculator") && (
-              <Link href="/tools/fee-calculator" className="block">
+              <button onClick={() => handleTabChange("calculator")} className="block w-full text-left">
                 <motion.div
                   whileHover={{ x: 2 }}
-                  className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+                  className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "calculator" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
                   title="Distance Calculator"
                 >
                   <Calculator size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
                   {!isSidebarCollapsed && <span className="truncate">Distance Calculator</span>}
                 </motion.div>
-              </Link>
+              </button>
             )}
 
             {hasAccess("settings") && (
@@ -873,12 +930,7 @@ export default function AdminPage() {
                       </div>
                       <Button 
                         type="button"
-                        onClick={() => {
-                          setDialogOpen(false);
-                          setTimeout(() => {
-                            setActiveTab("customers");
-                          }, 100);
-                        }}
+                        onClick={() => setCustomerDialogOpen(true)}
                         className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm rounded-full flex items-center gap-1.5 font-bold shrink-0"
                       >
                         <UserPlus size={14} />
@@ -896,12 +948,13 @@ export default function AdminPage() {
                               onClick={() => {
                                 setCustomerName(c.name);
                                 setCustomerPhone(c.phone);
-                                setPickupLoc(c.defaultAddress);
+                                const fullAddr = c.secondaryAddress ? `${c.defaultAddress} (Room ${c.secondaryAddress})` : c.defaultAddress;
+                                setPickupLoc(fullAddr);
                                 setPickupCoords(c.defaultCoords);
-                                setDeliveryLoc(c.defaultAddress);
+                                setDeliveryLoc(fullAddr);
                                 setDeliveryCoords(c.defaultCoords);
                                 setIsDeliveryDirty(false);
-                                setSelectedStoreIndex(getClosestShopIndex(c.defaultCoords, shopLocations));
+                                updateClosestStoreAsync(c.defaultCoords);
                                 setEditingFeeLock(null);
                                 
                                 if (c.isVIP) {
@@ -1045,7 +1098,7 @@ export default function AdminPage() {
                               }}
                               className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
                             />
-                            <span className="text-sm font-medium text-slate-700">บริการไปรับ (Pickup)</span>
+                            <span className="text-sm font-medium text-slate-700">Pickup</span>
                           </Label>
                           <Label className="flex items-center gap-1.5 cursor-pointer">
                             <input 
@@ -1057,7 +1110,7 @@ export default function AdminPage() {
                               }}
                               className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
                             />
-                            <span className="text-sm font-medium text-slate-700">บริการไปส่ง (Delivery)</span>
+                            <span className="text-sm font-medium text-slate-700">Delivery</span>
                           </Label>
                         </div>
 
@@ -1066,7 +1119,7 @@ export default function AdminPage() {
                             <div className="space-y-1">
                               <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
                                 <MapPin size={14} className="text-emerald-600" />
-                                ที่อยู่ไปรับ (Pickup Address) <span className="text-red-500">*</span>
+                                Pickup Address <span className="text-red-500">*</span>
                               </Label>
                               <LocationInput
                                 id="pickup-location"
@@ -1078,7 +1131,7 @@ export default function AdminPage() {
                                 onSelectLocation={(loc) => {
                                   const newCoords = { lat: loc.lat, lng: loc.lng };
                                   setPickupCoords(newCoords);
-                                  setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                                  updateClosestStoreAsync(newCoords);
                                   setEditingFeeLock(null);
                                   if (!isDeliveryDirty) {
                                     setDeliveryLoc(loc.name);
@@ -1093,7 +1146,7 @@ export default function AdminPage() {
                             <div className="space-y-1">
                               <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
                                 <Navigation size={14} className="text-red-600" />
-                                ที่อยู่ไปส่ง (Delivery Address) <span className="text-red-500">*</span>
+                                Delivery Address <span className="text-red-500">*</span>
                               </Label>
                               <LocationInput
                                 id="delivery-location"
@@ -1109,7 +1162,7 @@ export default function AdminPage() {
                                   setIsDeliveryDirty(true);
                                   setEditingFeeLock(null);
                                   if (!isPickup) {
-                                    setSelectedStoreIndex(getClosestShopIndex(newCoords, shopLocations));
+                                    updateClosestStoreAsync(newCoords);
                                   }
                                 }}
                               />
@@ -1127,7 +1180,7 @@ export default function AdminPage() {
                               setEditingFeeLock(null);
                               if (type === 'pickup') {
                                 setPickupCoords(coords);
-                                setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                                updateClosestStoreAsync(coords);
                                 if (!isDeliveryDirty) {
                                   setDeliveryCoords(coords);
                                 }
@@ -1135,7 +1188,7 @@ export default function AdminPage() {
                                 setDeliveryCoords(coords);
                                 setIsDeliveryDirty(true);
                                 if (!isPickup) {
-                                  setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
+                                  updateClosestStoreAsync(coords);
                                 }
                               }
                             }}
@@ -1182,7 +1235,7 @@ export default function AdminPage() {
                                       if (e.target.checked) setIsPickupLobby(false);
                                     }}
                                   />
-                                  <span className="text-xs text-slate-700">นัดรับ/เจอตัว</span>
+                                  <span className="text-xs text-slate-700">Meet up</span>
                                 </Label>
                                 <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
                                   <input 
@@ -1194,18 +1247,10 @@ export default function AdminPage() {
                                       if (e.target.checked) setIsPickupMeet(false);
                                     }}
                                   />
-                                  <span className="text-xs text-slate-700">ฝากไว้ที่ Lobby</span>
+                                  <span className="text-xs text-slate-700">Leave at Lobby</span>
                                 </Label>
                                 </div>
-                                {pickupProofImageUrls.length > 0 && (
-                                  <div className="flex gap-2 overflow-x-auto pt-2">
-                                    {pickupProofImageUrls.map((url, idx) => (
-                                      <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="relative group w-10 h-10 rounded-lg overflow-hidden border border-emerald-200 shadow-sm hover:border-emerald-400 transition-colors shrink-0">
-                                        <img src={url} alt={`Pickup Proof ${idx}`} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
-                                      </a>
-                                    ))}
-                                  </div>
-                                )}
+                                
                               </div>
                           )}
 
@@ -1245,7 +1290,7 @@ export default function AdminPage() {
                                         if (e.target.checked) setIsDeliveryLobby(false);
                                       }}
                                     />
-                                    <span className="text-xs text-slate-700">นัดรับ/เจอตัว</span>
+                                    <span className="text-xs text-slate-700">Meet up</span>
                                   </Label>
                                   <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
                                     <input 
@@ -1257,19 +1302,11 @@ export default function AdminPage() {
                                         if (e.target.checked) setIsDeliveryMeet(false);
                                       }}
                                     />
-                                    <span className="text-xs text-slate-700">ฝากไว้ที่ Lobby</span>
+                                    <span className="text-xs text-slate-700">Leave at Lobby</span>
                                   </Label>
                                 </div>
                               )}
-                              {deliveryProofImageUrls.length > 0 && (
-                                <div className="flex gap-2 overflow-x-auto pt-2">
-                                  {deliveryProofImageUrls.map((url, idx) => (
-                                    <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="relative group w-10 h-10 rounded-lg overflow-hidden border border-emerald-200 shadow-sm hover:border-emerald-400 transition-colors shrink-0">
-                                      <img src={url} alt={`Delivery Proof ${idx}`} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
-                                    </a>
-                                  ))}
-                                </div>
-                              )}
+                              
                             </div>
                           </div>
                         </div>
@@ -1283,21 +1320,64 @@ export default function AdminPage() {
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.15, duration: 0.3 }}
                     >
-                      {/* Laundry Bag Photo Upload */}
-                      <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm space-y-1">
-                        <Label className="flex items-center gap-1.5 text-xs font-medium">
-                          <Package size={14} className="text-indigo-600" />
-                          Laundry Bag Photos
-                        </Label>
-                        <MultiImageUploader
-                          ref={uploaderRef}
-                          entityType="job"
-                          entityId={Date.now().toString()} // Temp ID since job isn't created yet
-                          subType="bags"
-                          value={bagImageUrls}
-                          onValueChange={setBagImageUrls}
-                          maxFiles={5}
-                        />
+                      {/* Job Photos Unified Section */}
+                      <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm space-y-3">
+                        <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                          <Camera size={14} className="text-indigo-600" />
+                          <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">Job Photos</span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Laundry Bags</Label>
+                            <MultiImageUploader
+                              ref={uploaderRef}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="bags"
+                              value={bagImageUrls}
+                              onValueChange={setBagImageUrls}
+                              maxFiles={5}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Bill / Transfer</Label>
+                            <MultiImageUploader
+                              ref={billUploaderRef}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="bills"
+                              value={billImageUrls}
+                              onValueChange={setBillImageUrls}
+                              maxFiles={3}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
+                            <MultiImageUploader
+                              entityType="job"
+                              entityId={editingJobId || "new"}
+                              subType="proofs"
+                              value={pickupProofImageUrls}
+                              maxFiles={pickupProofImageUrls.length}
+                              readOnly
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
+                            <MultiImageUploader
+                              entityType="job"
+                              entityId={editingJobId || "new"}
+                              subType="proofs"
+                              value={deliveryProofImageUrls}
+                              maxFiles={deliveryProofImageUrls.length}
+                              readOnly
+                            />
+                          </div>
+                        </div>
                       </div>
 
                       {/* Laundry Service Type & Speed */}
@@ -1330,23 +1410,24 @@ export default function AdminPage() {
                                 id="service-weight"
                                 type="number" 
                                 min="2"
+                                step="0.01"
                                 className="h-8 text-xs text-center px-2"
                                 value={serviceWeight || ""}
-                                onChange={(e) => handleServiceOrSpeedChange(serviceType, serviceSpeed, Math.max(2, parseInt(e.target.value) || 2))}
+                                onChange={(e) => handleServiceOrSpeedChange(serviceType, serviceSpeed, Math.max(2, parseFloat(e.target.value) || 2))}
                               />
                             </div>
                           )}
                         </div>
 
                         <div className="space-y-1 pt-1 border-t border-slate-100">
-                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">ประเภทผ้า (Clothing Types)</Label>
+                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Clothing Types</Label>
                           <div className="grid grid-cols-2 gap-1">
                             {[
-                              { id: 'polo', label: 'เสื้อโปโล' },
-                              { id: 'tshirt', label: 'เสื้อยืด' },
-                              { id: 'pants', label: 'กางเกง' },
-                              { id: 'dress', label: 'ชุดเดรส' },
-                              { id: 'bedsheet', label: 'ผ้าปูที่นอน' },
+                              { id: 'polo', label: 'Polo Shirt' },
+                              { id: 'tshirt', label: 'T-Shirt' },
+                              { id: 'pants', label: 'Pants' },
+                              { id: 'dress', label: 'Dress' },
+                              { id: 'bedsheet', label: 'Bedsheet' },
                             ].map(item => (
                               <div key={item.id} className="flex items-center gap-2">
                                 <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
@@ -1397,6 +1478,27 @@ export default function AdminPage() {
                         </div>
 
                         <div className="space-y-1 pt-1 border-t border-slate-100">
+                          <Label htmlFor="payment-channel" className="flex items-center gap-1.5 text-xs font-medium">
+                            <CreditCard size={14} className="text-slate-600" />
+                            Payment Channel
+                          </Label>
+                          <select
+                            id="payment-channel"
+                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+                            value={paymentChannel}
+                            onChange={(e) => setPaymentChannel(e.target.value)}
+                          >
+                            <option value="">Select Channel</option>
+                            <option value="Cash">Cash</option>
+                            <option value="Transfer">Transfer</option>
+                            <option value="Credit Card">Credit Card</option>
+                            <option value="Gateway">Gateway</option>
+                            <option value="PromptPay">PromptPay</option>
+                            <option value="Deduct Member">Deduct Member</option>
+                          </select>
+                        </div>
+
+                        <div className="space-y-1 pt-1 border-t border-slate-100">
                           <Label htmlFor="payment-method" className="flex items-center gap-1.5 text-xs font-medium">
                             <CreditCard size={14} className="text-slate-600" />
                             Payment Status
@@ -1407,10 +1509,9 @@ export default function AdminPage() {
                             value={paymentMethod}
                             onChange={(e) => setPaymentMethod(e.target.value)}
                           >
-                            <option value="unpaid">ยังไม่จ่าย</option>
-                            <option value="transfer">โอนเงิน</option>
-                            <option value="cash">จ่ายแล้ว</option>
-                            <option value="credit">หักเครดิต</option>
+                            <option value="unpaid">Unpaid</option>
+                            <option value="paid">Paid</option>
+                            <option value="cod">Cash on Delivery (COD)</option>
                           </select>
                         </div>
 
@@ -1518,9 +1619,15 @@ export default function AdminPage() {
                                 const defaultPl = priceLists.find(pl => pl.isDefault);
                                 if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
                               }
-                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${serviceWeight} = ${pricePerKg * serviceWeight}฿)`;
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${serviceWeight} = ${Number((pricePerKg * serviceWeight).toFixed(2))}฿)`;
                             })()}
                           </span>
+                          {serviceSpeed !== "standard" && (
+                            <div className="flex justify-between items-center mt-2">
+                              <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
+                              <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.round(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
+                            </div>
+                          )}
                         </div>
                         
                         <div className="flex justify-between items-end mb-2">
@@ -1539,7 +1646,7 @@ export default function AdminPage() {
                         
                         <div className="flex justify-between items-end border-t border-slate-700 pt-2">
                           <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                          <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + fee).toFixed(0)}</span>
+                          <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.round(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                         </div>
 
                         {(isPickup || isDelivery) && (
@@ -1557,22 +1664,7 @@ export default function AdminPage() {
                         )}
                       </div>
 
-                      {/* Bill Photo Upload */}
-                      <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-2 shrink-0 mt-2">
-                        <Label className="flex items-center gap-1.5 text-xs font-medium">
-                          <CreditCard size={14} className="text-emerald-600" />
-                          Bill Photos (รูปใบเสร็จ)
-                        </Label>
-                        <MultiImageUploader
-                          ref={billUploaderRef}
-                          entityType="job"
-                          entityId={Date.now().toString()} // Temp ID since job isn't created yet
-                          subType="bills"
-                          value={billImageUrls}
-                          onValueChange={setBillImageUrls}
-                          maxFiles={3}
-                        />
-                      </div>
+
 
                     </motion.div>
                   </div>
@@ -1613,6 +1705,7 @@ export default function AdminPage() {
           {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}
           {activeTab === "services" && hasAccess("services") && <AdminServiceMenu />}
           {activeTab === "customers" && hasAccess("customers") && <AdminCRM />}
+          {activeTab === "calculator" && hasAccess("calculator") && <FeeCalculatorPage />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
 
@@ -1625,6 +1718,45 @@ export default function AdminPage() {
             </div>
           )}
         </main>
+        
+        <AdminCustomerDialog
+          open={customerDialogOpen}
+          onOpenChange={setCustomerDialogOpen}
+          onSaved={(c) => {
+            setCustomerName(c.name);
+            setCustomerPhone(c.phone);
+            const fullAddr = c.secondaryAddress ? `${c.defaultAddress} (Room ${c.secondaryAddress})` : c.defaultAddress;
+            setPickupLoc(fullAddr);
+            setPickupCoords(c.defaultCoords);
+            setDeliveryLoc(fullAddr);
+            setDeliveryCoords(c.defaultCoords);
+            setIsDeliveryDirty(false);
+            updateClosestStoreAsync(c.defaultCoords);
+            setEditingFeeLock(null);
+            
+            if (c.isVIP) {
+              setSelectedVIPLabel("VIP");
+            } else {
+              setSelectedVIPLabel("");
+            }
+            if (c.isMember) {
+              setSelectedMemberLabel("Member");
+              setSelectedMemberId(c.memberId || "");
+            } else {
+              setSelectedMemberLabel("");
+              setSelectedMemberId("");
+            }
+            setCustomerPriceListId(c.priceListId || null);
+            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
+            
+            setCustomerSearchQuery("");
+            setShowCustomerDropdown(false);
+            
+            if (c.remark && c.remark.trim() !== "") {
+              handleAddAdminLog(`CRM Remark: ${c.remark}`, true);
+            }
+          }}
+        />
       </motion.div>
     </AnimatePresence>
     </ProtectedRoute>

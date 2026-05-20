@@ -80,7 +80,7 @@ export default function FeeCalculatorPage() {
 
   if (!mounted) {
     return (
-      <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
+      <div className="flex-1 bg-slate-50 p-4 lg:p-6 flex flex-col h-full overflow-hidden">
         <div className="mb-6 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-4">
             <div className="w-14 h-14 bg-slate-200 rounded-2xl animate-pulse"></div>
@@ -99,12 +99,12 @@ export default function FeeCalculatorPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-4 lg:p-8 flex flex-col h-screen overflow-hidden">
+    <div className="flex-1 bg-slate-50 p-4 lg:p-6 flex flex-col h-full overflow-hidden">
       <div className="mb-6 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
-          <Link href="/admin" className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl hover:bg-indigo-200 transition-colors cursor-pointer block">
+          <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl block">
             <Calculator size={28} />
-          </Link>
+          </div>
           <div>
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">Delivery Fee Calculator</h1>
             <p className="text-sm font-medium text-slate-500">Search locations and calculate precise delivery fees based on real routing.</p>

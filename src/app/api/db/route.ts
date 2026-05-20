@@ -16,6 +16,13 @@ export async function GET() {
     ] = await Promise.all([
       prisma.customer.findMany(),
       prisma.job.findMany({
+        where: {
+          OR: [
+            { status: { notIn: ['completed', 'cancel'] } },
+            { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } }
+          ]
+        },
+        orderBy: { id: 'desc' },
         select: {
           id: true,
           type: true,
