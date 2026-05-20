@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { useRiders } from "@/lib/use-riders";
 import { jobStore, shopStore, type Job } from "@/lib/store";
@@ -15,7 +15,7 @@ import { AdminTaskTracker } from "@/components/admin-task-tracker";
 
 import { Calendar, dateFnsLocalizer, EventProps } from 'react-big-calendar';
 import withDragAndDrop, { withDragAndDropProps } from 'react-big-calendar/lib/addons/dragAndDrop';
-import { format, parse, startOfWeek, getDay, addMinutes } from 'date-fns';
+import { format, parse, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfDay, endOfDay, getDay, addMinutes } from 'date-fns';
 import { enUS } from 'date-fns/locale/en-US';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 import 'react-big-calendar/lib/addons/dragAndDrop/styles.css';
@@ -72,6 +72,24 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<any>('week');
+
+  useEffect(() => {
+    let start: Date;
+    let end: Date;
+
+    if (currentView === 'month') {
+      start = startOfMonth(currentDate);
+      end = endOfMonth(currentDate);
+    } else if (currentView === 'week') {
+      start = startOfWeek(currentDate);
+      end = endOfWeek(currentDate);
+    } else {
+      start = startOfDay(currentDate);
+      end = endOfDay(currentDate);
+    }
+
+    jobStore.fetchHistoricalJobs(start, end);
+  }, [currentDate, currentView]);
 
   // Filter riders by selected area
   const filteredRiders = useMemo(() => {
