@@ -5,10 +5,12 @@ import { format, isToday, addDays, isSameDay, addMonths, isSameMonth } from "dat
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
+import { addJobLogAction } from "@/actions/db";
 import { useJobs } from "@/lib/use-jobs";
-import { jobStore, Job } from "@/lib/store";
-import { MiniMap } from "@/components/map-loader";
+import { jobStore, Job, type AdminNoteLog } from "@/lib/store";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { MiniMap } from "@/components/map-loader";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -308,6 +310,43 @@ export default function RiderPage() {
   const [jobToComplete, setJobToComplete] = useState<RiderTask | null>(null);
   const [historyDate, setHistoryDate] = useState<Date>(new Date());
   const [historyMode, setHistoryMode] = useState<"daily" | "monthly">("daily");
+  const [riderNoteInput, setRiderNoteInput] = useState("");
+
+  const handleAddRiderLog = async (jobId: string, text: string) => {
+    if (!text.trim() || !user) return;
+    const newLog: AdminNoteLog = {
+      id: Math.random().toString(36).substring(7),
+      userId: user.id,
+      userName: activeRider?.name || (user as any).name || user.email || "Rider",
+      text: text.trim(),
+      timestamp: new Date().toISOString()
+    };
+    
+    // Optimistic update locally
+    setRiderNoteInput("");
+    if (selectedJob && selectedJob.job.id === jobId) {
+      let updatedLogs = [];
+      try {
+        if (selectedJob.job.adminNotesJson) {
+          updatedLogs = JSON.parse(selectedJob.job.adminNotesJson);
+        }
+      } catch(e) {}
+      updatedLogs.push(newLog);
+      
+      const newJson = JSON.stringify(updatedLogs);
+      setSelectedJob({ ...selectedJob, job: { ...selectedJob.job, adminNotesJson: newJson } });
+      
+      // Update store so it persists when modal closes
+      import("@/lib/api").then(m => m.refreshDb());
+    }
+
+    try {
+      await addJobLogAction(jobId, newLog);
+    } catch (err) {
+      console.error("Failed to save rider log:", err);
+      toast.error("Failed to send message");
+    }
+  };
 
   const handleLogout = () => {
     logout();
@@ -1005,25 +1044,65 @@ export default function RiderPage() {
                     </div>
                   )}
 
-                  {selectedJob.job.adminNotesJson && (() => {
+                  {(() => {
+                    let notes: any[] = [];
                     try {
-                      const notes = JSON.parse(selectedJob.job.adminNotesJson);
-                      if (notes.length > 0) {
-                        return (
-                          <div className="p-2 bg-amber-50 border border-amber-100 shadow-sm rounded-xl">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600 mb-1">Admin Notes</p>
-                            <div className="space-y-1">
-                              {notes.map((n: any, i: number) => (
-                                <div key={i} className="text-xs text-amber-800 bg-white/60 py-1 px-2 rounded">
-                                  <span className="font-bold">{n.userName}:</span> {n.text}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        );
+                      if (selectedJob.job.adminNotesJson) {
+                        notes = JSON.parse(selectedJob.job.adminNotesJson);
                       }
                     } catch {}
-                    return null;
+                    
+                    return (
+                      <div className="p-2 bg-slate-50 border border-slate-200 shadow-sm rounded-xl flex flex-col h-48">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 flex-shrink-0">Job Chat / Logs</p>
+                        
+                        <div className="flex-1 overflow-y-auto space-y-1.5 mb-2 pr-1">
+                          {notes.length > 0 ? notes.map((n: any, i: number) => {
+                            const isMe = n.userId === user?.id;
+                            return (
+                              <div key={n.id || i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                <div className={`px-2 py-1.5 rounded-lg max-w-[90%] ${isMe ? 'bg-indigo-500 text-white rounded-br-none' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none'}`}>
+                                  <div className="flex justify-between items-end gap-3 mb-0.5">
+                                    <span className={`text-[9px] font-bold ${isMe ? 'text-indigo-100' : 'text-slate-500'}`}>{n.userName}</span>
+                                    <span className={`text-[8px] ${isMe ? 'text-indigo-200' : 'text-slate-400'}`}>
+                                      {n.timestamp ? format(new Date(n.timestamp), "HH:mm") : ""}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs leading-snug whitespace-pre-wrap">{n.text}</p>
+                                </div>
+                              </div>
+                            );
+                          }) : (
+                            <div className="h-full flex items-center justify-center text-xs text-slate-400 italic">No messages yet...</div>
+                          )}
+                        </div>
+
+                        {selectedJob.job.status !== 'completed' && selectedJob.job.status !== 'cancel' && (
+                          <div className="flex gap-1.5 flex-shrink-0 mt-auto pt-1 border-t border-slate-200">
+                            <Input
+                              placeholder="Type a message..."
+                              value={riderNoteInput}
+                              onChange={(e) => setRiderNoteInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                                }
+                              }}
+                              className="h-8 text-xs bg-white flex-1"
+                            />
+                            <Button 
+                              type="button" 
+                              size="sm" 
+                              className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white"
+                              onClick={() => handleAddRiderLog(selectedJob.job.id, riderNoteInput)}
+                            >
+                              Send
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    );
                   })()}
 
                   {legType === 'pickup' && (

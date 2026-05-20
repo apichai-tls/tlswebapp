@@ -173,7 +173,7 @@ export const api = {
         
         if (newJobs.length > 0) {
           memoryDb.jobs = [...memoryDb.jobs, ...newJobs];
-          import('./store').then(m => m.emitJobChange());
+          import('./store').then(m => m.jobStore.notify());
         }
         return parsedJobs;
       }

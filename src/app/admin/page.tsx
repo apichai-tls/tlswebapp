@@ -42,6 +42,7 @@ import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import FeeCalculatorPage from "./fee-calculator/page";
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
+import { addJobLogAction } from "@/actions/db";
 import { useRiders } from "@/lib/use-riders";
 import {
   Plus,
@@ -284,16 +285,30 @@ export default function AdminPage() {
   const [adminLogs, setAdminLogs] = useState<AdminNoteLog[]>([]);
   const [adminNoteInput, setAdminNoteInput] = useState("");
 
-  const handleAddAdminLog = (text: string, isSystem = false) => {
+  const handleAddAdminLog = async (text: string, isSystem = false) => {
     if (!text.trim()) return;
     const newLog: AdminNoteLog = {
+      id: Math.random().toString(36).substring(7),
       userId: isSystem ? "system" : (user?.id || "unknown"),
-      userName: isSystem ? "System (CRM)" : (user?.email || "Admin"),
+      userName: isSystem ? "System (CRM)" : ((user as any)?.name || user?.email || "Admin"),
       text: text.trim(),
       timestamp: new Date().toISOString()
     };
+    
+    // Add locally for instant UI update
     setAdminLogs(prev => [...prev, newLog]);
     setAdminNoteInput("");
+
+    // Save instantly to DB if editing an existing job
+    if (editingJobId) {
+      try {
+        await addJobLogAction(editingJobId, newLog);
+        // Sync local store so other parts of the app update immediately
+        import("@/lib/api").then(m => m.refreshDb());
+      } catch (err) {
+        console.error("Failed to instantly save admin log:", err);
+      }
+    }
   };
   const [isPickupLobby, setIsPickupLobby] = useState(false);
   const [isPickupMeet, setIsPickupMeet] = useState(false);
@@ -586,14 +601,6 @@ export default function AdminPage() {
     const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
 
     let finalAdminLogs = [...adminLogs];
-    if (adminNoteInput.trim()) {
-      finalAdminLogs.push({
-        id: Math.random().toString(36).substring(7),
-        text: adminNoteInput.trim(),
-        createdAt: new Date().toISOString(),
-        createdBy: user?.name || "Admin",
-      });
-    }
 
     const newJobData = {
       customerName: customerName.trim(),
@@ -1522,16 +1529,22 @@ export default function AdminPage() {
                             {adminLogs.length > 0 ? (
                               <div className="max-h-24 overflow-y-auto space-y-1 bg-slate-50 p-1.5 rounded border border-slate-100 text-[10px]">
                                 {adminLogs.map((log, i) => (
-                                  <div key={i} className="flex gap-1.5 group relative pr-4">
-                                    <span className="text-slate-400 shrink-0">[{format(new Date(log.timestamp), "HH:mm")}]</span>
-                                    <span className={log.userId === 'system' ? 'text-indigo-600 font-medium' : 'text-slate-700 font-medium'}>{log.userName}:</span>
-                                    <span className="text-slate-600 break-words flex-1">{log.text}</span>
-                                    {log.userId === 'system' && (
+                                  <div key={log.id || i} className="group relative p-2 rounded-lg bg-slate-50 border border-slate-100 pr-6 shadow-sm">
+                                    <div className="flex justify-between items-center mb-1">
+                                      <span className={`font-bold text-[10px] uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
+                                        {log.userName || (log as any).createdBy || "System"}
+                                      </span>
+                                      <span className="text-[9px] text-slate-400">
+                                        {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
+                                    {!editingJobId && (
                                       <button 
                                         type="button"
                                         onClick={() => setAdminLogs(prev => prev.filter((_, idx) => idx !== i))}
                                         className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity p-0.5"
-                                        title="Remove CRM Remark"
+                                        title="Remove Log"
                                       >
                                         <X size={12} />
                                       </button>

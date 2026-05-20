@@ -438,7 +438,7 @@ function MonthlyReportModal({
       
       if (job) {
         customerName = job.customerName || "-";
-        customerStatus = job.customerStatus === 'vip' ? 'VIP' : job.customerStatus === 'member' ? 'Member' : 'Normal';
+        customerStatus = (job as any).customerStatus === 'vip' ? 'VIP' : (job as any).customerStatus === 'member' ? 'Member' : 'Normal';
         
         if (t.type.includes('pickup')) {
           location = job.pickupLocation?.replace(/,/g, ' ') || "-";
@@ -580,8 +580,8 @@ function MonthlyReportModal({
                             const job = jobs.find(j => j.id === t.jobId) || historyJobs.find(j => j.id === t.jobId);
                             let location = "-";
                             let distance = 0;
-                            let isVip = job?.customerStatus === 'vip';
-                            let isMember = job?.customerStatus === 'member';
+                            let isVip = (job as any)?.customerStatus === 'vip';
+                            let isMember = (job as any)?.customerStatus === 'member';
 
                             if (job) {
                               if (t.type.includes('pickup')) {

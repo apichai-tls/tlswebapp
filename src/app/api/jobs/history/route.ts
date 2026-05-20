@@ -59,7 +59,6 @@ export async function GET(req: NextRequest) {
         pickupProofImageUrl: true,
         deliveryProofImageUrl: true,
         branchId: true,
-        legs: true,
         pickupScheduledAt: true,
         deliveryScheduledAt: true,
         paymentChannel: true,

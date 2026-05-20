@@ -125,6 +125,7 @@ export interface Job {
 }
 
 export interface AdminNoteLog {
+  id?: string;
   userId: string;
   userName: string;
   text: string;
@@ -316,6 +317,7 @@ function emitJobChange() {
 }
 
 export const jobStore = {
+  notify: emitJobChange,
   subscribe(listener: Listener): () => void {
     jobListeners.add(listener);
     return () => jobListeners.delete(listener);

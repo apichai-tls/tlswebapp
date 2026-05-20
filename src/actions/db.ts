@@ -406,3 +406,22 @@ export async function updateSettingAction(key: string, value: string) {
   });
 }
 
+export async function addJobLogAction(id: string, logEntry: any) {
+  const job = await prisma.job.findUnique({ where: { id }, select: { adminNotesJson: true } });
+  if (!job) throw new Error('Job not found');
+  let notes = [];
+  if (job.adminNotesJson) {
+    try {
+      notes = JSON.parse(job.adminNotesJson);
+      if (!Array.isArray(notes)) notes = [];
+    } catch (e) {
+      notes = [];
+    }
+  }
+  notes.push(logEntry);
+  const updatedJson = JSON.stringify(notes);
+  return prisma.job.update({ 
+    where: { id }, 
+    data: { adminNotesJson: updatedJson } 
+  });
+}
