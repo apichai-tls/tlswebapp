@@ -626,8 +626,8 @@ export default function AdminPage() {
       serviceType,
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
-      pickupCommission: (isPickup && !selectedVIPLabel) ? Math.floor(pickupDist) * 2 : 0,
-      deliveryCommission: (isDelivery && !selectedVIPLabel) ? Math.floor(deliveryDist) * 2 : 0,
+      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) ? Math.floor(pickupDist) * 2 : 0,
+      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) ? Math.floor(deliveryDist) * 2 : 0,
       remark: [
         ...customRemarks,
         isFreeDelivery ? "Free Delivery" : "",
