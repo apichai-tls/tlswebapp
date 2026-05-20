@@ -1053,7 +1053,7 @@ export default function RiderPage() {
                     } catch {}
                     
                     return (
-                      <div className="p-2 bg-slate-50 border border-slate-200 shadow-sm rounded-xl flex flex-col h-48">
+                      <div className="p-2 bg-slate-50 border border-slate-200 shadow-sm rounded-xl flex flex-col h-32">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 flex-shrink-0">Job Chat / Logs</p>
                         
                         <div className="flex-1 overflow-y-auto space-y-1.5 mb-2 pr-1">

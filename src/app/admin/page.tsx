@@ -77,7 +77,8 @@ import {
   ChevronRight,
   Database,
   ZoomIn,
-  Camera
+  Camera,
+  MessageSquare
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -1074,51 +1075,53 @@ export default function AdminPage() {
                           </div>
                         </div>
                         
-                        <div className="space-y-1 mb-1 pb-1 border-b border-slate-100 shrink-0">
-                          <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
-                            <Store size={14} className="text-blue-600" />
-                            Origin Store Branch
-                          </Label>
-                          <select 
-                            id="store-select"
-                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                            value={selectedStoreIndex}
-                            onChange={(e) => {
-                              setSelectedStoreIndex(Number(e.target.value));
-                              setEditingFeeLock(null);
-                            }}
-                          >
-                            {shopLocations.map((shop, idx) => (
-                              <option key={shop.id} value={idx}>{shop.name}</option>
-                            ))}
-                          </select>
-                        </div>
+                        <div className="flex items-end gap-3 mb-1 pb-2 border-b border-slate-100 shrink-0">
+                          <div className="space-y-1 flex-1">
+                            <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
+                              <Store size={14} className="text-blue-600" />
+                              Origin Store Branch
+                            </Label>
+                            <select 
+                              id="store-select"
+                              className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                              value={selectedStoreIndex}
+                              onChange={(e) => {
+                                setSelectedStoreIndex(Number(e.target.value));
+                                setEditingFeeLock(null);
+                              }}
+                            >
+                              {shopLocations.map((shop, idx) => (
+                                <option key={shop.id} value={idx}>{shop.name}</option>
+                              ))}
+                            </select>
+                          </div>
 
-                        <div className="flex items-center gap-4 shrink-0">
-                          <Label className="flex items-center gap-1.5 cursor-pointer">
-                            <input 
-                              type="checkbox" 
-                              checked={isPickup}
-                              onChange={(e) => {
-                                setIsPickup(e.target.checked);
-                                setEditingFeeLock(null);
-                              }}
-                              className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                            />
-                            <span className="text-sm font-medium text-slate-700">Pickup</span>
-                          </Label>
-                          <Label className="flex items-center gap-1.5 cursor-pointer">
-                            <input 
-                              type="checkbox" 
-                              checked={isDelivery}
-                              onChange={(e) => {
-                                setIsDelivery(e.target.checked);
-                                setEditingFeeLock(null);
-                              }}
-                              className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                            />
-                            <span className="text-sm font-medium text-slate-700">Delivery</span>
-                          </Label>
+                          <div className="flex items-center gap-3 pb-1.5">
+                            <Label className="flex items-center gap-1.5 cursor-pointer">
+                              <input 
+                                type="checkbox" 
+                                checked={isPickup}
+                                onChange={(e) => {
+                                  setIsPickup(e.target.checked);
+                                  setEditingFeeLock(null);
+                                }}
+                                className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                              />
+                              <span className="text-[13px] font-medium text-slate-700">Pickup</span>
+                            </Label>
+                            <Label className="flex items-center gap-1.5 cursor-pointer">
+                              <input 
+                                type="checkbox" 
+                                checked={isDelivery}
+                                onChange={(e) => {
+                                  setIsDelivery(e.target.checked);
+                                  setEditingFeeLock(null);
+                                }}
+                                className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                              />
+                              <span className="text-[13px] font-medium text-slate-700">Delivery</span>
+                            </Label>
+                          </div>
                         </div>
 
                         <div className="flex flex-col gap-2 shrink-0">
@@ -1210,10 +1213,38 @@ export default function AdminPage() {
                         <div className="space-y-1 pt-1 border-t border-slate-100">
                           {isPickup && (
                             <div className="space-y-1">
-                              <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-xs font-medium">
-                                <Clock size={14} className="text-amber-500" />
-                                Pickup Time & Rider
-                              </Label>
+                              <div className="flex items-center justify-between gap-2">
+                                <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-xs font-medium">
+                                  <Clock size={14} className="text-amber-500" />
+                                  Pickup Time & Rider
+                                </Label>
+                                <div className="flex items-center gap-3">
+                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
+                                      checked={isPickupMeet}
+                                      onChange={(e) => {
+                                        setIsPickupMeet(e.target.checked);
+                                        if (e.target.checked) setIsPickupLobby(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-medium">Meet up</span>
+                                  </Label>
+                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
+                                      checked={isPickupLobby}
+                                      onChange={(e) => {
+                                        setIsPickupLobby(e.target.checked);
+                                        if (e.target.checked) setIsPickupMeet(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-medium">Lobby</span>
+                                  </Label>
+                                </div>
+                              </div>
                               <div className="grid grid-cols-[1.6fr_1fr] gap-2">
                                 <DateTimePicker
                                   id="schedule-pickup"
@@ -1231,41 +1262,44 @@ export default function AdminPage() {
                                   ))}
                                 </select>
                               </div>
-                              <div className="flex items-center gap-3 mt-1">
-                                <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                  <input 
-                                    type="checkbox" 
-                                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                                    checked={isPickupMeet}
-                                    onChange={(e) => {
-                                      setIsPickupMeet(e.target.checked);
-                                      if (e.target.checked) setIsPickupLobby(false);
-                                    }}
-                                  />
-                                  <span className="text-xs text-slate-700">Meet up</span>
-                                </Label>
-                                <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                  <input 
-                                    type="checkbox" 
-                                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                                    checked={isPickupLobby}
-                                    onChange={(e) => {
-                                      setIsPickupLobby(e.target.checked);
-                                      if (e.target.checked) setIsPickupMeet(false);
-                                    }}
-                                  />
-                                  <span className="text-xs text-slate-700">Leave at Lobby</span>
-                                </Label>
-                                </div>
-                                
-                              </div>
+                            </div>
                           )}
 
                           <div className={`space-y-0.5 ${isPickup ? 'pt-0.5 border-t border-slate-100' : ''}`}>
-                            <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-xs font-medium">
-                              <CalendarClock size={14} className="text-blue-500" />
-                              {isDelivery ? "Delivery Time & Rider" : "Est. Return Date"}
-                            </Label>
+                            <div className="flex items-center justify-between gap-2">
+                              <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-xs font-medium">
+                                <CalendarClock size={14} className="text-blue-500" />
+                                {isDelivery ? "Delivery Time & Rider" : "Est. Return Date"}
+                              </Label>
+                              {isDelivery && (
+                                <div className="flex items-center gap-3">
+                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
+                                      checked={isDeliveryMeet}
+                                      onChange={(e) => {
+                                        setIsDeliveryMeet(e.target.checked);
+                                        if (e.target.checked) setIsDeliveryLobby(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-medium">Meet up</span>
+                                  </Label>
+                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
+                                      checked={isDeliveryLobby}
+                                      onChange={(e) => {
+                                        setIsDeliveryLobby(e.target.checked);
+                                        if (e.target.checked) setIsDeliveryMeet(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-medium">Lobby</span>
+                                  </Label>
+                                </div>
+                              )}
+                            </div>
                             <div className={isDelivery ? "grid grid-cols-[1.6fr_1fr] gap-1" : "flex flex-col gap-1"}>
                               <DateTimePicker
                                   id="schedule-delivery"
@@ -1285,35 +1319,64 @@ export default function AdminPage() {
                                   </select>
                                 )}
                               </div>
-                              {isDelivery && (
-                                <div className="flex items-center gap-3 mt-1">
-                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                                      checked={isDeliveryMeet}
-                                      onChange={(e) => {
-                                        setIsDeliveryMeet(e.target.checked);
-                                        if (e.target.checked) setIsDeliveryLobby(false);
-                                      }}
-                                    />
-                                    <span className="text-xs text-slate-700">Meet up</span>
-                                  </Label>
-                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
-                                      checked={isDeliveryLobby}
-                                      onChange={(e) => {
-                                        setIsDeliveryLobby(e.target.checked);
-                                        if (e.target.checked) setIsDeliveryMeet(false);
-                                      }}
-                                    />
-                                    <span className="text-xs text-slate-700">Leave at Lobby</span>
-                                  </Label>
-                                </div>
-                              )}
-                              
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Admin Notes & Options */}
+                        <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-1.5 flex-1 min-h-[180px]">
+                          <Label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1.5"><MessageSquare size={14} className="text-indigo-500" /> Admin Note Logs</Label>
+                          <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
+                            {adminLogs.length > 0 ? (
+                              <div className="flex-1 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-[10px]">
+                                {adminLogs.map((log, i) => (
+                                  <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm">
+                                    <div className="flex justify-between items-center mb-1">
+                                      <span className={`font-bold text-[10px] uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
+                                        {log.userName || (log as any).createdBy || "System"}
+                                      </span>
+                                      <span className="text-[9px] text-slate-400">
+                                        {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
+                                    {!editingJobId && (
+                                      <button 
+                                        type="button"
+                                        onClick={() => setAdminLogs(prev => prev.filter((_, idx) => idx !== i))}
+                                        className="absolute right-1 top-1 opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity p-0.5"
+                                        title="Remove Log"
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-slate-400 italic px-1 flex-1 flex items-center justify-center border border-slate-100 bg-slate-50 rounded-lg">No notes yet...</div>
+                            )}
+                            <div className="flex gap-1 shrink-0 mt-1">
+                              <Input
+                                placeholder="Type a note & press Enter..."
+                                value={adminNoteInput}
+                                onChange={(e) => setAdminNoteInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleAddAdminLog(adminNoteInput);
+                                  }
+                                }}
+                                className="h-8 text-xs bg-white flex-1 rounded-lg"
+                              />
+                              <Button 
+                                type="button" 
+                                size="sm" 
+                                className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
+                                onClick={() => handleAddAdminLog(adminNoteInput)}
+                              >
+                                <Plus size={14} /> Send
+                              </Button>
                             </div>
                           </div>
                         </div>
@@ -1522,63 +1585,7 @@ export default function AdminPage() {
                           </select>
                         </div>
 
-                        {/* Admin Notes & Options */}
-                        <div className="space-y-1 pt-2 border-t border-slate-100 mt-auto">
-                          <Label className="text-[10px] font-medium text-slate-500">Admin Note Logs</Label>
-                          <div className="flex flex-col gap-1.5">
-                            {adminLogs.length > 0 ? (
-                              <div className="max-h-24 overflow-y-auto space-y-1 bg-slate-50 p-1.5 rounded border border-slate-100 text-[10px]">
-                                {adminLogs.map((log, i) => (
-                                  <div key={log.id || i} className="group relative p-2 rounded-lg bg-slate-50 border border-slate-100 pr-6 shadow-sm">
-                                    <div className="flex justify-between items-center mb-1">
-                                      <span className={`font-bold text-[10px] uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
-                                        {log.userName || (log as any).createdBy || "System"}
-                                      </span>
-                                      <span className="text-[9px] text-slate-400">
-                                        {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
-                                      </span>
-                                    </div>
-                                    <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
-                                    {!editingJobId && (
-                                      <button 
-                                        type="button"
-                                        onClick={() => setAdminLogs(prev => prev.filter((_, idx) => idx !== i))}
-                                        className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity p-0.5"
-                                        title="Remove Log"
-                                      >
-                                        <X size={12} />
-                                      </button>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="text-[10px] text-slate-400 italic px-1">No notes yet...</div>
-                            )}
-                            <div className="flex gap-1">
-                              <Input
-                                placeholder="Type a note & press Enter..."
-                                value={adminNoteInput}
-                                onChange={(e) => setAdminNoteInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleAddAdminLog(adminNoteInput);
-                                  }
-                                }}
-                                className="h-7 text-xs bg-white flex-1"
-                              />
-                              <Button 
-                                type="button" 
-                                size="sm" 
-                                className="h-7 px-2 bg-slate-800 hover:bg-slate-700"
-                                onClick={() => handleAddAdminLog(adminNoteInput)}
-                              >
-                                <Plus size={14} />
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
+
                       </div>
                       </motion.div>
 
