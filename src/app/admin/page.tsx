@@ -1677,7 +1677,7 @@ export default function AdminPage() {
                             </div>
                             <div className="text-right">
                               <span className="text-lg font-bold text-amber-400">
-                                ฿{selectedVIPLabel ? "0" : ((isPickup ? Math.floor(pickupDist) * 2 : 0) + (isDelivery ? Math.floor(deliveryDist) * 2 : 0)).toFixed(0)}
+                                ฿{selectedVIPLabel || isFreeDelivery ? "0" : ((isPickup ? Math.floor(pickupDist) * 2 : 0) + (isDelivery ? Math.floor(deliveryDist) * 2 : 0)).toFixed(0)}
                               </span>
                             </div>
                           </div>
