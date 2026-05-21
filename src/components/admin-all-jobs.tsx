@@ -69,7 +69,10 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     let start: Date;
     let end: Date;
     
-    if (dateFilter === "yesterday") {
+    if (dateFilter === "today") {
+      start = today;
+      end = today;
+    } else if (dateFilter === "yesterday") {
       start = yesterday;
       end = yesterday;
     } else if (dateFilter === "custom") {
