@@ -38,6 +38,7 @@ export async function GET() {
           distance: true,
           fee: true,
           status: true,
+          subStatus: true,
           createdAt: true,
           scheduledAt: true,
           completedAt: true,

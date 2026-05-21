@@ -223,8 +223,8 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
   return (
     <div
       onClick={onClick}
-      className={`bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm cursor-pointer hover:border-blue-300 transition-colors ${
-        (job.status === "completed" || job.status === "picked_up" || isHistory) ? "opacity-70" : ""
+      className={`bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm cursor-pointer transition-all active:scale-[0.98] ${
+        (job.status === "completed" || isHistory) ? "opacity-70 grayscale-[0.2]" : "hover:border-blue-400 hover:shadow-md"
       }`}
     >
       <div className="pb-3 pt-3 px-4">
@@ -408,8 +408,8 @@ export default function RiderPage() {
     const watcher = navigator.geolocation.watchPosition(
       (pos) => {
         setGpsActive(true);
-        // Ignore wildly inaccurate fixes (e.g., > 100 meters, typical of cell towers)
-        if (pos.coords.accuracy > 100) return;
+        // Ignore wildly inaccurate fixes (e.g., > 1500 meters, typical of cell towers)
+        if (pos.coords.accuracy > 1500) return;
 
         // Keep the best accuracy within the current time window
         if (pos.coords.accuracy < bestAccuracy) {
@@ -584,19 +584,23 @@ export default function RiderPage() {
     function handleCapture(taskId: string, event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (file) {
+      // Synchronous Auto-save logic (must be tied directly to user gesture for iOS)
+      const objectUrl = window.URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `${taskId}-proof.jpg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Cleanup object URL after download
+      setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
+
       setCapturedFiles(prev => ({ ...prev, [taskId]: file }));
       const reader = new FileReader();
       reader.onloadend = () => {
         const dataUrl = reader.result as string;
         setCapturedImages(prev => ({ ...prev, [taskId]: dataUrl }));
-        
-        // Auto-save logic
-        const link = document.createElement('a');
-        link.href = dataUrl;
-        link.download = `${taskId}-proof.jpg`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
       };
       reader.readAsDataURL(file);
     }

@@ -212,6 +212,7 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [editingSubStatus, setEditingSubStatus] = useState<"wash" | "dry" | "iron" | "ready" | null>(null);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
@@ -417,6 +418,7 @@ export default function AdminPage() {
 
   const handleCreateNewJob = () => {
     setEditingJobId(null);
+    setEditingSubStatus(null);
     setCustomerName("");
     setCustomerPhone("");
     setPickupLoc("");
@@ -431,6 +433,16 @@ export default function AdminPage() {
     setPaymentMethod("unpaid");
     setPaymentChannel("");
     setServiceType("wash_fold");
+    setServiceWeight(2);
+    setOtherClothingName("");
+    setClothingItems({
+      polo: { selected: false, quantity: 1 },
+      tshirt: { selected: false, quantity: 1 },
+      pants: { selected: false, quantity: 1 },
+      dress: { selected: false, quantity: 1 },
+      bedsheet: { selected: false, quantity: 1 },
+      other: { selected: false, quantity: 1 },
+    });
     if (firstWash) {
       handleServiceOrSpeedChange(firstWash, "standard", 2, null);
     } else {
@@ -449,6 +461,7 @@ export default function AdminPage() {
     setIsPickupMeet(false);
     setIsDeliveryLobby(false);
     setIsDeliveryMeet(false);
+    setIsFreeDelivery(false);
     setAdminNote("");
     setAdminLogs([]);
     setAdminNoteInput("");
@@ -462,6 +475,8 @@ export default function AdminPage() {
   };
 
   const handleEditFullJob = (job: Job) => {
+    setEditingJobId(job.id);
+    setEditingSubStatus(job.subStatus || null);
     setCustomerName(job.customerName || "");
     setCustomerPhone(job.customerPhone || "");
     const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation);
@@ -502,6 +517,17 @@ export default function AdminPage() {
     setSelectedMemberId(matchedCustomer?.memberId || "");
     setCustomerPriceListId(matchedCustomer?.priceListId || null);
     
+    setServiceWeight(2);
+    setOtherClothingName("");
+    setClothingItems({
+      polo: { selected: false, quantity: 1 },
+      tshirt: { selected: false, quantity: 1 },
+      pants: { selected: false, quantity: 1 },
+      dress: { selected: false, quantity: 1 },
+      bedsheet: { selected: false, quantity: 1 },
+      other: { selected: false, quantity: 1 },
+    });
+
     setBagImageUrls([]);
     setBillImageUrls([]);
     setPickupProofImageUrls([]);
@@ -552,6 +578,7 @@ export default function AdminPage() {
     setIsPickupMeet(job.remark ? job.remark.includes("Pickup: Meet up") : false);
     setIsDeliveryLobby(job.remark ? job.remark.includes("Delivery: Leave at Lobby") : false);
     setIsDeliveryMeet(job.remark ? job.remark.includes("Delivery: Meet up") : false);
+    setIsFreeDelivery(job.remark ? job.remark.includes("Free Delivery") : false);
     setPickupScheduledTime(format(roundToNearest30(new Date(job.pickupScheduledAt || job.scheduledAt || Date.now())), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setPickupRiderId(job.pickupRiderId || "");
@@ -605,6 +632,7 @@ export default function AdminPage() {
 
     const newJobData = {
       type: (isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store")),
+      subStatus: editingSubStatus,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       pickupLocation: isPickup ? pickupLoc.trim() : shop.address,
@@ -901,120 +929,172 @@ export default function AdminPage() {
                       <span className="sm:hidden">New Job</span>
                     </Button>
                   </motion.div>
-              <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
-                <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-row items-center gap-4">
-                  <DialogTitle className="flex items-center text-lg shrink-0">
-                    <div className="flex items-center gap-2">
-                      <Package size={18} />
-                      {editingJobId ? "Edit Job Details" : "Create New Job"}
-                    </div>
-                    {selectedVIPLabel && (
-                      <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
-                        VIP {selectedVIPLabel}
-                      </Badge>
-                    )}
-                  </DialogTitle>
-
-                  <div className="relative flex-1 max-w-md mx-auto z-50 mt-0">
-                    <div className="flex items-center gap-2">
-                      <div className="relative flex-1">
-                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <Input
-                          id="customer-search"
-                          placeholder="Search customer by name or phone..."
-                          value={customerSearchQuery}
-                          disabled={!!editingJobId}
-                          onChange={(e) => {
-                            setCustomerSearchQuery(e.target.value);
-                            setShowCustomerDropdown(true);
-                          }}
-                          onFocus={() => {
-                            if (customerSearchQuery) setShowCustomerDropdown(true);
-                          }}
-                          onBlur={() => {
-                            setTimeout(() => setShowCustomerDropdown(false), 200);
-                          }}
-                          className="h-9 pl-9 text-sm bg-slate-50 border-slate-200 focus-visible:ring-indigo-500 rounded-full w-full"
-                        />
+                  <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
+                <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 items-start lg:items-center">
+                  <div className="col-span-9 flex flex-row items-center gap-4 w-full">
+                    <DialogTitle className="flex items-center text-lg shrink-0">
+                      <div className="flex items-center gap-2">
+                        <Package size={18} />
+                        {editingJobId ? "Edit Job Details" : "Create New Job"}
                       </div>
-                      <Button 
-                        type="button"
-                        onClick={() => setCustomerDialogOpen(true)}
-                        className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm rounded-full flex items-center gap-1.5 font-bold shrink-0"
-                      >
-                        <UserPlus size={14} />
-                        <span className="text-xs">Add Customer</span>
-                      </Button>
-                    </div>
-                    
-                    {showCustomerDropdown && customerSearchQuery && (
-                      <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-60 overflow-y-auto top-[100%]">
-                        {filteredCustomers.length > 0 ? (
-                          filteredCustomers.map(c => (
-                            <div
-                              key={c.id}
-                              className="px-3 py-2 text-sm cursor-pointer hover:bg-slate-50 flex items-center justify-between border-b border-slate-50 last:border-0"
-                              onClick={() => {
-                                setCustomerName(c.name);
-                                setCustomerPhone(c.phone);
-                                const fullAddr = c.secondaryAddress ? `${c.defaultAddress} (Room ${c.secondaryAddress})` : c.defaultAddress;
-                                setPickupLoc(fullAddr);
-                                setPickupCoords(c.defaultCoords);
-                                setDeliveryLoc(fullAddr);
-                                setDeliveryCoords(c.defaultCoords);
-                                setIsDeliveryDirty(false);
-                                updateClosestStoreAsync(c.defaultCoords);
-                                setEditingFeeLock(null);
-                                
-                                if (c.isVIP) {
-                                  setSelectedVIPLabel("VIP");
-                                } else {
-                                  setSelectedVIPLabel("");
-                                }
-                                if (c.isMember) {
-                                  setSelectedMemberLabel("Member");
-                                  setSelectedMemberId(c.memberId || "");
-                                } else {
-                                  setSelectedMemberLabel("");
-                                  setSelectedMemberId("");
-                                }
-                                setCustomerPriceListId(c.priceListId || null);
-                                handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
-                                
-                                setCustomerSearchQuery("");
-                                setShowCustomerDropdown(false);
-                                
-                                if (c.remark && c.remark.trim() !== "") {
-                                  handleAddAdminLog(`CRM Remark: ${c.remark}`, true);
-                                }
-                              }}
-                            >
-                              <div>
-                                <p className="font-semibold text-slate-800">{c.name}</p>
-                                <p className="text-xs text-slate-500">{c.phone}</p>
+                      {selectedVIPLabel && (
+                        <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
+                          VIP {selectedVIPLabel}
+                        </Badge>
+                      )}
+                    </DialogTitle>
+                    <div className="relative w-full max-w-[400px] z-50 mt-0">
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <Input
+                            id="customer-search"
+                            placeholder="Search customer by name or phone..."
+                            value={customerSearchQuery}
+                            disabled={!!editingJobId}
+                            onChange={(e) => {
+                              setCustomerSearchQuery(e.target.value);
+                              setShowCustomerDropdown(true);
+                            }}
+                            onFocus={() => {
+                              if (customerSearchQuery) setShowCustomerDropdown(true);
+                            }}
+                            onBlur={() => {
+                              setTimeout(() => setShowCustomerDropdown(false), 200);
+                            }}
+                            className="h-9 pl-9 text-sm bg-slate-50 border-slate-200 focus-visible:ring-indigo-500 rounded-full w-full"
+                          />
+                        </div>
+                        <Button 
+                          type="button"
+                          onClick={() => setCustomerDialogOpen(true)}
+                          className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm rounded-full flex items-center gap-1.5 font-bold shrink-0"
+                        >
+                          <UserPlus size={14} />
+                          <span className="text-xs">Add Customer</span>
+                        </Button>
+                      </div>
+                      
+                      {showCustomerDropdown && customerSearchQuery && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-60 overflow-y-auto top-[100%]">
+                          {filteredCustomers.length > 0 ? (
+                            filteredCustomers.map(c => (
+                              <div
+                                key={c.id}
+                                className="px-3 py-2 text-sm cursor-pointer hover:bg-slate-50 flex items-center justify-between border-b border-slate-50 last:border-0"
+                                onClick={() => {
+                                  setServiceWeight(2);
+                                  setOtherClothingName("");
+                                  setClothingItems({
+                                    polo: { selected: false, quantity: 1 },
+                                    tshirt: { selected: false, quantity: 1 },
+                                    pants: { selected: false, quantity: 1 },
+                                    dress: { selected: false, quantity: 1 },
+                                    bedsheet: { selected: false, quantity: 1 },
+                                    other: { selected: false, quantity: 1 },
+                                  });
+                                  setCustomerName(c.name);
+                                  setCustomerPhone(c.phone);
+                                  const fullAddr = c.secondaryAddress ? `${c.defaultAddress} (Room ${c.secondaryAddress})` : c.defaultAddress;
+                                  setPickupLoc(fullAddr);
+                                  setPickupCoords(c.defaultCoords);
+                                  setDeliveryLoc(fullAddr);
+                                  setDeliveryCoords(c.defaultCoords);
+                                  setIsDeliveryDirty(false);
+                                  setIsFreeDelivery(false);
+                                  updateClosestStoreAsync(c.defaultCoords);
+                                  setEditingFeeLock(null);
+                                  
+                                  if (c.isVIP) {
+                                    setSelectedVIPLabel("VIP");
+                                  } else {
+                                    setSelectedVIPLabel("");
+                                  }
+                                  if (c.isMember) {
+                                    setSelectedMemberLabel("Member");
+                                    setSelectedMemberId(c.memberId || "");
+                                  } else {
+                                    setSelectedMemberLabel("");
+                                    setSelectedMemberId("");
+                                  }
+                                  setCustomerPriceListId(c.priceListId || null);
+                                  handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
+                                  
+                                  setCustomerSearchQuery("");
+                                  setShowCustomerDropdown(false);
+                                  
+                                  if (c.remark && c.remark.trim() !== "") {
+                                    handleAddAdminLog(`CRM Remark: ${c.remark}`, true);
+                                  }
+                                }}
+                              >
+                                <div>
+                                  <p className="font-semibold text-slate-800">{c.name}</p>
+                                  <p className="text-xs text-slate-500">{c.phone}</p>
+                                </div>
+                                {c.isVIP && (
+                                  <Badge variant="outline" className="text-[10px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
+                                    VIP
+                                  </Badge>
+                                )}
+                                {c.isMember && (
+                                  <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
+                                    Member
+                                  </Badge>
+                                )}
                               </div>
-                              {c.isVIP && (
-                                <Badge variant="outline" className="text-[10px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
-                                  VIP
-                                </Badge>
-                              )}
-                              {c.isMember && (
-                                <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
-                                  Member
-                                </Badge>
-                              )}
+                            ))
+                          ) : (
+                            <div className="px-3 py-4 text-center text-sm text-slate-500 bg-slate-50">
+                              No customers found. Fill details manually below.
                             </div>
-                          ))
-                        ) : (
-                          <div className="px-3 py-4 text-center text-sm text-slate-500 bg-slate-50">
-                            No customers found. Fill details manually below.
-                          </div>
-                        )}
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="col-span-3 w-full">
+                    {editingJobId && (
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Process:</span>
+                        <div className="flex bg-slate-50 p-1 rounded-xl border border-slate-200 shadow-inner">
+                          <button
+                            type="button"
+                            onClick={() => setEditingSubStatus(editingSubStatus === 'wash' ? null : 'wash')}
+                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'wash' ? 'bg-blue-100 border border-blue-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            title="Washing"
+                          >
+                            <span className="text-lg leading-none block drop-shadow-sm">💧</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingSubStatus(editingSubStatus === 'dry' ? null : 'dry')}
+                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'dry' ? 'bg-orange-100 border border-orange-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            title="Drying"
+                          >
+                            <span className="text-lg leading-none block drop-shadow-sm">♨️</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingSubStatus(editingSubStatus === 'iron' ? null : 'iron')}
+                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'iron' ? 'bg-indigo-100 border border-indigo-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            title="Ironing"
+                          >
+                            <span className="text-lg leading-none block drop-shadow-sm">👕</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingSubStatus(editingSubStatus === 'ready' ? null : 'ready')}
+                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'ready' ? 'bg-emerald-100 border border-emerald-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            title="Ready"
+                          >
+                            <span className="text-lg leading-none block drop-shadow-sm">✨</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
-                  
-                  <div className="w-8 shrink-0"></div>
                 </DialogHeader>
 
                 {/* Main Content Grid */}
@@ -1744,6 +1824,16 @@ export default function AdminPage() {
           open={customerDialogOpen}
           onOpenChange={setCustomerDialogOpen}
           onSaved={(c) => {
+            setServiceWeight(2);
+            setOtherClothingName("");
+            setClothingItems({
+              polo: { selected: false, quantity: 1 },
+              tshirt: { selected: false, quantity: 1 },
+              pants: { selected: false, quantity: 1 },
+              dress: { selected: false, quantity: 1 },
+              bedsheet: { selected: false, quantity: 1 },
+              other: { selected: false, quantity: 1 },
+            });
             setCustomerName(c.name);
             setCustomerPhone(c.phone);
             const fullAddr = c.secondaryAddress ? `${c.defaultAddress} (Room ${c.secondaryAddress})` : c.defaultAddress;
@@ -1752,6 +1842,7 @@ export default function AdminPage() {
             setDeliveryLoc(fullAddr);
             setDeliveryCoords(c.defaultCoords);
             setIsDeliveryDirty(false);
+            setIsFreeDelivery(false);
             updateClosestStoreAsync(c.defaultCoords);
             setEditingFeeLock(null);
             

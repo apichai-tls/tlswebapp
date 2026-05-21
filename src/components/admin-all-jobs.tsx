@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
@@ -21,12 +21,9 @@ import { useSyncExternalStore } from "react";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
   pickup: { label: "Pickup", className: "bg-orange-50 text-orange-700 border-orange-200" },
-  picked_up: { label: "Picked Up", className: "bg-indigo-50 text-indigo-700 border-indigo-200" },
-  ready_to_wash: { label: "Ready to Wash", className: "bg-blue-50 text-blue-700 border-blue-200" },
-  washed: { label: "Washed", className: "bg-sky-50 text-sky-700 border-sky-200" },
+  billing: { label: "Billing", className: "bg-blue-50 text-blue-700 border-blue-200" },
   delivery: { label: "Delivery", className: "bg-purple-50 text-purple-700 border-purple-200" },
   completed: { label: "Completed", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  active: { label: "Active", className: "bg-indigo-50 text-indigo-700 border-indigo-200" },
   cancel: { label: "Cancelled", className: "bg-red-50 text-red-700 border-red-200" },
   return: { label: "Return", className: "bg-rose-50 text-rose-700 border-rose-200" },
 };
@@ -34,20 +31,20 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
 const statusIcon: Record<JobStatus, React.ReactNode> = {
   pending: <Clock size={13} />,
   pickup: <Truck size={13} />,
-  picked_up: <CheckCircle2 size={13} />,
-  ready_to_wash: <Clock size={13} />,
-  washed: <CheckCircle2 size={13} />,
+  billing: <Clock size={13} />,
   delivery: <Navigation size={13} />,
   completed: <CheckCircle2 size={13} />,
-  active: <Zap size={13} />,
   cancel: <XCircle size={13} />,
   return: <Navigation size={13} />,
 };
 
 type FilterDate = "today" | "yesterday" | "custom";
 
+const KANBAN_COLUMNS: JobStatus[] = ['pending', 'pickup', 'billing', 'delivery', 'completed'];
+
 export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], onEditJob?: (job: Job) => void, onCreateJob?: () => void }) {
   const riders = useRiders();
+  const [viewMode, setViewMode] = useState<"list" | "kanban">("list");
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
@@ -104,27 +101,31 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       (job.customerPhone && job.customerPhone.includes(searchTerm));
 
     let matchesDate = true;
-    const isActive = !['completed', 'cancel'].includes(job.status);
+    const isActive = !['completed', 'cancel', 'return'].includes(job.status);
     
     if (dateFilter === "today") {
-      matchesDate = isSameDay(new Date(job.createdAt), today) || isActive;
+      matchesDate = isSameDay(new Date(job.createdAt), today) || 
+                    isActive || 
+                    (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false);
     } else if (dateFilter === "yesterday") {
-      matchesDate = isSameDay(new Date(job.createdAt), yesterday);
+      matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
+                    (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false);
     } else if (dateFilter === "custom") {
       const jobDate = new Date(job.createdAt);
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      matchesDate = jobDate >= start && jobDate <= end;
+      matchesDate = (jobDate >= start && jobDate <= end) || 
+                    (job.completedAt && new Date(job.completedAt) >= start && new Date(job.completedAt) <= end);
     }
 
     let matchesStatus = true;
     if (statusFilter !== "all") {
       matchesStatus = job.status === statusFilter;
     } else {
-      if (job.status === 'completed' && !showCompleted) matchesStatus = false;
-      if (job.status === 'cancel' && !showCancelled) matchesStatus = false;
+      if (job.status === 'completed' && !showCompleted && viewMode === "list") matchesStatus = false;
+      if (job.status === 'cancel' && !showCancelled && viewMode === "list") matchesStatus = false;
     }
 
     return matchesSearch && matchesDate && matchesStatus;
@@ -132,19 +133,36 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
 
   return (
     <div className="flex-1 overflow-auto p-6 lg:p-8 space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div>
-            <h2 className="text-2xl font-bold text-slate-900">Historical Jobs Log</h2>
-            <p className="text-sm text-slate-500 mt-1">Review all past and active jobs, track durations and distances.</p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div>
+              <h2 className="text-2xl font-bold text-slate-900">Historical Jobs Log</h2>
+              <p className="text-sm text-slate-500 mt-1">Review all past and active jobs, track durations and distances.</p>
+            </div>
+            {onCreateJob && (
+              <Button onClick={onCreateJob} className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2 shadow-sm shrink-0">
+                <Zap size={16} />
+                <span className="hidden sm:inline">Create New Job</span>
+                <span className="sm:hidden">Create</span>
+              </Button>
+            )}
           </div>
-          {onCreateJob && (
-            <Button onClick={onCreateJob} className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2 shadow-sm shrink-0">
-              <Zap size={16} />
-              <span className="hidden sm:inline">Create New Job</span>
-              <span className="sm:hidden">Create</span>
-            </Button>
-          )}
+          <div className="flex rounded-md shadow-sm border border-slate-200 bg-slate-50 p-1 shrink-0">
+            <button
+              onClick={() => setViewMode("list")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-sm transition-colors ${viewMode === "list" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+            >
+              <LayoutList size={16} />
+              List
+            </button>
+            <button
+              onClick={() => setViewMode("kanban")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-sm transition-colors ${viewMode === "kanban" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+            >
+              <LayoutGrid size={16} />
+              Kanban
+            </button>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative">
@@ -231,8 +249,8 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
             </div>
           )}
         </div>
-      </div>
 
+      {viewMode === "list" ? (
       <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
         <Table>
           <TableHeader>
@@ -402,18 +420,19 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                               if (newStatus === "cancel") {
                                 setCancellingJob(job);
                               } else {
-                                jobStore.updateJobDetails(job.id, { status: newStatus });
+                                const updates: any = { status: newStatus };
+                                if (newStatus === 'completed') {
+                                  updates.completedAt = new Date().toISOString();
+                                }
+                                jobStore.updateJobDetails(job.id, updates);
                               }
                             }}
                             className={`w-full text-[10px] font-semibold rounded-md border py-1 px-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer ${statusConfig[job.status]?.className || ''}`}
                           >
                             <option value="pending">Pending</option>
                             <option value="pickup">Pickup</option>
-                            <option value="picked_up">Picked Up</option>
-                            <option value="ready_to_wash">Ready to Wash</option>
-                            <option value="washed">Washed</option>
+                            <option value="billing">Billing</option>
                             <option value="delivery">Delivery</option>
-                            <option value="active">Active</option>
                             <option value="completed">Completed</option>
                             <option value="cancel">Cancelled</option>
                             <option value="return">Return</option>
@@ -433,6 +452,119 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
           </TableBody>
         </Table>
       </div>
+      ) : (
+        <div className="flex-1 overflow-x-auto pb-4 custom-scrollbar">
+          <div className="flex gap-4 min-w-max h-full min-h-[600px]">
+            {KANBAN_COLUMNS.map(status => (
+              <div 
+                key={status} 
+                className="w-72 flex flex-col bg-slate-50/50 rounded-xl border border-slate-200 shrink-0 h-full max-h-[75vh]"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.classList.add('bg-slate-100');
+                }}
+                onDragLeave={(e) => {
+                  e.currentTarget.classList.remove('bg-slate-100');
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  e.currentTarget.classList.remove('bg-slate-100');
+                  const jobId = e.dataTransfer.getData('jobId');
+                  if (jobId) {
+                    try {
+                      const job = filteredJobs.find(j => j.id === jobId);
+                      if (job && job.status !== status) {
+                         if (user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) {
+                           const updates: any = { status };
+                           if (status === 'completed') {
+                             updates.completedAt = new Date().toISOString();
+                           }
+                           await jobStore.updateJobDetails(jobId, updates);
+                           toast.success(`Job updated to ${statusConfig[status].label}`);
+                         } else {
+                           toast.error("You don't have permission to change status.");
+                         }
+                      }
+                    } catch(err: any) {
+                      toast.error(`Error updating job: ${err.message}`);
+                    }
+                  }
+                }}
+              >
+                <div className="p-3 border-b border-slate-200 flex items-center justify-between bg-white rounded-t-xl sticky top-0 z-10 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <span className={statusConfig[status].className + " w-6 h-6 flex items-center justify-center rounded-full"}>
+                       {statusIcon[status]}
+                    </span>
+                    <span className="font-semibold text-sm text-slate-800">{statusConfig[status].label}</span>
+                  </div>
+                  <Badge variant="secondary" className="text-xs bg-slate-100">
+                    {filteredJobs.filter(j => j.status === status).length}
+                  </Badge>
+                </div>
+                <div className="p-3 flex-1 overflow-y-auto flex flex-col gap-3 min-h-[150px]">
+                  {filteredJobs.filter(j => j.status === status).map(job => {
+                    let durationMin = null;
+                    if (job.completedAt) {
+                      durationMin = differenceInMinutes(new Date(job.completedAt), new Date(job.createdAt));
+                    }
+                    return (
+                    <div 
+                      key={job.id}
+                      draggable={user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')}
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('jobId', job.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                      }}
+                      onClick={() => onEditJob && onEditJob(job)}
+                      className={`bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs font-bold text-slate-900">{job.id.split('-')[0].toUpperCase()}</span>
+                          {job.subStatus === 'wash' && <span title="Washing" className="text-blue-500 drop-shadow-sm text-[10px]">💧</span>}
+                          {job.subStatus === 'dry' && <span title="Drying" className="text-orange-500 drop-shadow-sm text-[10px]">♨️</span>}
+                          {job.subStatus === 'iron' && <span title="Ironing" className="text-indigo-500 drop-shadow-sm text-[10px]">👕</span>}
+                          {job.subStatus === 'ready' && <span title="Ready" className="text-emerald-500 drop-shadow-sm text-[10px]">✨</span>}
+                        </div>
+                        <div className="flex gap-1">
+                          {job.source === 'pos' && (
+                            <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
+                          )}
+                          <Badge variant="secondary" className="text-[9px] bg-purple-50 text-purple-700 border-purple-100 px-1 py-0 h-4">
+                            {job.serviceType === 'wash_iron_fold' ? 'W/I/F' : 'W/F'}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="font-medium text-sm text-slate-900 mb-1 leading-tight">{job.customerName || "Walk-in Guest"}</div>
+                      <div className="text-xs text-slate-500 mb-3 flex items-start gap-1">
+                        <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
+                        <span className="line-clamp-2">{job.pickupLocation || "-"}</span>
+                      </div>
+                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100">
+                        <div className="flex gap-1.5">
+                          {job.pickupRiderId && <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1 rounded border border-amber-100" title="Pickup Rider Assigned">P</span>}
+                          {job.deliveryRiderId && <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1 rounded border border-indigo-100" title="Delivery Rider Assigned">D</span>}
+                          {!job.pickupRiderId && !job.deliveryRiderId && job.riderId && (
+                            <span className="text-[9px] font-bold text-slate-600 bg-slate-50 px-1 rounded border border-slate-200" title="Rider Assigned">R</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                           {durationMin !== null ? (
+                             <span className="text-[10px] font-semibold text-slate-700">{durationMin}m</span>
+                           ) : (
+                             <span className="text-[10px] text-slate-400 font-medium">{format(new Date(job.createdAt), "HH:mm")}</span>
+                           )}
+                        </div>
+                      </div>
+                    </div>
+                  )})}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <Dialog open={!!cancellingJob} onOpenChange={(open) => !open && setCancellingJob(null)}>
         <DialogContent className="sm:max-w-md">

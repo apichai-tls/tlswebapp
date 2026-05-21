@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type JobStatus = "pending" | "pickup" | "picked_up" | "ready_to_wash" | "washed" | "delivery" | "completed" | "active" | "cancel" | "return";
+export type JobStatus = "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return";
 export type JobType = "pickup" | "delivery" | "full_service";
 export type ServiceType = "wash_fold" | "wash_iron_fold" | "wash_iron_hanger";
 export type TripStatus = "pending" | "in_transit" | "completed";
@@ -89,6 +89,7 @@ export interface Job {
   distance: number; // 1-way km
   fee: number; // Total commission
   status: JobStatus;
+  subStatus?: "wash" | "dry" | "iron" | "ready";
   createdAt: Date;
   scheduledAt: Date;
   completedAt?: Date;
@@ -152,6 +153,7 @@ export interface Rider {
   rating: number;
   completedJobs: number;
   nationalId?: string;
+  color?: string;
   vehicleType?: "motorcycle" | "car" | "truck";
   vehiclePlate?: string;
   commissionBalance?: number;
@@ -367,6 +369,30 @@ export const jobStore = {
   },
 
   async updateJobDetails(id: string, updates: Partial<Job>) {
+    const jobs = api.sync.getJobs();
+    const job = jobs.find(j => j.id === id);
+
+    if (job && job.legs) {
+      let legsModified = false;
+      const updatedLegs = { ...job.legs };
+      
+      if (updates.pickupRiderId !== undefined && updates.pickupRiderId !== job.pickupRiderId) {
+        updatedLegs.pickupOutbound = { ...updatedLegs.pickupOutbound, riderId: updates.pickupRiderId || "" };
+        updatedLegs.pickupInbound = { ...updatedLegs.pickupInbound, riderId: updates.pickupRiderId || "" };
+        legsModified = true;
+      }
+      
+      if (updates.deliveryRiderId !== undefined && updates.deliveryRiderId !== job.deliveryRiderId) {
+        updatedLegs.deliveryOutbound = { ...updatedLegs.deliveryOutbound, riderId: updates.deliveryRiderId || "" };
+        updatedLegs.deliveryInbound = { ...updatedLegs.deliveryInbound, riderId: updates.deliveryRiderId || "" };
+        legsModified = true;
+      }
+      
+      if (legsModified) {
+        updates.legs = updatedLegs;
+      }
+    }
+
     await api.updateJob(id, updates);
     emitJobChange();
   },

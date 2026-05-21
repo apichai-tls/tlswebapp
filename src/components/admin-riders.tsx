@@ -4,6 +4,36 @@ import { useState, useMemo } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Edit2, Trash2, Phone, Star, Activity, Circle, CheckCircle2, BarChart3, ChevronRight, ChevronDown, Calendar, ArrowRight, Banknote, Image as ImageIcon, Download } from "lucide-react";
+
+const RIDER_COLORS = [
+  { name: 'Berry', hex: '#B81D5E' },
+  { name: 'Red Orange', hex: '#E65100' },
+  { name: 'Goldenrod', hex: '#FBC02D' },
+  { name: 'Forest', hex: '#0B8043' },
+  { name: 'Indigo', hex: '#3F51B5' },
+  { name: 'Purple', hex: '#8E24AA' },
+  
+  { name: 'Pink', hex: '#D81B60' },
+  { name: 'Orange', hex: '#F57C00' },
+  { name: 'Lime', hex: '#C0CA33' },
+  { name: 'Teal', hex: '#009688' },
+  { name: 'Periwinkle', hex: '#7986CB' },
+  { name: 'Brown', hex: '#795548' },
+  
+  { name: 'Red', hex: '#D50000' },
+  { name: 'Amber', hex: '#FFB300' },
+  { name: 'Leaf', hex: '#7CB342' },
+  { name: 'Blue', hex: '#039BE5' },
+  { name: 'Lavender', hex: '#BA68C8' },
+  { name: 'Graphite', hex: '#616161' },
+  
+  { name: 'Salmon', hex: '#F08080' },
+  { name: 'Yellow', hex: '#FFD54F' },
+  { name: 'Mint', hex: '#4DB6AC' },
+  { name: 'Sky', hex: '#4285F4' },
+  { name: 'Amethyst', hex: '#9575CD' },
+  { name: 'Taupe', hex: '#A1887F' }
+];
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -68,6 +98,7 @@ export function AdminRiders() {
   const [vehiclePlate, setVehiclePlate] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [branchId, setBranchId] = useState("");
+  const [color, setColor] = useState("#3b82f6");
 
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
@@ -90,6 +121,7 @@ export function AdminRiders() {
     setVehiclePlate("");
     setAvatarUrl("");
     setBranchId("");
+    setColor("#3b82f6");
     setDialogOpen(true);
   }
 
@@ -105,6 +137,7 @@ export function AdminRiders() {
     setVehiclePlate(rider.vehiclePlate || "");
     setAvatarUrl(rider.avatarUrl || "");
     setBranchId(rider.branchId || "");
+    setColor(rider.color || "#3b82f6");
     setDialogOpen(true);
   }
 
@@ -115,7 +148,7 @@ export function AdminRiders() {
     }
 
     const payload = { 
-      name, nickname, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl, branchId: branchId || undefined
+      name, nickname, phone, status, nationalId, vehicleType, vehiclePlate, avatarUrl, branchId: branchId || undefined, color
     };
 
     if (editingId) {
@@ -150,7 +183,6 @@ export function AdminRiders() {
         </div>
         
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          {/* Add New Rider button removed to enforce creation via Manage Users */}
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>{editingId ? "Edit Rider Profile" : "Create New Rider"}</DialogTitle>
@@ -222,6 +254,43 @@ export function AdminRiders() {
                   <Input id="vehiclePlate" value={vehiclePlate} onChange={(e) => setVehiclePlate(e.target.value)} placeholder="e.g. 1กข 1234 กทม" />
                 </div>
                 <div className="grid gap-2">
+                  <Label>Calendar Color</Label>
+                  <div className="grid grid-cols-6 gap-3 mt-1 w-max">
+                    {RIDER_COLORS.map(c => (
+                      <button
+                        key={c.hex}
+                        type="button"
+                        onClick={() => setColor(c.hex)}
+                        className={`w-9 h-9 rounded-full border-2 flex items-center justify-center transition-transform ${color.toUpperCase() === c.hex ? 'border-slate-900 scale-110 shadow-md' : 'border-transparent hover:scale-110'}`}
+                        style={{ backgroundColor: c.hex }}
+                        title={c.name}
+                      >
+                        {color.toUpperCase() === c.hex && <CheckCircle2 size={18} className="text-white drop-shadow-sm" />}
+                      </button>
+                    ))}
+                    <div className="relative w-9 h-9">
+                      <input
+                        type="color"
+                        className="absolute inset-0 opacity-0 w-full h-full cursor-pointer z-10"
+                        value={color}
+                        onChange={(e) => setColor(e.target.value)}
+                        title="Custom Color"
+                      />
+                      <button
+                        type="button"
+                        className={`w-9 h-9 rounded-full flex items-center justify-center bg-slate-200 text-slate-600 border-2 transition-transform ${!RIDER_COLORS.find(c => c.hex === color.toUpperCase()) ? 'border-slate-900 scale-110 shadow-md bg-white' : 'border-transparent hover:scale-110'}`}
+                        style={{ backgroundColor: !RIDER_COLORS.find(c => c.hex === color.toUpperCase()) ? color : undefined }}
+                      >
+                        {!RIDER_COLORS.find(c => c.hex === color.toUpperCase()) ? (
+                          <CheckCircle2 size={18} className={parseInt(color.slice(1), 16) > 0xffffff / 2 ? 'text-slate-800' : 'text-white drop-shadow-sm'} />
+                        ) : (
+                          <Plus size={18} />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-2">
                   <Label>Profile Picture (Cloud Upload)</Label>
                   <div className="w-32">
                     <ImageUploader 
@@ -258,6 +327,7 @@ export function AdminRiders() {
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ delay: i * 0.05 }}
               className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group relative flex flex-col overflow-hidden"
+              style={{ borderTop: `4px solid ${rider.color || '#3b82f6'}` }}
             >
               <div className="h-24 bg-gradient-to-r from-indigo-50 to-blue-50 relative rounded-t-2xl">
                 <div className="absolute inset-x-0 bottom-0 translate-y-1/2 flex justify-center">

@@ -273,9 +273,8 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
 
   const getRiderColor = (riderId?: string) => {
     if (!riderId) return '#94a3b8'; // unassigned = slate
-    const index = allRiders.findIndex(r => r.id === riderId);
-    if (index === -1) return '#94a3b8';
-    return RIDER_COLORS[index % RIDER_COLORS.length];
+    const rider = allRiders.find(r => r.id === riderId);
+    return rider?.color || '#3b82f6'; // default blue if not set
   };
 
   // Custom Event Styling

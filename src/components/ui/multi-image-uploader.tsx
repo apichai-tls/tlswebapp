@@ -178,11 +178,15 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
     };
 
     const handleRemoveExisting = (urlToRemove: string) => {
-      onValueChange?.(value.filter(url => url !== urlToRemove));
+      if (window.confirm("คุณต้องการลบรูปภาพนี้ใช่หรือไม่? (Are you sure you want to delete this image?)")) {
+        onValueChange?.(value.filter(url => url !== urlToRemove));
+      }
     };
 
     const handleRemovePending = (id: string) => {
-      setPendingFiles(prev => prev.filter(f => f.id !== id));
+      if (window.confirm("คุณต้องการลบรูปภาพนี้ใช่หรือไม่? (Are you sure you want to delete this image?)")) {
+        setPendingFiles(prev => prev.filter(f => f.id !== id));
+      }
     };
 
     const handlePaste = useCallback((e: React.ClipboardEvent) => {
