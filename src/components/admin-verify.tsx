@@ -29,7 +29,7 @@ export function AdminVerify({ onEditJob }: { onEditJob?: (job: Job) => void }) {
 
   const handleApprove = async (id: string) => {
     try {
-      await jobStore.updateJobDetails(id, { status: "active" });
+      await jobStore.updateJobDetails(id, { status: "pickup" });
       toast.success(`Order ${id} approved and sent to Dispatch.`);
     } catch (e: any) {
       toast.error(`Error: ${e.message}`);

@@ -217,7 +217,7 @@ export async function updateJobAction(id: string, updates: any) {
     const existingJob = await prisma.job.findUnique({ where: { id } });
     if (existingJob) {
       // Pickup completed
-      if (existingJob.status !== 'picked_up' && existingJob.status !== 'completed' && updates.status === 'picked_up' && existingJob.pickupCommission != null && existingJob.pickupRiderId) {
+      if (existingJob.status !== 'billing' && existingJob.status !== 'completed' && updates.status === 'billing' && existingJob.pickupCommission != null && existingJob.pickupRiderId) {
         // Check if transaction already exists to avoid duplicates
         const existingTx = await prisma.riderTransaction.findFirst({
           where: { jobId: id, type: 'commission_pickup' }

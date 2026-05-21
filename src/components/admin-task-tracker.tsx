@@ -181,23 +181,13 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
           <p className="text-[10px] text-slate-400 mt-1 pl-6">Store Branch Processing Phase</p>
           {!readOnly && (
             <div className="flex gap-2 mt-4 ml-6">
-               {(job.status === "pickup" || job.status === "picked_up") && (
-                 <Button 
-                   size="sm" 
-                   variant="outline"
-                   className="text-blue-600 border-blue-200 hover:bg-blue-50"
-                   onClick={() => jobStore.updateJobDetails(job.id, { status: "ready_to_wash" })}
-                 >
-                   Start Processing (Ready to Wash)
-                 </Button>
-               )}
-               {job.status === "ready_to_wash" && (
+               {job.status === "billing" && (
                  <Button 
                    size="sm" 
                    className="bg-indigo-600 text-white hover:bg-indigo-700"
-                   onClick={() => jobStore.updateJobDetails(job.id, { status: "washed" })}
+                   onClick={() => jobStore.updateJobDetails(job.id, { status: "delivery", subStatus: undefined })}
                  >
-                   Mark as Washed
+                   Processing Complete (Ready for Delivery)
                  </Button>
                )}
             </div>
@@ -291,7 +281,7 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
             {job.status === "pickup" && (
               <Button 
                 variant="outline" 
-                onClick={() => jobStore.updateJobDetails(job.id, { status: "picked_up" })}
+                onClick={() => jobStore.updateJobDetails(job.id, { status: "billing" })}
                 className="w-full text-emerald-600 border-emerald-200 hover:bg-emerald-50"
               >
                 <Check size={16} className="mr-2" />

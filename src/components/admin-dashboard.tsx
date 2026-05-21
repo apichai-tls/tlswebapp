@@ -27,13 +27,9 @@ const statusConfig: Record<string, { label: string; className: string }> = {
     label: "Pickup Completed",
     className: "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50",
   },
-  accepted: {
-    label: "Accepted",
-    className: "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-50",
-  },
-  active: {
-    label: "In Transit",
-    className: "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-50",
+  billing: {
+    label: "In Shop / Processing",
+    className: "bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-50",
   },
   completed: {
     label: "Completed",
@@ -48,10 +44,8 @@ const statusConfig: Record<string, { label: string; className: string }> = {
 const statusIcon: Record<string, React.ReactNode> = {
   pending: <Clock size={13} />,
   pickup: <Truck size={13} />,
-  picked_up: <CheckCircle2 size={13} />,
+  billing: <CheckCircle2 size={13} />,
   delivery: <Truck size={13} />,
-  accepted: <Truck size={13} />,
-  active: <Zap size={13} />,
   completed: <CheckCircle2 size={13} />,
   cancelled: <CheckCircle2 size={13} />,
 };
@@ -66,7 +60,7 @@ const rowVariant = {
 };
 
 export function AdminDashboard({ jobs }: { jobs: Job[] }) {
-  const [activeTab, setActiveTab] = useState<"all" | JobStatus>("all");
+  const [activeTab, setActiveTab] = useState<"all" | "active" | JobStatus>("all");
   const [financePeriod, setFinancePeriod] = useState<"this_month" | "last_month" | "this_year" | "all_time">("this_month");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 
@@ -97,10 +91,10 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   }
 
   const pendingCount = todaysJobs.filter((j) => j.status === "pending").length;
-  const activeCount = todaysJobs.filter((j) => j.status === "active").length;
+  const activeCount = todaysJobs.filter((j) => ["pickup", "billing", "delivery"].includes(j.status)).length;
   const completedCount = todaysJobs.filter((j) => j.status === "completed").length;
 
-  const displayedJobs = todaysJobs.filter(j => activeTab === "all" ? true : j.status === activeTab);
+  const displayedJobs = todaysJobs.filter(j => activeTab === "all" ? true : activeTab === "active" ? ["pickup", "billing", "delivery"].includes(j.status) : j.status === activeTab);
 
   // Financial Summary
   const filteredCompletedJobs = jobs.filter(j => {

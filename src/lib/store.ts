@@ -348,11 +348,11 @@ export const jobStore = {
     if (updatedLegs.deliveryInbound.status === "completed") {
       overallStatus = "completed";
     } else if (updatedLegs.deliveryOutbound.status === "in_transit" || updatedLegs.deliveryInbound.status === "in_transit") {
-      overallStatus = "active";
+      overallStatus = "delivery";
     } else if (updatedLegs.pickupInbound.status === "completed") {
-      overallStatus = "active"; // Cleaning phase
+      overallStatus = "billing"; // Cleaning phase
     } else if (updatedLegs.pickupOutbound.status === "in_transit" || updatedLegs.pickupInbound.status === "in_transit") {
-      overallStatus = "active";
+      overallStatus = "pickup";
     }
 
     await api.updateJob(id, { 
@@ -364,7 +364,7 @@ export const jobStore = {
   },
 
   async acceptJob(id: string, riderId: string) {
-    await api.updateJob(id, { status: "active", riderId, pickupRiderId: riderId });
+    await api.updateJob(id, { status: "pickup", riderId, pickupRiderId: riderId });
     emitJobChange();
   },
 
@@ -438,9 +438,10 @@ export const jobStore = {
     const job = jobs.find(j => j.id === id);
     if (!job) return;
 
-    if (["pending", "accepted", "active", "pickup"].includes(job.status)) {
+    // Add leg validation - legs might not exist for old jobs
+    if (["pending", "pickup", "billing"].includes(job.status)) {
       await api.updateJob(id, { 
-        status: "picked_up", 
+        status: "billing", 
         pickupProofImageUrl: proofImageUrl ? JSON.stringify([proofImageUrl]) : undefined 
       });
     } else {

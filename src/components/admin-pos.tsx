@@ -141,7 +141,7 @@ export function AdminPOS() {
         discount: manualAdjustment,
         items: cart.map(item => ({ name: item.name, quantity: item.quantity, price: item.price })),
         serviceType,
-        status: "active", // Walk-ins start as active (in shop)
+        status: "billing", // Walk-ins start at billing (in shop)
         fee: 0, // No rider commission for walk-in
         branchId: shops[0]?.id,
         isPaid: true,

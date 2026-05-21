@@ -235,7 +235,7 @@ export const api = {
     const dRider = jobDetails.deliveryRiderId;
 
     const isPOS = (jobDetails.source || jobDetails.source) === "pos";
-    const initialStatus = isPOS ? "active" : "pending";
+    const initialStatus = isPOS ? "billing" : "pending";
     const legStatus = (leg: "pickup" | "delivery") => {
       if (isPOS && leg === "pickup") return "completed";
       return "pending";

@@ -117,7 +117,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       matchesDate = (jobDate >= start && jobDate <= end) || 
-                    (job.completedAt && new Date(job.completedAt) >= start && new Date(job.completedAt) <= end);
+                    (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false);
     }
 
     let matchesStatus = true;
@@ -220,14 +220,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <option value="all">All Statuses</option>
               <option value="pending">Pending</option>
               <option value="pickup">Pickup</option>
-              <option value="picked_up">Picked Up</option>
-              <option value="ready_to_wash">Ready to Wash</option>
-              <option value="washed">Washed</option>
+              <option value="billing">In Shop / Processing</option>
               <option value="delivery">Delivery</option>
               <option value="completed">Completed</option>
-              <option value="active">Active</option>
               <option value="cancel">Cancelled</option>
-              <option value="return">Return</option>
+              <option value="return">Returned</option>
             </select>
           </div>
           

@@ -169,7 +169,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
       // Create Delivery Event (Indigo)
       if (job.type === 'delivery' || job.type === 'full_service') {
         // Only show delivery on calendar if the items have actually been picked up (Cleaning phase or ready)
-        const isPickupDone = !['pending', 'accepted', 'pickup'].includes(job.status);
+        const isPickupDone = !['pending', 'pickup'].includes(job.status);
         if (isPickupDone || job.type === 'delivery') { // Always show if it's a delivery-only job
           if (selectedRiderIds.size === 0 || !job.deliveryRiderId || selectedRiderIds.has(job.deliveryRiderId)) {
             const dStart = new Date(job.deliveryScheduledAt || new Date(job.createdAt).getTime() + 86400000);
@@ -283,7 +283,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
     
     if (event.type === 'pickup') {
       // Pickup is done if status has progressed past 'pickup'
-      isEventCompleted = !['pending', 'accepted', 'pickup'].includes(event.jobStatus);
+      isEventCompleted = !['pending', 'pickup'].includes(event.jobStatus);
     } else if (event.type === 'delivery') {
       // Delivery is done if status is 'completed'
       isEventCompleted = event.jobStatus === 'completed';
