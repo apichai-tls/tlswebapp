@@ -168,6 +168,7 @@ export async function getJobsByIdsAction(ids: string[]) {
 
 export async function updateJobAction(id: string, updates: any) {
   const data: any = {};
+  if (updates.type !== undefined) data.type = updates.type;
   if (updates.status !== undefined) data.status = updates.status;
   if (updates.completedAt !== undefined) data.completedAt = updates.completedAt;
   if (updates.pickupProofImageUrl !== undefined) data.pickupProofImageUrl = updates.pickupProofImageUrl;

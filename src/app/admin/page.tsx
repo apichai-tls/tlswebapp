@@ -604,6 +604,7 @@ export default function AdminPage() {
     let finalAdminLogs = [...adminLogs];
 
     const newJobData = {
+      type: (isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store")),
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       pickupLocation: isPickup ? pickupLoc.trim() : shop.address,
@@ -611,8 +612,8 @@ export default function AdminPage() {
       pickupCoords: isPickup && pickupCoords ? pickupCoords : shop.coords,
       dropoffCoords: isDelivery && deliveryCoords ? deliveryCoords : shop.coords,
       scheduledAt: pDate || null,
-      pickupScheduledAt: pDate || null,
-      pickupScheduledEndAt: pDate ? new Date(pDate.getTime() + 30 * 60000) : null,
+      pickupScheduledAt: isPickup ? (pDate || null) : null,
+      pickupScheduledEndAt: isPickup && pDate ? new Date(pDate.getTime() + 30 * 60000) : null,
       deliveryScheduledAt: isDelivery ? (deliveryScheduledTime ? parseTime(deliveryScheduledTime) : null) : null,
       deliveryScheduledEndAt: isDelivery && deliveryScheduledTime ? new Date(parseTime(deliveryScheduledTime).getTime() + 30 * 60000) : null,
       pickupRiderId: isPickup ? pickupRiderId || null : null,

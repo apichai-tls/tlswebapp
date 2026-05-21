@@ -149,7 +149,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
 
     jobs.forEach(job => {
       // Create Pickup Event (Amber)
-      if (job.type !== 'delivery') {
+      if (job.type === 'pickup' || job.type === 'full_service') {
         if (selectedRiderIds.size === 0 || !job.pickupRiderId || selectedRiderIds.has(job.pickupRiderId)) {
           const pStart = new Date(job.pickupScheduledAt || job.scheduledAt || job.createdAt);
           const pEnd = job.pickupScheduledEndAt ? new Date(job.pickupScheduledEndAt) : addMinutes(pStart, 30);
@@ -167,7 +167,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
       }
 
       // Create Delivery Event (Indigo)
-      if (job.type !== 'pickup') {
+      if (job.type === 'delivery' || job.type === 'full_service') {
         // Only show delivery on calendar if the items have actually been picked up (Cleaning phase or ready)
         const isPickupDone = !['pending', 'accepted', 'pickup'].includes(job.status);
         if (isPickupDone || job.type === 'delivery') { // Always show if it's a delivery-only job
