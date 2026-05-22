@@ -1266,25 +1266,33 @@ export default function RiderPage() {
                     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 flex-shrink-0">Job Chat / Logs</p>
                     
                     <div 
-                      className="flex-1 overflow-y-auto space-y-1.5 mb-2 pr-1 cursor-pointer hover:bg-slate-100/50 rounded transition-colors"
+                      className="flex-1 flex flex-col justify-center cursor-pointer hover:bg-slate-100/50 rounded-lg transition-colors px-1 mb-1"
                       onClick={() => setChatOpen(true)}
                     >
-                      {notes.length > 0 ? notes.map((n: any, i: number) => {
-                        const isMe = n.userId === user?.id;
+                      {notes.length > 0 ? (() => {
+                        const latest = notes[notes.length - 1];
+                        const isMe = latest.userId === user?.id;
                         return (
-                          <div key={n.id || i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                            <div className={`px-2 py-1.5 rounded-lg max-w-[90%] ${isMe ? 'bg-indigo-500 text-white rounded-br-none' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none shadow-sm'}`}>
-                              <div className="flex justify-between items-end gap-3 mb-0.5">
-                                <span className={`text-[9px] font-bold ${isMe ? 'text-indigo-100' : 'text-slate-500'}`}>{n.userName}</span>
-                                <span className={`text-[8px] ${isMe ? 'text-indigo-200' : 'text-slate-400'}`}>
-                                  {n.timestamp ? format(new Date(n.timestamp), "HH:mm") : ""}
-                                </span>
-                              </div>
-                              <p className="text-xs leading-snug whitespace-pre-wrap line-clamp-2">{n.text}</p>
+                          <div className="flex flex-col gap-0.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={`text-[9px] font-bold ${isMe ? 'text-indigo-600' : 'text-slate-500'}`}>
+                                {isMe ? 'You' : latest.userName}
+                              </span>
+                              <span className="text-[8px] text-slate-400">
+                                {latest.timestamp ? format(new Date(latest.timestamp), "HH:mm") : ""}
+                              </span>
                             </div>
+                            <div className={`px-2 py-1.5 rounded-lg ${isMe ? 'bg-indigo-500 text-white rounded-br-none self-end' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none shadow-sm'}`}>
+                              <p className="text-xs leading-snug line-clamp-2 whitespace-pre-wrap">{latest.text}</p>
+                            </div>
+                            {notes.length > 1 && (
+                              <p className="text-[9px] text-slate-400 italic mt-0.5">
+                                +{notes.length - 1} more message{notes.length > 2 ? 's' : ''} — tap to view all
+                              </p>
+                            )}
                           </div>
                         );
-                      }) : (
+                      })() : (
                         <div className="h-full flex flex-col items-center justify-center text-xs text-slate-400 italic">
                           <MessageCircle size={16} className="mb-1 opacity-50" />
                           <span>Tap to open chat</span>
