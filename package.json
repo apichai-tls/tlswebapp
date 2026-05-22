@@ -18,6 +18,7 @@
     "@capacitor/android": "^8.3.4",
     "@capacitor/camera": "^8.2.0",
     "@capacitor/core": "^8.3.4",
+    "@capacitor/filesystem": "^8.1.2",
     "@google-cloud/logging": "^11.2.1",
     "@google-cloud/storage": "^7.19.0",
     "@prisma/client": "^6.19.3",

@@ -696,30 +696,48 @@ export default function RiderPage() {
     try {
       // Dynamically import Capacitor plugins to avoid SSR issues
       const { Camera, CameraResultType, CameraSource } = await import('@capacitor/camera');
+      const { Filesystem, Directory } = await import('@capacitor/filesystem');
 
+      // Use Uri resultType — this is the ONLY mode where saveToGallery actually works on Android
       const photo = await Camera.getPhoto({
         quality: 90,
         allowEditing: false,
-        resultType: CameraResultType.DataUrl,
+        resultType: CameraResultType.Uri,
         source: CameraSource.Camera,
-        saveToGallery: true,        // ✅ บันทึกลง Gallery โดยตรง
+        saveToGallery: true,
         correctOrientation: true,
         presentationStyle: 'fullscreen',
       });
 
-      if (!photo.dataUrl) return;
+      if (!photo.path && !photo.webPath) return;
+
+      // Read file content as base64 so we can display & upload it
+      let dataUrl: string;
+      try {
+        // Try reading via Filesystem plugin (works reliably on native)
+        const fileData = await Filesystem.readFile({
+          path: photo.path!,
+        });
+        const base64 = typeof fileData.data === 'string' ? fileData.data : '';
+        dataUrl = `data:image/jpeg;base64,${base64}`;
+      } catch {
+        // Fallback: use webPath (works in browser/PWA mode)
+        dataUrl = photo.webPath || '';
+      }
+
+      if (!dataUrl) return;
 
       // Convert dataUrl → File for upload
-      const res = await fetch(photo.dataUrl);
+      const res = await fetch(dataUrl);
       const blob = await res.blob();
       const file = new File([blob], `${taskId}-proof.jpg`, { type: 'image/jpeg' });
 
       setCapturedFiles(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), file] }));
-      setCapturedImages(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), photo.dataUrl!] }));
+      setCapturedImages(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), dataUrl] }));
 
       toast.success('Photo saved to gallery ✅');
     } catch (err: any) {
-      if (err?.message?.includes('cancelled') || err?.message?.includes('cancel')) return;
+      if (err?.message?.includes('cancelled') || err?.message?.includes('cancel') || err?.message?.includes('User cancelled')) return;
       console.error('[Camera] Native capture failed:', err);
       toast.error('Could not open camera. Please try again.');
     }
