@@ -53,7 +53,13 @@ import {
   Crown,
   Loader2,
   Zap,
-  Info
+  Info,
+  CreditCard,
+  Shirt,
+  Layers,
+  Receipt,
+  Droplets,
+  Wind
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -197,7 +203,7 @@ export interface RiderTask {
 }
 
 
-function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean }) {
+function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false, branchName }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean, branchName?: string }) {
   const job = task.job;
   const legType = task.legType;
   const customerLanguage = customer?.language || "th";
@@ -215,21 +221,40 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
   const isExpress100 = remarks.some(r => r.includes("Express 100%"));
   
   // Find Leg specific instruction (Pickup / Delivery)
-  const legInstruction = remarks.find(r => legType === 'pickup' ? r.startsWith('ไปรับ:') : r.startsWith('ไปส่ง:'));
+  const legInstruction = remarks.find(r => 
+    legType === 'pickup' 
+      ? (r.startsWith('ไปรับ:') || r.startsWith('Pickup:')) 
+      : (r.startsWith('ไปส่ง:') || r.startsWith('Delivery:'))
+  );
   
   // Clean remark string
-  const cleanRemark = remarks.filter(r => !r.includes("Express") && !r.startsWith('ไปรับ:') && !r.startsWith('ไปส่ง:')).join(" | ");
+  const cleanRemark = remarks.filter(r => 
+    !r.includes("Express") && 
+    !r.startsWith('ไปรับ:') && !r.startsWith('Pickup:') && 
+    !r.startsWith('ไปส่ง:') && !r.startsWith('Delivery:')
+  ).join(" | ");
 
   return (
     <div
       onClick={onClick}
-      className={`bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm cursor-pointer transition-all active:scale-[0.98] ${
-        (job.status === "completed" || isHistory) ? "opacity-70 grayscale-[0.2]" : "hover:border-blue-400 hover:shadow-md"
+      className={`rounded-xl overflow-hidden border shadow-sm cursor-pointer transition-all active:scale-[0.98] ${
+        legType === 'pickup' ? 'bg-amber-50 border-amber-200 hover:border-amber-400' : 'bg-emerald-50 border-emerald-200 hover:border-emerald-400'
+      } ${
+        (job.status === "completed" || isHistory) ? "opacity-70 grayscale-[0.2]" : "hover:shadow-md"
       }`}
     >
       <div className="pb-3 pt-3 px-4">
         <div className="flex items-start justify-between mb-2">
           <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold font-mono">
+              <span>#{job.id.split('-')[0].toUpperCase()}</span>
+              {branchName && (
+                <>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded text-[10px] tracking-wider truncate max-w-[120px]">{branchName}</span>
+                </>
+              )}
+            </div>
             <h3 className="text-base font-black text-slate-900 leading-tight flex items-center gap-1.5 flex-wrap">
               {job.customerName || "Customer Guest"}
               {customerIsVip && <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1"><Crown size={12} className="fill-amber-500 text-amber-500"/> VIP</span>}
@@ -241,18 +266,31 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
               )}
             </h3>
             
-            {/* Express Badges */}
-            {(isExpress50 || isExpress100) && (
-              <div className="flex items-center gap-1 mt-0.5">
-                {isExpress50 && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-200 flex items-center gap-1"><Zap size={10} className="fill-orange-500" /> EXP 50%</span>}
-                {isExpress100 && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-red-200 flex items-center gap-1"><Zap size={10} className="fill-red-500" /> EXP 100%</span>}
-              </div>
-            )}
+            {/* Express Badges & Service Type */}
+            <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+              {(isExpress50 || isExpress100) && (
+                <>
+                  {isExpress50 && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-200 flex items-center gap-1"><Zap size={10} className="fill-orange-500" /> EXP 50%</span>}
+                  {isExpress100 && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-red-200 flex items-center gap-1"><Zap size={10} className="fill-red-500" /> EXP 100%</span>}
+                </>
+              )}
+              {job.laundryTypes && job.laundryTypes.length > 0 && (
+                <span className="bg-cyan-50 text-cyan-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-cyan-200 flex items-center gap-1">
+                  <Layers size={10} />
+                  {job.laundryTypes.map(t => t.toUpperCase()).join(', ')}
+                </span>
+              )}
+              {job.subStatus === 'billing' && <span className="bg-violet-100 text-violet-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-violet-200 flex items-center gap-1"><Receipt size={10} /> BILL</span>}
+              {job.subStatus === 'wash' && <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-blue-200 flex items-center gap-1"><Droplets size={10} /> WASH</span>}
+              {job.subStatus === 'dry' && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-200 flex items-center gap-1"><Wind size={10} /> DRY</span>}
+              {job.subStatus === 'iron' && <span className="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-indigo-200 flex items-center gap-1"><Shirt size={10} /> IRON</span>}
+              {job.subStatus === 'ready' && <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-emerald-200 flex items-center gap-1"><CheckCircle2 size={10} /> READY</span>}
+            </div>
           </div>
           
           <div className="flex flex-col items-end gap-1 shrink-0">
             <span
-              className={`flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+              className={`flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
             >
               {legType === 'pickup' ? <Package size={10} /> : <Truck size={10} />}
               {legType.toUpperCase()}
@@ -272,15 +310,28 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
 
         <div className="flex flex-col gap-1 text-slate-500 mt-2">
           {legInstruction && (
-            <div className="flex items-start gap-2 bg-blue-50 p-1.5 rounded-md border border-blue-100 mb-1">
-              <Info size={14} className="text-blue-600 shrink-0 mt-0.5" />
-              <span className="text-xs font-bold text-blue-800 leading-tight">{legInstruction}</span>
+            <div className="flex items-start gap-2 bg-orange-50 p-1.5 rounded-md border border-orange-100 mb-1">
+              <Info size={14} className="text-orange-600 shrink-0 mt-0.5" />
+              <span className="text-xs font-bold text-orange-800 leading-tight">{legInstruction}</span>
             </div>
           )}
           <div className="flex items-start gap-2">
             <MapPin size={14} className="text-red-500 shrink-0 mt-0.5" />
             <span className="text-sm font-medium text-slate-700 line-clamp-2">{targetLocation}</span>
           </div>
+          
+          {!!job.totalAmount && job.totalAmount > 0 && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex items-center gap-1 ${
+                job.isPaid ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-orange-50 text-orange-700 border-orange-200'
+              }`}>
+                <CreditCard size={10} className={job.isPaid ? "text-emerald-500" : "text-orange-500"} />
+                {[job.paymentMethod?.toUpperCase(), job.paymentChannel ? `(${job.paymentChannel})` : ""].filter(Boolean).join(" ")}
+                {job.paymentMethod || job.paymentChannel ? " - " : ""}
+                {job.isPaid ? 'PAID' : 'UNPAID'} ฿{job.totalAmount}
+              </span>
+            </div>
+          )}
         </div>
         
         {cleanRemark && (
@@ -300,8 +351,8 @@ export default function RiderPage() {
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [activeTab, setActiveTab] = useState("myjobs");
   const [expandedMap, setExpandedMap] = useState<string | null>(null);
-  const [capturedImages, setCapturedImages] = useState<Record<string, string>>({});
-  const [capturedFiles, setCapturedFiles] = useState<Record<string, File>>({});
+  const [capturedImages, setCapturedImages] = useState<Record<string, string[]>>({});
+  const [capturedFiles, setCapturedFiles] = useState<Record<string, File[]>>({});
   const [showOnlinePopup, setShowOnlinePopup] = useState(false);
   const [gpsActive, setGpsActive] = useState(false);
   const { user, logout } = useAuth();
@@ -311,6 +362,7 @@ export default function RiderPage() {
   const [historyDate, setHistoryDate] = useState<Date>(new Date());
   const [historyMode, setHistoryMode] = useState<"daily" | "monthly">("daily");
   const [riderNoteInput, setRiderNoteInput] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
 
   const handleAddRiderLog = async (jobId: string, text: string) => {
     if (!text.trim() || !user) return;
@@ -367,11 +419,11 @@ export default function RiderPage() {
     }
   }, [activeRider]);
 
-  // Periodic data refresh (polling for Live updates)
+  // Periodic data refresh — 5s so Rider sees newly assigned jobs quickly
   useEffect(() => {
     const interval = setInterval(() => {
       import("@/lib/api").then(m => m.refreshDb());
-    }, 15000); // 15 seconds
+    }, 5000); // 5 seconds
     return () => clearInterval(interval);
   }, []);
 
@@ -386,60 +438,91 @@ export default function RiderPage() {
 
   // GPS Tracking Logic
   useEffect(() => {
-    if (!activeRider || activeRider.status === "offline") {
+    if (!activeRider || activeRider.status === 'offline') {
       setGpsActive(false);
       return;
     }
 
-    let lastUpdate = 0;
-    let bestAccuracy = Infinity;
-    let bestCoords: GeolocationCoordinates | null = null;
+    // Use a ref-like variable to track the last pushed location
+    let lastPushedLat: number | null = null;
+    let lastPushedLng: number | null = null;
+    let lastPushTime = 0;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+    let firstFix = true;
 
-    const pushLocation = (coords: GeolocationCoordinates) => {
-      const now = Date.now();
-      lastUpdate = now;
-      bestAccuracy = Infinity; // reset for next batch
-      riderStore.updateRider(activeRider.id, { 
-        currentLocation: { lat: coords.latitude, lng: coords.longitude } 
+    const MIN_DISTANCE_METERS = 20;   // Only push if moved > 20m
+    const THROTTLE_MS = 15000;        // Push at most every 15s
+    const MAX_ACCURACY_M = 5000;      // Accept up to 5000m accuracy (APK-friendly)
+
+    function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number) {
+      const R = 6371000;
+      const toRad = (x: number) => (x * Math.PI) / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLng = toRad(lng2 - lng1);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    const pushLocation = (lat: number, lng: number) => {
+      lastPushedLat = lat;
+      lastPushedLng = lng;
+      lastPushTime = Date.now();
+
+      // 1. Update in-memory store immediately (UI responds instantly)
+      riderStore.updateRider(activeRider.id, {
+        currentLocation: { lat, lng }
       });
+
+      // 2. Persist to DB via lightweight GPS-only endpoint (fire-and-forget)
+      fetch('/api/rider-location', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ riderId: activeRider.id, lat, lng }),
+      }).catch(err => console.error('[GPS] Failed to persist location:', err));
     };
 
     const watcher = navigator.geolocation.watchPosition(
       (pos) => {
         setGpsActive(true);
-        // Ignore wildly inaccurate fixes (e.g., > 1500 meters, typical of cell towers)
-        if (pos.coords.accuracy > 1500) return;
 
-        // Keep the best accuracy within the current time window
-        if (pos.coords.accuracy < bestAccuracy) {
-          bestAccuracy = pos.coords.accuracy;
-          bestCoords = pos.coords;
-        }
+        const { latitude, longitude, accuracy } = pos.coords;
+
+        // Filter extremely inaccurate fixes (network-only location on some devices)
+        if (accuracy > MAX_ACCURACY_M) return;
 
         const now = Date.now();
-        if (now - lastUpdate > 10000) { // 10 seconds throttle
-          if (bestCoords) {
-            pushLocation(bestCoords);
-            if (throttleTimer) {
-              clearTimeout(throttleTimer);
-              throttleTimer = null;
-            }
-          }
-        } else if (!throttleTimer && bestCoords) {
-          // If throttled but we got a good fix, push it as soon as the throttle expires
+        const timeSinceLast = now - lastPushTime;
+
+        // Check if rider has actually moved enough to warrant a push
+        const hasMoved =
+          lastPushedLat === null ||
+          haversineDistance(lastPushedLat, lastPushedLng!, latitude, longitude) >= MIN_DISTANCE_METERS;
+
+        // Push immediately on first good fix, then throttle
+        if (firstFix || (hasMoved && timeSinceLast >= THROTTLE_MS)) {
+          firstFix = false;
+          if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
+          pushLocation(latitude, longitude);
+        } else if (hasMoved && !throttleTimer) {
+          // Moved but still in throttle window — schedule push at end of window
+          const remaining = THROTTLE_MS - timeSinceLast;
           throttleTimer = setTimeout(() => {
-            if (bestCoords) pushLocation(bestCoords);
             throttleTimer = null;
-          }, 10000 - (now - lastUpdate));
+            pushLocation(latitude, longitude);
+          }, remaining);
         }
       },
       (err) => {
-        console.error("GPS Error:", err);
+        console.error('GPS Error:', err.code, err.message);
         setGpsActive(false);
       },
-      // Force fresh GPS (maximumAge: 0) and give hardware more time to lock (timeout: 27000)
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 27000 }
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,       // Always request a fresh fix
+        timeout: 30000,      // Give hardware 30s to get a fix
+      }
     );
 
     return () => {
@@ -460,7 +543,8 @@ export default function RiderPage() {
           isCompleted: isPickupCompleted,
           isActive: ["pending", "accepted", "pickup"].includes(j.status),
           scheduledAt: j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
-          completedAt: isPickupCompleted ? (j.completedAt ? new Date(j.completedAt) : new Date()) : undefined,
+          // For history: use pickupScheduledAt as the date reference (the date the rider was assigned)
+          completedAt: isPickupCompleted ? (j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date())) : undefined,
           targetLocation: j.pickupLocation,
           targetCoords: j.pickupCoords,
           distance: j.pickupDistance || j.distance || 0,
@@ -476,7 +560,8 @@ export default function RiderPage() {
           isCompleted: isTerminal,
           isActive: ["washed", "delivery"].includes(j.status),
           scheduledAt: j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
-          completedAt: isTerminal ? (j.completedAt ? new Date(j.completedAt) : new Date()) : undefined,
+          // For history: use deliveryScheduledAt as the date reference (the date the rider was assigned)
+          completedAt: isTerminal ? (j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date())) : undefined,
           targetLocation: j.dropoffLocation,
           targetCoords: j.dropoffCoords,
           distance: j.deliveryDistance || j.distance || 0,
@@ -492,7 +577,9 @@ export default function RiderPage() {
 
   const historyJobs = allTasks
     .filter(t => {
+      // Show tasks that are "done" (pickup completed, or delivery completed)
       if (!t.isCompleted) return false;
+      // Use completedAt if available, otherwise fall back to scheduledAt for date matching
       const jobDate = t.completedAt || t.scheduledAt;
       if (historyMode === "daily") {
         if (!isSameDay(jobDate, historyDate)) return false;
@@ -526,46 +613,53 @@ export default function RiderPage() {
 
   async function handleComplete(taskId: string) {
     const jobId = taskId.replace(/-pickup$|-delivery$/, '');
-    const proofUrl = capturedImages[taskId];
-    const proofFile = capturedFiles[taskId];
-    if (!proofUrl || !proofFile) {
-      toast.error("Please take a photo as proof of delivery!");
+    const proofUrls = capturedImages[taskId];
+    const proofFiles = capturedFiles[taskId];
+    if (!proofUrls || proofUrls.length === 0 || !proofFiles || proofFiles.length === 0) {
+      toast.error("Please take at least one photo as proof of delivery!");
       return;
     }
     
     setIsUploadingProof(true);
-    let finalProofUrl = proofUrl; // fallback if it's somehow already a URL
+    let finalProofUrls: string[] = [];
 
     try {
-      if (proofFile) {
-        const actualContentType = proofFile.type || 'image/jpeg';
-        
-        // Upload to GCS
-        const response = await fetch("/api/upload-url", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            entityType: "job",
-            entityId: jobId,
-            subType: "proofs",
-            contentType: actualContentType,
-          }),
+      if (proofFiles && proofFiles.length > 0) {
+        // Upload all files in parallel
+        const uploadPromises = proofFiles.map(async (proofFile, index) => {
+          const actualContentType = proofFile.type || 'image/jpeg';
+          
+          // Upload to GCS
+          const response = await fetch("/api/upload-url", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              entityType: "job",
+              entityId: jobId,
+              subType: `proofs-${index}`,
+              contentType: actualContentType,
+            }),
+          });
+
+          if (!response.ok) throw new Error("Failed to get upload authorization for a photo");
+
+          const { uploadUrl, publicUrl } = await response.json();
+
+          const uploadResponse = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": actualContentType },
+            body: proofFile,
+          });
+
+          if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
+          
+          return publicUrl;
         });
 
-        if (!response.ok) throw new Error("Failed to get upload authorization");
-
-        const { uploadUrl, publicUrl } = await response.json();
-
-        const uploadResponse = await fetch(uploadUrl, {
-          method: "PUT",
-          headers: { "Content-Type": actualContentType },
-          body: proofFile,
-        });
-
-        if (!uploadResponse.ok) throw new Error("Upload failed: " + uploadResponse.statusText);
-        
-        finalProofUrl = publicUrl;
+        finalProofUrls = await Promise.all(uploadPromises);
       }
+      
+      const jsonProofUrls = JSON.stringify(finalProofUrls);
       
       await jobStore.completeJob(jobId, finalProofUrl);
       toast.success("Job marked as completed! 🎉");
@@ -581,30 +675,86 @@ export default function RiderPage() {
     }
   }
 
-    function handleCapture(taskId: string, event: React.ChangeEvent<HTMLInputElement>) {
+  function handleCapture(taskId: string, event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (file) {
-      // Synchronous Auto-save logic (must be tied directly to user gesture for iOS)
+    if (!file) return;
+
+    // Store file for upload
+    setCapturedFiles(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), file] }));
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      setCapturedImages(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), dataUrl] }));
+    };
+    reader.readAsDataURL(file);
+
+    // Save photo to device gallery
+    savePhotoToDevice(file, `${taskId}-proof.jpg`);
+  }
+
+  async function takePhotoNative(taskId: string) {
+    try {
+      // Dynamically import Capacitor plugins to avoid SSR issues
+      const { Camera, CameraResultType, CameraSource } = await import('@capacitor/camera');
+
+      const photo = await Camera.getPhoto({
+        quality: 90,
+        allowEditing: false,
+        resultType: CameraResultType.DataUrl,
+        source: CameraSource.Camera,
+        saveToGallery: true,        // ✅ บันทึกลง Gallery โดยตรง
+        correctOrientation: true,
+        presentationStyle: 'fullscreen',
+      });
+
+      if (!photo.dataUrl) return;
+
+      // Convert dataUrl → File for upload
+      const res = await fetch(photo.dataUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `${taskId}-proof.jpg`, { type: 'image/jpeg' });
+
+      setCapturedFiles(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), file] }));
+      setCapturedImages(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), photo.dataUrl!] }));
+
+      toast.success('Photo saved to gallery ✅');
+    } catch (err: any) {
+      if (err?.message?.includes('cancelled') || err?.message?.includes('cancel')) return;
+      console.error('[Camera] Native capture failed:', err);
+      toast.error('Could not open camera. Please try again.');
+    }
+  }
+
+  async function savePhotoToDevice(file: File, filename: string) {
+    // 1. Try Web Share API (Android WebView & modern mobile browsers)
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [new File([file], filename, { type: file.type || 'image/jpeg' })],
+          title: 'Proof Photo',
+        });
+        return;
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        console.warn('[savePhoto] Web Share API failed:', err);
+      }
+    }
+
+    // 2. Fallback: <a download> for desktop browsers
+    try {
       const objectUrl = window.URL.createObjectURL(file);
       const link = document.createElement('a');
       link.href = objectUrl;
-      link.download = `${taskId}-proof.jpg`;
+      link.download = filename;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      
-      // Cleanup object URL after download
-      setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
-
-      setCapturedFiles(prev => ({ ...prev, [taskId]: file }));
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const dataUrl = reader.result as string;
-        setCapturedImages(prev => ({ ...prev, [taskId]: dataUrl }));
-      };
-      reader.readAsDataURL(file);
+      setTimeout(() => window.URL.revokeObjectURL(objectUrl), 2000);
+    } catch (err) {
+      console.error('[savePhoto] Fallback download failed:', err);
     }
   }
+
 
   function toggleMap(jobId: string) {
     setExpandedMap((prev) => (prev === jobId ? null : jobId));
@@ -760,7 +910,7 @@ export default function RiderPage() {
               ) : (
                 <AnimatePresence mode="popLayout">
                   {myJobs.map((task, i) => {
-                    const customer = customers.find(c => c.id === task.job.customerId);
+                    const customer = customers.find(c => c.id === task.job.customerId || (task.job.customerPhone && c.phone === task.job.customerPhone));
                     return (
                       <motion.div
                         key={task.taskId}
@@ -777,6 +927,7 @@ export default function RiderPage() {
                           customer={customer} 
                           showCommission={showCommission} 
                           onClick={() => setSelectedJob(task)} 
+                          branchName={shopLocations.find(s => s.id === task.job.branchId)?.name}
                         />
                       </motion.div>
                     );
@@ -886,7 +1037,7 @@ export default function RiderPage() {
               ) : (
                 <AnimatePresence mode="popLayout">
                   {historyJobs.map((task, i) => {
-                    const customer = customers.find(c => c.id === task.job.customerId);
+                    const customer = customers.find(c => c.id === task.job.customerId || (task.job.customerPhone && c.phone === task.job.customerPhone));
                     return (
                       <motion.div
                         key={task.taskId}
@@ -902,6 +1053,7 @@ export default function RiderPage() {
                           customer={customer} 
                           showCommission={showCommission} 
                           isHistory={true}
+                          branchName={shopLocations.find(s => s.id === task.job.branchId)?.name}
                           onClick={() => {}} 
                         />
                       </motion.div>
@@ -964,7 +1116,7 @@ export default function RiderPage() {
             const targetCoords = selectedJob.targetCoords;
             const distance = selectedJob.distance;
             
-            const customer = customers.find(c => c.id === selectedJob.job.customerId);
+            const customer = customers.find(c => c.id === selectedJob.job.customerId || (selectedJob.job.customerPhone && c.phone === selectedJob.job.customerPhone));
             const customerIsVip = customer?.isVIP || false;
             const customerIsMember = customer?.isMember || false;
             const remarks = selectedJob.job.remark ? selectedJob.job.remark.split(" | ") : [];
@@ -972,7 +1124,18 @@ export default function RiderPage() {
             const isExpress100 = remarks.some(r => r.includes("Express 100%"));
             const displayDate = selectedJob.scheduledAt ? new Date(selectedJob.scheduledAt) : new Date();
             const formattedTime = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(displayDate);
-            const legInstruction = remarks.find(r => legType === 'pickup' ? r.startsWith('ไปรับ:') : r.startsWith('ไปส่ง:'));
+            const legInstruction = remarks.find(r => 
+              legType === 'pickup' 
+                ? (r.startsWith('ไปรับ:') || r.startsWith('Pickup:')) 
+                : (r.startsWith('ไปส่ง:') || r.startsWith('Delivery:'))
+            );
+            
+            let notes: any[] = [];
+            try {
+              if (selectedJob.job.adminNotesJson) {
+                notes = JSON.parse(selectedJob.job.adminNotesJson);
+              }
+            } catch {}
             
             return (
 
@@ -984,6 +1147,17 @@ export default function RiderPage() {
                         {selectedJob.job.customerName || "Customer Guest"}
                         {customerIsVip && <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1"><Crown size={12} className="fill-amber-500 text-amber-500"/> VIP</span>}
                         {!customerIsVip && customerIsMember && <span className="bg-indigo-100 text-indigo-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold">MEMBER</span>}
+                        {selectedJob.job.laundryTypes && selectedJob.job.laundryTypes.length > 0 && (
+                          <span className="bg-cyan-50 text-cyan-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-cyan-200 flex items-center gap-1">
+                            <Layers size={10} />
+                            {selectedJob.job.laundryTypes.map(t => t.toUpperCase()).join(', ')}
+                          </span>
+                        )}
+                        {selectedJob.job.subStatus === 'billing' && <span className="bg-violet-100 text-violet-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-violet-200 flex items-center gap-1"><Receipt size={10} /> BILL</span>}
+                        {selectedJob.job.subStatus === 'wash' && <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-blue-200 flex items-center gap-1"><Droplets size={10} /> WASH</span>}
+                        {selectedJob.job.subStatus === 'dry' && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-orange-200 flex items-center gap-1"><Wind size={10} /> DRY</span>}
+                        {selectedJob.job.subStatus === 'iron' && <span className="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-indigo-200 flex items-center gap-1"><Shirt size={10} /> IRON</span>}
+                        {selectedJob.job.subStatus === 'ready' && <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-emerald-200 flex items-center gap-1"><CheckCircle2 size={10} /> READY</span>}
                       </DialogTitle>
                       <span className="font-mono text-[10px] font-bold tracking-wider text-slate-500 mt-0.5 block">
                         {selectedJob.job.id}
@@ -1001,7 +1175,7 @@ export default function RiderPage() {
                       <div className="flex flex-col items-end gap-1.5">
                         <Badge
                           variant="outline"
-                          className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+                          className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
                         >
                           {legType === 'pickup' ? <Package size={14} /> : <Truck size={14} />}
                           {legType.toUpperCase()}
@@ -1039,7 +1213,29 @@ export default function RiderPage() {
                         <Navigation size={14} /> Navigate
                       </a>
                     </div>
+                    
+                    {!!selectedJob.job.totalAmount && selectedJob.job.totalAmount > 0 && (
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-2">
+                        <span className={`text-[11px] font-bold px-2 py-1 rounded border flex items-center gap-1.5 ${
+                          selectedJob.job.isPaid ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-orange-50 text-orange-700 border-orange-200'
+                        }`}>
+                          <CreditCard size={12} className={selectedJob.job.isPaid ? "text-emerald-500" : "text-orange-500"} />
+                          {[selectedJob.job.paymentMethod?.toUpperCase(), selectedJob.job.paymentChannel ? `(${selectedJob.job.paymentChannel})` : ""].filter(Boolean).join(" ")}
+                          {selectedJob.job.paymentMethod || selectedJob.job.paymentChannel ? " - " : ""}
+                          {selectedJob.job.isPaid ? 'PAID' : 'UNPAID'} ฿{selectedJob.job.totalAmount}
+                        </span>
+                      </div>
+                    )}
                   </div>
+
+                  {legInstruction && (
+                    <div className="p-2.5 bg-orange-50 border border-orange-100 rounded-xl flex items-start gap-2.5">
+                      <Info size={16} className="text-orange-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-bold text-orange-800 leading-tight">{legInstruction}</p>
+                      </div>
+                    </div>
+                  )}
 
                   {selectedJob.job.remark && (
                     <div className="p-2 bg-rose-50 border border-rose-100 shadow-sm rounded-xl">
@@ -1048,79 +1244,84 @@ export default function RiderPage() {
                     </div>
                   )}
 
-                  {(() => {
-                    let notes: any[] = [];
-                    try {
-                      if (selectedJob.job.adminNotesJson) {
-                        notes = JSON.parse(selectedJob.job.adminNotesJson);
-                      }
-                    } catch {}
+                  <div className="p-2 bg-slate-50 border border-slate-200 shadow-sm rounded-xl flex flex-col h-32 relative">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 flex-shrink-0">Job Chat / Logs</p>
                     
-                    return (
-                      <div className="p-2 bg-slate-50 border border-slate-200 shadow-sm rounded-xl flex flex-col h-32">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 flex-shrink-0">Job Chat / Logs</p>
-                        
-                        <div className="flex-1 overflow-y-auto space-y-1.5 mb-2 pr-1">
-                          {notes.length > 0 ? notes.map((n: any, i: number) => {
-                            const isMe = n.userId === user?.id;
-                            return (
-                              <div key={n.id || i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                                <div className={`px-2 py-1.5 rounded-lg max-w-[90%] ${isMe ? 'bg-indigo-500 text-white rounded-br-none' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none'}`}>
-                                  <div className="flex justify-between items-end gap-3 mb-0.5">
-                                    <span className={`text-[9px] font-bold ${isMe ? 'text-indigo-100' : 'text-slate-500'}`}>{n.userName}</span>
-                                    <span className={`text-[8px] ${isMe ? 'text-indigo-200' : 'text-slate-400'}`}>
-                                      {n.timestamp ? format(new Date(n.timestamp), "HH:mm") : ""}
-                                    </span>
-                                  </div>
-                                  <p className="text-xs leading-snug whitespace-pre-wrap">{n.text}</p>
-                                </div>
+                    <div 
+                      className="flex-1 overflow-y-auto space-y-1.5 mb-2 pr-1 cursor-pointer hover:bg-slate-100/50 rounded transition-colors"
+                      onClick={() => setChatOpen(true)}
+                    >
+                      {notes.length > 0 ? notes.map((n: any, i: number) => {
+                        const isMe = n.userId === user?.id;
+                        return (
+                          <div key={n.id || i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                            <div className={`px-2 py-1.5 rounded-lg max-w-[90%] ${isMe ? 'bg-indigo-500 text-white rounded-br-none' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none shadow-sm'}`}>
+                              <div className="flex justify-between items-end gap-3 mb-0.5">
+                                <span className={`text-[9px] font-bold ${isMe ? 'text-indigo-100' : 'text-slate-500'}`}>{n.userName}</span>
+                                <span className={`text-[8px] ${isMe ? 'text-indigo-200' : 'text-slate-400'}`}>
+                                  {n.timestamp ? format(new Date(n.timestamp), "HH:mm") : ""}
+                                </span>
                               </div>
-                            );
-                          }) : (
-                            <div className="h-full flex items-center justify-center text-xs text-slate-400 italic">No messages yet...</div>
-                          )}
-                        </div>
-
-                        {selectedJob.job.status !== 'completed' && selectedJob.job.status !== 'cancel' && (
-                          <div className="flex gap-1.5 flex-shrink-0 mt-auto pt-1 border-t border-slate-200">
-                            <Input
-                              placeholder="Type a message..."
-                              value={riderNoteInput}
-                              onChange={(e) => setRiderNoteInput(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  handleAddRiderLog(selectedJob.job.id, riderNoteInput);
-                                }
-                              }}
-                              className="h-8 text-xs bg-white flex-1"
-                            />
-                            <Button 
-                              type="button" 
-                              size="sm" 
-                              className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white"
-                              onClick={() => handleAddRiderLog(selectedJob.job.id, riderNoteInput)}
-                            >
-                              Send
-                            </Button>
+                              <p className="text-xs leading-snug whitespace-pre-wrap line-clamp-2">{n.text}</p>
+                            </div>
                           </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-
-                  {legType === 'pickup' && (
-                    <div className="space-y-2">
-                      <div className="p-2 bg-white border border-slate-100 shadow-sm rounded-xl">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Laundry Bags (จากร้าน)</p>
-                        <RiderJobImages jobId={selectedJob.job.id} imageType="bagImageUrl" />
-                      </div>
-                      <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Pickup Proof (รูปตอนไปรับ)</p>
-                        <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" />
-                      </div>
+                        );
+                      }) : (
+                        <div className="h-full flex flex-col items-center justify-center text-xs text-slate-400 italic">
+                          <MessageCircle size={16} className="mb-1 opacity-50" />
+                          <span>Tap to open chat</span>
+                        </div>
+                      )}
                     </div>
-                  )}
+
+                    {selectedJob.job.status !== 'completed' && selectedJob.job.status !== 'cancel' && (
+                      <div className="flex gap-1.5 flex-shrink-0 mt-auto pt-1 border-t border-slate-200">
+                        <Input
+                          placeholder="Type a message..."
+                          value={riderNoteInput}
+                          onChange={(e) => setRiderNoteInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && riderNoteInput.trim()) {
+                              e.preventDefault();
+                              handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                              setRiderNoteInput("");
+                            }
+                          }}
+                          className="h-8 text-xs bg-white flex-1"
+                        />
+                        <Button 
+                          type="button" 
+                          size="sm" 
+                          className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white"
+                          onClick={() => {
+                            if (riderNoteInput.trim()) {
+                              handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                              setRiderNoteInput("");
+                            }
+                          }}
+                          disabled={!riderNoteInput.trim()}
+                        >
+                          Send
+                        </Button>
+                      </div>
+                    )}
+                    
+                    {/* Expand Icon Hint */}
+                    <div className="absolute top-2 right-2 text-slate-400 pointer-events-none">
+                      <ZoomIn size={14} />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="p-2 bg-white border border-slate-100 shadow-sm rounded-xl">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Laundry Bags (จากร้าน)</p>
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="bagImageUrl" />
+                    </div>
+                    <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Pickup Proof (รูปตอนไปรับ)</p>
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" />
+                    </div>
+                  </div>
 
                   {selectedJob.job.status === 'completed' && (
                     <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
@@ -1150,6 +1351,94 @@ export default function RiderPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Chat Dialog */}
+      <Dialog open={chatOpen} onOpenChange={setChatOpen}>
+        <DialogContent className="max-w-[100vw] h-[100dvh] sm:max-w-md sm:h-[80vh] p-0 flex flex-col bg-white border-none rounded-none sm:rounded-xl z-[70] overflow-hidden">
+          <DialogHeader className="p-4 bg-indigo-600 border-b border-indigo-700 sticky top-0 shrink-0">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3 text-white">
+                <Button variant="ghost" className="h-8 w-8 p-0 rounded-full hover:bg-indigo-500 text-white" onClick={() => setChatOpen(false)}>
+                  <ChevronLeft size={20} />
+                </Button>
+                <div>
+                  <DialogTitle className="text-base font-bold flex items-center gap-2">
+                    Job Chat
+                  </DialogTitle>
+                  <p className="text-[10px] text-indigo-200 uppercase tracking-wider">{selectedJob?.job.id.split('-')[0]}</p>
+                </div>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 flex flex-col">
+            {selectedJob && (() => {
+              let notes: any[] = [];
+              try {
+                if (selectedJob.job.adminNotesJson) {
+                  notes = JSON.parse(selectedJob.job.adminNotesJson);
+                }
+              } catch {}
+              return notes.length > 0 ? notes.map((n: any, i: number) => {
+                const isMe = n.userId === user?.id;
+                return (
+                  <div key={n.id || i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                    <div className={`px-3 py-2 rounded-xl max-w-[85%] ${isMe ? 'bg-indigo-500 text-white rounded-br-none shadow-sm' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none shadow-sm'}`}>
+                      <div className="flex justify-between items-end gap-3 mb-1">
+                        <span className={`text-[10px] font-bold ${isMe ? 'text-indigo-100' : 'text-slate-500'}`}>{n.userName}</span>
+                        <span className={`text-[9px] ${isMe ? 'text-indigo-200' : 'text-slate-400'}`}>
+                          {n.timestamp ? format(new Date(n.timestamp), "HH:mm") : ""}
+                        </span>
+                      </div>
+                      <p className="text-sm leading-snug whitespace-pre-wrap">{n.text}</p>
+                    </div>
+                  </div>
+                );
+              }) : (
+                <div className="flex-1 flex flex-col items-center justify-center text-slate-400 space-y-2">
+                  <MessageCircle size={32} className="text-slate-300" />
+                  <p className="text-sm font-medium">No messages yet</p>
+                  <p className="text-xs">Send a message to update job status or report issues</p>
+                </div>
+              );
+            })()}
+          </div>
+
+          {selectedJob?.job.status !== 'completed' && selectedJob?.job.status !== 'cancel' && (
+            <div className="p-3 bg-white border-t border-slate-200 shrink-0">
+              <div className="flex gap-2 relative">
+                <Input
+                  placeholder="Type your message..."
+                  value={riderNoteInput}
+                  onChange={(e) => setRiderNoteInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && riderNoteInput.trim() && selectedJob) {
+                      e.preventDefault();
+                      handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                      setRiderNoteInput("");
+                    }
+                  }}
+                  className="h-10 text-sm bg-slate-50 border-slate-200 pr-12 focus-visible:ring-indigo-500 rounded-full"
+                />
+                <Button 
+                  type="button" 
+                  size="icon" 
+                  className="absolute right-1 top-1 h-8 w-8 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white"
+                  onClick={() => {
+                    if (riderNoteInput.trim() && selectedJob) {
+                      handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                      setRiderNoteInput("");
+                    }
+                  }}
+                  disabled={!riderNoteInput.trim()}
+                >
+                  <Navigation size={14} className="ml-0.5 rotate-45" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Camera Proof Modal */}
       <Dialog open={!!jobToComplete} onOpenChange={(open) => {
         if (!open) {
@@ -1167,54 +1456,65 @@ export default function RiderPage() {
                   </DialogTitle>
                 </DialogHeader>
                 <div className="p-4">
-                  <div className="relative aspect-[3/4] sm:aspect-video rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 overflow-hidden group">
-                    {previewUrl ? (
-                      <div className="relative w-full h-full">
-                        <img src={previewUrl} className="w-full h-full object-cover" alt="Proof" />
+                  <p className="text-sm font-medium text-slate-600 mb-3 text-center">
+                    Take up to 3 photos ({(capturedImages[jobToComplete.taskId] || []).length}/3)
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {(capturedImages[jobToComplete.taskId] || []).map((url, index) => (
+                      <div key={index} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
+                        <img src={url} className="w-full h-full object-cover" alt={`Proof ${index + 1}`} />
                         <button 
                           onClick={() => {
-                            setCapturedImages(prev => {
-                              const next = {...prev};
-                              delete next[jobToComplete.taskId];
-                              return next;
-                            });
-                            setCapturedFiles(prev => {
-                              const next = {...prev};
-                              delete next[jobToComplete.taskId];
-                              return next;
-                            });
+                            setCapturedImages(prev => ({
+                              ...prev,
+                              [jobToComplete.taskId]: prev[jobToComplete.taskId].filter((_, i) => i !== index)
+                            }));
+                            setCapturedFiles(prev => ({
+                              ...prev,
+                              [jobToComplete.taskId]: prev[jobToComplete.taskId].filter((_, i) => i !== index)
+                            }));
                           }}
-                          className="absolute top-3 right-3 h-10 w-10 rounded-full bg-red-500/90 text-white flex items-center justify-center shadow-lg backdrop-blur"
+                          className="absolute top-2 right-2 h-7 w-7 rounded-full bg-red-500/90 text-white flex items-center justify-center shadow-lg backdrop-blur"
                         >
-                          <X size={20} />
+                          <X size={14} />
                         </button>
                       </div>
-                    ) : (
-                      <label className="flex flex-col items-center justify-center w-full h-full cursor-pointer hover:bg-slate-100 transition-colors">
-                        <div className="flex flex-col items-center gap-4">
-                          <div className="h-16 w-16 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 group-hover:text-indigo-500 group-hover:scale-110 transition-all border border-slate-100">
-                            <ImageIcon size={32} />
-                          </div>
-                          <div className="text-center">
-                            <p className="text-base font-bold text-slate-700">Take Photo Proof</p>
-                            <p className="text-sm text-slate-400 mt-1">Tap to open camera</p>
-                          </div>
+                    ))}
+                    
+                    {(capturedImages[jobToComplete.taskId] || []).length < 3 && (
+                      <div
+                        className="aspect-square rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-100 transition-colors group"
+                        onClick={async () => {
+                          const { Capacitor } = await import('@capacitor/core');
+                          if (Capacitor.isNativePlatform()) {
+                            await takePhotoNative(jobToComplete.taskId);
+                          } else {
+                            document.getElementById(`file-input-${jobToComplete.taskId}`)?.click();
+                          }
+                        }}
+                      >
+                        <div className="h-10 w-10 mb-2 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 group-hover:text-indigo-500 group-hover:scale-110 transition-all border border-slate-100">
+                          <ImageIcon size={20} />
                         </div>
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          capture="environment" 
-                          className="hidden" 
-                          onChange={(e) => handleCapture(jobToComplete.taskId, e)}
-                        />
-                      </label>
+                        <p className="text-xs font-bold text-slate-700">Add Photo</p>
+                      </div>
                     )}
                   </div>
+                  
+                  {/* Hidden input — used on web only */}
+                  <input
+                    id={`file-input-${jobToComplete.taskId}`}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(e) => handleCapture(jobToComplete.taskId, e)}
+                  />
                 </div>
                 <DialogFooter className="p-4 pt-0">
                   <Button
                     className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-sm h-14 rounded-xl text-base disabled:opacity-50"
-                    disabled={!previewUrl || isUploadingProof}
+                    disabled={!(capturedImages[jobToComplete.taskId] || []).length || isUploadingProof}
                     onClick={async () => {
                       await handleComplete(jobToComplete.taskId);
                       setJobToComplete(null);

@@ -90,6 +90,25 @@ export const refreshDb = async () => {
         // Preserve POIs as they are loaded separately and heavily cached
         parsed.pois = memoryDb.pois;
       }
+
+      // ✅ FIX: Preserve in-memory GPS location for active riders
+      // refreshDb() fetches stale server data which may not have the latest GPS fix yet.
+      // We keep the most recent in-memory location so the map doesn't jump backwards.
+      if (memoryDb && parsed.riders) {
+        parsed.riders = parsed.riders.map((serverRider: any) => {
+          const memRider = memoryDb!.riders.find(r => r.id === serverRider.id);
+          if (
+            memRider &&
+            memRider.currentLocation &&
+            (serverRider.status === 'online' || serverRider.status === 'busy')
+          ) {
+            // Keep in-memory location (it's fresher than DB)
+            return { ...serverRider, currentLocation: memRider.currentLocation };
+          }
+          return serverRider;
+        });
+      }
+
       memoryDb = parseMockDb(parsed);
       import('./store').then(m => m.emitAllChanges());
     }
@@ -235,7 +254,9 @@ export const api = {
     const dRider = jobDetails.deliveryRiderId;
 
     const isPOS = (jobDetails.source || jobDetails.source) === "pos";
-    const initialStatus = isPOS ? "billing" : "pending";
+    // CSO creates as TBA (hidden from Manager), Manager/Admin creates as Pending
+    const creatorRole = (jobDetails as any).creatorRole;
+    const initialStatus = isPOS ? "billing" : (creatorRole === 'manager' ? 'pending' : 'tba');
     const legStatus = (leg: "pickup" | "delivery") => {
       if (isPOS && leg === "pickup") return "completed";
       return "pending";
@@ -253,6 +274,7 @@ export const api = {
       distance: jobDetails.distance || 0,
       fee: jobDetails.fee || 0,
       status: initialStatus,
+      subStatus: jobDetails.subStatus as any,
       createdAt: new Date(),
       scheduledAt: pDate,
       pickupRiderId: pRider,

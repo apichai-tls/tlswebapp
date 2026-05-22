@@ -93,7 +93,7 @@ export async function addJobAction(data: any) {
   let jobId = data.id;
   
   if (!jobId || String(jobId).startsWith('JOB-')) {
-    const year = new Date().getFullYear().toString();
+    const year = new Date().getFullYear().toString(); // 4-digit year, auto-changes each year
     const latestJob = await prisma.job.findFirst({
       where: { id: { startsWith: year } },
       orderBy: { id: 'desc' }
@@ -135,6 +135,7 @@ export async function addJobAction(data: any) {
       bagImageUrl: data.bagImageUrl,
       billImageUrl: data.billImageUrl,
       serviceType: data.serviceType,
+      laundryTypes: data.laundryTypes ? data.laundryTypes.join(',') : null,
       source: data.source,
       totalAmount: data.totalAmount,
       paymentMethod: data.paymentMethod,
@@ -202,6 +203,7 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.fee !== undefined) data.fee = updates.fee;
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
+  if (updates.laundryTypes !== undefined) data.laundryTypes = updates.laundryTypes ? updates.laundryTypes.join(',') : null;
   if (updates.remark !== undefined) data.remark = updates.remark;
   if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;

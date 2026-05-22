@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type JobStatus = "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return";
+export type JobStatus = "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return";
 export type JobType = "pickup" | "delivery" | "full_service";
 export type ServiceType = "wash_fold" | "wash_iron_fold" | "wash_iron_hanger";
 export type TripStatus = "pending" | "in_transit" | "completed";
@@ -89,7 +89,7 @@ export interface Job {
   distance: number; // 1-way km
   fee: number; // Total commission
   status: JobStatus;
-  subStatus?: "wash" | "dry" | "iron" | "ready";
+  subStatus?: "billing" | "wash" | "dry" | "iron" | "ready";
   createdAt: Date;
   scheduledAt: Date;
   completedAt?: Date;
@@ -100,6 +100,7 @@ export interface Job {
   riderId?: string; // Legacy assigned rider
   bagImageUrl?: string;
   serviceType?: ServiceType;
+  laundryTypes?: string[];
   source?: "app" | "pos";
   totalAmount?: number; // Customer price
   paymentMethod?: "cash" | "transfer" | "credit" | "card";

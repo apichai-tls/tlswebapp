@@ -19,7 +19,12 @@ export async function GET() {
         where: {
           OR: [
             { status: { notIn: ['completed', 'cancel'] } },
-            { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } }
+            { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } },
+            // Include recently completed/cancelled jobs for Rider History (last 7 days)
+            {
+              status: { in: ['completed', 'cancel'] },
+              completedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+            }
           ]
         },
         orderBy: { id: 'desc' },
@@ -44,6 +49,7 @@ export async function GET() {
           completedAt: true,
           riderId: true,
           serviceType: true,
+          laundryTypes: true,
           source: true,
           totalAmount: true,
           paymentMethod: true,
@@ -67,6 +73,8 @@ export async function GET() {
           deliveryProofImageUrl: true,
           bagImageUrl: true,
           billImageUrl: true,
+          paymentChannel: true,  // ✅ was missing — caused payment channel to not persist on reload
+          isPaid: true,          // ✅ was missing — caused payment status to not persist on reload
           // Exclude: proofImageUrl (deprecated)
         }
       }),
@@ -80,6 +88,7 @@ export async function GET() {
     // Map Raw DB data back to the format expected by the frontend
     const jobs = jobsRaw.map(j => ({
       ...j,
+      laundryTypes: j.laundryTypes ? j.laundryTypes.split(',') : [],
       items: j.itemsJson ? JSON.parse(j.itemsJson) : [],
       legs: j.legsJson ? JSON.parse(j.legsJson) : undefined,
       pickupCoords: { lat: j.pickupLat, lng: j.pickupLng },

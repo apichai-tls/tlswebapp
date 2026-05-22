@@ -36,6 +36,7 @@ import { AdminPOS } from "@/components/admin-pos";
 import { AdminServiceMenu } from "@/components/admin-service-menu";
 import { AdminCRM } from "@/components/admin-crm";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
+import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
 import { AdminSettings } from "@/components/admin-settings";
 import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
@@ -58,6 +59,7 @@ import {
   Users,
   User,
   Phone,
+  Eye,
   ArrowDownUp,
   Store,
   ShieldCheck,
@@ -78,7 +80,12 @@ import {
   Database,
   ZoomIn,
   Camera,
-  MessageSquare
+  MessageSquare,
+  Receipt,
+  Droplets,
+  Wind,
+  Shirt,
+  Edit
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -174,21 +181,40 @@ export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
-  // Restore tab from URL hash
+  // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '');
     const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator"];
+
     if (validTabs.includes(hash)) {
+      // Honour explicit URL hash (e.g. bookmarks / direct links)
       setActiveTab(hash as any);
+      return;
     }
-  }, []);
+
+    if (!user) return;
+
+    // Admin sees dashboard by default
+    if (user.role === 'admin') {
+      setActiveTab('dashboard');
+      return;
+    }
+
+    // For all other roles: jump to the first tab they have access to
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "settings", "users"
+    ];
+    const hasPermission = (key: string) => user.permissions?.includes(key);
+    const firstTab = tabOrder.find(tab => hasPermission(tab));
+    if (firstTab) setActiveTab(firstTab);
+  }, [user]);
 
   // Periodic data refresh based on active tab
   useEffect(() => {
-    let intervalTime: number | null = 60000; // Default 60 seconds
+    let intervalTime: number | null = 5000; // Default 5 seconds (jobs, dispatch, pos, etc.)
 
     if (activeTab === "map") {
-      intervalTime = 15000; // Live Map: 15 seconds
+      intervalTime = 15000; // Live Map: 15 seconds (GPS-heavy, keep slower)
     } else if (activeTab === "riders") {
       intervalTime = null; // Rider Report: No auto-refresh
       import("@/lib/api").then(m => m.refreshDb()); // Refresh once when opened
@@ -212,7 +238,8 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
-  const [editingSubStatus, setEditingSubStatus] = useState<"wash" | "dry" | "iron" | "ready" | null>(null);
+  const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
+  const [laundryTypes, setLaundryTypes] = useState<string[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
@@ -233,11 +260,17 @@ export default function AdminPage() {
   
   const [pickupLoc, setPickupLoc] = useState("");
   const [pickupCoords, setPickupCoords] = useState<LatLng | null>(null);
+  const [pickupRoom, setPickupRoom] = useState("");
   const [deliveryLoc, setDeliveryLoc] = useState("");
   const [deliveryCoords, setDeliveryCoords] = useState<LatLng | null>(null);
+  const [deliveryRoom, setDeliveryRoom] = useState("");
+
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [selectedProfileCustomer, setSelectedProfileCustomer] = useState<Customer | null>(null);
   
   const [isPickup, setIsPickup] = useState(true);
   const [isDelivery, setIsDelivery] = useState(true);
+  const [isWalkIn, setIsWalkIn] = useState(false);
   const [isDeliveryDirty, setIsDeliveryDirty] = useState(false); // Track if user manually changed delivery
 
   const [pickupDist, setPickupDist] = useState(0);
@@ -422,8 +455,10 @@ export default function AdminPage() {
     setCustomerName("");
     setCustomerPhone("");
     setPickupLoc("");
+    setPickupRoom("");
     setPickupCoords(null);
     setDeliveryLoc("");
+    setDeliveryRoom("");
     setDeliveryCoords(null);
     setIsPickup(true);
     setIsDelivery(true);
@@ -477,16 +512,29 @@ export default function AdminPage() {
   const handleEditFullJob = (job: Job) => {
     setEditingJobId(job.id);
     setEditingSubStatus(job.subStatus || null);
+    setLaundryTypes(job.laundryTypes || []);
     setCustomerName(job.customerName || "");
     setCustomerPhone(job.customerPhone || "");
+    
+    const foundCustomer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
+    setSelectedProfileCustomer(foundCustomer || null);
     const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation);
     const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation);
 
-    setPickupLoc(isPickupService ? job.pickupLocation || "" : "");
-    if (isPickupService && job.pickupCoords) setPickupCoords(job.pickupCoords);
-    else setPickupCoords(null);
+    const parseRoom = (loc: string) => {
+      const match = loc.match(/(.*?)\s*\(Room\s*(.*?)\)$/i);
+      if (match) return { base: match[1].trim(), room: match[2].trim() };
+      return { base: loc, room: "" };
+    };
+
+    const p = isPickupService ? parseRoom(job.pickupLocation || "") : { base: "", room: "" };
+    setPickupLoc(p.base);
+    setPickupRoom(p.room);
+    setPickupCoords(isPickupService ? job.pickupCoords || null : null);
     
-    setDeliveryLoc(isDeliveryService ? job.dropoffLocation || "" : "");
+    const d = isDeliveryService ? parseRoom(job.dropoffLocation || "") : { base: "", room: "" };
+    setDeliveryLoc(d.base);
+    setDeliveryRoom(d.room);
     if (isDeliveryService && job.dropoffCoords) setDeliveryCoords(job.dropoffCoords);
     else setDeliveryCoords(null);
     setPickupDist(job.pickupDistance || 0);
@@ -502,7 +550,7 @@ export default function AdminPage() {
     else if (isExp50) basePrice = Math.round(totalMinusFee / 1.5);
     
     setLaundryPrice(basePrice);
-    setPaymentMethod(job.paymentMethod || "unpaid");
+    setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
     setPaymentChannel(job.paymentChannel || "");
     setServiceType(job.serviceType || "wash_fold");
     setEditingFeeLock(job.fee);
@@ -586,6 +634,7 @@ export default function AdminPage() {
 
     setIsPickup(isPickupService);
     setIsDelivery(isDeliveryService);
+    setIsWalkIn(job.source === 'pos' || job.type === 'in_store');
 
     setEditingJobId(job.id);
     setDialogOpen(true);
@@ -600,8 +649,8 @@ export default function AdminPage() {
       toast.error("Please fill in the delivery location.");
       return;
     }
-    if (!isPickup && !isDelivery) {
-      toast.error("Please select at least one service (Pickup or Delivery).");
+    if (!isWalkIn && !isPickup && !isDelivery) {
+      toast.error("Please select at least one service (Pickup, Delivery, or Walk-In).");
       return;
     }
     
@@ -631,14 +680,18 @@ export default function AdminPage() {
     let finalAdminLogs = [...adminLogs];
 
     const newJobData = {
-      type: (isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store")),
-      subStatus: editingSubStatus,
+      type: isWalkIn ? "in_store" : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
+      subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
+      source: isWalkIn ? "pos" : "app",
+      // Auto-advance to Delivery or Completed when Process is set to Ready
+      ...(editingSubStatus === 'ready' && { status: isWalkIn ? 'completed' : 'delivery' }),
+      laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
-      pickupLocation: isPickup ? pickupLoc.trim() : shop.address,
-      dropoffLocation: isDelivery ? deliveryLoc.trim() : shop.address,
-      pickupCoords: isPickup && pickupCoords ? pickupCoords : shop.coords,
-      dropoffCoords: isDelivery && deliveryCoords ? deliveryCoords : shop.coords,
+      pickupLocation: isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shop.address,
+      dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : shop.address,
+      pickupCoords: isPickup ? pickupCoords : shop.coords,
+      dropoffCoords: isDelivery ? deliveryCoords : shop.coords,
       scheduledAt: pDate || null,
       pickupScheduledAt: isPickup ? (pDate || null) : null,
       pickupScheduledEndAt: isPickup && pDate ? new Date(pDate.getTime() + 30 * 60000) : null,
@@ -648,8 +701,8 @@ export default function AdminPage() {
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null,
       billImageUrl: finalBillImageUrls.length > 0 ? JSON.stringify(finalBillImageUrls) : null,
-      paymentMethod: paymentMethod === 'unpaid' ? null : (paymentMethod as any),
-      isPaid: !['unpaid', 'cod'].includes(paymentMethod),
+      paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
+      isPaid: paymentMethod === 'paid',
       fee,
       totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.round(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
       serviceType,
@@ -668,6 +721,7 @@ export default function AdminPage() {
       adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs) : null,
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
+      creatorRole: user?.role,
     };
 
     try {
@@ -680,7 +734,9 @@ export default function AdminPage() {
       }
 
       setPickupLoc("");
+      setPickupRoom("");
       setDeliveryLoc("");
+      setDeliveryRoom("");
       setIsDeliveryDirty(false);
       setIsFreeDelivery(false);
       setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
@@ -693,6 +749,7 @@ export default function AdminPage() {
       setPickupProofImageUrls([]);
       setDeliveryProofImageUrls([]);
       setServiceType("wash_fold");
+      setLaundryTypes([]);
       setServiceSpeed("standard");
       setSelectedVIPLabel("");
       setAdminNote("");
@@ -931,11 +988,13 @@ export default function AdminPage() {
                   </motion.div>
                   <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
                 <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 items-start lg:items-center">
-                  <div className="col-span-9 flex flex-row items-center gap-4 w-full">
+                  <div className="col-span-6 lg:col-span-7 flex flex-row items-center gap-4 w-full">
                     <DialogTitle className="flex items-center text-lg shrink-0">
                       <div className="flex items-center gap-2">
                         <Package size={18} />
-                        {editingJobId ? "Edit Job Details" : "Create New Job"}
+                        {editingJobId ? (
+                          <span>Edit Job <span className="text-slate-500 font-mono ml-1 text-sm bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">#{editingJobId.split('-')[0].toUpperCase()}</span></span>
+                        ) : "Create New Job"}
                       </div>
                       {selectedVIPLabel && (
                         <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
@@ -995,11 +1054,16 @@ export default function AdminPage() {
                                   });
                                   setCustomerName(c.name);
                                   setCustomerPhone(c.phone);
-                                  const fullAddr = c.secondaryAddress ? `${c.defaultAddress} (Room ${c.secondaryAddress})` : c.defaultAddress;
-                                  setPickupLoc(fullAddr);
+                                  setSelectedProfileCustomer(c);
+                                  
+                                  setPickupLoc(c.defaultAddress);
+                                  setPickupRoom(c.secondaryAddress || "");
                                   setPickupCoords(c.defaultCoords);
-                                  setDeliveryLoc(fullAddr);
+                                  
+                                  setDeliveryLoc(c.defaultAddress);
+                                  setDeliveryRoom(c.secondaryAddress || "");
                                   setDeliveryCoords(c.defaultCoords);
+                                  
                                   setIsDeliveryDirty(false);
                                   setIsFreeDelivery(false);
                                   updateClosestStoreAsync(c.defaultCoords);
@@ -1054,44 +1118,124 @@ export default function AdminPage() {
                     </div>
                   </div>
                   
-                  <div className="col-span-3 w-full">
+                  <div className="col-span-6 lg:col-span-5 w-full flex justify-end">
                     {editingJobId && (
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Process:</span>
-                        <div className="flex bg-slate-50 p-1 rounded-xl border border-slate-200 shadow-inner">
+                      <div className="flex flex-row gap-4 items-center justify-end w-full">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type:</span>
+                          <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+                            {[
+                              { id: 'W', label: 'Wash' },
+                              { id: 'F', label: 'Fold' },
+                              { id: 'I', label: 'Iron' },
+                              { id: 'H', label: 'Hanger' },
+                              { id: 'D', label: 'Dryclean' },
+                              { id: 'L', label: 'Linen' },
+                              { id: 'P', label: 'PCS' },
+                            ].map(t => (
+                              <button
+                                key={t.id}
+                                type="button"
+                                onClick={() => setLaundryTypes(prev => prev.includes(t.id) ? prev.filter(x => x !== t.id) : [...prev, t.id])}
+                                className={`flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-md transition-all min-w-[50px] ${
+                                  laundryTypes.includes(t.id)
+                                    ? 'bg-slate-800 shadow-sm'
+                                    : 'hover:bg-white text-slate-500 hover:text-slate-800'
+                                }`}
+                                title={t.label}
+                              >
+                                <span className={`text-[16px] font-black leading-none h-[18px] flex items-center justify-center ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-700'}`}>
+                                  {t.id}
+                                </span>
+                                <span className={`text-[9px] font-bold leading-none ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-500'}`}>
+                                  {t.label === 'Dryclean' ? 'Dry' : t.label}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
+                          <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+
+                            {/* Billing */}
+                          <button
+                            type="button"
+                            onClick={() => setEditingSubStatus(editingSubStatus === 'billing' ? null : 'billing')}
+                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                              editingSubStatus === 'billing'
+                                ? 'bg-violet-600 shadow-sm'
+                                : 'hover:bg-white text-slate-500 hover:text-slate-800'
+                            }`}
+                            title="Billing"
+                          >
+                            <Receipt size={18} className={editingSubStatus === 'billing' ? 'text-white' : ''} strokeWidth={2} />
+                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'billing' ? 'text-white' : 'text-slate-500'}`}>Bill</span>
+                          </button>
+
+                          {/* Wash */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'wash' ? null : 'wash')}
-                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'wash' ? 'bg-blue-100 border border-blue-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                              editingSubStatus === 'wash'
+                                ? 'bg-blue-600 shadow-sm'
+                                : 'hover:bg-white text-slate-500 hover:text-slate-800'
+                            }`}
                             title="Washing"
                           >
-                            <span className="text-lg leading-none block drop-shadow-sm">💧</span>
+                            <Droplets size={18} className={editingSubStatus === 'wash' ? 'text-white' : ''} strokeWidth={2} />
+                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'wash' ? 'text-white' : 'text-slate-500'}`}>Wash</span>
                           </button>
+
+                          {/* Dry */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'dry' ? null : 'dry')}
-                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'dry' ? 'bg-orange-100 border border-orange-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                              editingSubStatus === 'dry'
+                                ? 'bg-orange-600 shadow-sm'
+                                : 'hover:bg-white text-slate-500 hover:text-slate-800'
+                            }`}
                             title="Drying"
                           >
-                            <span className="text-lg leading-none block drop-shadow-sm">♨️</span>
+                            <Wind size={18} className={editingSubStatus === 'dry' ? 'text-white' : ''} strokeWidth={2} />
+                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'dry' ? 'text-white' : 'text-slate-500'}`}>Dry</span>
                           </button>
+
+                          {/* Iron */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'iron' ? null : 'iron')}
-                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'iron' ? 'bg-indigo-100 border border-indigo-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                              editingSubStatus === 'iron'
+                                ? 'bg-indigo-700 shadow-sm'
+                                : 'hover:bg-white text-slate-500 hover:text-slate-800'
+                            }`}
                             title="Ironing"
                           >
-                            <span className="text-lg leading-none block drop-shadow-sm">👕</span>
+                            <Shirt size={18} className={editingSubStatus === 'iron' ? 'text-white' : ''} strokeWidth={2} />
+                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'iron' ? 'text-white' : 'text-slate-500'}`}>Iron</span>
                           </button>
+
+                          {/* Ready */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'ready' ? null : 'ready')}
-                            className={`p-2 rounded-lg transition-all ${editingSubStatus === 'ready' ? 'bg-emerald-100 border border-emerald-200 shadow-sm scale-110' : 'hover:bg-slate-200 border border-transparent opacity-60 hover:opacity-100'}`}
+                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                              editingSubStatus === 'ready'
+                                ? 'bg-emerald-600 shadow-sm'
+                                : 'hover:bg-white text-slate-500 hover:text-slate-800'
+                            }`}
                             title="Ready"
                           >
-                            <span className="text-lg leading-none block drop-shadow-sm">✨</span>
+                            <CheckCircle2 size={18} className={editingSubStatus === 'ready' ? 'text-white' : ''} strokeWidth={2} />
+                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'ready' ? 'text-white' : 'text-slate-500'}`}>Ready</span>
                           </button>
+
                         </div>
+                      </div>
                       </div>
                     )}
                   </div>
@@ -1127,6 +1271,21 @@ export default function AdminPage() {
                                   </Badge>
                                 )}
                               </Label>
+                              {selectedProfileCustomer && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded shadow-sm border border-indigo-100 shrink-0 ml-1 flex items-center justify-center"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setCustomerDialogOpen(true);
+                                  }}
+                                  title="Edit Customer CRM"
+                                >
+                                  <Edit size={10} />
+                                </Button>
+                              )}
                             </div>
                             <Input
                               id="custName"
@@ -1177,18 +1336,19 @@ export default function AdminPage() {
                             </select>
                           </div>
 
-                          <div className="flex items-center gap-3 pb-1.5">
+                          <div className="flex items-center gap-3 pb-1">
                             <Label className="flex items-center gap-1.5 cursor-pointer">
                               <input 
                                 type="checkbox" 
                                 checked={isPickup}
                                 onChange={(e) => {
                                   setIsPickup(e.target.checked);
+                                  if (e.target.checked) setIsWalkIn(false);
                                   setEditingFeeLock(null);
                                 }}
-                                className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                                className="rounded text-blue-600 w-3 h-3 border-slate-300"
                               />
-                              <span className="text-[13px] font-medium text-slate-700">Pickup</span>
+                              <span className="text-xs font-semibold text-slate-700">Pickup</span>
                             </Label>
                             <Label className="flex items-center gap-1.5 cursor-pointer">
                               <input 
@@ -1196,11 +1356,28 @@ export default function AdminPage() {
                                 checked={isDelivery}
                                 onChange={(e) => {
                                   setIsDelivery(e.target.checked);
+                                  if (e.target.checked) setIsWalkIn(false);
                                   setEditingFeeLock(null);
                                 }}
-                                className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4"
+                                className="rounded text-blue-600 w-3 h-3 border-slate-300"
                               />
-                              <span className="text-[13px] font-medium text-slate-700">Delivery</span>
+                              <span className="text-xs font-semibold text-slate-700">Delivery</span>
+                            </Label>
+                            <Label className="flex items-center gap-1.5 cursor-pointer ml-2">
+                              <input 
+                                type="checkbox" 
+                                checked={isWalkIn}
+                                onChange={(e) => {
+                                  setIsWalkIn(e.target.checked);
+                                  if (e.target.checked) {
+                                    setIsPickup(false);
+                                    setIsDelivery(false);
+                                  }
+                                  setEditingFeeLock(null);
+                                }}
+                                className="rounded text-amber-500 w-3 h-3 border-slate-300 focus:ring-amber-500"
+                              />
+                              <span className="text-xs font-semibold text-amber-700">Walk-In</span>
                             </Label>
                           </div>
                         </div>
@@ -1212,24 +1389,36 @@ export default function AdminPage() {
                                 <MapPin size={14} className="text-emerald-600" />
                                 Pickup Address <span className="text-red-500">*</span>
                               </Label>
-                              <LocationInput
-                                id="pickup-location"
-                                placeholder="Customer pickup address"
-                                value={pickupLoc}
-                                onChange={(v) => {
-                                  setPickupLoc(v);
-                                }}
-                                onSelectLocation={(loc) => {
-                                  const newCoords = { lat: loc.lat, lng: loc.lng };
-                                  setPickupCoords(newCoords);
-                                  updateClosestStoreAsync(newCoords);
-                                  setEditingFeeLock(null);
-                                  if (!isDeliveryDirty) {
-                                    setDeliveryLoc(loc.name);
-                                    setDeliveryCoords(newCoords);
-                                  }
-                                }}
-                              />
+                              <div className="flex gap-2">
+                                <div className="flex-1">
+                                  <LocationInput
+                                    id="pickup-location"
+                                    placeholder="Customer pickup address"
+                                    value={pickupLoc}
+                                    onChange={(v) => {
+                                      setPickupLoc(v);
+                                    }}
+                                    onSelectLocation={(loc) => {
+                                      const newCoords = { lat: loc.lat, lng: loc.lng };
+                                      setPickupCoords(newCoords);
+                                      updateClosestStoreAsync(newCoords);
+                                      setEditingFeeLock(null);
+                                      if (!isDeliveryDirty) {
+                                        setDeliveryLoc(loc.name);
+                                        setDeliveryCoords(newCoords);
+                                      }
+                                    }}
+                                  />
+                                </div>
+                                <div className="w-20 shrink-0">
+                                  <Input
+                                    placeholder="Room"
+                                    value={pickupRoom}
+                                    onChange={(e) => setPickupRoom(e.target.value)}
+                                    className="h-9 text-xs"
+                                  />
+                                </div>
+                              </div>
                             </div>
                           )}
 
@@ -1239,24 +1428,36 @@ export default function AdminPage() {
                                 <Navigation size={14} className="text-red-600" />
                                 Delivery Address <span className="text-red-500">*</span>
                               </Label>
-                              <LocationInput
-                                id="delivery-location"
-                                placeholder="Customer delivery address"
-                                value={deliveryLoc}
-                                onChange={(v) => {
-                                  setDeliveryLoc(v);
-                                  setIsDeliveryDirty(true);
-                                }}
-                                onSelectLocation={(loc) => {
-                                  const newCoords = { lat: loc.lat, lng: loc.lng };
-                                  setDeliveryCoords(newCoords);
-                                  setIsDeliveryDirty(true);
-                                  setEditingFeeLock(null);
-                                  if (!isPickup) {
-                                    updateClosestStoreAsync(newCoords);
-                                  }
-                                }}
-                              />
+                              <div className="flex gap-2">
+                                <div className="flex-1">
+                                  <LocationInput
+                                    id="delivery-location"
+                                    placeholder="Customer delivery address"
+                                    value={deliveryLoc}
+                                    onChange={(v) => {
+                                      setDeliveryLoc(v);
+                                      setIsDeliveryDirty(true);
+                                    }}
+                                    onSelectLocation={(loc) => {
+                                      const newCoords = { lat: loc.lat, lng: loc.lng };
+                                      setDeliveryCoords(newCoords);
+                                      setIsDeliveryDirty(true);
+                                      setEditingFeeLock(null);
+                                      if (!isPickup) {
+                                        updateClosestStoreAsync(newCoords);
+                                      }
+                                    }}
+                                  />
+                                </div>
+                                <div className="w-20 shrink-0">
+                                  <Input
+                                    placeholder="Room"
+                                    value={deliveryRoom}
+                                    onChange={(e) => setDeliveryRoom(e.target.value)}
+                                    className="h-9 text-xs"
+                                  />
+                                </div>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -1574,35 +1775,47 @@ export default function AdminPage() {
                           <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Clothing Types</Label>
                           <div className="grid grid-cols-2 gap-1">
                             {[
+                              { id: 'other', label: 'Other (Specify)' },
                               { id: 'polo', label: 'Polo Shirt' },
                               { id: 'tshirt', label: 'T-Shirt' },
                               { id: 'pants', label: 'Pants' },
                               { id: 'dress', label: 'Dress' },
                               { id: 'bedsheet', label: 'Bedsheet' },
                             ].map(item => (
-                              <div key={item.id} className="flex items-center gap-2">
-                                <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
-                                  <input 
-                                    type="checkbox" 
-                                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-3.5 w-3.5 shrink-0"
-                                    checked={clothingItems[item.id].selected}
-                                    onChange={(e) => setClothingItems(prev => ({
-                                      ...prev,
-                                      [item.id]: { ...prev[item.id], selected: e.target.checked }
-                                    }))}
-                                  />
-                                  <span className="truncate">{item.label}</span>
-                                </Label>
-                                {clothingItems[item.id].selected && (
-                                  <Input 
-                                    type="number" 
-                                    min="1"
-                                    className="w-12 h-6 text-xs text-center p-1 shrink-0"
-                                    value={clothingItems[item.id].quantity}
-                                    onChange={(e) => setClothingItems(prev => ({
-                                      ...prev,
-                                      [item.id]: { ...prev[item.id], quantity: Math.max(1, parseInt(e.target.value) || 1) }
-                                    }))}
+                              <div key={item.id} className="flex flex-col gap-1 col-span-1">
+                                <div className="flex items-center gap-2">
+                                  <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-3.5 w-3.5 shrink-0"
+                                      checked={clothingItems[item.id].selected}
+                                      onChange={(e) => setClothingItems(prev => ({
+                                        ...prev,
+                                        [item.id]: { ...prev[item.id], selected: e.target.checked }
+                                      }))}
+                                    />
+                                    <span className="truncate">{item.label}</span>
+                                  </Label>
+                                  {clothingItems[item.id].selected && (
+                                    <Input 
+                                      type="number" 
+                                      min="1"
+                                      className="w-12 h-6 text-xs text-center p-1 shrink-0"
+                                      value={clothingItems[item.id].quantity}
+                                      onChange={(e) => setClothingItems(prev => ({
+                                        ...prev,
+                                        [item.id]: { ...prev[item.id], quantity: Math.max(1, parseInt(e.target.value) || 1) }
+                                      }))}
+                                    />
+                                  )}
+                                </div>
+                                {item.id === 'other' && clothingItems[item.id].selected && (
+                                  <Input
+                                    type="text"
+                                    placeholder="Specify item..."
+                                    className="h-6 text-xs px-2 w-full mt-0.5"
+                                    value={otherClothingName}
+                                    onChange={(e) => setOtherClothingName(e.target.value)}
                                   />
                                 )}
                               </div>
@@ -1610,61 +1823,7 @@ export default function AdminPage() {
                           </div>
                         </div>
 
-                        <div className="space-y-1 pt-1 border-t border-slate-100">
-                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Service Speed</Label>
-                          <div className="flex items-center gap-2">
-                            <Label className="flex items-center gap-1 cursor-pointer">
-                              <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} />
-                              <span className="text-xs">Standard</span>
-                            </Label>
-                            <Label className="flex items-center gap-1 cursor-pointer">
-                              <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} />
-                              <span className="text-xs">Exp 50%</span>
-                            </Label>
-                            <Label className="flex items-center gap-1 cursor-pointer">
-                              <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} />
-                              <span className="text-xs">Exp 100%</span>
-                            </Label>
-                          </div>
-                        </div>
 
-                        <div className="space-y-1 pt-1 border-t border-slate-100">
-                          <Label htmlFor="payment-channel" className="flex items-center gap-1.5 text-xs font-medium">
-                            <CreditCard size={14} className="text-slate-600" />
-                            Payment Channel
-                          </Label>
-                          <select
-                            id="payment-channel"
-                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
-                            value={paymentChannel}
-                            onChange={(e) => setPaymentChannel(e.target.value)}
-                          >
-                            <option value="">Select Channel</option>
-                            <option value="Cash">Cash</option>
-                            <option value="Transfer">Transfer</option>
-                            <option value="Credit Card">Credit Card</option>
-                            <option value="Gateway">Gateway</option>
-                            <option value="PromptPay">PromptPay</option>
-                            <option value="Deduct Member">Deduct Member</option>
-                          </select>
-                        </div>
-
-                        <div className="space-y-1 pt-1 border-t border-slate-100">
-                          <Label htmlFor="payment-method" className="flex items-center gap-1.5 text-xs font-medium">
-                            <CreditCard size={14} className="text-slate-600" />
-                            Payment Status
-                          </Label>
-                          <select
-                            id="payment-method"
-                            className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
-                            value={paymentMethod}
-                            onChange={(e) => setPaymentMethod(e.target.value)}
-                          >
-                            <option value="unpaid">Unpaid</option>
-                            <option value="paid">Paid</option>
-                            <option value="cod">Cash on Delivery (COD)</option>
-                          </select>
-                        </div>
 
 
                       </div>
@@ -1729,6 +1888,76 @@ export default function AdminPage() {
                               <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.round(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
                             </div>
                           )}
+
+                          <div className="space-y-0.5 pt-2 mt-2 border-t border-slate-700">
+                            <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
+                            <div className="flex items-center gap-2">
+                              <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <span className="text-[11px] text-slate-200">Standard</span>
+                              </Label>
+                              <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <span className="text-[11px] text-slate-200">Exp 50%</span>
+                              </Label>
+                              <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <span className="text-[11px] text-slate-200">Exp 100%</span>
+                              </Label>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 pt-2 mt-2 border-t border-slate-700">
+                            <div className="space-y-0.5">
+                              <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                <CreditCard size={12} className="text-slate-500" />
+                                Payment Channel
+                              </Label>
+                              <select
+                                id="payment-channel"
+                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                                value={paymentChannel}
+                                onChange={(e) => setPaymentChannel(e.target.value)}
+                              >
+                                <option value="">Select Channel</option>
+                                <option value="Cash / COD">Cash / COD</option>
+                                <option value="Transfer">Transfer</option>
+                                <option value="Credit Card">Credit Card</option>
+                                <option value="Gateway">Gateway</option>
+                                <option value="PromptPay">PromptPay</option>
+                                <option value="Deduct Member">Deduct Member</option>
+                              </select>
+                            </div>
+
+                            <div className="space-y-0.5">
+                              <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                <CreditCard size={12} className="text-slate-500" />
+                                Status
+                              </Label>
+                              <div className="flex items-center gap-2 h-6">
+                                <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
+                                  <input 
+                                    type="radio" 
+                                    name="payment-status"
+                                    checked={paymentMethod === 'unpaid'} 
+                                    onChange={() => setPaymentMethod('unpaid')} 
+                                    className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" 
+                                  />
+                                  <span className="font-medium text-slate-200">Unpaid</span>
+                                </Label>
+                                <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
+                                  <input 
+                                    type="radio" 
+                                    name="payment-status"
+                                    checked={paymentMethod === 'paid'} 
+                                    onChange={() => setPaymentMethod('paid')} 
+                                    className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600" 
+                                  />
+                                  <span className="font-medium text-emerald-400">Paid</span>
+                                </Label>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                         
                         <div className="flex justify-between items-end mb-2">
@@ -1823,6 +2052,7 @@ export default function AdminPage() {
         <AdminCustomerDialog
           open={customerDialogOpen}
           onOpenChange={setCustomerDialogOpen}
+          customer={selectedProfileCustomer}
           onSaved={(c) => {
             setServiceWeight(2);
             setOtherClothingName("");
@@ -1836,11 +2066,16 @@ export default function AdminPage() {
             });
             setCustomerName(c.name);
             setCustomerPhone(c.phone);
-            const fullAddr = c.secondaryAddress ? `${c.defaultAddress} (Room ${c.secondaryAddress})` : c.defaultAddress;
-            setPickupLoc(fullAddr);
+            setSelectedProfileCustomer(c);
+            
+            setPickupLoc(c.defaultAddress);
+            setPickupRoom(c.secondaryAddress || "");
             setPickupCoords(c.defaultCoords);
-            setDeliveryLoc(fullAddr);
+            
+            setDeliveryLoc(c.defaultAddress);
+            setDeliveryRoom(c.secondaryAddress || "");
             setDeliveryCoords(c.defaultCoords);
+            
             setIsDeliveryDirty(false);
             setIsFreeDelivery(false);
             updateClosestStoreAsync(c.defaultCoords);
@@ -1871,6 +2106,12 @@ export default function AdminPage() {
         />
       </motion.div>
     </AnimatePresence>
+    
+      <AdminCustomerProfileModal
+        open={profileOpen}
+        onOpenChange={setProfileOpen}
+        customer={selectedProfileCustomer}
+      />
     </ProtectedRoute>
   );
 }

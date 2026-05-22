@@ -185,9 +185,9 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
                  <Button 
                    size="sm" 
                    className="bg-indigo-600 text-white hover:bg-indigo-700"
-                   onClick={() => jobStore.updateJobDetails(job.id, { status: "delivery", subStatus: undefined })}
+                   onClick={() => jobStore.updateJobDetails(job.id, { status: (job.source === 'pos' || job.type === 'in_store') ? "completed" : "delivery", subStatus: undefined })}
                  >
-                   Processing Complete (Ready for Delivery)
+                   Processing Complete {(job.source === 'pos' || job.type === 'in_store') ? "(Job Finished)" : "(Ready for Delivery)"}
                  </Button>
                )}
             </div>

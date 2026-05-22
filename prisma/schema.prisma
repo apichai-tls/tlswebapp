@@ -54,7 +54,7 @@ model Job {
   dropoffLng          Float
   distance            Float
   fee                 Float
-  status              String    // "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return"
+  status              String    // "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return"
   subStatus           String?   // "wash" | "dry" | "iron" | "ready"
   createdAt           DateTime  @default(now())
   scheduledAt         DateTime
@@ -66,6 +66,7 @@ model Job {
   bagImageUrl         String?
   billImageUrl        String?
   serviceType         String?   // "wash_fold" | "wash_iron_fold"
+  laundryTypes        String?   // comma-separated "W,I,H,D,L,P"
   source              String?   // "app" | "pos"
   totalAmount         Float?
   paymentMethod       String?   // "cash" | "transfer" | "credit" | "card"
