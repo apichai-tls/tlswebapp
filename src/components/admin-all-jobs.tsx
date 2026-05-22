@@ -544,6 +544,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                                 {shopLocations.find(s => s.id === job.branchId)?.name}
                               </span>
                             )}
+                            {job.laundryTypes && job.laundryTypes.length > 0 && (
+                              <span className="text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded tracking-wide">
+                                {job.laundryTypes.join(', ')}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex gap-1 items-start">
@@ -569,6 +574,17 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                             </>
                           );
                         })()}
+                      </div>
+                      <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+                        <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                        <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">P Date:</span>
+                        <span className="font-medium text-slate-600">
+                          {job.scheduledAt
+                            ? isSameDay(new Date(job.scheduledAt), new Date())
+                              ? format(new Date(job.scheduledAt), "HH:mm")
+                              : format(new Date(job.scheduledAt), "dd MMM, HH:mm")
+                            : "-"}
+                        </span>
                       </div>
                       <div className="text-xs text-slate-500 mb-3 flex items-start gap-1">
                         <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
