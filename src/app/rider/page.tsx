@@ -661,7 +661,7 @@ export default function RiderPage() {
       
       const jsonProofUrls = JSON.stringify(finalProofUrls);
       
-      await jobStore.completeJob(jobId, finalProofUrl);
+      await jobStore.completeJob(jobId, jsonProofUrls);
       toast.success("Job marked as completed! 🎉");
       // Return to online status if no other active jobs
       if (activeRider && myJobs.filter(t => !t.isCompleted).length <= 1) {

@@ -634,7 +634,7 @@ export default function AdminPage() {
 
     setIsPickup(isPickupService);
     setIsDelivery(isDeliveryService);
-    setIsWalkIn(job.source === 'pos' || job.type === 'in_store');
+    setIsWalkIn(job.source === 'pos' || (job.type as string) === 'in_store');
 
     setEditingJobId(job.id);
     setDialogOpen(true);
