@@ -76,8 +76,22 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
     }
 
-    // Authenticate Admin/Manager/CSO against DB
-    const response = await loginUser(email, password);
+    // Authenticate Admin/Manager/CSO against DB via API route
+    // NOTE: Server Actions don't work reliably in Capacitor WebView (APK),
+    // so we use a regular API route instead.
+    let response: { success: boolean; user?: any; error?: string } | null = null;
+    try {
+      const apiRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      response = await apiRes.json();
+    } catch {
+      // Fallback to Server Action if fetch fails (e.g., in web browser context)
+      response = await loginUser(email, password);
+    }
+
     if (!response || !response.success || !response.user) {
       throw new Error(response?.error || "Invalid email or password");
     }
