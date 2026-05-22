@@ -439,17 +439,35 @@ export const jobStore = {
     const job = jobs.find(j => j.id === id);
     if (!job) return;
 
+    // proofImageUrl may already be a JSON array string (e.g. '["url1","url2"]')
+    // or a single URL string. Normalise to a JSON array string.
+    const toJsonArray = (val?: string): string | undefined => {
+      if (!val) return undefined;
+      try {
+        const parsed = JSON.parse(val);
+        // Already a valid JSON array → store as-is
+        if (Array.isArray(parsed)) return val;
+        // Was a JSON primitive → wrap in array
+        return JSON.stringify([parsed]);
+      } catch {
+        // Plain URL string → wrap in array
+        return JSON.stringify([val]);
+      }
+    };
+
+    const proofJson = toJsonArray(proofImageUrl);
+
     // Add leg validation - legs might not exist for old jobs
     if (["pending", "pickup", "billing"].includes(job.status)) {
-      await api.updateJob(id, { 
-        status: "billing", 
-        pickupProofImageUrl: proofImageUrl ? JSON.stringify([proofImageUrl]) : undefined 
+      await api.updateJob(id, {
+        status: "billing",
+        pickupProofImageUrl: proofJson,
       });
     } else {
-      await api.updateJob(id, { 
-        status: "completed", 
-        completedAt: new Date(), 
-        deliveryProofImageUrl: proofImageUrl ? JSON.stringify([proofImageUrl]) : undefined 
+      await api.updateJob(id, {
+        status: "completed",
+        completedAt: new Date(),
+        deliveryProofImageUrl: proofJson,
       });
     }
     emitJobChange();

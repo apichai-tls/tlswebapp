@@ -583,28 +583,39 @@ export default function AdminPage() {
     fetch(`/api/jobs/${job.id}/details`)
       .then(r => r.json())
       .then(data => {
-        const parseUrls = (imgUrl: any) => {
+        const parseUrls = (imgUrl: any): string[] => {
           if (!imgUrl) return [];
-          try {
-            const parsed = JSON.parse(imgUrl);
-            const rawUrls = Array.isArray(parsed) ? parsed : [parsed];
-            return rawUrls.map((url: string) => {
-              if (typeof url === 'string' && !url.startsWith('http') && !url.startsWith('/')) {
-                const cleanPath = url.replace(/^["'\\]+|["'\\]+$/g, '');
-                return `https://storage.googleapis.com/tls-images-test/${cleanPath}`;
+          // Helper to resolve a single value to a full URL
+          const resolveUrl = (url: string): string => {
+            if (typeof url !== 'string') return '';
+            const clean = url.trim().replace(/^[\"'\\]+|[\"'\\]+$/g, '');
+            if (!clean || clean === 'null' || clean === 'undefined') return '';
+            if (clean.startsWith('http') || clean.startsWith('/')) return clean;
+            return `https://storage.googleapis.com/tls-images-test/${clean}`;
+          };
+
+          const flattenAndResolve = (val: any): string[] => {
+            if (!val) return [];
+            if (typeof val === 'string') {
+              // Try parsing as JSON (handles nested JSON strings)
+              try {
+                const inner = JSON.parse(val);
+                return flattenAndResolve(inner);
+              } catch {
+                // Plain URL string
+                const resolved = resolveUrl(val);
+                return resolved ? [resolved] : [];
               }
-              return url;
-            });
-          } catch {
-            const url = imgUrl;
-            if (typeof url === 'string' && !url.startsWith('http') && !url.startsWith('/')) {
-              const cleanPath = url.replace(/^["'\\]+|["'\\]+$/g, '');
-              return [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
-            } else {
-              return [url];
             }
-          }
+            if (Array.isArray(val)) {
+              return val.flatMap((item: any) => flattenAndResolve(item));
+            }
+            return [];
+          };
+
+          return flattenAndResolve(imgUrl).filter(Boolean);
         };
+
         setBagImageUrls(parseUrls(data.bagImageUrl));
         setBillImageUrls(parseUrls(data.billImageUrl));
         setPickupProofImageUrls(parseUrls(data.pickupProofImageUrl));
