@@ -71,7 +71,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
   const [viewJobId, setViewJobId] = useState<string | null>(null);
 
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [currentView, setCurrentView] = useState<any>('week');
+  const [currentView, setCurrentView] = useState<any>('day');
 
   useEffect(() => {
     let start: Date;
@@ -400,7 +400,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
             onNavigate={(date: Date) => setCurrentDate(date)}
             view={currentView}
             onView={(view: any) => setCurrentView(view)}
-            views={['month', 'week', 'day', 'agenda']}
+            views={['day', 'week', 'month', 'agenda']}
             onEventDrop={onEventDrop}
             onEventResize={onEventResize}
             onSelectEvent={onSelectEvent}

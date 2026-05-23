@@ -356,6 +356,10 @@ export default function RiderPage() {
   const [showOnlinePopup, setShowOnlinePopup] = useState(false);
   const [gpsActive, setGpsActive] = useState(false);
   const { user, logout } = useAuth();
+  // ✅ FIX: Track the status the rider intentionally set in this session.
+  // refreshDb() can overwrite the in-memory status from DB (which may be stale).
+  // This ref lets us restore the correct status after each refresh.
+  const intendedStatusRef = useRef<string | null>(null);
   
   const [selectedJob, setSelectedJob] = useState<RiderTask | null>(null);
   const [jobToComplete, setJobToComplete] = useState<RiderTask | null>(null);
@@ -417,7 +421,15 @@ export default function RiderPage() {
         setShowOnlinePopup(true);
       }
     }
-  }, [activeRider]);
+  }, [activeRider?.id]); // ✅ only fire on rider ID change, not on every status update
+
+  // ✅ FIX: After every refreshDb, if DB returned a stale status, restore the intended status.
+  useEffect(() => {
+    if (!activeRider || !intendedStatusRef.current) return;
+    if (activeRider.status !== intendedStatusRef.current) {
+      riderStore.updateRider(activeRider.id, { status: intendedStatusRef.current as any });
+    }
+  }, [activeRider?.status]);
 
   // Periodic data refresh — 5s so Rider sees newly assigned jobs quickly
   useEffect(() => {
@@ -429,6 +441,7 @@ export default function RiderPage() {
 
   function handleGoOnline() {
     if (activeRider) {
+      intendedStatusRef.current = "online"; // ✅ lock intended status
       riderStore.updateRider(activeRider.id, { status: "online" });
       sessionStorage.setItem("riderWelcomed", "true");
       setShowOnlinePopup(false);
@@ -437,22 +450,27 @@ export default function RiderPage() {
   }
 
   // GPS Tracking Logic
+  // ✅ FIX: Depend only on activeRider?.id — NOT on activeRider?.status.
+  // Previously, every time refreshDb() changed the status in memory, this effect restarted,
+  // clearing watchPosition and resetting firstFix=true, causing GPS to jump to IP location.
+  const activeRiderIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!activeRider || activeRider.status === 'offline') {
+    if (!activeRider?.id) {
       setGpsActive(false);
       return;
     }
+    activeRiderIdRef.current = activeRider.id;
 
-    // Use a ref-like variable to track the last pushed location
     let lastPushedLat: number | null = null;
     let lastPushedLng: number | null = null;
     let lastPushTime = 0;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
     let firstFix = true;
+    let watcherId: number | null = null;
 
-    const MIN_DISTANCE_METERS = 20;   // Only push if moved > 20m
-    const THROTTLE_MS = 15000;        // Push at most every 15s
-    const MAX_ACCURACY_M = 5000;      // Accept up to 5000m accuracy (APK-friendly)
+    const MIN_DISTANCE_METERS = 20;
+    const THROTTLE_MS = 15000;
+    const MAX_ACCURACY_M = 5000;
 
     function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number) {
       const R = 6371000;
@@ -469,67 +487,65 @@ export default function RiderPage() {
       lastPushedLat = lat;
       lastPushedLng = lng;
       lastPushTime = Date.now();
-
-      // 1. Update in-memory store immediately (UI responds instantly)
-      riderStore.updateRider(activeRider.id, {
-        currentLocation: { lat, lng }
-      });
-
-      // 2. Persist to DB via lightweight GPS-only endpoint (fire-and-forget)
+      const riderId = activeRiderIdRef.current;
+      if (!riderId) return;
+      riderStore.updateRider(riderId, { currentLocation: { lat, lng } });
       fetch('/api/rider-location', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ riderId: activeRider.id, lat, lng }),
+        body: JSON.stringify({ riderId, lat, lng }),
       }).catch(err => console.error('[GPS] Failed to persist location:', err));
     };
 
-    const watcher = navigator.geolocation.watchPosition(
-      (pos) => {
-        setGpsActive(true);
-
-        const { latitude, longitude, accuracy } = pos.coords;
-
-        // Filter extremely inaccurate fixes (network-only location on some devices)
-        if (accuracy > MAX_ACCURACY_M) return;
-
-        const now = Date.now();
-        const timeSinceLast = now - lastPushTime;
-
-        // Check if rider has actually moved enough to warrant a push
-        const hasMoved =
-          lastPushedLat === null ||
-          haversineDistance(lastPushedLat, lastPushedLng!, latitude, longitude) >= MIN_DISTANCE_METERS;
-
-        // Push immediately on first good fix, then throttle
-        if (firstFix || (hasMoved && timeSinceLast >= THROTTLE_MS)) {
-          firstFix = false;
-          if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
-          pushLocation(latitude, longitude);
-        } else if (hasMoved && !throttleTimer) {
-          // Moved but still in throttle window — schedule push at end of window
-          const remaining = THROTTLE_MS - timeSinceLast;
-          throttleTimer = setTimeout(() => {
-            throttleTimer = null;
+    const startWatch = () => {
+      if (watcherId !== null) navigator.geolocation.clearWatch(watcherId);
+      watcherId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setGpsActive(true);
+          const { latitude, longitude, accuracy } = pos.coords;
+          if (accuracy > MAX_ACCURACY_M) return;
+          const now = Date.now();
+          const timeSinceLast = now - lastPushTime;
+          const hasMoved =
+            lastPushedLat === null ||
+            haversineDistance(lastPushedLat, lastPushedLng!, latitude, longitude) >= MIN_DISTANCE_METERS;
+          if (firstFix || (hasMoved && timeSinceLast >= THROTTLE_MS)) {
+            firstFix = false;
+            if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
             pushLocation(latitude, longitude);
-          }, remaining);
-        }
-      },
-      (err) => {
-        console.error('GPS Error:', err.code, err.message);
-        setGpsActive(false);
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 0,       // Always request a fresh fix
-        timeout: 30000,      // Give hardware 30s to get a fix
+          } else if (hasMoved && !throttleTimer) {
+            const remaining = THROTTLE_MS - timeSinceLast;
+            throttleTimer = setTimeout(() => {
+              throttleTimer = null;
+              pushLocation(latitude, longitude);
+            }, remaining);
+          }
+        },
+        (err) => {
+          console.error('[GPS] Error:', err.code, err.message);
+          setGpsActive(false);
+        },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
+      );
+    };
+
+    startWatch();
+
+    // ✅ FIX: Resume GPS when app comes back to foreground (Android WebView / PWA)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        firstFix = true; // get a fresh fix immediately
+        startWatch();
       }
-    );
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      navigator.geolocation.clearWatch(watcher);
+      if (watcherId !== null) navigator.geolocation.clearWatch(watcherId);
       if (throttleTimer) clearTimeout(throttleTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeRider?.id, activeRider?.status]);
+  }, [activeRider?.id]); // ✅ Only restart GPS when rider ID changes, NOT on status changes
 
   const allTasks: RiderTask[] = [];
   if (activeRider) {
@@ -785,10 +801,12 @@ export default function RiderPage() {
       return;
     }
     const newStatus = activeRider.status === "online" ? "offline" : "online";
+    intendedStatusRef.current = newStatus; // ✅ lock intended status so refreshDb can't overwrite it
     riderStore.updateRider(activeRider.id, { status: newStatus });
     if (newStatus === "online") {
       toast.success("You are now online!");
     } else {
+      intendedStatusRef.current = null; // ✅ allow DB to sync when going offline intentionally
       toast("You are now offline.", { icon: "💤" });
     }
   }

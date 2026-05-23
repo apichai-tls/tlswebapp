@@ -2062,7 +2062,10 @@ export default function AdminPage() {
         
         <AdminCustomerDialog
           open={customerDialogOpen}
-          onOpenChange={setCustomerDialogOpen}
+          onOpenChange={(open) => {
+            setCustomerDialogOpen(open);
+            if (!open) setSelectedProfileCustomer(null);
+          }}
           customer={selectedProfileCustomer}
           onSaved={(c) => {
             setServiceWeight(2);

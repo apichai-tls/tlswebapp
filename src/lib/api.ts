@@ -79,8 +79,12 @@ export const ensureDbLoaded = async () => {
   }
 };
 
+let isRefreshing = false; // Guard against concurrent refreshes
+
 export const refreshDb = async () => {
   if (typeof window === 'undefined') return;
+  if (isRefreshing) return; // Skip if already fetching — prevents race conditions
+  isRefreshing = true;
   try {
     const res = await fetch('/api/db');
     if (res.ok) {
@@ -109,11 +113,22 @@ export const refreshDb = async () => {
         });
       }
 
+      // ✅ FIX: Sanity check — prevent server response with fewer jobs from wiping in-memory jobs.
+      // This can happen if /api/db is slow or returns a partial result (e.g. network hiccup).
+      // If the new data has significantly fewer jobs than what we have in memory, merge instead of overwrite.
+      if (memoryDb && parsed.jobs && parsed.jobs.length < memoryDb.jobs.length * 0.8) {
+        const serverJobIds = new Set(parsed.jobs.map((j: any) => j.id));
+        const extraMemJobs = memoryDb.jobs.filter(j => !serverJobIds.has(j.id));
+        parsed.jobs = [...parsed.jobs, ...extraMemJobs];
+      }
+
       memoryDb = parseMockDb(parsed);
       import('./store').then(m => m.emitAllChanges());
     }
   } catch (error) {
     console.error('Failed to refresh DB', error);
+  } finally {
+    isRefreshing = false;
   }
 };
 

@@ -318,7 +318,10 @@ export function AdminCRM() {
 
       <AdminCustomerDialog 
         open={dialogOpen} 
-        onOpenChange={setDialogOpen} 
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setEditingCustomer(null);
+        }} 
         customer={editingCustomer} 
       />
 
