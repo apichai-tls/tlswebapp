@@ -22,7 +22,6 @@ export async function addCustomerAction(data: any) {
 
   const c = await prisma.customer.create({
     data: {
-      id: data.id,
       name: data.name,
       phone: data.phone,
       defaultAddress: data.defaultAddress,

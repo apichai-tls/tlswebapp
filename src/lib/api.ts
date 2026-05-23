@@ -205,12 +205,13 @@ export const api = {
   async addCustomer(customer: Omit<Customer, 'id'>): Promise<Customer> {
     
     const db = initDb();
-    const newCustomer = {
+    // Let PostgreSQL generate the UUID; do NOT pass a pre-generated id
+    const savedCustomer = await dbActions.addCustomerAction(customer);
+    const newCustomer: Customer = {
       ...customer,
-      id: `CUST-${String(db.customers.length + 1).padStart(3, "0")}`,
+      id: savedCustomer.id,
     };
     db.customers = [newCustomer, ...db.customers];
-    await dbActions.addCustomerAction(newCustomer);
     return newCustomer;
   },
 
