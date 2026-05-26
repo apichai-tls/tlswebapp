@@ -99,14 +99,9 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
 
   // Filter Logic
   const filteredJobs = jobs.filter((job) => {
-    // 0. Manager Role Filter & Area Filter
+    // 0. Manager Role Filter
     if (user?.role === 'manager') {
       if (job.status === 'tba') return false;
-      if (job.status === 'pending') return false;
-      if (user.area && user.area !== 'ALL') {
-        const branch = shopLocations.find(s => s.id === job.branchId);
-        if (branch?.area !== user.area) return false;
-      }
     }
 
     // 1. Search Query (ID, Customer Name, or Phone)

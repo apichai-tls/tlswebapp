@@ -79,16 +79,6 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   // Only display TODAY'S jobs for the dashboard
   let todaysJobs = jobs.filter(j => isToday(j.createdAt));
   
-  if (user?.role === 'manager') {
-    todaysJobs = todaysJobs.filter(j => {
-      if (j.status === 'pending') return false;
-      if (user.area && user.area !== 'ALL') {
-        const branch = shopLocations.find(s => s.id === j.branchId);
-        if (branch?.area !== user.area) return false;
-      }
-      return true;
-    });
-  }
 
   const pendingCount = todaysJobs.filter((j) => j.status === "pending").length;
   const activeCount = todaysJobs.filter((j) => ["pickup", "billing", "delivery"].includes(j.status)).length;
@@ -99,12 +89,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   // Financial Summary
   const filteredCompletedJobs = jobs.filter(j => {
     if (j.status !== 'completed') return false;
-    
-    // Area Filter
-    if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
-      const branch = shopLocations.find(s => s.id === j.branchId);
-      if (branch?.area !== user.area) return false;
-    }
+
     
     const date = new Date(j.completedAt || j.createdAt);
     

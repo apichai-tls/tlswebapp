@@ -160,7 +160,16 @@ export function AdminCustomerDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog 
+      open={open} 
+      onOpenChange={(newOpen, eventDetails) => {
+        if (!newOpen && eventDetails?.reason === 'outside-press') {
+          return;
+        }
+        onOpenChange(newOpen);
+      }} 
+      disablePointerDismissal={true}
+    >
       <DialogContent className="sm:max-w-2xl p-6 bg-white overflow-y-auto max-h-[90vh] z-[60]">
         <DialogHeader className="mb-4">
           <DialogTitle className="flex items-center gap-2 text-xl">

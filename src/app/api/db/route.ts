@@ -134,15 +134,12 @@ export async function GET() {
     });
   } catch (error) {
     console.error('Failed to read from Prisma:', error);
-    return NextResponse.json({
-      customers: [],
-      jobs: [],
-      riders: [],
-      services: [],
-      priceLists: [],
-      shopLocations: [],
-      pois: [],
-      settings: {}
-    });
+    return NextResponse.json(
+      { 
+        error: 'Database connection failed', 
+        details: error instanceof Error ? error.message : String(error) 
+      }, 
+      { status: 500 }
+    );
   }
 }

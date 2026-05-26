@@ -209,9 +209,23 @@ export default function AdminPage() {
     if (firstTab) setActiveTab(firstTab);
   }, [user]);
 
-  // Periodic data refresh based on active tab
+  // User Activity Tracking Ref for Smart Polling (Idle Detection)
+  const lastActiveTime = useRef(Date.now());
+
+  // Periodic data refresh based on active tab + Smart Polling (Visibility & Idle Detection)
   useEffect(() => {
-    let intervalTime: number | null = 5000; // Default 5 seconds (jobs, dispatch, pos, etc.)
+    // 1. Listen for user activity to detect idle state
+    const handleUserActivity = () => {
+      lastActiveTime.current = Date.now();
+    };
+
+    window.addEventListener("mousemove", handleUserActivity, { passive: true });
+    window.addEventListener("keydown", handleUserActivity, { passive: true });
+    window.addEventListener("mousedown", handleUserActivity, { passive: true });
+    window.addEventListener("scroll", handleUserActivity, { passive: true });
+    window.addEventListener("touchstart", handleUserActivity, { passive: true });
+
+    let intervalTime: number | null = 3000; // Smart Polling active rate: 3 seconds (up from 5s)
 
     if (activeTab === "map") {
       intervalTime = 15000; // Live Map: 15 seconds (GPS-heavy, keep slower)
@@ -220,12 +234,41 @@ export default function AdminPage() {
       import("@/lib/api").then(m => m.refreshDb()); // Refresh once when opened
     }
 
+    let interval: ReturnType<typeof setInterval> | null = null;
+    let tickCount = 0;
+
     if (intervalTime !== null) {
-      const interval = setInterval(() => {
-        import("@/lib/api").then(m => m.refreshDb());
+      interval = setInterval(() => {
+        // Paused Mode: Skip fetching if the browser tab is hidden/minimized
+        if (document.visibilityState === "hidden") {
+          return;
+        }
+
+        const timeSinceLastActive = Date.now() - lastActiveTime.current;
+        const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+        tickCount++;
+
+        if (timeSinceLastActive > IDLE_TIMEOUT_MS) {
+          // Monitor Mode (Idle): Slow down polling to every 4th tick (e.g. 12s for 3s interval, 60s for 15s interval)
+          if (tickCount % 4 === 0) {
+            import("@/lib/api").then(m => m.refreshDb());
+          }
+        } else {
+          // Active Mode: Poll at regular interval rate
+          import("@/lib/api").then(m => m.refreshDb());
+        }
       }, intervalTime);
-      return () => clearInterval(interval);
     }
+
+    return () => {
+      window.removeEventListener("mousemove", handleUserActivity);
+      window.removeEventListener("keydown", handleUserActivity);
+      window.removeEventListener("mousedown", handleUserActivity);
+      window.removeEventListener("scroll", handleUserActivity);
+      window.removeEventListener("touchstart", handleUserActivity);
+      if (interval) clearInterval(interval);
+    };
   }, [activeTab]);
 
   const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator") => {
@@ -551,7 +594,14 @@ export default function AdminPage() {
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
-    setPaymentChannel(job.paymentChannel || "");
+    let fallbackChannel = job.paymentChannel || "";
+    if (!fallbackChannel && job.paymentMethod) {
+      const pm = job.paymentMethod.toLowerCase();
+      if (pm === "transfer") fallbackChannel = "Transfer";
+      else if (pm === "cash") fallbackChannel = "Cash / COD";
+      else if (pm === "credit" || pm === "card") fallbackChannel = "Credit Card";
+    }
+    setPaymentChannel(fallbackChannel);
     setServiceType(job.serviceType || "wash_fold");
     setEditingFeeLock(job.fee);
     
@@ -647,6 +697,9 @@ export default function AdminPage() {
     setIsDelivery(isDeliveryService);
     setIsWalkIn(job.source === 'pos' || (job.type as string) === 'in_store');
 
+    const branchIndex = shopLocations.findIndex(s => s.id === job.branchId);
+    setSelectedStoreIndex(branchIndex >= 0 ? branchIndex : 0);
+
     setEditingJobId(job.id);
     setDialogOpen(true);
   };
@@ -689,13 +742,22 @@ export default function AdminPage() {
     const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
 
     let finalAdminLogs = [...adminLogs];
+    if (adminNoteInput.trim()) {
+      finalAdminLogs.push({
+        id: Math.random().toString(36).substring(7),
+        userId: user?.id || "unknown",
+        userName: (user as any)?.name || user?.email || "Admin",
+        text: adminNoteInput.trim(),
+        timestamp: new Date().toISOString()
+      });
+    }
 
     const newJobData = {
-      type: isWalkIn ? "in_store" : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
+      type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
       subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
       source: isWalkIn ? "pos" : "app",
       // Auto-advance to Delivery or Completed when Process is set to Ready
-      ...(editingSubStatus === 'ready' && { status: isWalkIn ? 'completed' : 'delivery' }),
+      ...(editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
       laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
@@ -986,7 +1048,16 @@ export default function AdminPage() {
               </Button>
 
               {(user?.role === 'admin' || hasAccess('dashboard') || hasAccess('jobs') || hasAccess('dispatch')) && (
-                <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <Dialog 
+                  open={dialogOpen} 
+                  onOpenChange={(open, eventDetails) => {
+                    if (!open && eventDetails?.reason === 'outside-press') {
+                      return;
+                    }
+                    setDialogOpen(open);
+                  }} 
+                  disablePointerDismissal={true}
+                >
                   <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
                     <Button 
                       onClick={handleCreateNewJob}
@@ -1367,7 +1438,7 @@ export default function AdminPage() {
                                 checked={isDelivery}
                                 onChange={(e) => {
                                   setIsDelivery(e.target.checked);
-                                  if (e.target.checked) setIsWalkIn(false);
+                                  if (e.target.checked && isPickup) setIsWalkIn(false);
                                   setEditingFeeLock(null);
                                 }}
                                 className="rounded text-blue-600 w-3 h-3 border-slate-300"
@@ -1382,7 +1453,6 @@ export default function AdminPage() {
                                   setIsWalkIn(e.target.checked);
                                   if (e.target.checked) {
                                     setIsPickup(false);
-                                    setIsDelivery(false);
                                   }
                                   setEditingFeeLock(null);
                                 }}
@@ -1937,6 +2007,7 @@ export default function AdminPage() {
                                 <option value="Gateway">Gateway</option>
                                 <option value="PromptPay">PromptPay</option>
                                 <option value="Deduct Member">Deduct Member</option>
+                                <option value="HQ/Credit">HQ/Credit</option>
                               </select>
                             </div>
 

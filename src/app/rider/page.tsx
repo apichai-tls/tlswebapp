@@ -431,12 +431,48 @@ export default function RiderPage() {
     }
   }, [activeRider?.status]);
 
-  // Periodic data refresh — 5s so Rider sees newly assigned jobs quickly
+  // User Activity Tracking Ref for Smart Polling (Mobile Touch Detection)
+  const lastActiveTime = useRef(Date.now());
+
+  // Periodic data refresh — 5s so Rider sees newly assigned jobs quickly + Smart Polling (Visibility & Touch Idle Detection)
   useEffect(() => {
+    const handleUserActivity = () => {
+      lastActiveTime.current = Date.now();
+    };
+
+    window.addEventListener("touchstart", handleUserActivity, { passive: true });
+    window.addEventListener("scroll", handleUserActivity, { passive: true });
+    window.addEventListener("click", handleUserActivity, { passive: true });
+
+    let tickCount = 0;
     const interval = setInterval(() => {
-      import("@/lib/api").then(m => m.refreshDb());
+      // Paused Mode: Skip fetching entirely if screen is locked or app is in background
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      const timeSinceLastActive = Date.now() - lastActiveTime.current;
+      const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+      tickCount++;
+
+      if (timeSinceLastActive > IDLE_TIMEOUT_MS) {
+        // Idle Monitor Mode: Slow down polling to every 4th tick (e.g. 20s for 5s interval)
+        if (tickCount % 4 === 0) {
+          import("@/lib/api").then(m => m.refreshDb());
+        }
+      } else {
+        // Active Mode: 5 seconds polling
+        import("@/lib/api").then(m => m.refreshDb());
+      }
     }, 5000); // 5 seconds
-    return () => clearInterval(interval);
+
+    return () => {
+      window.removeEventListener("touchstart", handleUserActivity);
+      window.removeEventListener("scroll", handleUserActivity);
+      window.removeEventListener("click", handleUserActivity);
+      clearInterval(interval);
+    };
   }, []);
 
   function handleGoOnline() {
@@ -551,7 +587,7 @@ export default function RiderPage() {
   if (activeRider) {
     jobs.forEach(j => {
       if (j.pickupRiderId === activeRider.id || j.riderId === activeRider.id) {
-        const isPickupCompleted = ["picked_up", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
+        const isPickupCompleted = ["picked_up", "billing", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
         allTasks.push({
           taskId: `${j.id}-pickup`,
           job: j,
