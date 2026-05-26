@@ -432,7 +432,7 @@ export default function AdminPage() {
       }
     }
 
-    setLaundryPrice(Math.round(pricePerKg * newWeight));
+    setLaundryPrice(Math.ceil(pricePerKg * newWeight));
   };
   const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
@@ -589,8 +589,8 @@ export default function AdminPage() {
     
     const totalMinusFee = job.totalAmount ? job.totalAmount - (job.fee || 0) : 0;
     let basePrice = totalMinusFee;
-    if (isExp100) basePrice = Math.round(totalMinusFee / 2);
-    else if (isExp50) basePrice = Math.round(totalMinusFee / 1.5);
+    if (isExp100) basePrice = Math.ceil(totalMinusFee / 2);
+    else if (isExp50) basePrice = Math.ceil(totalMinusFee / 1.5);
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
@@ -777,7 +777,7 @@ export default function AdminPage() {
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
       fee,
-      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.round(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
+      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
       serviceType,
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
@@ -1960,13 +1960,13 @@ export default function AdminPage() {
                                 const defaultPl = priceLists.find(pl => pl.isDefault);
                                 if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
                               }
-                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${serviceWeight} = ${Number((pricePerKg * serviceWeight).toFixed(2))}฿)`;
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${serviceWeight} = ${Math.ceil(pricePerKg * serviceWeight)}฿)`;
                             })()}
                           </span>
                           {serviceSpeed !== "standard" && (
                             <div className="flex justify-between items-center mt-2">
                               <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                              <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.round(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
+                              <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
                             </div>
                           )}
 
@@ -2058,7 +2058,7 @@ export default function AdminPage() {
                         
                         <div className="flex justify-between items-end border-t border-slate-700 pt-2">
                           <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                          <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.round(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
+                          <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                         </div>
 
                         {(isPickup || isDelivery) && (
