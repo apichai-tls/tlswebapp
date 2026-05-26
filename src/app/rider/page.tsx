@@ -595,8 +595,11 @@ export default function RiderPage() {
           isCompleted: isPickupCompleted,
           isActive: ["pending", "accepted", "pickup"].includes(j.status),
           scheduledAt: j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
-          // For history: use pickupScheduledAt as the date reference (the date the rider was assigned)
-          completedAt: isPickupCompleted ? (j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date())) : undefined,
+          // For history: use actual pickupOutbound completion time, fallback to scheduled times
+          completedAt: isPickupCompleted ? (
+            j.legs?.pickupOutbound?.completedAt ? new Date(j.legs.pickupOutbound.completedAt) :
+            (j.pickupScheduledAt ? new Date(j.pickupScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()))
+          ) : undefined,
           targetLocation: j.pickupLocation,
           targetCoords: j.pickupCoords,
           distance: j.pickupDistance || j.distance || 0,
@@ -612,8 +615,12 @@ export default function RiderPage() {
           isCompleted: isTerminal,
           isActive: ["washed", "delivery"].includes(j.status),
           scheduledAt: j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()),
-          // For history: use deliveryScheduledAt as the date reference (the date the rider was assigned)
-          completedAt: isTerminal ? (j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date())) : undefined,
+          // For history: use actual deliveryOutbound completion time, fallback to job.completedAt, then scheduled times
+          completedAt: isTerminal ? (
+            j.legs?.deliveryOutbound?.completedAt ? new Date(j.legs.deliveryOutbound.completedAt) :
+            (j.completedAt ? new Date(j.completedAt) :
+            (j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date())))
+          ) : undefined,
           targetLocation: j.dropoffLocation,
           targetCoords: j.dropoffCoords,
           distance: j.deliveryDistance || j.distance || 0,

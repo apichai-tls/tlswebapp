@@ -459,15 +459,29 @@ export const jobStore = {
 
     // Add leg validation - legs might not exist for old jobs
     if (["pending", "pickup", "billing"].includes(job.status)) {
+      const updatedLegs = job.legs ? {
+        ...job.legs,
+        pickupOutbound: { ...job.legs.pickupOutbound, status: "completed" as const, completedAt: new Date() },
+        pickupInbound: { ...job.legs.pickupInbound, status: "completed" as const, completedAt: new Date() }
+      } : undefined;
+
       await api.updateJob(id, {
         status: "billing",
         pickupProofImageUrl: proofJson,
+        legs: updatedLegs,
       });
     } else {
+      const updatedLegs = job.legs ? {
+        ...job.legs,
+        deliveryOutbound: { ...job.legs.deliveryOutbound, status: "completed" as const, completedAt: new Date() },
+        deliveryInbound: { ...job.legs.deliveryInbound, status: "completed" as const, completedAt: new Date() }
+      } : undefined;
+
       await api.updateJob(id, {
         status: "completed",
         completedAt: new Date(),
         deliveryProofImageUrl: proofJson,
+        legs: updatedLegs,
       });
     }
     emitJobChange();
