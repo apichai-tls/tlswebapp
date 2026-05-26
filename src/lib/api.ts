@@ -113,6 +113,37 @@ export const refreshDb = async () => {
         });
       }
 
+      // ✅ FIX: Prevent background polling from overwriting recently completed local job status (race condition protection)
+      // When a rider completes a job (pickup -> billing, or delivery -> completed), the client updates locally and performs
+      // GCS uploads + DB Server Actions. In the meantime, concurrent polling fetch('/api/db') could return stale DB states,
+      // reverting the job in UI. We preserve the advanced local status and proof URLs until the server reflects the changes.
+      if (memoryDb && parsed.jobs) {
+        parsed.jobs = parsed.jobs.map((serverJob: any) => {
+          const memJob = memoryDb!.jobs.find(j => j.id === serverJob.id);
+          if (memJob) {
+            const isMemPickupCompleted = ["billing", "active", "ready_to_wash", "washed", "delivery", "completed"].includes(memJob.status);
+            const isServerPickupCompleted = ["billing", "active", "ready_to_wash", "washed", "delivery", "completed"].includes(serverJob.status);
+            
+            const isMemDeliveryCompleted = memJob.status === "completed";
+            const isServerDeliveryCompleted = serverJob.status === "completed";
+
+            const shouldPreservePickup = isMemPickupCompleted && !isServerPickupCompleted;
+            const shouldPreserveDelivery = isMemDeliveryCompleted && !isServerDeliveryCompleted;
+
+            if (shouldPreservePickup || shouldPreserveDelivery) {
+              return {
+                ...serverJob,
+                status: memJob.status,
+                completedAt: memJob.completedAt || serverJob.completedAt,
+                pickupProofImageUrl: memJob.pickupProofImageUrl || serverJob.pickupProofImageUrl,
+                deliveryProofImageUrl: memJob.deliveryProofImageUrl || serverJob.deliveryProofImageUrl,
+              };
+            }
+          }
+          return serverJob;
+        });
+      }
+
       // ✅ FIX: Sanity check — prevent server response with fewer jobs from wiping in-memory jobs.
       // This can happen if /api/db is slow or returns a partial result (e.g. network hiccup).
       // If the new data has significantly fewer jobs than what we have in memory, merge instead of overwrite.

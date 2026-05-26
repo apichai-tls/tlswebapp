@@ -4,6 +4,57 @@ import { useState, useRef } from "react";
 import { UploadCloud, CheckCircle2, Loader2, X, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      return resolve(file);
+    }
+    const img = new Image();
+    img.src = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      let width = img.width;
+      let height = img.height;
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        return resolve(file);
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            return resolve(file);
+          }
+          const compressedFile = new File([blob], file.name, {
+            type: "image/jpeg",
+            lastModified: Date.now(),
+          });
+          resolve(compressedFile);
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => {
+      resolve(file);
+    };
+  });
+}
+
 interface ImageUploaderProps {
   entityType: "job" | "rider" | "system";
   entityId: string;
@@ -49,6 +100,9 @@ export function ImageUploader({
     setUploadProgress(10);
 
     try {
+      // Compress the image before uploading (evidence grade: 1600px width/height max, 85% quality)
+      const compressedFile = await compressImage(file, 1600, 1600, 0.85);
+
       // 1. Get Signed URL from our Next.js backend
       const response = await fetch("/api/upload-url", {
         method: "POST",
@@ -57,7 +111,7 @@ export function ImageUploader({
           entityType,
           entityId,
           subType,
-          contentType: file.type,
+          contentType: compressedFile.type,
         }),
       });
 
@@ -72,9 +126,9 @@ export function ImageUploader({
       const uploadResponse = await fetch(uploadUrl, {
         method: "PUT",
         headers: {
-          "Content-Type": file.type,
+          "Content-Type": compressedFile.type,
         },
-        body: file,
+        body: compressedFile,
       });
 
       if (!uploadResponse.ok) {
