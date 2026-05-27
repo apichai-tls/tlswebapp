@@ -277,20 +277,6 @@ export function AdminCustomerDialog({
             <Input placeholder="13-digit Tax ID" value={taxId} onChange={e => setTaxId(e.target.value)} className="h-8 text-xs border-slate-200" />
           </div>
 
-          <div className="space-y-1">
-            <Label className="text-xs font-semibold text-indigo-600 flex items-center gap-1"><Crown size={12}/> Preferred Language</Label>
-            <div className="flex gap-2">
-              <select 
-                className="w-full h-8 px-2 rounded-md border border-slate-200 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" 
-                value={language} 
-                onChange={e => setLanguage(e.target.value)}
-              >
-                <option value="th">🇹🇭 Thai</option>
-                <option value="en">🇬🇧 English</option>
-                <option value="zh">🇨🇳 Chinese</option>
-              </select>
-            </div>
-          </div>
           
           <div className="col-span-1 md:col-span-3 mt-2 flex flex-col gap-2">
             <label className="flex items-center gap-3 p-3 bg-blue-50/80 rounded-lg border border-blue-200 cursor-pointer hover:bg-blue-50 transition-colors">

@@ -75,7 +75,7 @@ export function AdminCustomerProfileModal({
             </div>
           </div>
 
-          {(customer.email || customer.lineId || customer.remark || customer.secondaryAddress || customer.companyName || customer.taxId || customer.dob || (customer.language && customer.language !== 'th')) && (
+          {(customer.email || customer.lineId || customer.remark || customer.secondaryAddress || customer.companyName || customer.taxId || customer.dob) && (
             <div>
                <h3 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
                  <FileText size={16} className="text-indigo-500" />
@@ -84,7 +84,6 @@ export function AdminCustomerProfileModal({
                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-sm space-y-2">
                   {customer.email && <div><span className="text-slate-500 w-24 inline-block">Email:</span> <span className="font-medium text-slate-900">{customer.email}</span></div>}
                   {customer.lineId && <div><span className="text-slate-500 w-24 inline-block">LINE ID:</span> <span className="font-medium text-slate-900">{customer.lineId}</span></div>}
-                  {customer.language && customer.language !== 'th' && <div><span className="text-slate-500 w-24 inline-block">Language:</span> <span className="font-medium text-slate-900">{customer.language === 'en' ? '🇬🇧 English' : customer.language === 'zh' ? '🇨🇳 Chinese' : '🇹🇭 Thai'}</span></div>}
                   {customer.dob && <div><span className="text-slate-500 w-24 inline-block">Birthday:</span> <span className="font-medium text-slate-900">{customer.dob}</span></div>}
                   {customer.secondaryAddress && <div><span className="text-slate-500 w-24 inline-block align-top">2nd Address:</span> <span className="font-medium text-slate-900 inline-block w-[calc(100%-6rem)]">{customer.secondaryAddress}</span></div>}
                   {customer.remark && <div><span className="text-slate-500 w-24 inline-block align-top">Remarks:</span> <span className="font-medium text-rose-600 inline-block w-[calc(100%-6rem)]">{customer.remark}</span></div>}

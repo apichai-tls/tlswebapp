@@ -206,7 +206,6 @@ export interface RiderTask {
 function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false, branchName }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean, branchName?: string }) {
   const job = task.job;
   const legType = task.legType;
-  const customerLanguage = customer?.language || "th";
   const customerIsVip = customer?.isVIP || false;
   const customerIsMember = customer?.isMember || false;
   
@@ -259,11 +258,6 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
               {job.customerName || "Customer Guest"}
               {customerIsVip && <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1"><Crown size={12} className="fill-amber-500 text-amber-500"/> VIP</span>}
               {!customerIsVip && customerIsMember && <span className="bg-indigo-100 text-indigo-800 text-[10px] px-1.5 py-0.5 rounded-md font-bold">MEMBER</span>}
-              {customerLanguage && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-bold ${customerLanguage.toLowerCase() === 'th' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
-                  {customerLanguage.toUpperCase()}
-                </span>
-              )}
             </h3>
             
             {/* Express Badges & Service Type */}
