@@ -83,12 +83,21 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     if (dateFilter === "today") {
       start = today;
       end = today;
+      // Today focuses on active work — hide completed/cancelled by default
+      setShowCompleted(false);
+      setShowCancelled(false);
     } else if (dateFilter === "yesterday") {
       start = yesterday;
       end = yesterday;
+      // Historical view — show all statuses
+      setShowCompleted(true);
+      setShowCancelled(true);
     } else if (dateFilter === "custom") {
       start = new Date(startDate);
       end = new Date(endDate);
+      // Historical view — show all statuses
+      setShowCompleted(true);
+      setShowCancelled(true);
     } else {
       return; 
     }
@@ -104,11 +113,13 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       if (job.status === 'tba') return false;
     }
 
-    // 1. Search Query (ID, Customer Name, or Phone)
+    const statusLabel = statusConfig[job.status]?.label || "";
     const matchesSearch = 
       job.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (job.customerName && job.customerName.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (job.customerPhone && job.customerPhone.includes(searchTerm));
+      (job.customerPhone && job.customerPhone.includes(searchTerm)) ||
+      statusLabel.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      job.status.toLowerCase().includes(searchTerm.toLowerCase());
 
     let matchesDate = true;
     const isActive = !['completed', 'cancel', 'return'].includes(job.status);
@@ -116,10 +127,12 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     if (dateFilter === "today") {
       matchesDate = isSameDay(new Date(job.createdAt), today) || 
                     isActive || 
-                    (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false);
+                    (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
+                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false);
     } else if (dateFilter === "yesterday") {
       matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
-                    (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false);
+                    (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
+                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false);
     } else if (dateFilter === "custom") {
       const jobDate = new Date(job.createdAt);
       const start = new Date(startDate);
@@ -127,7 +140,8 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       matchesDate = (jobDate >= start && jobDate <= end) || 
-                    (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false);
+                    (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
+                    (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false);
     }
 
     let matchesStatus = true;

@@ -12,7 +12,10 @@ export async function GET() {
       services,
       priceListsRaw,
       shopLocations,
-      settingsRaw
+      settingsRaw,
+      lifetimeEarnings,
+      monthEarnings,
+      completedJobsCounts
     ] = await Promise.all([
       prisma.customer.findMany(),
       prisma.job.findMany({
@@ -83,6 +86,34 @@ export async function GET() {
       prisma.priceList.findMany(),
       prisma.shopLocation.findMany(),
       prisma.setting.findMany(),
+      prisma.riderTransaction.groupBy({
+        by: ['riderId'],
+        where: {
+          type: { in: ['commission_pickup', 'commission_delivery'] }
+        },
+        _sum: {
+          amount: true
+        }
+      }),
+      prisma.riderTransaction.groupBy({
+        by: ['riderId'],
+        where: {
+          type: { in: ['commission_pickup', 'commission_delivery'] },
+          createdAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
+        },
+        _sum: {
+          amount: true
+        }
+      }),
+      prisma.riderTransaction.groupBy({
+        by: ['riderId'],
+        where: {
+          type: { in: ['commission_pickup', 'commission_delivery'] }
+        },
+        _count: {
+          id: true
+        }
+      })
     ]);
 
     // Map Raw DB data back to the format expected by the frontend
@@ -117,10 +148,19 @@ export async function GET() {
 
 
     
-    const formattedRiders = riders.map(r => ({
-      ...r,
-      currentLocation: r.currentLat && r.currentLng ? { lat: r.currentLat, lng: r.currentLng } : undefined
-    }));
+    const formattedRiders = riders.map(r => {
+      const lifeSum = lifetimeEarnings.find(e => e.riderId === r.id)?._sum?.amount || 0;
+      const monSum = monthEarnings.find(e => e.riderId === r.id)?._sum?.amount || 0;
+      const jobCnt = completedJobsCounts.find(e => e.riderId === r.id)?._count?.id || 0;
+      
+      return {
+        ...r,
+        lifetimeEarnings: lifeSum,
+        monthEarnings: monSum,
+        completedJobsCount: jobCnt,
+        currentLocation: r.currentLat && r.currentLng ? { lat: r.currentLat, lng: r.currentLng } : undefined
+      };
+    });
 
     return NextResponse.json({
       customers: formattedCustomers,

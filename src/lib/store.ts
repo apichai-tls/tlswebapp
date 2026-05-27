@@ -594,3 +594,8 @@ export const poiStore = {
     emitPoiChange();
   }
 };
+
+// Subscribe to synchronous API changes to trigger UI updates automatically
+api.subscribe(() => {
+  emitAllChanges();
+});

@@ -77,16 +77,19 @@ export function AdminRiders() {
   const [tempId, setTempId] = useState<string>("");
 
   const riderStats = useMemo(() => {
-    const stats: Record<string, { monthEarnings: number, totalEarnings: number }> = {};
-    const now = new Date();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
+    const stats: Record<string, { monthEarnings: number, totalEarnings: number, completedJobsCount: number }> = {};
 
     riders.forEach(r => {
-      stats[r.id] = { monthEarnings: 0, totalEarnings: r.commissionBalance || 0 };
+      stats[r.id] = {
+        monthEarnings: (r as any).monthEarnings || 0,
+        totalEarnings: (r as any).lifetimeEarnings || 0,
+        completedJobsCount: (r as any).completedJobsCount || 0
+      };
     });
     return stats;
   }, [riders]);
+
+
 
   // Form State
   const [name, setName] = useState("");
@@ -380,7 +383,7 @@ export function AdminRiders() {
                   <div className="text-center flex flex-col items-center justify-center border-l border-slate-100">
                     <div className="flex items-center justify-center gap-1 text-slate-700 font-semibold text-sm">
                       <CheckCircle2 size={12} className="text-emerald-500" />
-                      {rider.completedJobs}
+                      {riderStats[rider.id]?.completedJobsCount || 0}
                     </div>
                     <p className="text-[9px] text-slate-400 uppercase tracking-widest mt-1">Jobs</p>
                   </div>
@@ -567,7 +570,13 @@ function MonthlyReportModal({
                 variant="outline" 
                 className="bg-white/10 border-white/20 text-white hover:bg-white/20 gap-2 cursor-pointer"
                 onClick={() => {
+                  const originalTitle = document.title;
+                  const monthToUse = expandedMonth || (months.length > 0 ? months[0] : format(new Date(), "MMMM yyyy"));
+                  document.title = `${rider.name} - ${monthToUse}`;
                   window.print();
+                  setTimeout(() => {
+                    document.title = originalTitle;
+                  }, 100);
                   toast.success("Preparing report for print...");
                 }}
               >
@@ -711,7 +720,7 @@ function MonthlyReportModal({
 
         {/* --- FORMAL PRINT LAYOUT (HIDDEN ON SCREEN, VISIBLE ON PRINT) --- */}
         {typeof window !== 'undefined' && createPortal(
-          <div className="hidden print:block bg-white text-black p-4 w-full print-root" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 99999 }}>
+          <div className="hidden print:block bg-white text-black p-6 w-full print-root">
             {/* Header */}
             <div className="flex items-center justify-between border-b-2 border-slate-900 pb-4 mb-4">
               <div className="flex items-center gap-3">
@@ -743,16 +752,19 @@ function MonthlyReportModal({
             {months.length === 0 ? (
               <p className="text-center py-6 text-slate-500 text-sm">No transactions recorded.</p>
             ) : (
-              months.map((month) => {
-                const monthTrans = grouped[month];
-                const monthEarnings = monthTrans.reduce((sum: number, t: any) => sum + t.amount, 0);
+              months
+                .filter((month) => !expandedMonth || month === expandedMonth)
+                .map((month) => {
+                  const monthTrans = grouped[month];
+                  const monthEarnings = monthTrans.reduce((sum: number, t: any) => sum + t.amount, 0);
 
-                return (
-                  <div key={month} className="mb-6 break-inside-avoid">
-                    <div className="flex justify-between items-end border-b border-slate-300 pb-1 mb-2">
-                      <h3 className="text-base font-bold">{month}</h3>
-                      <p className="text-sm font-bold text-slate-700">Total: ฿{monthEarnings.toFixed(2)}</p>
-                    </div>
+                  return (
+                    <div key={month} className="mb-6">
+                      <div className="flex justify-between items-end border-b border-slate-300 pb-1 mb-2">
+                        <h3 className="text-base font-bold">{month}</h3>
+                        <p className="text-sm font-bold text-slate-700">Total: ฿{monthEarnings.toFixed(2)}</p>
+                      </div>
+
                     
                     <table className="w-full text-left text-[9px] leading-tight">
                       <thead>

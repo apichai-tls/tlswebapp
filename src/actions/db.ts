@@ -207,6 +207,9 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
   if (updates.branchId !== undefined) data.branchId = updates.branchId;
+  if (updates.source !== undefined) data.source = updates.source;
+  if (updates.pickupScheduledEndAt !== undefined) data.pickupScheduledEndAt = updates.pickupScheduledEndAt;
+  if (updates.deliveryScheduledEndAt !== undefined) data.deliveryScheduledEndAt = updates.deliveryScheduledEndAt;
 
   if (updates.pickupDistance !== undefined) data.pickupDistance = updates.pickupDistance;
   if (updates.deliveryDistance !== undefined) data.deliveryDistance = updates.deliveryDistance;

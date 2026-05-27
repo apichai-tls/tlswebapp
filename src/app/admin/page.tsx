@@ -42,6 +42,7 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import FeeCalculatorPage from "./fee-calculator/page";
+
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
 import { addJobLogAction } from "@/actions/db";
 import { useRiders } from "@/lib/use-riders";
@@ -85,7 +86,8 @@ import {
   Droplets,
   Wind,
   Shirt,
-  Edit
+  Edit,
+  ClipboardList
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -497,6 +499,9 @@ export default function AdminPage() {
     setEditingSubStatus(null);
     setCustomerName("");
     setCustomerPhone("");
+    setCustomerSearchQuery("");
+    setSelectedProfileCustomer(null);
+    setCustomerPriceListId(null);
     setPickupLoc("");
     setPickupRoom("");
     setPickupCoords(null);
@@ -505,6 +510,8 @@ export default function AdminPage() {
     setDeliveryCoords(null);
     setIsPickup(true);
     setIsDelivery(true);
+    setIsWalkIn(false);
+    setSelectedStoreIndex(0);
     const firstWash = washServices.length > 0 ? washServices[0].id : "";
     setServiceSpeed("standard");
     setDeliveryScheduledTime("");
@@ -919,6 +926,8 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">All Jobs</span>}
               </motion.a>
             )}
+
+
 
             {hasAccess("customers") && (
               <motion.a
@@ -2120,6 +2129,7 @@ export default function AdminPage() {
           {activeTab === "calculator" && hasAccess("calculator") && <FeeCalculatorPage />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
+
 
           {/* Fallback for no access to current tab */}
           {!hasAccess(activeTab) && (

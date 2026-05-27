@@ -36,7 +36,7 @@ export const ensureDbLoaded = async () => {
       const parsed = JSON.parse(JSON.stringify(cached), dateReviver);
       memoryDb = parseMockDb(parsed);
       isDbLoaded = true;
-      import('./store').then(m => m.emitAllChanges());
+      api.notify();
     }
   } catch(e) {
     console.error('Failed to load from Cache API', e);
@@ -60,7 +60,7 @@ export const ensureDbLoaded = async () => {
       isDbLoaded = true;
       
       // Trigger a re-render for all components using useSyncExternalStore
-      import('./store').then(m => m.emitAllChanges());
+      api.notify();
 
       // Background lazy load POIs
       fetch('/api/pois')
@@ -69,7 +69,7 @@ export const ensureDbLoaded = async () => {
           if (memoryDb) {
             const parsedPois = JSON.parse(JSON.stringify(poiData), dateReviver);
             memoryDb.pois = parsedPois;
-            import('./store').then(m => m.emitAllChanges());
+            api.notify();
           }
         })
         .catch(err => console.error("Failed to load POIs in background", err));
@@ -144,17 +144,16 @@ export const refreshDb = async () => {
         });
       }
 
-      // ✅ FIX: Sanity check — prevent server response with fewer jobs from wiping in-memory jobs.
-      // This can happen if /api/db is slow or returns a partial result (e.g. network hiccup).
-      // If the new data has significantly fewer jobs than what we have in memory, merge instead of overwrite.
-      if (memoryDb && parsed.jobs && parsed.jobs.length < memoryDb.jobs.length * 0.8) {
+      // ✅ FIX: Preserve all in-memory jobs (e.g. historical jobs loaded via fetchHistoricalJobs)
+      // that are not returned by the server /api/db (which only fetches recent/active jobs).
+      if (memoryDb && parsed.jobs) {
         const serverJobIds = new Set(parsed.jobs.map((j: any) => j.id));
         const extraMemJobs = memoryDb.jobs.filter(j => !serverJobIds.has(j.id));
         parsed.jobs = [...parsed.jobs, ...extraMemJobs];
       }
 
       memoryDb = parseMockDb(parsed);
-      import('./store').then(m => m.emitAllChanges());
+      api.notify();
     }
   } catch (error) {
     console.error('Failed to refresh DB', error);
@@ -215,9 +214,22 @@ const parseMockDb = (data: unknown): Database => {
   return db;
 };
 
+type DbChangeListener = () => void;
+const dbChangeListeners = new Set<DbChangeListener>();
+
 // --- API METHODS ---
 
 export const api = {
+  subscribe(listener: DbChangeListener) {
+    dbChangeListeners.add(listener);
+    return () => {
+      dbChangeListeners.delete(listener);
+    };
+  },
+  notify() {
+    dbChangeListeners.forEach(l => l());
+  },
+
   // --- CUSTOMERS ---
   async getCustomers(): Promise<Customer[]> {
     
@@ -232,14 +244,24 @@ export const api = {
         const data = await res.json();
         const parsedJobs = JSON.parse(JSON.stringify(data), dateReviver) as Job[];
         
-        // Merge into memoryDb.jobs uniquely by id
+        // Merge: update existing jobs + add new ones
+        // IMPORTANT: Must create a NEW array reference for useSyncExternalStore to detect changes
         const existingIds = new Set(memoryDb.jobs.map(j => j.id));
+        const historyMap = new Map(parsedJobs.map(j => [j.id, j]));
+
+        // Update existing jobs with fresh data from history
+        const updatedJobs = memoryDb.jobs.map(j => {
+          if (historyMap.has(j.id)) {
+            return { ...j, ...historyMap.get(j.id)! };
+          }
+          return j;
+        });
+
+        // Add new jobs that don't exist yet in memory
         const newJobs = parsedJobs.filter(j => !existingIds.has(j.id));
-        
-        if (newJobs.length > 0) {
-          memoryDb.jobs = [...memoryDb.jobs, ...newJobs];
-          import('./store').then(m => m.jobStore.notify());
-        }
+
+        memoryDb.jobs = [...updatedJobs, ...newJobs]; // Always new array reference
+        api.notify();
         return parsedJobs;
       }
     } catch (error) {
