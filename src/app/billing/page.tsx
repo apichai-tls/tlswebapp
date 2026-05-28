@@ -82,7 +82,15 @@ function compressImage(file: File, maxDim = 1600, quality = 0.85): Promise<File>
 // BillingJobCard
 // ---------------------------------------------------------------------------
 
-function BillingJobCard({ job }: { job: Job }) {
+function BillingJobCard({
+  job,
+  onUpload,
+  onFinish,
+}: {
+  job: Job;
+  onUpload?: () => void;
+  onFinish?: () => void;
+}) {
   const [billUrls, setBillUrls] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -137,6 +145,7 @@ function BillingJobCard({ job }: { job: Job }) {
       });
       setBillUrls(newUrls);
       toast.success("อัปโหลด Bill สำเร็จ ✅");
+      if (onUpload) onUpload();
     } catch (err) {
       console.error("Upload error:", err);
       toast.error("อัปโหลดไม่สำเร็จ กรุณาลองใหม่");
@@ -285,6 +294,17 @@ function BillingJobCard({ job }: { job: Job }) {
               ครบ 3 รูปแล้ว
             </div>
           )}
+
+          {/* Finish Button - only shown if they have uploaded at least one photo */}
+          {billUrls.length > 0 && onFinish && (
+            <button
+              onClick={onFinish}
+              className="w-full mt-2 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all active:scale-[0.97]"
+            >
+              <CheckCircle2 size={16} />
+              เสร็จสิ้นการอัปโหลด
+            </button>
+          )}
         </div>
       </div>
 
@@ -320,13 +340,28 @@ export default function BillingPage() {
   const { user, logout } = useAuth();
   const jobs = useJobs();
   const [search, setSearch] = useState("");
+  
+  // Track jobs that were uploaded in this session, to keep them visible
+  const [sessionUploadedJobIds, setSessionUploadedJobIds] = useState<Set<string>>(new Set());
+  // Track jobs that the user clicked "Finish" on, to hide them immediately
+  const [hiddenJobIds, setHiddenJobIds] = useState<string[]>([]);
 
-  // Filter: billing status only, and match subStatus "billing" specifically
+  // Filter: show all jobs that do not have a bill image uploaded (only in billing, delivery, or completed status)
   const billingJobs = jobs
     .filter((j) => {
-      // Must be overall status "billing" AND subStatus must be "billing" (or not set)
-      return j.status === "billing" && (j.subStatus === "billing" || !j.subStatus)
-        && !j.billImageUrl; // Hide jobs that already have bill uploaded
+      // Only allow billing, delivery, and completed statuses
+      const allowedStatuses = ["billing", "delivery", "completed"];
+      if (!allowedStatuses.includes(j.status)) return false;
+
+      // Hide if the user manually finished it in this session
+      if (hiddenJobIds.includes(j.id)) return false;
+
+      // Hide jobs that already have bill uploaded (unless uploaded in this session)
+      if (j.billImageUrl && !sessionUploadedJobIds.has(j.id)) {
+        return false;
+      }
+
+      return true;
     })
     .filter((j) => {
       if (!search.trim()) return true;
@@ -418,7 +453,23 @@ export default function BillingPage() {
                 </p>
               </div>
             ) : (
-              billingJobs.map((job) => <BillingJobCard key={job.id} job={job} />)
+              billingJobs.map((job) => (
+                <BillingJobCard
+                  key={job.id}
+                  job={job}
+                  onUpload={() => {
+                    setSessionUploadedJobIds((prev) => {
+                      const next = new Set(prev);
+                      next.add(job.id);
+                      return next;
+                    });
+                  }}
+                  onFinish={() => {
+                    setHiddenJobIds((prev) => [...prev, job.id]);
+                    toast.success("บันทึกข้อมูลสำเร็จ ✅");
+                  }}
+                />
+              ))
             )}
           </div>
         </main>
