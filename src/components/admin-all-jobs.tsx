@@ -319,12 +319,18 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                               </span>
                             )}
                           </div>
-                          <div className="flex gap-1">
+                          <div className="flex gap-1 items-center">
                           {job.source === 'pos' && (
                             <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">
                               POS
                             </Badge>
                           )}
+                          {job.billImageUrl && job.billImageUrl !== '[]' && <span title="Bill uploaded" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
+                          {job.subStatus === 'billing' && <span title="Billing" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
+                          {job.subStatus === 'wash'    && <span title="Washing" className="w-4 h-4 rounded flex items-center justify-center bg-blue-100 text-blue-700 border border-blue-200"><Droplets size={10} /></span>}
+                          {job.subStatus === 'dry'     && <span title="Drying" className="w-4 h-4 rounded flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={10} /></span>}
+                          {job.subStatus === 'iron'    && <span title="Ironing" className="w-4 h-4 rounded flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={10} /></span>}
+                          {job.subStatus === 'ready'   && <span title="Ready" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200"><CheckCircle2 size={10} /></span>}
                           <Badge variant="secondary" className="text-[9px] bg-purple-50 text-purple-700 border-purple-100 px-1.5 py-0 h-4">
                             {job.serviceType === 'wash_iron_fold' ? 'W/I/F' : 'W/F'}
                           </Badge>
@@ -560,15 +566,16 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                             )}
                           </div>
                         </div>
-                        <div className="flex gap-1 items-start">
+                        <div className="flex gap-1 items-center">
                           {job.source === 'pos' && (
                             <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
                           )}
-                          {job.subStatus === 'billing' && <span title="Billing" className="text-[9px] font-bold px-1.5 py-0.5 h-4 rounded flex items-center gap-1 bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={9} /> BILL</span>}
-                          {job.subStatus === 'wash'    && <span title="Washing" className="text-[9px] font-bold px-1.5 py-0.5 h-4 rounded flex items-center gap-1 bg-blue-100 text-blue-700 border border-blue-200"><Droplets size={9} /> WASH</span>}
-                          {job.subStatus === 'dry'     && <span title="Drying" className="text-[9px] font-bold px-1.5 py-0.5 h-4 rounded flex items-center gap-1 bg-orange-100 text-orange-700 border border-orange-200"><Wind size={9} /> DRY</span>}
-                          {job.subStatus === 'iron'    && <span title="Ironing" className="text-[9px] font-bold px-1.5 py-0.5 h-4 rounded flex items-center gap-1 bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={9} /> IRON</span>}
-                          {job.subStatus === 'ready'   && <span title="Ready" className="text-[9px] font-bold px-1.5 py-0.5 h-4 rounded flex items-center gap-1 bg-emerald-100 text-emerald-700 border border-emerald-200"><CheckCircle2 size={9} /> READY</span>}
+                          {job.billImageUrl && job.billImageUrl !== '[]' && <span title="Bill uploaded" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
+                          {job.subStatus === 'billing' && <span title="Billing" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
+                          {job.subStatus === 'wash'    && <span title="Washing" className="w-4 h-4 rounded flex items-center justify-center bg-blue-100 text-blue-700 border border-blue-200"><Droplets size={10} /></span>}
+                          {job.subStatus === 'dry'     && <span title="Drying" className="w-4 h-4 rounded flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={10} /></span>}
+                          {job.subStatus === 'iron'    && <span title="Ironing" className="w-4 h-4 rounded flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={10} /></span>}
+                          {job.subStatus === 'ready'   && <span title="Ready" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200"><CheckCircle2 size={10} /></span>}
                         </div>
                       </div>
                       <div className="font-medium text-sm text-slate-900 mb-1 leading-tight flex items-center gap-1 flex-wrap">

@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer } from "@/lib/store";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
@@ -165,6 +165,18 @@ export default function AdminPage() {
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
+  const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
+
+  const localDataForSearch = useMemo(() => {
+    return pois.map(p => ({
+      name: p.name,
+      address: p.address,
+      lat: p.coords.lat,
+      lng: p.coords.lng,
+      placeId: p.placeId || p.id,
+      isLocal: true
+    }));
+  }, [pois]);
   
   const washServices = useMemo(() => {
     const filtered = services.filter(s => s.name.toLowerCase().startsWith('wash'));
@@ -1250,20 +1262,18 @@ export default function AdminPage() {
                           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
                           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
 
-                            {/* Billing */}
-                          <button
-                            type="button"
-                            onClick={() => setEditingSubStatus(editingSubStatus === 'billing' ? null : 'billing')}
-                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
-                              editingSubStatus === 'billing'
+                            {/* Billing — auto-indicator, not clickable */}
+                          <div
+                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all cursor-default ${
+                              billImageUrls.length > 0
                                 ? 'bg-violet-600 shadow-sm'
-                                : 'hover:bg-white text-slate-500 hover:text-slate-800'
+                                : 'text-slate-400'
                             }`}
-                            title="Billing"
+                            title={billImageUrls.length > 0 ? 'Bill uploaded' : 'No bill uploaded'}
                           >
-                            <Receipt size={18} className={editingSubStatus === 'billing' ? 'text-white' : ''} strokeWidth={2} />
-                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'billing' ? 'text-white' : 'text-slate-500'}`}>Bill</span>
-                          </button>
+                            <Receipt size={18} className={billImageUrls.length > 0 ? 'text-white' : ''} strokeWidth={2} />
+                            <span className={`text-[9px] font-bold leading-none ${billImageUrls.length > 0 ? 'text-white' : 'text-slate-400'}`}>Bill</span>
+                          </div>
 
                           {/* Wash */}
                           <button
@@ -1485,6 +1495,7 @@ export default function AdminPage() {
                                     id="pickup-location"
                                     placeholder="Customer pickup address"
                                     value={pickupLoc}
+                                    localData={localDataForSearch}
                                     onChange={(v) => {
                                       setPickupLoc(v);
                                     }}
@@ -1524,6 +1535,7 @@ export default function AdminPage() {
                                     id="delivery-location"
                                     placeholder="Customer delivery address"
                                     value={deliveryLoc}
+                                    localData={localDataForSearch}
                                     onChange={(v) => {
                                       setDeliveryLoc(v);
                                       setIsDeliveryDirty(true);

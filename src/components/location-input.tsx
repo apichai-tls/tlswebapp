@@ -38,8 +38,8 @@ export function LocationInput({ id, placeholder, value, onChange, onSelectLocati
     async function fetchResults() {
       // If we have local data, DO NOT auto-search google.
       if (localData) {
-        setGoogleResults([]);
-        setHasSearchedGoogle(false);
+        // Local filtering is handled by localResults computed above.
+        // Don't clear Google results here — only clear them when user types (in onChange).
         if (value.length >= 2 && isTypingRef.current) setIsOpen(true);
         return;
       }
@@ -63,7 +63,7 @@ export function LocationInput({ id, placeholder, value, onChange, onSelectLocati
   const handleManualGoogleSearch = async () => {
     if (value.length < 3) return;
     setLoading(true);
-    const data = await searchLocation(value);
+    const data = await searchLocation(value, true);
     setGoogleResults(data);
     setHasSearchedGoogle(true);
     setLoading(false);
@@ -90,6 +90,9 @@ export function LocationInput({ id, placeholder, value, onChange, onSelectLocati
           onChange={(e) => {
             isTypingRef.current = true;
             onChange(e.target.value);
+            // Clear previous Google search when user types a new query
+            setGoogleResults([]);
+            setHasSearchedGoogle(false);
             if (e.target.value.length >= 2) setIsOpen(true);
             else setIsOpen(false);
           }}
@@ -106,7 +109,7 @@ export function LocationInput({ id, placeholder, value, onChange, onSelectLocati
           <ul className="max-h-60 overflow-auto py-1 text-sm">
             {[...localResults, ...googleResults].map((result: SearchResult & { isLocal?: boolean }, idx) => (
               <li
-                key={result.placeId || idx}
+                key={`${result.placeId || 'loc'}-${idx}`}
                 onClick={() => {
                   isTypingRef.current = false;
                   lastSelectedRef.current = result.name;

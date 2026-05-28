@@ -13,7 +13,7 @@ export interface RouteResult {
   coordinates: LatLng[];
 }
 
-export async function searchLocation(query: string): Promise<SearchResult[]> {
+export async function searchLocation(query: string, forceGoogle = false): Promise<SearchResult[]> {
   if (!query.trim()) return [];
 
   const lowerQuery = query.toLowerCase().replace(/\u200b/g, '');
@@ -39,11 +39,11 @@ export async function searchLocation(query: string): Promise<SearchResult[]> {
     return results.slice(0, 10);
   }
 
-  // 2. Fallback to Google Maps API (if enabled)
+  // 2. Fallback to Google Maps API (if enabled, or forced by manual button click)
   try {
     const settings = settingsStore.getSnapshot();
     
-    if (settings.enableGoogleApi !== "true") {
+    if (!forceGoogle && settings.enableGoogleApi !== "true") {
       return results; // Return only local results
     }
 
