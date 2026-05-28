@@ -325,7 +325,8 @@ export default function BillingPage() {
   const billingJobs = jobs
     .filter((j) => {
       // Must be overall status "billing" AND subStatus must be "billing" (or not set)
-      return j.status === "billing" && (j.subStatus === "billing" || !j.subStatus);
+      return j.status === "billing" && (j.subStatus === "billing" || !j.subStatus)
+        && !j.billImageUrl; // Hide jobs that already have bill uploaded
     })
     .filter((j) => {
       if (!search.trim()) return true;
