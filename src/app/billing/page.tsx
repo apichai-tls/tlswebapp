@@ -99,8 +99,8 @@ function BillingJobCard({ job }: { job: Job }) {
     if (!file) return;
     e.target.value = ""; // allow re-selecting same file
 
-    if (billUrls.length >= 1) {
-      toast.error("อัปโหลดแล้ว 1 รูป");
+    if (billUrls.length >= 3) {
+      toast.error("สูงสุด 3 รูปต่อ Job");
       return;
     }
 
@@ -137,17 +137,6 @@ function BillingJobCard({ job }: { job: Job }) {
       });
       setBillUrls(newUrls);
       toast.success("อัปโหลด Bill สำเร็จ ✅");
-
-      // Auto-download to device gallery
-      try {
-        const link = document.createElement('a');
-        link.href = publicUrl;
-        link.download = `bill_${job.id.split('-')[0]}_${Date.now()}.jpg`;
-        link.target = '_blank';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } catch { /* silent */ }
     } catch (err) {
       console.error("Upload error:", err);
       toast.error("อัปโหลดไม่สำเร็จ กรุณาลองใหม่");
@@ -266,7 +255,7 @@ function BillingJobCard({ job }: { job: Job }) {
             className="hidden"
           />
 
-          {billUrls.length < 1 ? (
+          {billUrls.length < 3 ? (
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
@@ -286,14 +275,14 @@ function BillingJobCard({ job }: { job: Job }) {
               ) : (
                 <>
                   <Camera size={18} />
-                  ถ่ายรูป Bill
+                  ถ่ายรูป Bill ({billUrls.length}/3)
                 </>
               )}
             </button>
           ) : (
             <div className="flex items-center justify-center gap-1.5 text-xs text-emerald-600 font-bold py-2">
               <CheckCircle2 size={14} />
-              อัปโหลดแล้ว ✅
+              ครบ 3 รูปแล้ว
             </div>
           )}
         </div>
@@ -336,8 +325,7 @@ export default function BillingPage() {
   const billingJobs = jobs
     .filter((j) => {
       // Must be overall status "billing" AND subStatus must be "billing" (or not set)
-      return j.status === "billing" && (j.subStatus === "billing" || !j.subStatus)
-        && !j.billImageUrl; // Hide jobs that already have bill uploaded
+      return j.status === "billing" && (j.subStatus === "billing" || !j.subStatus);
     })
     .filter((j) => {
       if (!search.trim()) return true;
