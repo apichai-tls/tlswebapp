@@ -142,24 +142,60 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
     let closestShopId = "";
 
     // 1. Try Google Distance Matrix API
+    let distanceMatrixSuccess = false;
     if (settings.enableGoogleApi === "true" && settings.googleMapsApiKey) {
       const apiKey = settings.googleMapsApiKey;
       // Calculate from Shops -> Customer to match the Delivery routing direction
       const origins = candidateShops.map(s => `${s.coords.lat},${s.coords.lng}`).join("|");
       const destinations = `${targetCoords.lat},${targetCoords.lng}`;
 
-      const res = await fetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}&key=${encodeURIComponent(apiKey)}`);
-      const data = await res.json();
+      try {
+        const res = await fetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}&key=${encodeURIComponent(apiKey)}`);
+        const data = await res.json();
 
-      if (!data.error && data.distancesKm) {
-        data.distancesKm.forEach((dist: number, i: number) => {
-          if (dist < minDistance) {
-            minDistance = dist;
-            closestShopId = candidateShops[i].id;
+        if (!data.error && data.distancesKm) {
+          data.distancesKm.forEach((dist: number, i: number) => {
+            if (dist < minDistance) {
+              minDistance = dist;
+              closestShopId = candidateShops[i].id;
+            }
+          });
+          if (closestShopId) {
+            distanceMatrixSuccess = true;
+            return closestShopId;
           }
-        });
-        if (closestShopId) return closestShopId;
+        }
+      } catch (e) {
+        console.warn("Google Distance Matrix failed", e);
       }
+    }
+
+    // 1.5. Try Individual Google Directions API Fallback (using two_wheeler mode)
+    if (!distanceMatrixSuccess && settings.enableGoogleApi === "true" && settings.googleMapsApiKey) {
+      const promises = candidateShops.map(async (shop) => {
+        try {
+          const origin = `${shop.coords.lat},${shop.coords.lng}`;
+          const destination = `${targetCoords.lat},${targetCoords.lng}`;
+          const res = await fetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(settings.googleMapsApiKey || "")}`);
+          const data = await res.json();
+          if (data && !data.error && typeof data.distanceKm === "number") {
+            return { id: shop.id, dist: data.distanceKm };
+          }
+        } catch (e) {
+          console.warn(`Individual Google Directions fallback failed for ${shop.name}:`, e);
+        }
+        return null;
+      });
+
+      const results = await Promise.all(promises);
+      results.forEach((r) => {
+        if (r && r.dist < minDistance) {
+          minDistance = r.dist;
+          closestShopId = r.id;
+        }
+      });
+
+      if (closestShopId) return closestShopId;
     }
 
     // 2. Fallback to OSRM Table Service

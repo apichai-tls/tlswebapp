@@ -15,12 +15,29 @@ export function ProtectedRoute({ children, allowedRole }: { children: React.Reac
       if (!user) {
         // Redirect to login and save the attempted URL
         router.push(`/login?redirect=${encodeURIComponent(pathname)}`);
-      } else if (allowedRole) {
-        const roles = Array.isArray(allowedRole) ? allowedRole : [allowedRole];
-        if (!roles.includes(user.role)) {
-          // Role mismatch, send them to their proper dashboard
-          router.push(user.role === 'rider' ? '/rider' : '/admin');
-        }
+      } else {
+        // Check if running in a native platform (BILL APK context)
+        import("@capacitor/core").then(({ Capacitor }) => {
+          if (Capacitor.isNativePlatform() && user.role !== 'rider') {
+            // BILL APK isolation: Force the user to only view the billing page
+            if (pathname !== '/billing') {
+              router.push('/billing');
+            }
+          } else if (allowedRole) {
+            const roles = Array.isArray(allowedRole) ? allowedRole : [allowedRole];
+            if (!roles.includes(user.role)) {
+              // Role mismatch, send them to their proper dashboard
+              router.push(user.role === 'rider' ? '/rider' : '/admin');
+            }
+          }
+        }).catch(() => {
+          if (allowedRole) {
+            const roles = Array.isArray(allowedRole) ? allowedRole : [allowedRole];
+            if (!roles.includes(user.role)) {
+              router.push(user.role === 'rider' ? '/rider' : '/admin');
+            }
+          }
+        });
       }
     }
   }, [user, isLoading, router, pathname, allowedRole]);

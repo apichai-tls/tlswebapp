@@ -63,7 +63,16 @@ function LoginForm() {
       if (redirectPath) {
         router.push(redirectPath);
       } else {
-        router.push(user.role === "rider" ? "/rider" : "/admin");
+        // If it's a native platform and NOT a rider, default to /billing (BILL APK)
+        import("@capacitor/core").then(({ Capacitor }) => {
+          if (Capacitor.isNativePlatform() && user.role !== "rider") {
+            router.push("/billing");
+          } else {
+            router.push(user.role === "rider" ? "/rider" : "/admin");
+          }
+        }).catch(() => {
+          router.push(user.role === "rider" ? "/rider" : "/admin");
+        });
       }
     } catch (error: any) {
       toast.error(error.message || "Login failed. Please try again.");
