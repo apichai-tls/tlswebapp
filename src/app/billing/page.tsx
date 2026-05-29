@@ -399,7 +399,6 @@ export default function BillingPage() {
   
   const touchStartY = useRef(0);
   const isPulling = useRef(false);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Synchronize state values with refs for touch event handlers
   useEffect(() => {
@@ -411,12 +410,10 @@ export default function BillingPage() {
   }, [isPullRefreshing]);
 
   useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-
     const handleTouchStart = (e: TouchEvent) => {
-      // Trigger pulling only if we are at the top of the scroll container
-      const isAtTop = el.scrollTop === 0 && window.scrollY === 0;
+      // Trigger pulling only if we are at the top of the window scroll
+      // Using <= 5 to safely account for sub-pixel rendering on high-DPI mobile screens
+      const isAtTop = window.scrollY <= 5;
       if (isAtTop && !isRefreshingRef.current) {
         touchStartY.current = e.touches[0].clientY;
         isPulling.current = true;
@@ -481,14 +478,14 @@ export default function BillingPage() {
       }
     };
 
-    el.addEventListener("touchstart", handleTouchStart, { passive: true });
-    el.addEventListener("touchmove", handleTouchMove, { passive: false });
-    el.addEventListener("touchend", handleTouchEnd, { passive: true });
+    window.addEventListener("touchstart", handleTouchStart, { passive: true });
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+    window.addEventListener("touchend", handleTouchEnd, { passive: true });
 
     return () => {
-      el.removeEventListener("touchstart", handleTouchStart);
-      el.removeEventListener("touchmove", handleTouchMove);
-      el.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
     };
   }, []);
 
@@ -583,7 +580,7 @@ export default function BillingPage() {
   }
 
   const mobileLayout = (
-    <div ref={scrollContainerRef} className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100/80 animate-in fade-in duration-200 overflow-y-auto">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100/80 animate-in fade-in duration-200">
       {/* ============ Header ============ */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 shadow-sm">
         <div className="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
