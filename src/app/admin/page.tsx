@@ -1449,12 +1449,8 @@ export default function AdminPage() {
                               id="custName"
                               placeholder="Name"
                               value={customerName}
-                              disabled={true}
-                              onChange={(e) => {
-                                setCustomerName(e.target.value);
-                                setSelectedVIPLabel("");
-                              }}
-                              className="h-8 text-xs bg-slate-50 cursor-not-allowed text-slate-500"
+                              readOnly={true}
+                              className="h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all"
                             />
                           </div>
                           <div className="space-y-1">
@@ -1462,14 +1458,13 @@ export default function AdminPage() {
                               <Phone size={12} />
                               Phone
                             </Label>
-                            <div className="pointer-events-none opacity-60 select-none">
-                              <PhoneInput
-                                placeholder="Phone number"
-                                value={customerPhone}
-                                onChange={() => {}}
-                                className="w-full h-8 cursor-not-allowed"
-                              />
-                            </div>
+                            <Input
+                              id="custPhone"
+                              placeholder="Phone number"
+                              value={customerPhone}
+                              readOnly={true}
+                              className="h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all"
+                            />
                           </div>
                         </div>
                         

@@ -111,9 +111,42 @@ export interface RiderTask {
   commission: number;
 }
 
-const RiderJobImages = ({ jobId, imageType }: { jobId: string, imageType: 'bagImageUrl' | 'pickupProofImageUrl' | 'deliveryProofImageUrl' }) => {
-  const [images, setImages] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+const RiderJobImages = ({ 
+  jobId, 
+  imageType, 
+  initialValue 
+}: { 
+  jobId: string, 
+  imageType: 'bagImageUrl' | 'pickupProofImageUrl' | 'deliveryProofImageUrl', 
+  initialValue?: string 
+}) => {
+  const parseUrls = (imgUrl: any): string[] => {
+    if (!imgUrl) return [];
+    let urls: string[] = [];
+    try {
+      const parsed = JSON.parse(imgUrl);
+      const rawUrls = Array.isArray(parsed) ? parsed : [parsed];
+      urls = rawUrls.map((u: string) => {
+        if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
+          const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
+          return `https://storage.googleapis.com/tls-images-test/${cleanPath}`;
+        }
+        return u;
+      });
+    } catch {
+      const u = imgUrl;
+      if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
+        const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
+        urls = [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
+      } else {
+        urls = [u];
+      }
+    }
+    return urls;
+  };
+
+  const [images, setImages] = useState<string[]>(() => parseUrls(initialValue));
+  const [loading, setLoading] = useState(() => !initialValue); // only show loading if no initial value exists
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -121,34 +154,19 @@ const RiderJobImages = ({ jobId, imageType }: { jobId: string, imageType: 'bagIm
       .then(r => r.json())
       .then(data => {
         const urlData = data[imageType];
-        if (!urlData) return;
-        let urls: string[] = [];
-        try {
-          const parsed = JSON.parse(urlData);
-          const rawUrls = Array.isArray(parsed) ? parsed : [parsed];
-          urls = rawUrls.map((u: string) => {
-            if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
-              const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
-              return `https://storage.googleapis.com/tls-images-test/${cleanPath}`;
-            }
-            return u;
-          });
-        } catch {
-          const u = urlData;
-          if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
-            const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
-            urls = [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
-          } else {
-            urls = [u];
-          }
+        const remoteUrls = parseUrls(urlData);
+        
+        // Only update if it actually changed to prevent flickering or losing newly uploaded ones
+        const localUrls = parseUrls(initialValue);
+        if (JSON.stringify(remoteUrls) !== JSON.stringify(images)) {
+          setImages(remoteUrls);
         }
-        setImages(urls);
       })
       .catch(e => console.error(`Failed to load ${imageType}`, e))
       .finally(() => setLoading(false));
-  }, [jobId, imageType]);
+  }, [jobId, imageType, initialValue]);
 
-  if (loading) return <div className="text-xs text-slate-400 mt-2">Loading images...</div>;
+  if (loading && images.length === 0) return <div className="text-xs text-slate-400 mt-2">Loading images...</div>;
   if (images.length === 0) return null;
 
   return (
@@ -1393,18 +1411,18 @@ export default function RiderPage() {
                   <div className="space-y-2">
                     <div className="p-2 bg-white border border-slate-100 shadow-sm rounded-xl">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Laundry Bags (จากร้าน)</p>
-                      <RiderJobImages jobId={selectedJob.job.id} imageType="bagImageUrl" />
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="bagImageUrl" initialValue={selectedJob.job.bagImageUrl} />
                     </div>
                     <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Pickup Proof (รูปตอนไปรับ)</p>
-                      <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" />
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" initialValue={selectedJob.job.pickupProofImageUrl} />
                     </div>
                   </div>
 
                   {selectedJob.job.status === 'completed' && (
                     <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Delivery Proof (รูปตอนไปส่ง)</p>
-                      <RiderJobImages jobId={selectedJob.job.id} imageType="deliveryProofImageUrl" />
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="deliveryProofImageUrl" initialValue={selectedJob.job.deliveryProofImageUrl} />
                     </div>
                   )}
                 </div>
