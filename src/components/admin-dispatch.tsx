@@ -262,6 +262,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
         bagImageUrl: undefined,
         billImageUrl: undefined,
         proofImageUrl: undefined,
+        createdBy: user?.name || user?.email || "Dispatcher",
       } as any);
 
       toast.success("Job duplicated and sent to Order Verify.");

@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { type Job, jobStore, type JobLegs } from "@/lib/store";
 import { useRiders } from "@/lib/use-riders";
+import { useAuth } from "@/providers/auth-provider";
 import { CheckCircle2, Circle, Truck, Package, Timer, ArrowRight, Home, Edit2, Check, X, Copy } from "lucide-react";
 import { format } from "date-fns";
 import { useState } from "react";
@@ -50,6 +51,7 @@ function Step({ title, desc, legKey, leg, icon, toggleLegStatus, getRiderName }:
 
 export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly?: boolean }) {
   const riders = useRiders();
+  const { user } = useAuth();
   const [deliveryRiderId, setDeliveryRiderId] = useState(job.legs?.deliveryOutbound.riderId || "");
   const [deliveryTime, setDeliveryTime] = useState(
     job.legs?.deliveryOutbound.scheduledAt ? format(new Date(job.legs.deliveryOutbound.scheduledAt), "HH:mm") : ""
@@ -74,6 +76,7 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
         bagImageUrl: undefined,
         billImageUrl: undefined,
         proofImageUrl: undefined,
+        createdBy: user?.name || user?.email || "Task Tracker",
       } as any);
 
       toast.success("Job duplicated and sent to Order Verify.");

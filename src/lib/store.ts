@@ -62,7 +62,7 @@ export interface Customer {
   creditBalance?: number; // Credit Wallet
   tier?: CustomerTier; // Legacy
   isMember?: boolean; // Legacy
-  memberId?: string;
+  memberId?: string | null;
   isVIP?: boolean;
   isCorporate?: boolean;
   isWhatsapp?: boolean;
@@ -124,6 +124,7 @@ export interface Job {
   remark?: string;
   adminNotesJson?: string;
   branchId?: string;
+  createdBy?: string | null;
 }
 
 export interface AdminNoteLog {

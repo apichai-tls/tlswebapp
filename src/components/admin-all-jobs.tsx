@@ -614,7 +614,12 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                         </div>
                       </div>
                       <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                        <div className="flex gap-1.5">
+                        <div className="flex gap-1.5 flex-wrap items-center">
+                          {job.createdBy && (
+                            <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded border border-indigo-200 flex items-center gap-1 shrink-0" title={`Created by ${job.createdBy}`}>
+                              <User size={10} className="text-indigo-500" /> {job.createdBy}
+                            </span>
+                          )}
                           {job.pickupRiderId && <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1 rounded border border-amber-300 flex items-center gap-1" title="Pickup Rider Assigned"><Package size={10} /> {(() => { const r = riders.find(r => r.id === job.pickupRiderId); return r?.nickname || r?.name || job.pickupRiderId; })()}</span>}
                           {job.deliveryRiderId && <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 rounded border border-emerald-300 flex items-center gap-1" title="Delivery Rider Assigned"><Truck size={10} /> {(() => { const r = riders.find(r => r.id === job.deliveryRiderId); return r?.nickname || r?.name || job.deliveryRiderId; })()}</span>}
                           {!job.pickupRiderId && !job.deliveryRiderId && job.riderId && (

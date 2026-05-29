@@ -70,6 +70,7 @@ export async function GET(req: NextRequest) {
         branchId: true,
         paymentChannel: true,
         isPaid: true,
+        createdBy: true,
       }
     });
     

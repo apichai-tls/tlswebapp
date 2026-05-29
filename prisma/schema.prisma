@@ -90,6 +90,7 @@ model Job {
   adminNotesJson      String?   // Array of AdminNoteLog objects
 
   branchId            String?
+  createdBy           String?
 
   customer            Customer? @relation(fields: [customerId], references: [id])
   branch              ShopLocation? @relation(fields: [branchId], references: [id])

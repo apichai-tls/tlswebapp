@@ -843,6 +843,7 @@ export default function AdminPage() {
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
       creatorRole: user?.role,
+      createdBy: user?.name || user?.email || "Admin",
     };
 
     try {

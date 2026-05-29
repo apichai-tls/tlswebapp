@@ -78,6 +78,7 @@ export async function GET() {
           billImageUrl: true,
           paymentChannel: true,  // ✅ was missing — caused payment channel to not persist on reload
           isPaid: true,          // ✅ was missing — caused payment status to not persist on reload
+          createdBy: true,
           // Exclude: proofImageUrl (deprecated)
         }
       }),

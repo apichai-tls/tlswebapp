@@ -280,31 +280,41 @@ export const api = {
   },
   
   async addCustomer(customer: Omit<Customer, 'id'>): Promise<Customer> {
-    
     const db = initDb();
     // Let PostgreSQL generate the UUID; do NOT pass a pre-generated id
     const savedCustomer = await dbActions.addCustomerAction(customer);
     const newCustomer: Customer = {
       ...customer,
       id: savedCustomer.id,
+      name: savedCustomer.name,
+      memberId: savedCustomer.memberId,
     };
     db.customers = [newCustomer, ...db.customers];
     return newCustomer;
   },
 
   async updateCustomer(id: string, updates: Partial<Customer>): Promise<Customer> {
-    
     const db = initDb();
+    const currentCustomer = db.customers.find(c => c.id === id);
+    if (!currentCustomer) throw new Error("Customer not found");
+
+    const savedCustomer = await dbActions.updateCustomerAction(id, updates);
+
     let updatedCustomer: Customer | null = null;
     db.customers = db.customers.map(c => {
       if (c.id === id) {
-        updatedCustomer = { ...c, ...updates };
-        return updatedCustomer;
+        const u: Customer = { 
+          ...c, 
+          ...updates,
+          name: savedCustomer.name,
+          memberId: savedCustomer.memberId,
+        };
+        updatedCustomer = u;
+        return u;
       }
       return c;
     });
     if (!updatedCustomer) throw new Error("Customer not found");
-    await dbActions.updateCustomerAction(id, updates);
     return updatedCustomer;
   },
 
@@ -374,6 +384,7 @@ export const api = {
       adminNotesJson: jobDetails.adminNotesJson as string,
       branchId: jobDetails.branchId as string,
       paymentChannel: jobDetails.paymentChannel as string,
+      createdBy: jobDetails.createdBy as string | null || null,
       legs: {
         pickupOutbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
         pickupInbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },

@@ -36,6 +36,7 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import { useSyncExternalStore } from "react";
 import { useCustomers } from "@/lib/use-customers";
+import { useAuth } from "@/providers/auth-provider";
 
 const CATEGORIES = ["All", "Weight", "Clothing", "Bedding", "Add-on"];
 
@@ -48,6 +49,7 @@ interface CartItem {
 }
 
 export function AdminPOS() {
+  const { user } = useAuth();
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const customers = useCustomers();
@@ -145,6 +147,7 @@ export function AdminPOS() {
         fee: 0, // No rider commission for walk-in
         branchId: shops[0]?.id,
         isPaid: true,
+        createdBy: user?.name || user?.email || "POS Counter",
       });
 
       toast.success("Order Synced Successfully", {

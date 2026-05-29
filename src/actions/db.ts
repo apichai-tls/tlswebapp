@@ -3,26 +3,26 @@
 import { prisma } from '@/lib/prisma';
 
 // CUSTOMERS
-async function generateMemberId() {
-  const lastMember = await prisma.customer.findFirst({
-    where: { memberId: { not: null } },
-    orderBy: { memberId: 'desc' },
-  });
-  if (!lastMember || !lastMember.memberId) return "00001";
-  const num = parseInt(lastMember.memberId, 10);
-  if (isNaN(num)) return "00001";
-  return String(num + 1).padStart(5, '0');
-}
-
 export async function addCustomerAction(data: any) {
   let memberId = null;
   if (data.isMember) {
-    memberId = await generateMemberId();
+    if (data.memberId && data.memberId.trim()) {
+      const memberIdUpper = data.memberId.trim().toUpperCase();
+      const existing = await prisma.customer.findUnique({
+        where: { memberId: memberIdUpper }
+      });
+      if (existing) {
+        throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+      }
+      memberId = memberIdUpper;
+    }
   }
+
+  const nameUpper = data.name ? data.name.toUpperCase() : data.name;
 
   const c = await prisma.customer.create({
     data: {
-      name: data.name,
+      name: nameUpper,
       phone: data.phone,
       defaultAddress: data.defaultAddress,
       defaultLat: data.defaultCoords?.lat || 0,
@@ -49,7 +49,9 @@ export async function addCustomerAction(data: any) {
 
 export async function updateCustomerAction(id: string, updates: any) {
   const data: any = {};
-  if (updates.name !== undefined) data.name = updates.name;
+  if (updates.name !== undefined) {
+    data.name = updates.name ? updates.name.toUpperCase() : updates.name;
+  }
   if (updates.phone !== undefined) data.phone = updates.phone;
   if (updates.defaultAddress !== undefined) data.defaultAddress = updates.defaultAddress;
   if (updates.defaultCoords) {
@@ -62,10 +64,44 @@ export async function updateCustomerAction(id: string, updates: any) {
   
   if (updates.isMember !== undefined) {
     data.isMember = updates.isMember;
-    if (updates.isMember === true) {
-      const current = await prisma.customer.findUnique({ where: { id } });
-      if (current && !current.memberId) {
-        data.memberId = await generateMemberId();
+    if (updates.isMember === false) {
+      data.memberId = null;
+    } else {
+      if (updates.memberId !== undefined) {
+        if (updates.memberId && updates.memberId.trim()) {
+          const memberIdUpper = updates.memberId.trim().toUpperCase();
+          const existing = await prisma.customer.findFirst({
+            where: {
+              memberId: memberIdUpper,
+              id: { not: id }
+            }
+          });
+          if (existing) {
+            throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+          }
+          data.memberId = memberIdUpper;
+        } else {
+          data.memberId = null;
+        }
+      }
+    }
+  } else if (updates.memberId !== undefined) {
+    const current = await prisma.customer.findUnique({ where: { id } });
+    if (current && current.isMember) {
+      if (updates.memberId && updates.memberId.trim()) {
+        const memberIdUpper = updates.memberId.trim().toUpperCase();
+        const existing = await prisma.customer.findFirst({
+          where: {
+            memberId: memberIdUpper,
+            id: { not: id }
+          }
+        });
+        if (existing) {
+          throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+        }
+        data.memberId = memberIdUpper;
+      } else {
+        data.memberId = null;
       }
     }
   }
@@ -156,6 +192,7 @@ export async function addJobAction(data: any) {
       remark: data.remark,
       adminNotesJson: data.adminNotesJson,
       branchId: data.branchId,
+      createdBy: data.createdBy,
     }
   });
 }

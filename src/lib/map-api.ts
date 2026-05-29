@@ -80,26 +80,34 @@ export async function getRoute(pickup: LatLng, dropoff: LatLng): Promise<RouteRe
 
   try {
     const settings = settingsStore.getSnapshot();
+    const apiKey = settings.googleMapsApiKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
     
     // 1. Use Google Directions API if enabled
-    if (settings.enableGoogleApi === "true" && settings.googleMapsApiKey) {
-      const apiKey = settings.googleMapsApiKey;
-      const origin = `${pickup.lat},${pickup.lng}`;
-      const destination = `${dropoff.lat},${dropoff.lng}`;
-      
-      const res = await fetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
-      const data = await res.json();
-      
-      if (!data.error && data.coordinates) {
-        const result = {
-          distanceKm: data.distanceKm,
-          coordinates: data.coordinates,
-        };
-        routeCache.set(cacheKey, result);
-        return result;
+    if (settings.enableGoogleApi === "true" && apiKey && apiKey !== "YOUR_API_KEY_HERE") {
+      try {
+        const origin = `${pickup.lat},${pickup.lng}`;
+        const destination = `${dropoff.lat},${dropoff.lng}`;
+        
+        const res = await fetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
+        if (res.ok) {
+          const data = await res.json();
+          
+          if (!data.error && data.coordinates) {
+            const result = {
+              distanceKm: data.distanceKm,
+              coordinates: data.coordinates,
+            };
+            routeCache.set(cacheKey, result);
+            return result;
+          }
+          
+          console.warn("Google Directions API returned error, falling back to OSRM", data.error);
+        } else {
+          console.warn("Google Directions API request failed, falling back to OSRM", res.statusText);
+        }
+      } catch (googleError) {
+        console.warn("Google Directions API failed with exception, falling back to OSRM", googleError);
       }
-      
-      console.warn("Google Directions API failed, falling back to OSRM", data.error);
     }
 
     // 2. Fallback to Free OSRM API (Using 'driving' profile)
@@ -138,13 +146,13 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
     const candidateShops = shops;
 
     const settings = settingsStore.getSnapshot();
+    const apiKey = settings.googleMapsApiKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
     let minDistance = Infinity;
     let closestShopId = "";
 
     // 1. Try Google Distance Matrix API
     let distanceMatrixSuccess = false;
-    if (settings.enableGoogleApi === "true" && settings.googleMapsApiKey) {
-      const apiKey = settings.googleMapsApiKey;
+    if (settings.enableGoogleApi === "true" && apiKey && apiKey !== "YOUR_API_KEY_HERE") {
       // Calculate from Shops -> Customer to match the Delivery routing direction
       const origins = candidateShops.map(s => `${s.coords.lat},${s.coords.lng}`).join("|");
       const destinations = `${targetCoords.lat},${targetCoords.lng}`;
@@ -171,12 +179,12 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
     }
 
     // 1.5. Try Individual Google Directions API Fallback (using two_wheeler mode)
-    if (!distanceMatrixSuccess && settings.enableGoogleApi === "true" && settings.googleMapsApiKey) {
+    if (!distanceMatrixSuccess && settings.enableGoogleApi === "true" && apiKey && apiKey !== "YOUR_API_KEY_HERE") {
       const promises = candidateShops.map(async (shop) => {
         try {
           const origin = `${shop.coords.lat},${shop.coords.lng}`;
           const destination = `${targetCoords.lat},${targetCoords.lng}`;
-          const res = await fetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(settings.googleMapsApiKey || "")}`);
+          const res = await fetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
           const data = await res.json();
           if (data && !data.error && typeof data.distanceKm === "number") {
             return { id: shop.id, dist: data.distanceKm };

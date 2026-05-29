@@ -52,6 +52,7 @@ export function AdminCustomerDialog({
   const [isVIP, setIsVIP] = useState(false);
   const [isCorporate, setIsCorporate] = useState(false);
   const [isMember, setIsMember] = useState(false);
+  const [memberId, setMemberId] = useState("");
   const [isWhatsapp, setIsWhatsapp] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
 
@@ -68,7 +69,7 @@ export function AdminCustomerDialog({
   useEffect(() => {
     if (open) {
       if (customer) {
-        setName(customer.name);
+        setName(customer.name.toUpperCase());
         setPhone(customer.phone);
         setAddress(customer.defaultAddress);
         setCoords(customer.defaultCoords);
@@ -84,6 +85,7 @@ export function AdminCustomerDialog({
         setIsVIP(customer.isVIP || false);
         setIsCorporate(customer.isCorporate || false);
         setIsMember(customer.isMember || false);
+        setMemberId(customer.memberId || "");
         setIsWhatsapp(customer.isWhatsapp || false);
         setSelectedLocation(null);
       } else {
@@ -103,6 +105,7 @@ export function AdminCustomerDialog({
         setIsVIP(false);
         setIsCorporate(false);
         setIsMember(false);
+        setMemberId("");
         setIsWhatsapp(false);
         setSelectedLocation(null);
       }
@@ -141,6 +144,7 @@ export function AdminCustomerDialog({
       isVIP: isVIP,
       isMember: isMember,
       isWhatsapp: isWhatsapp,
+      memberId: isMember ? memberId.trim() || null : null,
     };
 
     try {
@@ -184,7 +188,7 @@ export function AdminCustomerDialog({
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 py-1">
           <div className="space-y-1 col-span-2">
             <Label htmlFor="name" className="text-xs font-semibold text-rose-600">Full Name *</Label>
-            <Input id="name" placeholder="John Doe" value={name} onChange={e => setName(e.target.value)} className="h-8 text-xs border-slate-200" />
+            <Input id="name" placeholder="JOHN DOE" value={name} onChange={e => setName(e.target.value.toUpperCase())} className="h-8 text-xs border-slate-200" />
           </div>
           
           <div className="space-y-1">
@@ -279,23 +283,38 @@ export function AdminCustomerDialog({
 
           
           <div className="col-span-1 md:col-span-3 mt-2 flex flex-col gap-2">
-            <label className="flex items-center gap-3 p-3 bg-blue-50/80 rounded-lg border border-blue-200 cursor-pointer hover:bg-blue-50 transition-colors">
-              <input 
-                type="checkbox" 
-                checked={isMember} 
-                onChange={e => setIsMember(e.target.checked)}
-                className="h-5 w-5 rounded border-blue-300 text-blue-600 focus:ring-blue-600 bg-white"
-              />
-              <div>
-                <p className="text-sm font-bold text-blue-800 flex items-center gap-1.5">
-                  <Users size={16} className="text-blue-600" /> Member
-                  {customer?.memberId && (
-                    <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded ml-2">ID: {customer.memberId}</span>
-                  )}
-                </p>
-                <p className="text-xs text-blue-600/80">Apply member pricing list automatically. {customer ? '' : '(ID will be generated upon save)'}</p>
-              </div>
-            </label>
+            <div className="flex flex-col gap-2 p-3 bg-blue-50/80 rounded-lg border border-blue-200">
+              <label className="flex items-center gap-3 cursor-pointer hover:bg-blue-50/20 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={isMember} 
+                  onChange={e => {
+                    setIsMember(e.target.checked);
+                    if (!e.target.checked) setMemberId("");
+                  }}
+                  className="h-5 w-5 rounded border-blue-300 text-blue-600 focus:ring-blue-600 bg-white"
+                />
+                <div>
+                  <p className="text-sm font-bold text-blue-800 flex items-center gap-1.5">
+                    <Users size={16} className="text-blue-600" /> Member
+                  </p>
+                  <p className="text-xs text-blue-600/80">Apply member pricing list automatically and assign a Member No.</p>
+                </div>
+              </label>
+              
+              {isMember && (
+                <div className="mt-2 pl-8 space-y-1">
+                  <Label htmlFor="memberId" className="text-[10px] font-semibold text-blue-800">Member No / เลขสมาชิก (ปล่อยว่างได้)</Label>
+                  <Input 
+                    id="memberId" 
+                    placeholder="e.g. MB-001" 
+                    value={memberId} 
+                    onChange={e => setMemberId(e.target.value.toUpperCase())}
+                    className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800"
+                  />
+                </div>
+              )}
+            </div>
 
             <label className="flex items-center gap-3 p-3 bg-indigo-50/80 rounded-lg border border-indigo-200 cursor-pointer hover:bg-indigo-50 transition-colors">
               <input 
