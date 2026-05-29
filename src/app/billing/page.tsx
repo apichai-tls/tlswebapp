@@ -393,31 +393,45 @@ export default function BillingPage() {
   // Pull-to-refresh state and touch event handling
   const [pullDistance, setPullDistance] = useState(0);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  
+  const pullDistanceRef = useRef(0);
+  const isRefreshingRef = useRef(false);
+  
   const touchStartY = useRef(0);
   const isPulling = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Synchronize state values with refs for touch event handlers
+  useEffect(() => {
+    pullDistanceRef.current = pullDistance;
+  }, [pullDistance]);
+
+  useEffect(() => {
+    isRefreshingRef.current = isPullRefreshing;
+  }, [isPullRefreshing]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
 
     const handleTouchStart = (e: TouchEvent) => {
-      // Only trigger pulling if both the element and window are scrolled to the absolute top
+      // Trigger pulling only if we are at the top of the scroll container
       const isAtTop = el.scrollTop === 0 && window.scrollY === 0;
-      if (isAtTop && !isPullRefreshing) {
+      if (isAtTop && !isRefreshingRef.current) {
         touchStartY.current = e.touches[0].clientY;
         isPulling.current = true;
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (!isPulling.current || isPullRefreshing) return;
+      if (!isPulling.current || isRefreshingRef.current) return;
       const currentY = e.touches[0].clientY;
       const diff = currentY - touchStartY.current;
       
       if (diff > 0) {
         // Resistance: logarithmic feel
         const distance = Math.min(100, Math.pow(diff, 0.85));
+        pullDistanceRef.current = distance;
         setPullDistance(distance);
         
         // Prevent WebView's default overscroll reload gesture
@@ -425,6 +439,7 @@ export default function BillingPage() {
           if (e.cancelable) e.preventDefault();
         }
       } else {
+        pullDistanceRef.current = 0;
         setPullDistance(0);
       }
     };
@@ -433,9 +448,13 @@ export default function BillingPage() {
       if (!isPulling.current) return;
       isPulling.current = false;
 
-      if (pullDistance >= 60 && !isPullRefreshing) {
+      const currentDistance = pullDistanceRef.current;
+
+      if (currentDistance >= 60 && !isRefreshingRef.current) {
         setIsPullRefreshing(true);
-        setPullDistance(60); // Hold at active spin position
+        isRefreshingRef.current = true;
+        setPullDistance(60); // Stay at active spin position
+        pullDistanceRef.current = 60;
 
         toast.promise(
           import("@/lib/api").then(async (m) => {
@@ -452,10 +471,13 @@ export default function BillingPage() {
 
         setTimeout(() => {
           setIsPullRefreshing(false);
+          isRefreshingRef.current = false;
           setPullDistance(0);
+          pullDistanceRef.current = 0;
         }, 800);
       } else {
         setPullDistance(0);
+        pullDistanceRef.current = 0;
       }
     };
 
@@ -468,7 +490,7 @@ export default function BillingPage() {
       el.removeEventListener("touchmove", handleTouchMove);
       el.removeEventListener("touchend", handleTouchEnd);
     };
-  }, [pullDistance, isPullRefreshing]);
+  }, []);
 
   useEffect(() => {
     setIsMounted(true);
