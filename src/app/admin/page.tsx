@@ -299,6 +299,7 @@ export default function AdminPage() {
   const [laundryPrice, setLaundryPrice] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [paymentChannel, setPaymentChannel] = useState("");
+  const [cashPlaced, setCashPlaced] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
@@ -538,6 +539,7 @@ export default function AdminPage() {
     setDeliveryScheduledTime("");
     setPaymentMethod("unpaid");
     setPaymentChannel("");
+    setCashPlaced(false);
     setServiceType("wash_fold");
     setServiceWeight(2);
     setOtherClothingName("");
@@ -629,6 +631,7 @@ export default function AdminPage() {
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
+    setCashPlaced(job.cashPlaced || false);
     let fallbackChannel = job.paymentChannel || "";
     if (!fallbackChannel && job.paymentMethod) {
       const pm = job.paymentMethod.toLowerCase();
@@ -861,6 +864,7 @@ export default function AdminPage() {
       paymentChannel: paymentChannel || null,
       creatorRole: user?.role,
       createdBy: user?.name || user?.email || "Admin",
+      cashPlaced,
     };
 
     try {
@@ -2130,6 +2134,20 @@ export default function AdminPage() {
                                 </Label>
                               </div>
                             </div>
+
+                            {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                              <div className="col-span-2 pt-2 mt-1 border-t border-slate-700/50">
+                                <Label className="flex items-center gap-2 cursor-pointer w-fit">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={cashPlaced} 
+                                    onChange={(e) => setCashPlaced(e.target.checked)} 
+                                    className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 h-3.5 w-3.5"
+                                  />
+                                  <span className="text-[11px] text-slate-300 font-medium">Cash Left at Lobby</span>
+                                </Label>
+                              </div>
+                            )}
                           </div>
                         </div>
                         

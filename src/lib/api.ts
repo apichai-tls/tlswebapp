@@ -385,6 +385,7 @@ export const api = {
       branchId: jobDetails.branchId as string,
       paymentChannel: jobDetails.paymentChannel as string,
       createdBy: jobDetails.createdBy as string | null || null,
+      cashPlaced: jobDetails.cashPlaced as boolean || false,
       legs: {
         pickupOutbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
         pickupInbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },

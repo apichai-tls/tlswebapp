@@ -125,6 +125,7 @@ export interface Job {
   adminNotesJson?: string;
   branchId?: string;
   createdBy?: string | null;
+  cashPlaced?: boolean;
 }
 
 export interface AdminNoteLog {

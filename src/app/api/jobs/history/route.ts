@@ -72,6 +72,7 @@ export async function GET(req: NextRequest) {
         paymentChannel: true,
         isPaid: true,
         createdBy: true,
+        cashPlaced: true,
       }
     });
     // Map Raw DB data back to the format expected by the frontend (consistent with /api/db)

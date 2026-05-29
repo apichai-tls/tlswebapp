@@ -91,6 +91,7 @@ model Job {
 
   branchId            String?
   createdBy           String?
+  cashPlaced          Boolean   @default(false)
 
   customer            Customer? @relation(fields: [customerId], references: [id])
   branch              ShopLocation? @relation(fields: [branchId], references: [id])
