@@ -2132,22 +2132,19 @@ export default function AdminPage() {
                                   />
                                   <span className="font-medium text-emerald-400">Paid</span>
                                 </Label>
+                                {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                                  <Label className="flex items-center gap-1.5 cursor-pointer text-[11px] ml-2 animate-in fade-in duration-200">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={cashPlaced} 
+                                      onChange={(e) => setCashPlaced(e.target.checked)} 
+                                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3"
+                                    />
+                                    <span className="font-medium text-amber-400">วางเงินแล้ว</span>
+                                  </Label>
+                                )}
                               </div>
                             </div>
-
-                            {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                              <div className="col-span-2 pt-2 mt-1 border-t border-slate-700/50">
-                                <Label className="flex items-center gap-2 cursor-pointer w-fit">
-                                  <input 
-                                    type="checkbox" 
-                                    checked={cashPlaced} 
-                                    onChange={(e) => setCashPlaced(e.target.checked)} 
-                                    className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 h-3.5 w-3.5"
-                                  />
-                                  <span className="text-[11px] text-slate-300 font-medium">Cash Left at Lobby</span>
-                                </Label>
-                              </div>
-                            )}
                           </div>
                         </div>
                         
