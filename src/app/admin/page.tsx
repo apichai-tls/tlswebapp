@@ -197,12 +197,19 @@ export default function AdminPage() {
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
-    const hash = window.location.hash.replace('#', '');
+    const hash = window.location.hash.replace('#', '').split('?')[0];
     const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
       setActiveTab(hash as any);
+
+      const searchParams = new URLSearchParams(window.location.search);
+      if (searchParams.get("create") === "true") {
+        setDialogOpen(true);
+        // Clean up query parameters in URL without reloading
+        window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+      }
       return;
     }
 
@@ -736,6 +743,9 @@ export default function AdminPage() {
       toast.error("Please select at least one service (Pickup, Delivery, or Walk-In).");
       return;
     }
+
+    const existingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+    const isAlreadyCompleted = existingJob?.status === "completed";
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
 
@@ -775,8 +785,8 @@ export default function AdminPage() {
       type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
       subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
       source: isWalkIn ? "pos" : "app",
-      // Auto-advance to Delivery or Completed when Process is set to Ready
-      ...(editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
+      // Auto-advance to Delivery or Completed when Process is set to Ready (only if job is not already completed)
+      ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
       laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
@@ -967,6 +977,21 @@ export default function AdminPage() {
               </motion.a>
             )}
 
+
+
+
+
+            {hasAccess("billing") && (
+              <Link 
+                href="/billing" 
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+                title="Billing"
+              >
+                <Camera size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Billing</span>}
+              </Link>
+            )}
+
             {hasAccess("riders") && (
               <motion.a
                 href="#riders"
@@ -1054,7 +1079,7 @@ export default function AdminPage() {
               <Logo />
             </div>
             <h1 className="hidden lg:block text-lg font-semibold text-slate-900">
-              Dashboard
+              Dashboard - {user?.name || user?.email || ""}
             </h1>
             
             <div className="flex items-center gap-3">
@@ -1092,17 +1117,20 @@ export default function AdminPage() {
                   <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
                 <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 items-start lg:items-center">
                   <div className="col-span-6 lg:col-span-7 flex flex-row items-center gap-4 w-full">
-                    <DialogTitle className="flex items-center text-lg shrink-0">
+                    <DialogTitle className="flex flex-col items-start gap-1 text-lg shrink-0">
                       <div className="flex items-center gap-2">
                         <Package size={18} />
-                        {editingJobId ? (
-                          <span>Edit Job <span className="text-slate-500 font-mono ml-1 text-sm bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">#{editingJobId.split('-')[0].toUpperCase()}</span></span>
-                        ) : "Create New Job"}
+                        <span>{editingJobId ? "Edit Job" : "Create New Job"}</span>
+                        {selectedVIPLabel && (
+                          <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
+                            VIP {selectedVIPLabel}
+                          </Badge>
+                        )}
                       </div>
-                      {selectedVIPLabel && (
-                        <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
-                          VIP {selectedVIPLabel}
-                        </Badge>
+                      {editingJobId && (
+                        <span className="text-slate-500 font-mono text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200 ml-6">
+                          Order ID: #{editingJobId.split('-')[0].toUpperCase()}
+                        </span>
                       )}
                     </DialogTitle>
                     <div className="relative w-full max-w-[400px] z-50 mt-0">
@@ -1221,7 +1249,7 @@ export default function AdminPage() {
                     </div>
                   </div>
                   
-                  <div className="col-span-6 lg:col-span-5 w-full flex justify-end">
+                  <div className="col-span-6 lg:col-span-5 w-full flex justify-end pr-10 lg:pr-12">
                     {editingJobId && (
                       <div className="flex flex-row gap-4 items-center justify-end w-full">
                         <div className="flex items-center gap-2">
@@ -1240,14 +1268,14 @@ export default function AdminPage() {
                                 key={t.id}
                                 type="button"
                                 onClick={() => setLaundryTypes(prev => prev.includes(t.id) ? prev.filter(x => x !== t.id) : [...prev, t.id])}
-                                className={`flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-md transition-all min-w-[50px] ${
+                                className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
                                   laundryTypes.includes(t.id)
                                     ? 'bg-slate-800 shadow-sm'
                                     : 'hover:bg-white text-slate-500 hover:text-slate-800'
                                 }`}
                                 title={t.label}
                               >
-                                <span className={`text-[16px] font-black leading-none h-[18px] flex items-center justify-center ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-700'}`}>
+                                <span className={`text-[14px] font-black leading-none h-[16px] flex items-center justify-center ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-700'}`}>
                                   {t.id}
                                 </span>
                                 <span className={`text-[9px] font-bold leading-none ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-500'}`}>
@@ -1264,14 +1292,16 @@ export default function AdminPage() {
 
                             {/* Billing — auto-indicator, not clickable */}
                           <div
-                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all cursor-default ${
+                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] cursor-default ${
                               billImageUrls.length > 0
-                                ? 'bg-violet-600 shadow-sm'
+                                ? 'bg-violet-600 shadow-sm text-white'
                                 : 'text-slate-400'
                             }`}
                             title={billImageUrls.length > 0 ? 'Bill uploaded' : 'No bill uploaded'}
                           >
-                            <Receipt size={18} className={billImageUrls.length > 0 ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="h-[16px] flex items-center justify-center">
+                              <Receipt size={14} className={billImageUrls.length > 0 ? 'text-white' : 'text-slate-400'} strokeWidth={2} />
+                            </div>
                             <span className={`text-[9px] font-bold leading-none ${billImageUrls.length > 0 ? 'text-white' : 'text-slate-400'}`}>Bill</span>
                           </div>
 
@@ -1279,14 +1309,16 @@ export default function AdminPage() {
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'wash' ? null : 'wash')}
-                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
                               editingSubStatus === 'wash'
-                                ? 'bg-blue-600 shadow-sm'
+                                ? 'bg-blue-600 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Washing"
                           >
-                            <Droplets size={18} className={editingSubStatus === 'wash' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="h-[16px] flex items-center justify-center">
+                              <Droplets size={14} className={editingSubStatus === 'wash' ? 'text-white' : ''} strokeWidth={2} />
+                            </div>
                             <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'wash' ? 'text-white' : 'text-slate-500'}`}>Wash</span>
                           </button>
 
@@ -1294,14 +1326,16 @@ export default function AdminPage() {
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'dry' ? null : 'dry')}
-                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
                               editingSubStatus === 'dry'
-                                ? 'bg-orange-600 shadow-sm'
+                                ? 'bg-orange-600 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Drying"
                           >
-                            <Wind size={18} className={editingSubStatus === 'dry' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="h-[16px] flex items-center justify-center">
+                              <Wind size={14} className={editingSubStatus === 'dry' ? 'text-white' : ''} strokeWidth={2} />
+                            </div>
                             <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'dry' ? 'text-white' : 'text-slate-500'}`}>Dry</span>
                           </button>
 
@@ -1309,14 +1343,16 @@ export default function AdminPage() {
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'iron' ? null : 'iron')}
-                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
                               editingSubStatus === 'iron'
-                                ? 'bg-indigo-700 shadow-sm'
+                                ? 'bg-indigo-700 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Ironing"
                           >
-                            <Shirt size={18} className={editingSubStatus === 'iron' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="h-[16px] flex items-center justify-center">
+                              <Shirt size={14} className={editingSubStatus === 'iron' ? 'text-white' : ''} strokeWidth={2} />
+                            </div>
                             <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'iron' ? 'text-white' : 'text-slate-500'}`}>Iron</span>
                           </button>
 
@@ -1324,14 +1360,16 @@ export default function AdminPage() {
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'ready' ? null : 'ready')}
-                            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md transition-all ${
+                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
                               editingSubStatus === 'ready'
-                                ? 'bg-emerald-600 shadow-sm'
+                                ? 'bg-emerald-600 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Ready"
                           >
-                            <CheckCircle2 size={18} className={editingSubStatus === 'ready' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="h-[16px] flex items-center justify-center">
+                              <CheckCircle2 size={14} className={editingSubStatus === 'ready' ? 'text-white' : ''} strokeWidth={2} />
+                            </div>
                             <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'ready' ? 'text-white' : 'text-slate-500'}`}>Ready</span>
                           </button>
 

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TLS-BILL</string>
+    <string name="title_activity_main">TLS-BILL</string>
+    <string name="package_name">com.tls.billing</string>
+    <string name="custom_url_scheme">com.tls.billing</string>
+</resources>

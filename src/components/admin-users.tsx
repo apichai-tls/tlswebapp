@@ -25,6 +25,7 @@ const MENU_PERMISSIONS = [
   { id: "jobs", label: "All Jobs" },
   { id: "customers", label: "Customers (CRM)" },
   { id: "dispatch", label: "Dispatch Schedule" },
+  { id: "billing", label: "Billing Photo Upload" },
   { id: "riders", label: "Riders" },
   { id: "map", label: "Live Map" },
   { id: "calculator", label: "Distance Calculator" },

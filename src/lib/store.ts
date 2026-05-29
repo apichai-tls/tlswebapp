@@ -346,7 +346,9 @@ export const jobStore = {
     };
 
     let overallStatus = job.status;
-    if (updatedLegs.deliveryInbound.status === "completed") {
+    if (job.status === "completed") {
+      overallStatus = "completed";
+    } else if (updatedLegs.deliveryInbound.status === "completed") {
       overallStatus = "completed";
     } else if (updatedLegs.deliveryOutbound.status === "in_transit" || updatedLegs.deliveryInbound.status === "in_transit") {
       overallStatus = "delivery";
@@ -359,7 +361,7 @@ export const jobStore = {
     await api.updateJob(id, { 
       legs: updatedLegs, 
       status: overallStatus, 
-      completedAt: overallStatus === "completed" ? new Date() : undefined 
+      completedAt: overallStatus === "completed" ? (job.completedAt || new Date()) : undefined 
     });
     emitJobChange();
   },
@@ -372,6 +374,11 @@ export const jobStore = {
   async updateJobDetails(id: string, updates: Partial<Job>) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
+
+    if (job && job.status === "completed") {
+      delete updates.status;
+      delete updates.completedAt;
+    }
 
     if (job && job.legs) {
       let legsModified = false;
@@ -479,7 +486,7 @@ export const jobStore = {
 
       await api.updateJob(id, {
         status: "completed",
-        completedAt: new Date(),
+        completedAt: job.completedAt || new Date(),
         deliveryProofImageUrl: proofJson,
         legs: updatedLegs,
       });

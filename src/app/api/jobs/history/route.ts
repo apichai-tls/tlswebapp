@@ -69,6 +69,7 @@ export async function GET(req: NextRequest) {
         deliveryProofImageUrl: true,
         branchId: true,
         paymentChannel: true,
+        isPaid: true,
       }
     });
     

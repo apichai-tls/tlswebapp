@@ -7,6 +7,7 @@ import { loginUser } from '@/actions/auth';
 export interface User {
   id: string;
   email: string;
+  name?: string;
   role: 'admin' | 'rider' | 'manager' | 'cso' | 'staff';
   permissions: string[];
   area?: string;
