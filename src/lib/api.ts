@@ -43,7 +43,7 @@ export const ensureDbLoaded = async () => {
   }
 
   try {
-    const res = await fetch('/api/db');
+    const res = await fetch('/api/db?t=' + Date.now());
     if (res.ok) {
       const data = await res.json();
       
@@ -86,7 +86,7 @@ export const refreshDb = async () => {
   if (isRefreshing) return; // Skip if already fetching — prevents race conditions
   isRefreshing = true;
   try {
-    const res = await fetch('/api/db');
+    const res = await fetch('/api/db?t=' + Date.now());
     if (res.ok) {
       const data = await res.json();
       const parsed = JSON.parse(JSON.stringify(data), dateReviver);

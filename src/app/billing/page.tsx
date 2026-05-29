@@ -30,6 +30,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Plus,
+  RefreshCw,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -389,6 +390,86 @@ export default function BillingPage() {
   const [isNative, setIsNative] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
+  // Pull-to-refresh state and touch event handling
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const touchStartY = useRef(0);
+  const isPulling = useRef(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      // Only trigger pulling if both the element and window are scrolled to the absolute top
+      const isAtTop = el.scrollTop === 0 && window.scrollY === 0;
+      if (isAtTop && !isPullRefreshing) {
+        touchStartY.current = e.touches[0].clientY;
+        isPulling.current = true;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPulling.current || isPullRefreshing) return;
+      const currentY = e.touches[0].clientY;
+      const diff = currentY - touchStartY.current;
+      
+      if (diff > 0) {
+        // Resistance: logarithmic feel
+        const distance = Math.min(100, Math.pow(diff, 0.85));
+        setPullDistance(distance);
+        
+        // Prevent WebView's default overscroll reload gesture
+        if (diff > 10) {
+          if (e.cancelable) e.preventDefault();
+        }
+      } else {
+        setPullDistance(0);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (!isPulling.current) return;
+      isPulling.current = false;
+
+      if (pullDistance >= 60 && !isPullRefreshing) {
+        setIsPullRefreshing(true);
+        setPullDistance(60); // Hold at active spin position
+
+        toast.promise(
+          import("@/lib/api").then(async (m) => {
+            await m.refreshDb();
+            // Aesthetic delay for smooth transition feel
+            await new Promise((r) => setTimeout(r, 600));
+          }),
+          {
+            loading: "Syncing latest bills...",
+            success: "Updated successfully ✅",
+            error: "Sync failed ❌",
+          }
+        );
+
+        setTimeout(() => {
+          setIsPullRefreshing(false);
+          setPullDistance(0);
+        }, 800);
+      } else {
+        setPullDistance(0);
+      }
+    };
+
+    el.addEventListener("touchstart", handleTouchStart, { passive: true });
+    el.addEventListener("touchmove", handleTouchMove, { passive: false });
+    el.addEventListener("touchend", handleTouchEnd, { passive: true });
+
+    return () => {
+      el.removeEventListener("touchstart", handleTouchStart);
+      el.removeEventListener("touchmove", handleTouchMove);
+      el.removeEventListener("touchend", handleTouchEnd);
+    };
+  }, [pullDistance, isPullRefreshing]);
+
   useEffect(() => {
     setIsMounted(true);
     import("@capacitor/core").then(({ Capacitor }) => {
@@ -480,7 +561,7 @@ export default function BillingPage() {
   }
 
   const mobileLayout = (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100/80 animate-in fade-in duration-200">
+    <div ref={scrollContainerRef} className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100/80 animate-in fade-in duration-200 overflow-y-auto">
       {/* ============ Header ============ */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 shadow-sm">
         <div className="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
@@ -500,6 +581,30 @@ export default function BillingPage() {
           </button>
         </div>
       </header>
+
+      {/* ============ Pull to Refresh Indicator ============ */}
+      <div 
+        className="flex justify-center transition-all duration-150 overflow-hidden bg-white/50 backdrop-blur-sm border-b border-slate-100/50 sticky top-[57px] z-20"
+        style={{ 
+          height: pullDistance > 0 || isPullRefreshing ? `${pullDistance}px` : "0px",
+          opacity: pullDistance > 0 || isPullRefreshing ? 1 : 0
+        }}
+      >
+        <div className="flex items-center justify-center gap-2 py-2">
+          {isPullRefreshing ? (
+            <Loader2 className="animate-spin text-blue-600" size={16} />
+          ) : (
+            <RefreshCw 
+              style={{ transform: `rotate(${pullDistance * 4}deg)` }} 
+              className="text-blue-500 transition-transform" 
+              size={16} 
+            />
+          )}
+          <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase">
+            {isPullRefreshing ? "Syncing..." : pullDistance >= 60 ? "Release to sync" : "Pull to sync"}
+          </span>
+        </div>
+      </div>
 
       {/* ============ Content ============ */}
       <main className="max-w-lg mx-auto px-4 py-4 pb-24">
