@@ -1471,12 +1471,7 @@ export default function RiderPage() {
                     </div>
                   )}
 
-                  {selectedJob.job.remark && (
-                    <div className="p-2 bg-rose-50 border border-rose-100 shadow-sm rounded-xl">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-rose-500 mb-0.5">Instructions</p>
-                      <p className="text-xs font-medium text-rose-800">{selectedJob.job.remark}</p>
-                    </div>
-                  )}
+
 
                   <div className="p-2 bg-slate-50 border border-slate-200 shadow-sm rounded-xl flex flex-col h-32 relative">
                     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1 flex-shrink-0">Job Chat / Logs</p>
