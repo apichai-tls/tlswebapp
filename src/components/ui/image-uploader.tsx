@@ -102,46 +102,72 @@ export function ImageUploader({
     try {
       // Compress the image before uploading (evidence grade: 1600px width/height max, 85% quality)
       const compressedFile = await compressImage(file, 1600, 1600, 0.85);
+      let finalUrl = "";
+      let finalPath = "";
 
-      // 1. Get Signed URL from our Next.js backend
-      const response = await fetch("/api/upload-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entityType,
-          entityId,
-          subType,
-          contentType: compressedFile.type,
-        }),
-      });
+      try {
+        // 1. Get Signed URL from our Next.js backend
+        const response = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entityType,
+            entityId,
+            subType,
+            contentType: compressedFile.type,
+          }),
+        });
 
-      if (!response.ok) {
-        throw new Error("Failed to get upload authorization");
-      }
+        if (!response.ok) {
+          throw new Error("Failed to get upload authorization");
+        }
 
-      const { uploadUrl, filePath, publicUrl } = await response.json();
-      setUploadProgress(50);
+        const { uploadUrl, filePath, publicUrl } = await response.json();
+        setUploadProgress(40);
 
-      // 2. Upload file directly to Google Cloud Storage
-      const uploadResponse = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: {
-          "Content-Type": compressedFile.type,
-        },
-        body: compressedFile,
-      });
+        // 2. Upload file directly to Google Cloud Storage
+        const uploadResponse = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Type": compressedFile.type,
+          },
+          body: compressedFile,
+        });
 
-      if (!uploadResponse.ok) {
-        throw new Error("Failed to upload file to Cloud Storage");
+        if (!uploadResponse.ok) {
+          throw new Error("Failed to upload file to Cloud Storage");
+        }
+        
+        finalUrl = publicUrl || filePath;
+        finalPath = filePath;
+      } catch (gcsError: any) {
+        console.warn("GCS Upload failed, falling back to local filesystem upload:", gcsError.message);
+        setUploadProgress(60);
+
+        // Fallback: POST file directly to Next.js API /api/upload-local
+        const localFormData = new FormData();
+        localFormData.append("file", compressedFile);
+        localFormData.append("entityType", entityType);
+        localFormData.append("entityId", entityId);
+        if (subType) localFormData.append("subType", subType);
+
+        const fallbackResponse = await fetch("/api/upload-local", {
+          method: "POST",
+          body: localFormData,
+        });
+
+        if (!fallbackResponse.ok) {
+          const errData = await fallbackResponse.json().catch(() => ({}));
+          throw new Error(errData.error || "Local upload fallback failed");
+        }
+
+        const fallbackData = await fallbackResponse.json();
+        finalUrl = fallbackData.publicUrl;
+        finalPath = fallbackData.filePath;
       }
 
       setUploadProgress(100);
-      
-      // 3. Construct final URL and notify parent
-      // If publicUrl is provided (like for avatars), use it. 
-      // Otherwise, just return the path (for private files like bills).
-      const finalUrl = publicUrl || filePath; 
-      onUploadSuccess(finalUrl, filePath);
+      onUploadSuccess(finalUrl, finalPath);
 
       setTimeout(() => {
         setIsUploading(false);

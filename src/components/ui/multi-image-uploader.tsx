@@ -123,40 +123,66 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
 
               // Compress the image before uploading (evidence grade: 1600px width/height max, 85% quality)
               const compressedFile = await compressImage(uploadData.file, 1600, 1600, 0.85);
+              let finalUrl = "";
 
-              // 1. Get Signed URL
-              const response = await fetch("/api/upload-url", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  entityType,
-                  entityId,
-                  subType,
-                  contentType: compressedFile.type,
-                }),
-              });
+              try {
+                // 1. Get Signed URL
+                const response = await fetch("/api/upload-url", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    entityType,
+                    entityId,
+                    subType,
+                    contentType: compressedFile.type,
+                  }),
+                });
 
-              if (!response.ok) throw new Error("Failed to get upload authorization");
+                if (!response.ok) throw new Error("Failed to get upload authorization");
 
-              const { uploadUrl, filePath, publicUrl } = await response.json();
-              updateFileStatus(uploadData.id, { progress: 40 });
+                const { uploadUrl, filePath, publicUrl } = await response.json();
+                updateFileStatus(uploadData.id, { progress: 40 });
 
-              // 2. Upload file
-              const uploadResponse = await fetch(uploadUrl, {
-                method: "PUT",
-                headers: { "Content-Type": compressedFile.type },
-                body: compressedFile,
-              });
+                // 2. Upload file directly to Cloud Storage
+                const uploadResponse = await fetch(uploadUrl, {
+                  method: "PUT",
+                  headers: { "Content-Type": compressedFile.type },
+                  body: compressedFile,
+                });
 
-              if (!uploadResponse.ok) throw new Error("Upload failed");
+                if (!uploadResponse.ok) throw new Error("Cloud storage upload failed");
+                
+                finalUrl = publicUrl || filePath;
+              } catch (gcsError: any) {
+                console.warn("GCS Upload failed, falling back to local filesystem upload:", gcsError.message);
+                updateFileStatus(uploadData.id, { progress: 50 });
+
+                // Fallback: POST file directly to Next.js API /api/upload-local
+                const localFormData = new FormData();
+                localFormData.append("file", compressedFile);
+                localFormData.append("entityType", entityType);
+                localFormData.append("entityId", entityId);
+                if (subType) localFormData.append("subType", subType);
+
+                const fallbackResponse = await fetch("/api/upload-local", {
+                  method: "POST",
+                  body: localFormData,
+                });
+
+                if (!fallbackResponse.ok) {
+                  const errData = await fallbackResponse.json().catch(() => ({}));
+                  throw new Error(errData.error || "Local upload fallback failed");
+                }
+
+                const fallbackData = await fallbackResponse.json();
+                finalUrl = fallbackData.publicUrl;
+              }
               
               updateFileStatus(uploadData.id, { progress: 100 });
-              const finalUrl = publicUrl || filePath;
-
               updateFileStatus(uploadData.id, { status: "success", finalUrl });
               uploadedUrls.push(finalUrl);
             } catch (error: any) {
-              console.error(error);
+              console.error("Upload process error:", error);
               updateFileStatus(uploadData.id, { status: "error", errorMsg: error.message });
               toast.error(`Failed to upload ${uploadData.file.name}: ${error.message}`);
               throw error; // Rethrow to stop the overarching process if needed
