@@ -768,8 +768,18 @@ export default function AdminPage() {
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
 
-    // Parse scheduled pickup time for today
-    const pDate = parseTime(pickupScheduledTime);
+    const getValidDateOrNull = (timeStr: string): Date | null => {
+      if (!timeStr) return null;
+      try {
+        const d = parseTime(timeStr);
+        return (d instanceof Date && !isNaN(d.getTime())) ? d : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const validPickupDate = getValidDateOrNull(pickupScheduledTime);
+    const validDeliveryDate = getValidDateOrNull(deliveryScheduledTime);
     
     setIsSubmitting(true);
     let finalBagImageUrls: string[] = [];
@@ -813,11 +823,11 @@ export default function AdminPage() {
       dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : shop.address,
       pickupCoords: isPickup ? pickupCoords : shop.coords,
       dropoffCoords: isDelivery ? deliveryCoords : shop.coords,
-      scheduledAt: pDate || null,
-      pickupScheduledAt: isPickup ? (pDate || null) : null,
-      pickupScheduledEndAt: isPickup && pDate ? new Date(pDate.getTime() + 30 * 60000) : null,
-      deliveryScheduledAt: isDelivery ? (deliveryScheduledTime ? parseTime(deliveryScheduledTime) : null) : null,
-      deliveryScheduledEndAt: isDelivery && deliveryScheduledTime ? new Date(parseTime(deliveryScheduledTime).getTime() + 30 * 60000) : null,
+      scheduledAt: (isPickup ? validPickupDate : (isDelivery ? validDeliveryDate : null)) || new Date(),
+      pickupScheduledAt: isPickup ? validPickupDate : null,
+      pickupScheduledEndAt: isPickup && validPickupDate ? new Date(validPickupDate.getTime() + 30 * 60000) : null,
+      deliveryScheduledAt: isDelivery ? validDeliveryDate : null,
+      deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null,

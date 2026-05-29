@@ -252,6 +252,7 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.deliveryDistance !== undefined) data.deliveryDistance = updates.deliveryDistance;
   if (updates.pickupCommission !== undefined) data.pickupCommission = updates.pickupCommission;
   if (updates.deliveryCommission !== undefined) data.deliveryCommission = updates.deliveryCommission;
+  if (updates.createdBy !== undefined) data.createdBy = updates.createdBy;
 
   // Check if a leg was just completed by comparing status
   if (updates.status) {
