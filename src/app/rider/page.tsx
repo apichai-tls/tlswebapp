@@ -303,7 +303,7 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
           
           <div className="flex flex-col items-end gap-1 shrink-0">
             <div className="flex items-center gap-1">
-              {job.paymentChannel === "Cash / COD" && !job.isPaid && (
+              {job.cashPlaced && (
                 <span className="flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200">
                   <Banknote size={10} className="text-red-500" />
                   เก็บเงินสด
@@ -1397,7 +1397,7 @@ export default function RiderPage() {
                       </Button>
                       <div className="flex flex-col items-end gap-1.5">
                         <div className="flex items-center gap-1">
-                          {selectedJob.job.paymentChannel === "Cash / COD" && !selectedJob.job.isPaid && (
+                          {selectedJob.job.cashPlaced && (
                             <Badge
                               variant="outline"
                               className="gap-1.5 text-xs py-1 px-2 bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200"
