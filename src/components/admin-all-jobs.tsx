@@ -326,7 +326,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                             </Badge>
                           )}
                           {job.billImageUrl && job.billImageUrl !== '[]' && <span title="Bill uploaded" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
-                          {job.subStatus === 'billing' && <span title="Billing" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
                           {job.subStatus === 'wash'    && <span title="Washing" className="w-4 h-4 rounded flex items-center justify-center bg-blue-100 text-blue-700 border border-blue-200"><Droplets size={10} /></span>}
                           {job.subStatus === 'dry'     && <span title="Drying" className="w-4 h-4 rounded flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={10} /></span>}
                           {job.subStatus === 'iron'    && <span title="Ironing" className="w-4 h-4 rounded flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={10} /></span>}
@@ -571,7 +570,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                             <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
                           )}
                           {job.billImageUrl && job.billImageUrl !== '[]' && <span title="Bill uploaded" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
-                          {job.subStatus === 'billing' && <span title="Billing" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
                           {job.subStatus === 'wash'    && <span title="Washing" className="w-4 h-4 rounded flex items-center justify-center bg-blue-100 text-blue-700 border border-blue-200"><Droplets size={10} /></span>}
                           {job.subStatus === 'dry'     && <span title="Drying" className="w-4 h-4 rounded flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={10} /></span>}
                           {job.subStatus === 'iron'    && <span title="Ironing" className="w-4 h-4 rounded flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={10} /></span>}

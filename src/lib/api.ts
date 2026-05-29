@@ -130,15 +130,24 @@ export const refreshDb = async () => {
             const shouldPreservePickup = isMemPickupCompleted && !isServerPickupCompleted;
             const shouldPreserveDelivery = isMemDeliveryCompleted && !isServerDeliveryCompleted;
 
+            let updatedJob = { ...serverJob };
+
             if (shouldPreservePickup || shouldPreserveDelivery) {
-              return {
-                ...serverJob,
+              updatedJob = {
+                ...updatedJob,
                 status: memJob.status,
                 completedAt: memJob.completedAt || serverJob.completedAt,
                 pickupProofImageUrl: memJob.pickupProofImageUrl || serverJob.pickupProofImageUrl,
                 deliveryProofImageUrl: memJob.deliveryProofImageUrl || serverJob.deliveryProofImageUrl,
               };
             }
+
+            // Always preserve in-memory billImageUrl if client has one but server has stale empty/null data
+            if (memJob.billImageUrl && memJob.billImageUrl !== '[]' && (!serverJob.billImageUrl || serverJob.billImageUrl === '[]')) {
+              updatedJob.billImageUrl = memJob.billImageUrl;
+            }
+
+            return updatedJob;
           }
           return serverJob;
         });

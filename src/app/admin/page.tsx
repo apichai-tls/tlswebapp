@@ -302,6 +302,7 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
   const [laundryTypes, setLaundryTypes] = useState<string[]>([]);
   const [customerName, setCustomerName] = useState("");
@@ -515,6 +516,7 @@ export default function AdminPage() {
 
   const handleCreateNewJob = () => {
     setEditingJobId(null);
+    setIsDetailLoading(false);
     setEditingSubStatus(null);
     setCustomerName("");
     setCustomerPhone("");
@@ -652,52 +654,69 @@ export default function AdminPage() {
       other: { selected: false, quantity: 1 },
     });
 
-    setBagImageUrls([]);
-    setBillImageUrls([]);
-    setPickupProofImageUrls([]);
-    setDeliveryProofImageUrls([]);
+    const parseUrls = (imgUrl: any): string[] => {
+      if (!imgUrl) return [];
+      // Helper to resolve a single value to a full URL
+      const resolveUrl = (url: string): string => {
+        if (typeof url !== 'string') return '';
+        const clean = url.trim().replace(/^[\"'\\]+|[\"'\\]+$/g, '');
+        if (!clean || clean === 'null' || clean === 'undefined') return '';
+        if (clean.startsWith('http') || clean.startsWith('/')) return clean;
+        return `https://storage.googleapis.com/tls-images-test/${clean}`;
+      };
+
+      const flattenAndResolve = (val: any): string[] => {
+        if (!val) return [];
+        if (typeof val === 'string') {
+          // Try parsing as JSON (handles nested JSON strings)
+          try {
+            const inner = JSON.parse(val);
+            return flattenAndResolve(inner);
+          } catch {
+            // Plain URL string
+            const resolved = resolveUrl(val);
+            return resolved ? [resolved] : [];
+          }
+        }
+        if (Array.isArray(val)) {
+          return val.flatMap((item: any) => flattenAndResolve(item));
+        }
+        return [];
+      };
+
+      return flattenAndResolve(imgUrl).filter(Boolean);
+    };
+
+    // 🚀 Load images INSTANTLY from the local in-memory job object
+    const localBagUrls = parseUrls(job.bagImageUrl);
+    const localBillUrls = parseUrls(job.billImageUrl);
+    const localPickupUrls = parseUrls(job.pickupProofImageUrl);
+    const localDeliveryUrls = parseUrls(job.deliveryProofImageUrl || job.proofImageUrl);
+
+    setBagImageUrls(localBagUrls);
+    setBillImageUrls(localBillUrls);
+    setPickupProofImageUrls(localPickupUrls);
+    setDeliveryProofImageUrls(localDeliveryUrls);
+
+    // No need to show blocking loader because we loaded images instantly!
+    setIsDetailLoading(false);
+
+    // Silent background fetch to ensure perfect consistency with the server DB
     fetch(`/api/jobs/${job.id}/details`)
       .then(r => r.json())
       .then(data => {
-        const parseUrls = (imgUrl: any): string[] => {
-          if (!imgUrl) return [];
-          // Helper to resolve a single value to a full URL
-          const resolveUrl = (url: string): string => {
-            if (typeof url !== 'string') return '';
-            const clean = url.trim().replace(/^[\"'\\]+|[\"'\\]+$/g, '');
-            if (!clean || clean === 'null' || clean === 'undefined') return '';
-            if (clean.startsWith('http') || clean.startsWith('/')) return clean;
-            return `https://storage.googleapis.com/tls-images-test/${clean}`;
-          };
+        const remoteBagUrls = parseUrls(data.bagImageUrl);
+        const remoteBillUrls = parseUrls(data.billImageUrl);
+        const remotePickupUrls = parseUrls(data.pickupProofImageUrl);
+        const remoteDeliveryUrls = parseUrls(data.deliveryProofImageUrl || data.proofImageUrl);
 
-          const flattenAndResolve = (val: any): string[] => {
-            if (!val) return [];
-            if (typeof val === 'string') {
-              // Try parsing as JSON (handles nested JSON strings)
-              try {
-                const inner = JSON.parse(val);
-                return flattenAndResolve(inner);
-              } catch {
-                // Plain URL string
-                const resolved = resolveUrl(val);
-                return resolved ? [resolved] : [];
-              }
-            }
-            if (Array.isArray(val)) {
-              return val.flatMap((item: any) => flattenAndResolve(item));
-            }
-            return [];
-          };
-
-          return flattenAndResolve(imgUrl).filter(Boolean);
-        };
-
-        setBagImageUrls(parseUrls(data.bagImageUrl));
-        setBillImageUrls(parseUrls(data.billImageUrl));
-        setPickupProofImageUrls(parseUrls(data.pickupProofImageUrl));
-        setDeliveryProofImageUrls(parseUrls(data.deliveryProofImageUrl || data.proofImageUrl)); // Fallback to old proofImageUrl if deliveryProof is empty
+        // Only update states if they actually changed on the server to prevent flashing or overriding local changes
+        if (JSON.stringify(remoteBagUrls) !== JSON.stringify(localBagUrls)) setBagImageUrls(remoteBagUrls);
+        if (JSON.stringify(remoteBillUrls) !== JSON.stringify(localBillUrls)) setBillImageUrls(remoteBillUrls);
+        if (JSON.stringify(remotePickupUrls) !== JSON.stringify(localPickupUrls)) setPickupProofImageUrls(remotePickupUrls);
+        if (JSON.stringify(remoteDeliveryUrls) !== JSON.stringify(localDeliveryUrls)) setDeliveryProofImageUrls(remoteDeliveryUrls);
       })
-      .catch(e => console.error("Failed to fetch job details images", e));
+      .catch(e => console.error("Failed to fetch job details images in background", e));
     
     setAdminNote(job.remark || "");
     try {
@@ -2148,12 +2167,17 @@ export default function AdminPage() {
                     <Button 
                       className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
                       onClick={handleCreate}
-                      disabled={isSubmitting || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
+                      disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
                     >
                       {isSubmitting ? (
                         <>
                           <Loader2 size={16} className="animate-spin mr-2" />
                           Uploading & Saving...
+                        </>
+                      ) : isDetailLoading ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin mr-2" />
+                          Loading details...
                         </>
                       ) : (
                         editingJobId ? "Save Changes" : "Create Job"
