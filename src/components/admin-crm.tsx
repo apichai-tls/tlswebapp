@@ -82,15 +82,15 @@ const getAvatarBadge = (customer: Customer) => {
 
 // Helper to format last active date
 const getLastActiveText = (date?: Date) => {
-  if (!date) return "ยังไม่มีประวัติออเดอร์";
+  if (!date) return "No order history";
   try {
     const diffMs = new Date().getTime() - new Date(date).getTime();
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    if (diffDays === 0) return "ใช้งานวันนี้";
-    if (diffDays === 1) return "เมื่อวานนี้";
-    return `${diffDays} วันที่แล้ว`;
+    if (diffDays === 0) return "Active today";
+    if (diffDays === 1) return "Yesterday";
+    return `${diffDays} days ago`;
   } catch {
-    return "ไม่ระบุ";
+    return "N/A";
   }
 };
 
@@ -240,7 +240,7 @@ export function AdminCRM() {
             <h1 className="text-2xl font-black text-slate-900 tracking-tight leading-tight">Customer Database</h1>
           </div>
           <p className="text-sm text-slate-500 font-medium">
-            ระบบบริหารความสัมพันธ์ลูกค้า ({customers.length} ราย) ดูประวัติ ยอดขายสะสม และการตั้งค่าสิทธิ์ราคาพิเศษ
+            Customer Relationship Management ({customers.length} customers) - View history, LTV spent, and custom rates.
           </p>
         </div>
         <Button 
@@ -248,7 +248,7 @@ export function AdminCRM() {
           className="gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-md shadow-indigo-100 transition-all rounded-xl h-11 px-5"
         >
           <UserPlus size={18} />
-          เพิ่มลูกค้าใหม่
+          Add New Customer
         </Button>
       </div>
 
@@ -264,10 +264,10 @@ export function AdminCRM() {
           <div className="absolute right-4 top-4 p-3 bg-indigo-50 text-indigo-600 rounded-xl group-hover:scale-110 transition-transform">
             <Users size={24} />
           </div>
-          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">ลูกค้าในระบบทั้งหมด</p>
+          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Total Customers</p>
           <div className="flex items-baseline gap-2">
             <h3 className="text-3xl font-black text-slate-900">{statsCount.all}</h3>
-            <span className="text-xs text-slate-500">ราย</span>
+            <span className="text-xs text-slate-500">retail</span>
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5">
             <Badge variant="secondary" className="bg-amber-50 text-amber-800 border-none font-bold text-[10px] h-5 py-0 px-2">
@@ -287,14 +287,14 @@ export function AdminCRM() {
           <div className="absolute right-4 top-4 p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform">
             <Wallet size={24} />
           </div>
-          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">ยอดกระเป๋าเงินรวม (Credit Wallets)</p>
+          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Credit Wallet Balance</p>
           <div className="flex items-baseline gap-2">
             <h3 className="text-3xl font-black text-emerald-600">
               ฿{totalCreditBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
             </h3>
           </div>
           <p className="text-xs text-slate-500 mt-3 font-medium">
-            มีผู้ใช้กระเป๋าเครดิต <span className="font-bold text-emerald-600">{statsCount.balance}</span> รายในระบบ
+            There are <span className="font-bold text-emerald-600">{statsCount.balance}</span> active wallets in system.
           </p>
         </motion.div>
 
@@ -303,14 +303,14 @@ export function AdminCRM() {
           <div className="absolute right-4 top-4 p-3 bg-indigo-800 text-indigo-200 rounded-xl group-hover:scale-110 transition-transform">
             <TrendingUp size={24} />
           </div>
-          <p className="text-indigo-200/70 text-xs font-bold uppercase tracking-widest mb-2">ยอดขายสะสมรวมลูกค้า (Total Network LTV)</p>
+          <p className="text-indigo-200/70 text-xs font-bold uppercase tracking-widest mb-2">Total Customer LTV</p>
           <div className="flex items-baseline gap-2">
             <h3 className="text-3xl font-black text-white">
               ฿{totalNetworkLTV.toLocaleString()}
             </h3>
           </div>
           <p className="text-xs text-indigo-200 mt-3 font-medium">
-            สถิติมูลค่าการใช้บริการที่เสร็จสมบูรณ์จากลูกค้าทั้งหมด
+            Completed order value stats from all customers.
           </p>
         </motion.div>
       </motion.div>
@@ -330,7 +330,7 @@ export function AdminCRM() {
               }`}
             >
               <Users size={14} />
-              ทั้งหมด ({statsCount.all})
+              All ({statsCount.all})
             </button>
             <button
               onClick={() => setActiveTab("vip")}
@@ -341,7 +341,7 @@ export function AdminCRM() {
               }`}
             >
               <Star size={14} className="fill-amber-400 text-amber-500" />
-              ลูกค้า VIP ({statsCount.vip})
+              VIP ({statsCount.vip})
             </button>
             <button
               onClick={() => setActiveTab("member")}
@@ -352,7 +352,7 @@ export function AdminCRM() {
               }`}
             >
               <Crown size={14} className="text-indigo-600" />
-              สมาชิก ({statsCount.member})
+              Members ({statsCount.member})
             </button>
             <button
               onClick={() => setActiveTab("corporate")}
@@ -363,7 +363,7 @@ export function AdminCRM() {
               }`}
             >
               <Building size={14} className="text-slate-600" />
-              องค์กร B2B ({statsCount.corporate})
+              Corporate B2B ({statsCount.corporate})
             </button>
             <button
               onClick={() => setActiveTab("balance")}
@@ -374,7 +374,7 @@ export function AdminCRM() {
               }`}
             >
               <Wallet size={14} className="text-emerald-600" />
-              มีกระเป๋าเงิน ({statsCount.balance})
+              Active Wallets ({statsCount.balance})
             </button>
           </div>
 
@@ -382,7 +382,7 @@ export function AdminCRM() {
           <div className="relative w-full lg:w-80">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <Input 
-              placeholder="ค้นหาชื่อ, เบอร์โทร, LINE, อีเมล, ID..." 
+              placeholder="Search name, phone, LINE, email, ID..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-10 h-10 border-slate-200 bg-slate-50 focus-visible:ring-indigo-500 rounded-xl text-xs font-medium"
@@ -403,11 +403,11 @@ export function AdminCRM() {
           <Table>
             <TableHeader>
               <TableRow className="bg-slate-50/70 hover:bg-slate-50/70 border-b-slate-200">
-                <TableHead className="font-bold text-slate-700 pl-6 py-4 text-xs uppercase tracking-wider">ข้อมูลส่วนตัวและผู้ติดต่อ</TableHead>
-                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">ที่อยู่และตึก (จัดส่ง)</TableHead>
-                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">กระเป๋าเงิน & เรทราคา</TableHead>
-                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider text-center">สถิติสะสม LTV</TableHead>
-                <TableHead className="font-bold text-slate-700 pr-6 py-4 text-xs uppercase tracking-wider text-right">เครื่องมือ</TableHead>
+                <TableHead className="font-bold text-slate-700 pl-6 py-4 text-xs uppercase tracking-wider">Profile & Contact Info</TableHead>
+                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Address & Building (Delivery)</TableHead>
+                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Wallet & Pricing</TableHead>
+                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider text-center">Accumulated LTV Stats</TableHead>
+                <TableHead className="font-bold text-slate-700 pr-6 py-4 text-xs uppercase tracking-wider text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -417,8 +417,8 @@ export function AdminCRM() {
                     <TableCell colSpan={5} className="h-44 text-center text-slate-400">
                       <div className="flex flex-col items-center justify-center space-y-2">
                         <Users size={32} className="text-slate-300" />
-                        <p className="font-semibold text-sm">ไม่พบรายชื่อลูกค้าที่ตรงตามเงื่อนไขการค้นหา</p>
-                        <p className="text-xs text-slate-400">กรุณาลองกรอกคำค้นหาอื่นหรือเปลี่ยนแท็บคัดกรอง</p>
+                        <p className="font-semibold text-sm">No customers found matching the search criteria</p>
+                        <p className="text-xs text-slate-400">Please try different keywords or change filter tabs</p>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -464,7 +464,7 @@ export function AdminCRM() {
                                 )}
                                 {isNewCustomer ? (
                                   <Badge className="bg-sky-50 text-sky-700 border border-sky-200/40 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
-                                    ลูกค้าใหม่
+                                    NEW
                                   </Badge>
                                 ) : null}
                               </div>
@@ -508,7 +508,7 @@ export function AdminCRM() {
                                 </span>
                               </div>
                             ) : (
-                              <span className="text-[10px] text-amber-500 font-bold ml-3.5 italic">⚠️ ไม่มีตึก/ห้อง</span>
+                              <span className="text-[10px] text-amber-500 font-bold ml-3.5 italic">⚠️ No building/room</span>
                             )}
                           </div>
                         </TableCell>
@@ -537,11 +537,11 @@ export function AdminCRM() {
                               {customer.priceListId && customer.priceListId !== "regular" ? (
                                 <Badge className="bg-purple-50 text-purple-700 border border-purple-200/30 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
                                   <Crown size={8} className="text-purple-600" /> 
-                                  {priceLists.find(p => p.id === customer.priceListId)?.name || "ราคาพิเศษ"}
+                                  {priceLists.find(p => p.id === customer.priceListId)?.name || "Special Rate"}
                                 </Badge>
                               ) : (
                                 <Badge className="bg-slate-50 text-slate-500 border border-slate-200/60 shadow-none font-medium text-[9px] h-4.5 py-0 px-1.5">
-                                  อัตราปกติ
+                                  Standard Rate
                                 </Badge>
                               )}
                             </div>
@@ -555,7 +555,7 @@ export function AdminCRM() {
                               ฿{stats.ltv.toLocaleString()}
                             </span>
                             <span className="text-[10px] text-slate-500 bg-slate-100 font-semibold px-2 py-0.5 rounded-full">
-                              {stats.jobsCount} ออเดอร์
+                              {stats.jobsCount} orders
                             </span>
                             <span className="text-[9px] text-slate-400 flex items-center gap-0.5 mt-0.5">
                               <Clock size={8} />
@@ -580,7 +580,7 @@ export function AdminCRM() {
                               }}
                             >
                               <Wallet size={12} />
-                              เติมเงิน
+                              Top Up
                             </Button>
 
                             {/* View detail button */}
@@ -588,7 +588,7 @@ export function AdminCRM() {
                               variant="ghost" 
                               size="icon" 
                               className="h-8 w-8 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors rounded-lg"
-                              title="ดูประวัติลูกค้า"
+                              title="View Profile"
                               onClick={() => {
                                 setSelectedProfileCustomer(customer);
                                 setProfileOpen(true);
@@ -602,7 +602,7 @@ export function AdminCRM() {
                               variant="ghost" 
                               size="icon" 
                               className="h-8 w-8 text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors rounded-lg"
-                              title="แก้ไขข้อมูล"
+                              title="Edit"
                               onClick={() => openForm(customer)}
                             >
                               <Edit size={15} />
@@ -613,7 +613,7 @@ export function AdminCRM() {
                               variant="ghost" 
                               size="icon" 
                               className="h-8 w-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors rounded-lg"
-                              title="ลบรายชื่อ"
+                              title="Delete"
                               onClick={() => handleDelete(customer.id, customer.name)}
                             >
                               <Trash2 size={15} />
@@ -649,23 +649,23 @@ export function AdminCRM() {
                 <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
                   <Wallet size={24} />
                 </div>
-                ทำรายการเติมเงิน / หักเครดิต
+                Credit Wallet Top-Up / Deduction
               </DialogTitle>
               <DialogDescription className="text-emerald-800/80 mt-1">
-                จัดการเพิ่มหรือหักเงินในกระเป๋าเครดิตของลูกค้าคุณ **{topUpCustomer?.name}**
+                Manage credit balance for customer **{topUpCustomer?.name}**
               </DialogDescription>
             </DialogHeader>
 
             <div className="p-6 space-y-6">
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
-                <span className="text-sm font-semibold text-slate-500">ยอดเงินคงเหลือปัจจุบัน</span>
+                <span className="text-sm font-semibold text-slate-500">Current Credit Balance</span>
                 <span className="text-2xl font-black text-slate-900">
                   ฿{(topUpCustomer?.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </span>
               </div>
 
               <div className="space-y-3">
-                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">จำนวนเงินทำรายการ (฿)</Label>
+                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Transaction Amount (฿)</Label>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">฿</span>
                   <Input 
@@ -673,20 +673,20 @@ export function AdminCRM() {
                     step="0.01"
                     required
                     autoFocus
-                    placeholder="ตัวอย่าง 1000" 
+                    placeholder="e.g. 1000" 
                     value={topUpAmount} 
                     onChange={e => setTopUpAmount(e.target.value)} 
                     className="h-14 pl-10 border-slate-200 text-xl font-bold rounded-xl focus-visible:ring-emerald-500 bg-white" 
                   />
                 </div>
-                <p className="text-[11px] text-slate-500 font-medium">ใส่เครื่องหมายลบ (เช่น -500) เพื่อหักเงินออกออกจากกระเป๋าเครดิต</p>
+                <p className="text-[11px] text-slate-500 font-medium">Use negative numbers (e.g. -500) to deduct credits from wallet.</p>
               </div>
             </div>
 
             <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100">
-              <Button type="button" variant="ghost" onClick={() => setTopUpOpen(false)} className="h-12 rounded-xl font-semibold px-6">ยกเลิก</Button>
+              <Button type="button" variant="ghost" onClick={() => setTopUpOpen(false)} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
               <Button type="submit" className="h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl px-8 shadow-lg shadow-emerald-100">
-                ยืนยันการทำรายการ
+                Confirm Transaction
               </Button>
             </DialogFooter>
           </form>

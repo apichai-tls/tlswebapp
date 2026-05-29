@@ -304,7 +304,7 @@ export function AdminCustomerDialog({
               
               {isMember && (
                 <div className="mt-2 pl-8 space-y-1">
-                  <Label htmlFor="memberId" className="text-[10px] font-semibold text-blue-800">Member No / เลขสมาชิก (ปล่อยว่างได้)</Label>
+                  <Label htmlFor="memberId" className="text-[10px] font-semibold text-blue-800">Member No (Optional)</Label>
                   <Input 
                     id="memberId" 
                     placeholder="e.g. MB-001" 

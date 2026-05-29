@@ -117,7 +117,7 @@ export function AdminCustomerProfileModal({
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-gradient-to-br from-slate-50 to-indigo-50/10 p-4 rounded-xl border border-slate-200 flex flex-col justify-between">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                <CreditCard size={12} className="text-indigo-500" /> ยอดการสั่งซื้อสะสม (LTV)
+                <CreditCard size={12} className="text-indigo-500" /> Accumulated Spend (LTV)
               </span>
               <span className="text-2xl font-black text-indigo-950">
                 ฿{ltv.toLocaleString()}
@@ -126,10 +126,10 @@ export function AdminCustomerProfileModal({
             
             <div className="bg-gradient-to-br from-slate-50 to-indigo-50/10 p-4 rounded-xl border border-slate-200 flex flex-col justify-between">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                <Clock size={12} className="text-indigo-500" /> ออเดอร์ทั้งหมดที่เสร็จสมบูรณ์
+                <Clock size={12} className="text-indigo-500" /> Completed Orders
               </span>
               <span className="text-2xl font-black text-indigo-950">
-                {jobsCount} <span className="text-xs font-semibold text-slate-500">ครั้ง</span>
+                {jobsCount} <span className="text-xs font-semibold text-slate-500">times</span>
               </span>
             </div>
           </div>
@@ -139,7 +139,7 @@ export function AdminCustomerProfileModal({
             <div className="bg-rose-50 border border-rose-200/60 p-4 rounded-xl flex gap-3 text-rose-800 shadow-sm animate-pulse">
               <AlertTriangle size={20} className="text-rose-500 shrink-0" />
               <div className="space-y-0.5">
-                <h4 className="text-xs font-black uppercase tracking-wider">คำแนะนำพิเศษในการซัก/รีด (Remarks)</h4>
+                <h4 className="text-xs font-black uppercase tracking-wider">Special Laundry Instructions (Remarks)</h4>
                 <p className="text-sm font-extrabold leading-relaxed">{customer.remark}</p>
               </div>
             </div>
@@ -149,7 +149,7 @@ export function AdminCustomerProfileModal({
           <div className="space-y-2.5">
              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
                <FileText size={14} className="text-indigo-500" />
-               ข้อมูลเพิ่มเติมของลูกค้า
+               Additional Customer Info
              </h3>
              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 text-xs space-y-3 font-semibold text-slate-700">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -161,21 +161,21 @@ export function AdminCustomerProfileModal({
                   )}
                   {customer.dob && (
                     <div className="flex items-center gap-2">
-                      <span className="text-slate-400 w-24 shrink-0">วันเกิด:</span>
+                      <span className="text-slate-400 w-24 shrink-0">Date of Birth:</span>
                       <span className="text-slate-900">{customer.dob}</span>
                     </div>
                   )}
                   {customer.language && (
                     <div className="flex items-center gap-2">
-                      <span className="text-slate-400 w-24 shrink-0">ภาษาที่รองรับ:</span>
-                      <span className="text-slate-900 uppercase">{customer.language === "th" ? "ภาษาไทย (TH)" : "ภาษาอังกฤษ (EN)"}</span>
+                      <span className="text-slate-400 w-24 shrink-0">Supported Language:</span>
+                      <span className="text-slate-900 uppercase">{customer.language === "th" ? "Thai (TH)" : "English (EN)"}</span>
                     </div>
                   )}
                 </div>
 
                 <div className="pt-2 border-t border-slate-200 space-y-2">
                   <div className="flex items-start gap-2">
-                    <span className="text-slate-400 w-24 shrink-0 mt-0.5">ที่อยู่หลัก:</span>
+                    <span className="text-slate-400 w-24 shrink-0 mt-0.5">Primary Address:</span>
                     <span className="text-slate-900 leading-relaxed font-bold flex items-start gap-1">
                       <MapPin size={12} className="text-emerald-500 shrink-0 mt-0.5" />
                       {customer.defaultAddress}
@@ -183,7 +183,7 @@ export function AdminCustomerProfileModal({
                   </div>
                   {customer.secondaryAddress && (
                     <div className="flex items-center gap-2">
-                      <span className="text-slate-400 w-24 shrink-0">ตึก/ชั้น/ห้อง:</span>
+                      <span className="text-slate-400 w-24 shrink-0">Building/Room:</span>
                       <span className="text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md font-extrabold flex items-center gap-1">
                         <Building size={12} />
                         {customer.secondaryAddress}
@@ -196,13 +196,13 @@ export function AdminCustomerProfileModal({
                   <div className="pt-2 border-t border-slate-200 space-y-2">
                      {customer.companyName && (
                        <div className="flex items-center gap-2">
-                         <span className="text-slate-400 w-24 shrink-0">ชื่อบริษัท B2B:</span>
+                         <span className="text-slate-400 w-24 shrink-0">B2B Company Name:</span>
                          <span className="text-slate-900 font-extrabold">{customer.companyName}</span>
                        </div>
                      )}
                      {customer.taxId && (
                        <div className="flex items-center gap-2">
-                         <span className="text-slate-400 w-24 shrink-0">เลขผู้เสียภาษี:</span>
+                         <span className="text-slate-400 w-24 shrink-0">Tax ID:</span>
                          <span className="text-slate-900">{customer.taxId}</span>
                        </div>
                      )}
@@ -215,24 +215,24 @@ export function AdminCustomerProfileModal({
           <div className="space-y-2.5">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
               <Calendar size={14} className="text-indigo-500" />
-              ประวัติการส่งออเดอร์ (ล่าสุด)
+              Recent Order History
             </h3>
             <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
               <div className="max-h-[220px] overflow-y-auto">
                 <Table>
                   <TableHeader className="bg-slate-50 sticky top-0 z-10 shadow-sm">
                     <TableRow>
-                      <TableHead className="w-[110px] text-xs font-bold py-3 text-slate-600 pl-4">วันที่ทำรายการ</TableHead>
-                      <TableHead className="text-xs font-bold py-3 text-slate-600">ประเภทบริการ & แพ็คเกจ</TableHead>
-                      <TableHead className="text-xs font-bold py-3 text-slate-600">การจ่ายเงิน</TableHead>
-                      <TableHead className="text-right text-xs font-bold py-3 text-slate-600 pr-4">ยอดเงินสุทธิ</TableHead>
+                      <TableHead className="w-[110px] text-xs font-bold py-3 text-slate-600 pl-4">Transaction Date</TableHead>
+                      <TableHead className="text-xs font-bold py-3 text-slate-600">Service Type & Package</TableHead>
+                      <TableHead className="text-xs font-bold py-3 text-slate-600">Payment</TableHead>
+                      <TableHead className="text-right text-xs font-bold py-3 text-slate-600 pr-4">Net Amount</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {customerJobs.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={4} className="text-center h-24 text-slate-400 text-xs font-semibold">
-                          ยังไม่พบประวัติการส่งออเดอร์ในระบบ
+                          No order history found in system
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -244,10 +244,10 @@ export function AdminCustomerProfileModal({
                           <TableCell className="py-3">
                             <div className="flex flex-col gap-0.5">
                               <span className="text-xs font-bold text-slate-900 capitalize">
-                                {job.serviceType?.replace(/_/g, ' ') || 'บริการทั่วไป'}
+                                {job.serviceType?.replace(/_/g, ' ') || 'General Service'}
                               </span>
                               <span className="text-[10px] text-slate-400">
-                                {job.type === "full_service" ? "บริการรับส่งครบวงจร" : job.type === "pickup" ? "รับสินค้าอย่างเดียว" : "จัดส่งอย่างเดียว"}
+                                {job.type === "full_service" ? "Full Service" : job.type === "pickup" ? "Pickup Only" : "Delivery Only"}
                               </span>
                             </div>
                           </TableCell>
@@ -255,10 +255,10 @@ export function AdminCustomerProfileModal({
                             {job.paymentMethod ? (
                               <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600 uppercase bg-slate-100 px-2 py-0.5 rounded-full w-fit">
                                 <CreditCard size={10} className="text-slate-400" />
-                                {job.paymentMethod === "credit" ? "หักกระเป๋าเครดิต" : job.paymentMethod}
+                                {job.paymentMethod === "credit" ? "Credit Wallet" : job.paymentMethod}
                               </div>
                             ) : (
-                              <span className="text-[10px] text-slate-400 italic">ไม่ระบุ</span>
+                              <span className="text-[10px] text-slate-400 italic">N/A</span>
                             )}
                           </TableCell>
                           <TableCell className="text-right font-black text-slate-900 pr-4 py-3 text-xs">
