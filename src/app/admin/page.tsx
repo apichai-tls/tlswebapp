@@ -583,7 +583,14 @@ export default function AdminPage() {
   const handleEditFullJob = (job: Job) => {
     setEditingJobId(job.id);
     setEditingSubStatus(job.subStatus || null);
-    setLaundryTypes(job.laundryTypes || []);
+    const rawLaundry = job.laundryTypes as any;
+    setLaundryTypes(
+      Array.isArray(rawLaundry) 
+        ? rawLaundry 
+        : (typeof rawLaundry === "string" && rawLaundry.trim() !== "")
+          ? rawLaundry.split(",")
+          : []
+    );
     setCustomerName(job.customerName || "");
     setCustomerPhone(job.customerPhone || "");
     

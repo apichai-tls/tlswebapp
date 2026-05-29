@@ -45,6 +45,7 @@ export async function GET(req: NextRequest) {
         completedAt: true,
         riderId: true,
         serviceType: true,
+        laundryTypes: true,
         source: true,
         totalAmount: true,
         paymentMethod: true,
@@ -73,8 +74,17 @@ export async function GET(req: NextRequest) {
         createdBy: true,
       }
     });
+    // Map Raw DB data back to the format expected by the frontend (consistent with /api/db)
+    const mappedJobs = jobs.map(j => ({
+      ...j,
+      laundryTypes: j.laundryTypes ? j.laundryTypes.split(',') : [],
+      items: j.itemsJson ? JSON.parse(j.itemsJson) : [],
+      legs: j.legsJson ? JSON.parse(j.legsJson) : undefined,
+      pickupCoords: { lat: j.pickupLat, lng: j.pickupLng },
+      dropoffCoords: { lat: j.dropoffLat, lng: j.dropoffLng },
+    }));
     
-    return NextResponse.json(jobs);
+    return NextResponse.json(mappedJobs);
   } catch (error) {
     console.error("Failed to fetch historical jobs:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

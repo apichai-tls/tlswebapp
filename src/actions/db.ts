@@ -239,7 +239,11 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.fee !== undefined) data.fee = updates.fee;
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
-  if (updates.laundryTypes !== undefined) data.laundryTypes = updates.laundryTypes ? updates.laundryTypes.join(',') : null;
+  if (updates.laundryTypes !== undefined) {
+    data.laundryTypes = Array.isArray(updates.laundryTypes)
+      ? updates.laundryTypes.join(',')
+      : (updates.laundryTypes || null);
+  }
   if (updates.remark !== undefined) data.remark = updates.remark;
   if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
