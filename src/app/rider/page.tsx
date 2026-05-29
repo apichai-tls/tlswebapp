@@ -302,12 +302,20 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
           </div>
           
           <div className="flex flex-col items-end gap-1 shrink-0">
-            <span
-              className={`flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
-            >
-              {legType === 'pickup' ? <Package size={10} /> : <Truck size={10} />}
-              {legType.toUpperCase()}
-            </span>
+            <div className="flex items-center gap-1">
+              {job.paymentChannel === "Cash / COD" && !job.isPaid && (
+                <span className="flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200">
+                  <Banknote size={10} className="text-red-500" />
+                  เก็บเงินสด
+                </span>
+              )}
+              <span
+                className={`flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
+              >
+                {legType === 'pickup' ? <Package size={10} /> : <Truck size={10} />}
+                {legType.toUpperCase()}
+              </span>
+            </div>
             {showCommission && (
               <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-100 mt-0.5">
                 ฿{task.commission}
@@ -1388,13 +1396,24 @@ export default function RiderPage() {
                         <X size={18} />
                       </Button>
                       <div className="flex flex-col items-end gap-1.5">
-                        <Badge
-                          variant="outline"
-                          className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
-                        >
-                          {legType === 'pickup' ? <Package size={14} /> : <Truck size={14} />}
-                          {legType.toUpperCase()}
-                        </Badge>
+                        <div className="flex items-center gap-1">
+                          {selectedJob.job.paymentChannel === "Cash / COD" && !selectedJob.job.isPaid && (
+                            <Badge
+                              variant="outline"
+                              className="gap-1.5 text-xs py-1 px-2 bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200"
+                            >
+                              <Banknote size={14} className="text-red-500" />
+                              เก็บเงินสด
+                            </Badge>
+                          )}
+                          <Badge
+                            variant="outline"
+                            className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
+                          >
+                            {legType === 'pickup' ? <Package size={14} /> : <Truck size={14} />}
+                            {legType.toUpperCase()}
+                          </Badge>
+                        </div>
                         {showCommission && (
                           <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-100">
                             ฿{selectedJob.commission}
