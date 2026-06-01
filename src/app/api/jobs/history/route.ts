@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
           lte: endDate,
         }
       },
-      orderBy: { id: 'desc' },
+      orderBy: { updatedAt: 'desc' },
       select: {
         id: true,
         type: true,
@@ -41,6 +41,7 @@ export async function GET(req: NextRequest) {
         status: true,
         subStatus: true,
         createdAt: true,
+        updatedAt: true,
         scheduledAt: true,
         completedAt: true,
         riderId: true,

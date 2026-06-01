@@ -30,7 +30,7 @@ export async function GET() {
             }
           ]
         },
-        orderBy: { id: 'desc' },
+        orderBy: { updatedAt: 'desc' },
         select: {
           id: true,
           type: true,
@@ -48,6 +48,7 @@ export async function GET() {
           status: true,
           subStatus: true,
           createdAt: true,
+          updatedAt: true,
           scheduledAt: true,
           completedAt: true,
           riderId: true,

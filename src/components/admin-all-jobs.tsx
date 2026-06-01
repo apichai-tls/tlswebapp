@@ -510,7 +510,12 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       const job = filteredJobs.find(j => j.id === jobId);
                       if (job && job.status !== status) {
                          if (user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) {
-                           const updates: any = { status };
+                           const updates: any = { 
+                             status,
+                             actorId: user?.id,
+                             actorName: user?.name || user?.email,
+                             actorRole: user?.role
+                           };
                            if (status === 'completed') {
                              updates.completedAt = new Date().toISOString();
                            }

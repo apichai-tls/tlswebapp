@@ -196,6 +196,8 @@ export async function addJobAction(data: any) {
       cashPlaced: data.cashPlaced || false,
     }
   });
+
+  return createdJob;
 }
 
 export async function getJobsByIdsAction(ids: string[]) {
@@ -205,6 +207,7 @@ export async function getJobsByIdsAction(ids: string[]) {
 }
 
 export async function updateJobAction(id: string, updates: any) {
+  const existingJob = await prisma.job.findUnique({ where: { id } });
   const data: any = {};
   if (updates.type !== undefined) data.type = updates.type;
   if (updates.status !== undefined) data.status = updates.status;
@@ -262,7 +265,6 @@ export async function updateJobAction(id: string, updates: any) {
 
   // Check if a leg was just completed by comparing status
   if (updates.status) {
-    const existingJob = await prisma.job.findUnique({ where: { id } });
     if (existingJob) {
       // Pickup completed
       if (existingJob.status !== 'billing' && existingJob.status !== 'completed' && updates.status === 'billing' && existingJob.pickupCommission != null && existingJob.pickupRiderId) {
@@ -312,7 +314,9 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
 
-  return prisma.job.update({ where: { id }, data });
+  const updatedJob = await prisma.job.update({ where: { id }, data });
+
+  return updatedJob;
 }
 
 // SERVICES

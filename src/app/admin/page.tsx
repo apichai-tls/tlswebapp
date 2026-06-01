@@ -41,6 +41,7 @@ import { AdminSettings } from "@/components/admin-settings";
 import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
+import { AdminLogs } from "@/components/admin-logs";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -303,6 +304,7 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [showJobLogs, setShowJobLogs] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
   const [laundryTypes, setLaundryTypes] = useState<string[]>([]);
@@ -517,6 +519,7 @@ export default function AdminPage() {
 
   const handleCreateNewJob = () => {
     setEditingJobId(null);
+    setShowJobLogs(false);
     setIsDetailLoading(false);
     setEditingSubStatus(null);
     setCustomerName("");
@@ -584,6 +587,7 @@ export default function AdminPage() {
 
   const handleEditFullJob = (job: Job) => {
     setEditingJobId(job.id);
+    setShowJobLogs(false);
     setEditingSubStatus(job.subStatus || null);
     const rawLaundry = job.laundryTypes as any;
     setLaundryTypes(
@@ -756,6 +760,7 @@ export default function AdminPage() {
     setSelectedStoreIndex(branchIndex >= 0 ? branchIndex : 0);
 
     setEditingJobId(job.id);
+    setShowJobLogs(false);
     setDialogOpen(true);
   };
 
@@ -801,8 +806,9 @@ export default function AdminPage() {
       if (billUploaderRef.current) {
         finalBillImageUrls = await billUploaderRef.current.startUpload();
       }
-    } catch (err) {
+    } catch (err: any) {
       setIsSubmitting(false);
+      toast.error(`Failed to upload images: ${err.message || 'Unknown error'}`);
       return; // Stop creation if upload fails
     }
 
@@ -865,6 +871,9 @@ export default function AdminPage() {
       creatorRole: user?.role,
       createdBy: user?.name || user?.email || "Admin",
       cashPlaced,
+      actorId: user?.id,
+      actorName: user?.name || user?.email,
+      actorRole: user?.role
     };
 
     try {
@@ -899,6 +908,7 @@ export default function AdminPage() {
       setAdminNoteInput("");
       setShowAdminNote(false);
       setEditingJobId(null);
+      setShowJobLogs(false);
       setDialogOpen(false);
     } catch (err: any) {
       console.error("Job Save Error:", err);
@@ -1097,6 +1107,7 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Manage Users</span>}
               </motion.a>
             )}
+
           </nav>
           <div className={`border-t border-slate-200 px-3 py-4 space-y-2`}>
             <Link href="/privacy">
@@ -1423,7 +1434,8 @@ export default function AdminPage() {
 
                 {/* Main Content Grid */}
                 <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3">
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-full">
+                  {!showJobLogs ? (
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-full">
                     
                     {/* COL 1: Basic Info (span 4) */}
                     <motion.div
@@ -2186,9 +2198,16 @@ export default function AdminPage() {
 
                     </motion.div>
                   </div>
+                  ) : (
+                    <div className="h-full w-full bg-white rounded-xl border border-slate-200 overflow-hidden">
+                      <AdminLogs jobId={editingJobId || undefined} />
+                    </div>
+                  )}
                 </div>
-                <DialogFooter className="mt-0 p-4 border-t border-slate-200 bg-white shrink-0">
-                  <div className="flex gap-3">
+                
+                {!showJobLogs && (
+                  <DialogFooter className="mt-0 p-4 border-t border-slate-200 bg-white shrink-0">
+                    <div className="flex gap-3">
                     <Button variant="outline" className="flex-1" onClick={() => setDialogOpen(false)} disabled={isSubmitting}>
                       Cancel
                     </Button>
@@ -2213,6 +2232,7 @@ export default function AdminPage() {
                     </Button>
                   </div>
                 </DialogFooter>
+                )}
                 </DialogContent>
               </Dialog>
             )}
@@ -2228,7 +2248,7 @@ export default function AdminPage() {
           {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}
           {activeTab === "services" && hasAccess("services") && <AdminServiceMenu />}
           {activeTab === "customers" && hasAccess("customers") && <AdminCRM />}
-          {activeTab === "calculator" && hasAccess("calculator") && <FeeCalculatorPage />}
+        {activeTab === "calculator" && <FeeCalculatorPage />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
 

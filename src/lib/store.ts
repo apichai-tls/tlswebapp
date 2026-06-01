@@ -91,8 +91,12 @@ export interface Job {
   status: JobStatus;
   subStatus?: "billing" | "wash" | "dry" | "iron" | "ready";
   createdAt: Date;
+  updatedAt?: Date;
   scheduledAt: Date;
   completedAt?: Date;
+  actorId?: string;
+  actorName?: string;
+  actorRole?: string;
   proofImageUrl?: string;
   pickupProofImageUrl?: string;
   deliveryProofImageUrl?: string;

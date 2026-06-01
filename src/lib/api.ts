@@ -352,7 +352,7 @@ export const api = {
 
     const newJob: Job = {
       id: `JOB-${String(db.jobs.length + 1).padStart(3, "0")}`,
-      type: "full_service",
+      type: jobDetails.type as any || "full_service",
       customerName: jobDetails.customerName,
       customerPhone: jobDetails.customerPhone,
       pickupLocation: jobDetails.pickupLocation || "",
@@ -368,12 +368,18 @@ export const api = {
       pickupRiderId: pRider,
       deliveryRiderId: dRider,
       pickupScheduledAt: pDate,
+      pickupScheduledEndAt: jobDetails.pickupScheduledEndAt as Date | null,
       deliveryScheduledAt: dDate,
+      deliveryScheduledEndAt: jobDetails.deliveryScheduledEndAt as Date | null,
       bagImageUrl: jobDetails.bagImageUrl,
+      billImageUrl: jobDetails.billImageUrl as string | null,
       serviceType: jobDetails.serviceType || "wash_fold",
+      laundryTypes: jobDetails.laundryTypes as string[] | undefined,
       source: jobDetails.source || "app",
       totalAmount: jobDetails.totalAmount || ((jobDetails.fee || 0) * 2.5),
       discount: jobDetails.discount || 0,
+      paymentMethod: jobDetails.paymentMethod as string | null,
+      isPaid: jobDetails.isPaid as boolean | false,
       pickupDistance: jobDetails.pickupDistance,
       deliveryDistance: jobDetails.deliveryDistance,
       pickupCommission: jobDetails.pickupCommission,
@@ -394,7 +400,11 @@ export const api = {
       }
     };
 
-    const savedJobInDb = await dbActions.addJobAction(newJob);
+    const savedJobInDb = await dbActions.addJobAction({
+      ...newJob,
+      actorId: jobDetails.actorId,
+      actorName: jobDetails.actorName
+    });
     
     // Replace the fake ID with the real ID from DB
     const finalJob = { ...newJob, id: savedJobInDb.id };
@@ -406,15 +416,13 @@ export const api = {
   async updateJob(id: string, updates: Partial<Job>): Promise<Job> {
     
     const db = initDb();
-    let updatedJob: Job | null = null;
-    db.jobs = db.jobs.map(j => {
-      if (j.id === id) {
-        updatedJob = { ...j, ...updates };
-        return updatedJob;
-      }
-      return j;
-    });
-    if (!updatedJob) throw new Error("Job not found");
+    const jobIndex = db.jobs.findIndex(j => j.id === id);
+    if (jobIndex === -1) throw new Error("Job not found");
+    
+    const updatedJob = { ...db.jobs[jobIndex], ...updates, updatedAt: new Date() };
+    db.jobs.splice(jobIndex, 1);
+    db.jobs.unshift(updatedJob);
+    
     await dbActions.updateJobAction(id, updates);
     return updatedJob;
   },
