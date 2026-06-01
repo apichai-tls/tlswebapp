@@ -146,7 +146,7 @@ export async function addJobAction(data: any) {
     }
   }
 
-  return prisma.job.create({
+  const createdJob = await prisma.job.create({
     data: {
       id: jobId,
       type: data.type || 'full_service',
