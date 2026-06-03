@@ -98,11 +98,13 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
         } else if (e.key === "ArrowLeft") {
           setPreviewIndex(prev => prev !== null && prev > 0 ? prev - 1 : prev);
         } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
           setPreviewIndex(null);
         }
       };
-      window.addEventListener("keydown", handleKeyDown);
-      return () => window.removeEventListener("keydown", handleKeyDown);
+      window.addEventListener("keydown", handleKeyDown, { capture: true });
+      return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
     }, [previewIndex, allImages.length]);
 
     useImperativeHandle(ref, () => ({

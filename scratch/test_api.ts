@@ -1,1 +1,0 @@
-async function main() { const res = await fetch('http://localhost:3000/api/jobs/history?start=2026-05-19T10:00:00Z&end=2026-05-19T10:00:00Z'); const json = await res.json(); console.log('Fetched:', json.length, 'jobs'); } main();

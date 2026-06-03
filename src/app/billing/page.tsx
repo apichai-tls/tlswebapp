@@ -31,6 +31,8 @@ import {
   ChevronRight,
   Plus,
   RefreshCw,
+  RotateCw,
+  RotateCcw,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -64,26 +66,45 @@ function parseBillUrls(raw: string | null | undefined): string[] {
   }
 }
 
-/** Compress image before upload (max 1600px, 85 % JPEG quality) */
-function compressImage(file: File, maxDim = 1600, quality = 0.85): Promise<File> {
+/** Compress and optionally rotate image before upload (max 1600px, 85 % JPEG quality) */
+function compressImage(file: File, maxDim = 1600, quality = 0.85, rotation = 0): Promise<File> {
   return new Promise((resolve) => {
     const img = new window.Image();
     img.onload = () => {
       let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        if (width > height) {
-          height = Math.round((height * maxDim) / width);
-          width = maxDim;
+      
+      const isSwapped = rotation === 90 || rotation === 270;
+      const canvasWidth = isSwapped ? height : width;
+      const canvasHeight = isSwapped ? width : height;
+
+      let finalWidth = canvasWidth;
+      let finalHeight = canvasHeight;
+
+      if (canvasWidth > maxDim || canvasHeight > maxDim) {
+        if (canvasWidth > canvasHeight) {
+          finalHeight = Math.round((canvasHeight * maxDim) / canvasWidth);
+          finalWidth = maxDim;
         } else {
-          width = Math.round((width * maxDim) / height);
-          height = maxDim;
+          finalWidth = Math.round((canvasWidth * maxDim) / canvasHeight);
+          finalHeight = maxDim;
         }
       }
+
       const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = finalWidth;
+      canvas.height = finalHeight;
       const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, width, height);
+
+      if (rotation !== 0) {
+        ctx.translate(finalWidth / 2, finalHeight / 2);
+        ctx.rotate((rotation * Math.PI) / 180);
+        const drawWidth = isSwapped ? finalHeight : finalWidth;
+        const drawHeight = isSwapped ? finalWidth : finalHeight;
+        ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+      } else {
+        ctx.drawImage(img, 0, 0, finalWidth, finalHeight);
+      }
+
       canvas.toBlob(
         (blob) => resolve(blob ? new File([blob], file.name, { type: "image/jpeg" }) : file),
         "image/jpeg",
@@ -122,6 +143,7 @@ function BillingJobCard({
   const [billUrls, setBillUrls] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [pendingPhoto, setPendingPhoto] = useState<{ file: File; rotation: number; previewUrl: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Keep bill URLs in sync with job data (updated via polling / store)
@@ -129,7 +151,7 @@ function BillingJobCard({
     setBillUrls(parseBillUrls(job.billImageUrl));
   }, [job.billImageUrl]);
 
-  // ---- Camera capture → compress → upload → save ----
+  // ---- Camera capture → set pending for preview/rotation ----
   const handleCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -140,9 +162,24 @@ function BillingJobCard({
       return;
     }
 
+    setPendingPhoto({
+      file,
+      rotation: 0,
+      previewUrl: URL.createObjectURL(file),
+    });
+  };
+
+  // ---- Execute upload with selected rotation ----
+  const executeUpload = async () => {
+    if (!pendingPhoto) return;
+    if (billUrls.length >= 3) {
+      toast.error("Maximum 3 photos per job");
+      return;
+    }
+
     setUploading(true);
     try {
-      const compressed = await compressImage(file);
+      const compressed = await compressImage(pendingPhoto.file, 1600, 0.85, pendingPhoto.rotation);
 
       // 1) Get signed upload URL
       const res = await fetch("/api/upload-url", {
@@ -173,6 +210,11 @@ function BillingJobCard({
       });
       setBillUrls(newUrls);
       toast.success("Bill uploaded successfully ✅");
+      
+      // Cleanup
+      URL.revokeObjectURL(pendingPhoto.previewUrl);
+      setPendingPhoto(null);
+      
       if (onUpload) onUpload();
     } catch (err) {
       console.error("Upload error:", err);
@@ -354,6 +396,89 @@ function BillingJobCard({
           >
             <X size={24} />
           </button>
+        </div>
+      )}
+
+      {/* ---- Image Preview & Rotate Modal ---- */}
+      {pendingPhoto && (
+        <div className="fixed inset-0 z-50 bg-black/95 flex flex-col justify-between p-4 pb-8 safe-bottom">
+          {/* Header */}
+          <div className="flex justify-between items-center text-white shrink-0 pt-2">
+            <h4 className="text-xs font-extrabold tracking-wide uppercase">พรีวิวและจัดหมุนรูปภาพบิล (Preview & Rotate)</h4>
+            <button 
+              onClick={() => {
+                URL.revokeObjectURL(pendingPhoto.previewUrl);
+                setPendingPhoto(null);
+              }}
+              className="w-8 h-8 bg-white/10 text-white rounded-full flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Image display */}
+          <div className="flex-1 flex items-center justify-center overflow-hidden my-4">
+            <div className="relative max-w-full max-h-[60vh] flex items-center justify-center">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={pendingPhoto.previewUrl}
+                alt="To upload"
+                style={{ transform: `rotate(${pendingPhoto.rotation}deg)` }}
+                className="max-w-full max-h-[60vh] object-contain rounded-xl shadow-2xl border border-white/10 transition-transform duration-200"
+              />
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className="space-y-4 shrink-0 px-2 w-full max-w-md mx-auto">
+            {/* Rotation Control Buttons */}
+            <div className="flex justify-center gap-3">
+              <button
+                onClick={() => setPendingPhoto(prev => prev ? { ...prev, rotation: (prev.rotation - 90 + 360) % 360 } : null)}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-xs active:scale-95 transition-all border border-white/10"
+              >
+                <RotateCcw size={14} />
+                หมุนซ้าย (90° Left)
+              </button>
+              <button
+                onClick={() => setPendingPhoto(prev => prev ? { ...prev, rotation: (prev.rotation + 90) % 360 } : null)}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-xs active:scale-95 transition-all border border-white/10"
+              >
+                <RotateCw size={14} />
+                หมุนขวา (90° Right)
+              </button>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  URL.revokeObjectURL(pendingPhoto.previewUrl);
+                  setPendingPhoto(null);
+                }}
+                className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white rounded-xl font-bold text-sm border border-white/10 active:scale-95 transition-all"
+              >
+                ยกเลิก (Cancel)
+              </button>
+              <button
+                onClick={executeUpload}
+                disabled={uploading}
+                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-lg active:scale-[0.97] transition-all flex items-center justify-center gap-2"
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    กำลังอัปโหลด...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={16} />
+                    บันทึกรูปภาพ (Upload)
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>

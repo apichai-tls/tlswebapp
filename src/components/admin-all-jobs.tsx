@@ -607,12 +607,22 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
                         <CalendarDays size={11} className="shrink-0 text-slate-400" />
                         <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">P Date:</span>
-                        <span className="font-medium text-slate-600">
+                        <span className="font-medium text-slate-600 flex items-center gap-1">
                           {job.scheduledAt
                             ? isSameDay(new Date(job.scheduledAt), new Date())
                               ? format(new Date(job.scheduledAt), "HH:mm")
                               : format(new Date(job.scheduledAt), "dd MMM, HH:mm")
                             : "-"}
+                          {job.remark?.includes("Express 50%") && (
+                            <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-orange-50 text-orange-600 border-orange-200">
+                              EXP 50%
+                            </Badge>
+                          )}
+                          {job.remark?.includes("Express 100%") && (
+                            <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-red-50 text-red-600 border-red-200">
+                              EXP 100%
+                            </Badge>
+                          )}
                         </span>
                       </div>
                       <div className="text-xs text-slate-500 mb-3 flex items-start gap-1">
