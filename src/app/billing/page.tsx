@@ -157,8 +157,8 @@ function BillingJobCard({
     if (!file) return;
     e.target.value = ""; // allow re-selecting same file
 
-    if (billUrls.length >= 3) {
-      toast.error("Maximum 3 photos per job");
+    if (billUrls.length >= 4) {
+      toast.error("Maximum 4 photos per job");
       return;
     }
 
@@ -172,8 +172,8 @@ function BillingJobCard({
   // ---- Execute upload with selected rotation ----
   const executeUpload = async () => {
     if (!pendingPhoto) return;
-    if (billUrls.length >= 3) {
-      toast.error("Maximum 3 photos per job");
+    if (billUrls.length >= 4) {
+      toast.error("Maximum 4 photos per job");
       return;
     }
 
@@ -334,7 +334,7 @@ function BillingJobCard({
             className="hidden"
           />
 
-          {billUrls.length < 3 ? (
+          {billUrls.length < 4 ? (
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
@@ -354,14 +354,14 @@ function BillingJobCard({
               ) : (
                 <>
                   <Camera size={18} />
-                  Upload Bill ({billUrls.length}/3)
+                  Upload Bill ({billUrls.length}/4)
                 </>
               )}
             </button>
           ) : (
             <div className="flex items-center justify-center gap-1.5 text-xs text-emerald-600 font-bold py-2">
               <CheckCircle2 size={14} />
-              3 photos uploaded
+              4 photos uploaded
             </div>
           )}
 
