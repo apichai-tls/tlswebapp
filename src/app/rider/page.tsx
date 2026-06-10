@@ -751,7 +751,24 @@ export default function RiderPage() {
   }
 
   const myJobs = allTasks
-    .filter(t => t.isActive && !t.isCompleted)
+    .filter(t => {
+      if (!t.isActive || t.isCompleted) return false;
+
+      // Hide future delivery tasks from the rider until the scheduled date arrives
+      if (t.legType === "delivery") {
+        const scheduledDate = new Date(t.scheduledAt);
+        const today = new Date();
+        
+        // Clear time to compare only the calendar dates
+        today.setHours(0, 0, 0, 0);
+        scheduledDate.setHours(0, 0, 0, 0);
+        
+        if (scheduledDate > today) {
+          return false;
+        }
+      }
+      return true;
+    })
     .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
 
   const historyJobs = allTasks
