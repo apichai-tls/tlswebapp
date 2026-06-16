@@ -625,6 +625,17 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           )}
                         </span>
                       </div>
+                      {job.deliveryScheduledAt && (
+                        <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+                          <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">D Date:</span>
+                          <span className="font-medium text-slate-600 flex items-center gap-1">
+                            {isSameDay(new Date(job.deliveryScheduledAt), new Date())
+                              ? format(new Date(job.deliveryScheduledAt), "HH:mm")
+                              : format(new Date(job.deliveryScheduledAt), "dd MMM, HH:mm")}
+                          </span>
+                        </div>
+                      )}
                       <div className="text-xs text-slate-500 mb-3 flex items-start gap-1">
                         <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
                         <span className="line-clamp-2">{job.pickupLocation || "-"}</span>

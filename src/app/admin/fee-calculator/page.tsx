@@ -151,7 +151,7 @@ export default function FeeCalculatorPage() {
                   if (isAutoSelectShop) {
                     setIsCalculatingShop(true);
                     try {
-                      const closestShopId = await getClosestShopByRoute(newCoords, shops);
+                      const closestShopId = await getClosestShopByRoute(newCoords, shops, loc.address || loc.name);
                       if (closestShopId) setSelectedShopId(closestShopId);
                     } finally {
                       setIsCalculatingShop(false);
@@ -207,7 +207,7 @@ export default function FeeCalculatorPage() {
                         if (checked && pickupLoc) {
                           setIsCalculatingShop(true);
                           try {
-                            const closestShopId = await getClosestShopByRoute(pickupLoc.coords, shops);
+                            const closestShopId = await getClosestShopByRoute(pickupLoc.coords, shops, pickupLoc.address);
                             if (closestShopId) setSelectedShopId(closestShopId);
                           } finally {
                             setIsCalculatingShop(false);

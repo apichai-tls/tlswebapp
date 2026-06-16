@@ -346,9 +346,9 @@ export default function AdminPage() {
 
   const [selectedStoreIndex, setSelectedStoreIndex] = useState(0);
 
-  const updateClosestStoreAsync = async (coords: LatLng) => {
+  const updateClosestStoreAsync = async (coords: LatLng, address?: string) => {
     try {
-      const closestId = await getClosestShopByRoute(coords, shopLocations);
+      const closestId = await getClosestShopByRoute(coords, shopLocations, address);
       if (closestId) {
         const idx = shopLocations.findIndex(s => s.id === closestId);
         if (idx >= 0) {
@@ -658,15 +658,38 @@ export default function AdminPage() {
     setCustomerPriceListId(matchedCustomer?.priceListId || null);
     
     setServiceWeight(2);
-    setOtherClothingName("");
-    setClothingItems({
+    const initialClothingItems: Record<string, { selected: boolean; quantity: number }> = {
       polo: { selected: false, quantity: 1 },
       tshirt: { selected: false, quantity: 1 },
       pants: { selected: false, quantity: 1 },
       dress: { selected: false, quantity: 1 },
       bedsheet: { selected: false, quantity: 1 },
       other: { selected: false, quantity: 1 },
-    });
+    };
+    let otherName = "";
+
+    if (job.items && Array.isArray(job.items)) {
+      const labelsReverseMap: Record<string, string> = {
+        "Polo Shirt": "polo",
+        "T-Shirt": "tshirt",
+        "Pants": "pants",
+        "Dress": "dress",
+        "Bedsheet": "bedsheet"
+      };
+
+      job.items.forEach(item => {
+        const standardKey = labelsReverseMap[item.name];
+        if (standardKey) {
+          initialClothingItems[standardKey] = { selected: true, quantity: item.quantity };
+        } else {
+          initialClothingItems.other = { selected: true, quantity: item.quantity };
+          otherName = item.name;
+        }
+      });
+    }
+
+    setClothingItems(initialClothingItems);
+    setOtherClothingName(otherName);
 
     const parseUrls = (imgUrl: any): string[] => {
       if (!imgUrl) return [];
@@ -826,7 +849,32 @@ export default function AdminPage() {
       });
     }
 
+    const itemsPayload: { name: string; quantity: number; price: number }[] = [];
+    const labelsMap: Record<string, string> = {
+      polo: "Polo Shirt",
+      tshirt: "T-Shirt",
+      pants: "Pants",
+      dress: "Dress",
+      bedsheet: "Bedsheet"
+    };
+
+    Object.entries(clothingItems).forEach(([key, val]) => {
+      if (val.selected) {
+        let name = labelsMap[key];
+        if (key === 'other') {
+          name = otherClothingName.trim() || "Other";
+        }
+        itemsPayload.push({
+          name: name || key,
+          quantity: val.quantity,
+          price: 0
+        });
+      }
+    });
+
     const newJobData = {
+      customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
+      items: itemsPayload,
       type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
       subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
       source: isWalkIn ? "pos" : "app",
@@ -1249,7 +1297,7 @@ export default function AdminPage() {
                                   
                                   setIsDeliveryDirty(false);
                                   setIsFreeDelivery(false);
-                                  updateClosestStoreAsync(c.defaultCoords);
+                                  updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
                                   setEditingFeeLock(null);
                                   
                                   if (c.isVIP) {
@@ -1588,7 +1636,7 @@ export default function AdminPage() {
                                     onSelectLocation={(loc) => {
                                       const newCoords = { lat: loc.lat, lng: loc.lng };
                                       setPickupCoords(newCoords);
-                                      updateClosestStoreAsync(newCoords);
+                                      updateClosestStoreAsync(newCoords, loc.name);
                                       setEditingFeeLock(null);
                                       if (!isDeliveryDirty) {
                                         setDeliveryLoc(loc.name);
@@ -1632,7 +1680,7 @@ export default function AdminPage() {
                                       setIsDeliveryDirty(true);
                                       setEditingFeeLock(null);
                                       if (!isPickup) {
-                                        updateClosestStoreAsync(newCoords);
+                                        updateClosestStoreAsync(newCoords, loc.name);
                                       }
                                     }}
                                   />
@@ -2295,7 +2343,7 @@ export default function AdminPage() {
             
             setIsDeliveryDirty(false);
             setIsFreeDelivery(false);
-            updateClosestStoreAsync(c.defaultCoords);
+            updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
             setEditingFeeLock(null);
             
             if (c.isVIP) {

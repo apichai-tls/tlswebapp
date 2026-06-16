@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { format, isToday, addDays, isSameDay, addMonths, isSameMonth } from "date-fns";
+import { format, isToday, addDays, isSameDay, addMonths, isSameMonth, startOfDay, endOfDay, startOfMonth, endOfMonth } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
@@ -594,6 +594,24 @@ export default function RiderPage() {
       clearInterval(interval);
     };
   }, []);
+
+  // Fetch historical jobs for Rider History
+  useEffect(() => {
+    if (activeTab !== "history" || !activeRider?.id) return;
+
+    let start: Date;
+    let end: Date;
+
+    if (historyMode === "daily") {
+      start = startOfDay(historyDate);
+      end = endOfDay(historyDate);
+    } else {
+      start = startOfMonth(historyDate);
+      end = endOfMonth(historyDate);
+    }
+
+    jobStore.fetchHistoricalJobs(start, end, activeRider.id);
+  }, [activeTab, historyMode, historyDate, activeRider?.id]);
 
   function handleGoOnline() {
     if (activeRider) {

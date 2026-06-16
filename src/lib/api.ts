@@ -80,6 +80,7 @@ export const ensureDbLoaded = async () => {
 };
 
 let isRefreshing = false; // Guard against concurrent refreshes
+const lastUpdatedJobs = new Map<string, number>();
 
 export const refreshDb = async () => {
   if (typeof window === 'undefined') return;
@@ -121,6 +122,12 @@ export const refreshDb = async () => {
         parsed.jobs = parsed.jobs.map((serverJob: any) => {
           const memJob = memoryDb!.jobs.find(j => j.id === serverJob.id);
           if (memJob) {
+            // Stale polling overwrite protection: Keep the local in-memory job if edited within 10s
+            const lastUpdated = lastUpdatedJobs.get(serverJob.id);
+            if (lastUpdated && (Date.now() - lastUpdated) < 10000) {
+              return memJob;
+            }
+
             const isMemPickupCompleted = ["billing", "active", "ready_to_wash", "washed", "delivery", "completed"].includes(memJob.status);
             const isServerPickupCompleted = ["billing", "active", "ready_to_wash", "washed", "delivery", "completed"].includes(serverJob.status);
             
@@ -245,10 +252,14 @@ export const api = {
     return initDb().customers;
   },
   
-  async fetchHistoricalJobs(startDate: Date, endDate: Date) {
+  async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
     if (typeof window === 'undefined' || !memoryDb) return [];
     try {
-      const res = await fetch(`/api/jobs/history?start=${startDate.toISOString()}&end=${endDate.toISOString()}`);
+      let url = `/api/jobs/history?start=${startDate.toISOString()}&end=${endDate.toISOString()}`;
+      if (riderId) {
+        url += `&riderId=${encodeURIComponent(riderId)}`;
+      }
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         const parsedJobs = JSON.parse(JSON.stringify(data), dateReviver) as Job[];
@@ -353,6 +364,7 @@ export const api = {
     const newJob: Job = {
       id: `JOB-${String(db.jobs.length + 1).padStart(3, "0")}`,
       type: jobDetails.type as any || "full_service",
+      customerId: jobDetails.customerId,
       customerName: jobDetails.customerName,
       customerPhone: jobDetails.customerPhone,
       pickupLocation: jobDetails.pickupLocation || "",
@@ -409,6 +421,14 @@ export const api = {
     // Replace the fake ID with the real ID from DB
     const finalJob = { ...newJob, id: savedJobInDb.id };
     
+    // Prune old entries
+    for (const [key, value] of lastUpdatedJobs.entries()) {
+      if (Date.now() - value > 60000) {
+        lastUpdatedJobs.delete(key);
+      }
+    }
+    lastUpdatedJobs.set(finalJob.id, Date.now());
+
     db.jobs = [finalJob, ...db.jobs];
     return finalJob as Job;
   },
@@ -423,6 +443,14 @@ export const api = {
     db.jobs.splice(jobIndex, 1);
     db.jobs.unshift(updatedJob);
     
+    // Prune old entries
+    for (const [key, value] of lastUpdatedJobs.entries()) {
+      if (Date.now() - value > 60000) {
+        lastUpdatedJobs.delete(key);
+      }
+    }
+    lastUpdatedJobs.set(id, Date.now());
+
     await dbActions.updateJobAction(id, updates);
     return updatedJob;
   },

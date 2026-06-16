@@ -401,6 +401,22 @@ export const jobStore = {
         updatedLegs.deliveryInbound = { ...updatedLegs.deliveryInbound, riderId: updates.deliveryRiderId || "" };
         legsModified = true;
       }
+
+      if (updates.pickupScheduledAt !== undefined && updates.pickupScheduledAt !== job.pickupScheduledAt) {
+        if (updates.pickupScheduledAt) {
+          updatedLegs.pickupOutbound = { ...updatedLegs.pickupOutbound, scheduledAt: updates.pickupScheduledAt };
+          updatedLegs.pickupInbound = { ...updatedLegs.pickupInbound, scheduledAt: updates.pickupScheduledAt };
+          legsModified = true;
+        }
+      }
+
+      if (updates.deliveryScheduledAt !== undefined && updates.deliveryScheduledAt !== job.deliveryScheduledAt) {
+        if (updates.deliveryScheduledAt) {
+          updatedLegs.deliveryOutbound = { ...updatedLegs.deliveryOutbound, scheduledAt: updates.deliveryScheduledAt };
+          updatedLegs.deliveryInbound = { ...updatedLegs.deliveryInbound, scheduledAt: updates.deliveryScheduledAt };
+          legsModified = true;
+        }
+      }
       
       if (legsModified) {
         updates.legs = updatedLegs;
@@ -411,8 +427,8 @@ export const jobStore = {
     emitJobChange();
   },
 
-  async fetchHistoricalJobs(startDate: Date, endDate: Date) {
-    return await api.fetchHistoricalJobs(startDate, endDate);
+  async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
+    return await api.fetchHistoricalJobs(startDate, endDate, riderId);
   },
 
   async assignPickupRider(id: string, riderId: string, scheduledAt?: Date) {

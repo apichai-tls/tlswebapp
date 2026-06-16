@@ -5,6 +5,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const start = searchParams.get("start");
   const end = searchParams.get("end");
+  const riderId = searchParams.get("riderId");
   
   if (!start || !end) {
     return NextResponse.json({ error: "Missing start or end date" }, { status: 400 });
@@ -16,13 +17,23 @@ export async function GET(req: NextRequest) {
   endDate.setHours(23, 59, 59, 999);
 
   try {
+    const whereClause: any = {
+      createdAt: {
+        gte: startDate,
+        lte: endDate,
+      }
+    };
+
+    if (riderId) {
+      whereClause.OR = [
+        { pickupRiderId: riderId },
+        { deliveryRiderId: riderId },
+        { riderId: riderId }
+      ];
+    }
+
     const jobs = await prisma.job.findMany({
-      where: {
-        createdAt: {
-          gte: startDate,
-          lte: endDate,
-        }
-      },
+      where: whereClause,
       orderBy: { updatedAt: 'desc' },
       select: {
         id: true,

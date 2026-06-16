@@ -221,6 +221,9 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.pickupScheduledAt !== undefined) data.pickupScheduledAt = updates.pickupScheduledAt;
   if (updates.deliveryRiderId !== undefined) data.deliveryRiderId = updates.deliveryRiderId;
   if (updates.deliveryScheduledAt !== undefined) data.deliveryScheduledAt = updates.deliveryScheduledAt;
+  if (updates.customerId !== undefined) data.customerId = updates.customerId;
+  if (updates.distance !== undefined) data.distance = updates.distance;
+  if (updates.items !== undefined) data.itemsJson = updates.items ? JSON.stringify(updates.items) : null;
 
   // Additional fields for full job edits
   if (updates.customerName !== undefined) data.customerName = updates.customerName;
