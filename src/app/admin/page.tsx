@@ -2079,6 +2079,20 @@ export default function AdminPage() {
                     >
                       {/* Summary Card */}
                       <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md shrink-0">
+                        {(user?.role === 'admin' || user?.role === 'cso') && (
+                          <div className="flex justify-between items-center pb-2 mb-2 border-b border-slate-700/50">
+                            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Job Flag</span>
+                            <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
+                              <input 
+                                type="checkbox" 
+                                checked={isStuck} 
+                                onChange={(e) => setIsStuck(e.target.checked)} 
+                                className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3.5 w-3.5"
+                              />
+                              <span className="text-xs font-bold">Stuck</span>
+                            </Label>
+                          </div>
+                        )}
                         <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-700">
                           {isPickup && (
                             <div className="flex justify-between items-center text-xs">
@@ -2219,18 +2233,7 @@ export default function AdminPage() {
                                 <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
-                              <span className="text-[10px] text-slate-400 ml-5 mb-1.5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
-                              {(user?.role === 'admin' || user?.role === 'cso') && (
-                                <Label className="flex items-center gap-1.5 cursor-pointer text-red-400">
-                                  <input 
-                                    type="checkbox" 
-                                    checked={isStuck} 
-                                    onChange={(e) => setIsStuck(e.target.checked)} 
-                                    className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3.5 w-3.5"
-                                  />
-                                  <span className="text-xs font-bold">Stuck</span>
-                                </Label>
-                              )}
+                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
                           </div>
                           <div className="text-right">
                             {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">฿{baseFee.toFixed(0)}</span>}
