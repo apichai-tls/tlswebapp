@@ -146,16 +146,31 @@ export function AdminCRM() {
   // Detailed Customer Analytics (Jobs count, total spent/LTV, and Last Active date)
   const customerAnalytics = useMemo(() => {
     const analytics: Record<string, { jobsCount: number; ltv: number; lastActiveDate?: Date }> = {};
+    
+    // Maps for O(1) lookups
+    const customerById = new Map<string, Customer>();
+    const customerByPhone = new Map<string, Customer>();
+    const customerByName = new Map<string, Customer>();
+    
     customers.forEach(c => {
       analytics[c.id] = { jobsCount: 0, ltv: 0 };
+      customerById.set(c.id, c);
+      if (c.phone) customerByPhone.set(c.phone, c);
+      if (c.name) customerByName.set(c.name.toUpperCase(), c);
     });
     
     jobs.forEach(job => {
-      const matchedCustomer = customers.find(c => 
-        (job.customerPhone && c.phone === job.customerPhone) || 
-        (job.customerId && c.id === job.customerId) ||
-        (job.customerName && c.name === job.customerName)
-      );
+      let matchedCustomer: Customer | undefined;
+      
+      if (job.customerId) {
+        matchedCustomer = customerById.get(job.customerId);
+      }
+      if (!matchedCustomer && job.customerPhone) {
+        matchedCustomer = customerByPhone.get(job.customerPhone);
+      }
+      if (!matchedCustomer && job.customerName) {
+        matchedCustomer = customerByName.get(job.customerName.toUpperCase());
+      }
       
       if (matchedCustomer) {
         const stats = analytics[matchedCustomer.id];
