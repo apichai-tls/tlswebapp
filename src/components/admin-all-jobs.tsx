@@ -495,6 +495,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                 key={status} 
                 className="w-72 flex flex-col bg-slate-50/50 rounded-xl border border-slate-200 shrink-0 h-full max-h-[75vh]"
                 onDragOver={(e) => {
+                  if (status === 'completed') return; // Do not allow dragover drop effect on Completed column
                   e.preventDefault();
                   e.currentTarget.classList.add('bg-slate-100');
                 }}
@@ -504,6 +505,12 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                 onDrop={async (e) => {
                   e.preventDefault();
                   e.currentTarget.classList.remove('bg-slate-100');
+                  
+                  if (status === 'completed') {
+                    toast.error("Cannot drag and drop jobs directly to Completed status.");
+                    return;
+                  }
+
                   const jobId = e.dataTransfer.getData('jobId');
                   if (jobId) {
                     try {
@@ -516,9 +523,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                              actorName: user?.name || user?.email,
                              actorRole: user?.role
                            };
-                           if (status === 'completed') {
-                             updates.completedAt = new Date().toISOString();
-                           }
                            await jobStore.updateJobDetails(jobId, updates);
                            toast.success(`Job updated to ${statusConfig[status].label}`);
                          } else {
