@@ -130,6 +130,7 @@ export interface Job {
   branchId?: string;
   createdBy?: string | null;
   cashPlaced?: boolean;
+  isStuck?: boolean;
 }
 
 export interface AdminNoteLog {

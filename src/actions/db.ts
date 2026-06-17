@@ -194,6 +194,7 @@ export async function addJobAction(data: any) {
       branchId: data.branchId,
       createdBy: data.createdBy,
       cashPlaced: data.cashPlaced || false,
+      isStuck: data.isStuck || false,
     }
   });
 
@@ -265,6 +266,7 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.deliveryCommission !== undefined) data.deliveryCommission = updates.deliveryCommission;
   if (updates.createdBy !== undefined) data.createdBy = updates.createdBy;
   if (updates.cashPlaced !== undefined) data.cashPlaced = updates.cashPlaced;
+  if (updates.isStuck !== undefined) data.isStuck = updates.isStuck;
 
   // Check if a leg was just completed by comparing status
   if (updates.status) {

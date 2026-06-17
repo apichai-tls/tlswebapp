@@ -557,7 +557,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                         e.dataTransfer.effectAllowed = 'move';
                       }}
                       onClick={() => onEditJob && onEditJob(job)}
-                      className={`bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
+                      className={`${job.isStuck ? 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70' : 'bg-white border-slate-200'} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
                     >
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex flex-col gap-1 w-full">
@@ -576,6 +576,9 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           </div>
                         </div>
                         <div className="flex gap-1 items-center">
+                          {job.isStuck && (
+                            <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-red-100 text-red-700 border-red-200 shrink-0">Stuck</Badge>
+                          )}
                           {job.source === 'pos' && (
                             <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
                           )}

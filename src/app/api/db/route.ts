@@ -159,6 +159,7 @@ export async function GET() {
           isPaid: true,          // ✅ was missing — caused payment status to not persist on reload
           createdBy: true,
           cashPlaced: true,
+          isStuck: true,
           // Exclude: proofImageUrl (deprecated)
         }
       }),

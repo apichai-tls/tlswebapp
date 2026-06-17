@@ -772,6 +772,11 @@ export default function RiderPage() {
     .filter(t => {
       if (!t.isActive || t.isCompleted) return false;
 
+      // Hide active delivery tasks if they are stuck
+      if (t.legType === "delivery" && t.job.isStuck) {
+        return false;
+      }
+
       // Hide future delivery tasks from the rider until the scheduled date arrives
       if (t.legType === "delivery") {
         const scheduledDate = new Date(t.scheduledAt);

@@ -254,6 +254,10 @@ export const api = {
   
   async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
     if (typeof window === 'undefined' || !memoryDb) return [];
+    if (!startDate || !endDate || isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      console.warn("Invalid start/end date passed to fetchHistoricalJobs", startDate, endDate);
+      return [];
+    }
     try {
       let url = `/api/jobs/history?start=${startDate.toISOString()}&end=${endDate.toISOString()}`;
       if (riderId) {

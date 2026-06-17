@@ -340,6 +340,7 @@ export default function AdminPage() {
   const [isDelivery, setIsDelivery] = useState(true);
   const [isWalkIn, setIsWalkIn] = useState(false);
   const [isDeliveryDirty, setIsDeliveryDirty] = useState(false); // Track if user manually changed delivery
+  const [isStuck, setIsStuck] = useState(false);
 
   const [pickupDist, setPickupDist] = useState(0);
   const [deliveryDist, setDeliveryDist] = useState(0);
@@ -580,6 +581,7 @@ export default function AdminPage() {
     setDeliveryRiderId("");
     setPickupDist(0);
     setDeliveryDist(0);
+    setIsStuck(false);
     setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setDialogOpen(true);
@@ -589,6 +591,7 @@ export default function AdminPage() {
     setEditingJobId(job.id);
     setShowJobLogs(false);
     setEditingSubStatus(job.subStatus || null);
+    setIsStuck(job.isStuck || false);
     const rawLaundry = job.laundryTypes as any;
     setLaundryTypes(
       Array.isArray(rawLaundry) 
@@ -873,6 +876,7 @@ export default function AdminPage() {
     });
 
     const newJobData = {
+      isStuck,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
       type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
@@ -939,6 +943,7 @@ export default function AdminPage() {
       setDeliveryRoom("");
       setIsDeliveryDirty(false);
       setIsFreeDelivery(false);
+      setIsStuck(false);
       setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
       setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
       setPaymentMethod("unpaid");
@@ -2214,7 +2219,18 @@ export default function AdminPage() {
                                 <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
-                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
+                              <span className="text-[10px] text-slate-400 ml-5 mb-1.5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
+                              {(user?.role === 'admin' || user?.role === 'cso') && (
+                                <Label className="flex items-center gap-1.5 cursor-pointer text-red-400">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isStuck} 
+                                    onChange={(e) => setIsStuck(e.target.checked)} 
+                                    className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3.5 w-3.5"
+                                  />
+                                  <span className="text-xs font-bold">Stuck</span>
+                                </Label>
+                              )}
                           </div>
                           <div className="text-right">
                             {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">฿{baseFee.toFixed(0)}</span>}
