@@ -2450,7 +2450,7 @@ export default function AdminPage() {
             {/* Admin Note Logs Expanded Dialog */}
             <Dialog open={noteLogsModalOpen} onOpenChange={setNoteLogsModalOpen}>
               <DialogContent className="sm:max-w-lg w-[95vw] rounded-2xl mx-auto p-0 bg-white border-none shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
-                <DialogHeader className="p-4 bg-indigo-600 border-b border-indigo-700 sticky top-0 shrink-0 flex flex-row items-center justify-between text-white">
+                <DialogHeader className="p-4 bg-indigo-600 border-b border-indigo-700 sticky top-0 shrink-0 text-white">
                   <div>
                     <DialogTitle className="text-base font-bold flex items-center gap-2">
                       <MessageSquare size={18} />
@@ -2458,9 +2458,6 @@ export default function AdminPage() {
                     </DialogTitle>
                     <p className="text-[10px] text-indigo-200 uppercase tracking-wider mt-0.5">Job ID: {editingJobId}</p>
                   </div>
-                  <Button variant="ghost" className="h-8 w-8 p-0 rounded-full hover:bg-indigo-500 text-white flex items-center justify-center" onClick={() => setNoteLogsModalOpen(false)}>
-                    <X size={20} />
-                  </Button>
                 </DialogHeader>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 flex flex-col min-h-0">
