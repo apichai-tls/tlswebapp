@@ -421,6 +421,20 @@ export default function RiderPage() {
       }
     }
   }, [jobs, selectedJob, user?.id]);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Scroll chat list to bottom when chat opens or messages change
+  useEffect(() => {
+    if (chatOpen) {
+      const timer = setTimeout(() => {
+        if (chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+        }
+      }, 150); // Wait for Dialog sheet slide-in animation to settle
+      return () => clearTimeout(timer);
+    }
+  }, [chatOpen, selectedJob?.job.adminNotesJson]);
   
   // Pull-to-refresh state and touch event handling
   const [pullDistance, setPullDistance] = useState(0);
@@ -1730,6 +1744,7 @@ export default function RiderPage() {
                 </div>
               );
             })()}
+            <div ref={chatEndRef} />
           </div>
 
           {selectedJob?.job.status !== 'completed' && selectedJob?.job.status !== 'cancel' && (

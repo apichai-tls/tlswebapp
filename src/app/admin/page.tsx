@@ -405,10 +405,15 @@ export default function AdminPage() {
 
   // Scroll admin notes list to the bottom
   useEffect(() => {
-    if (adminLogsEndRef.current) {
-      adminLogsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (dialogOpen) {
+      const timer = setTimeout(() => {
+        if (adminLogsEndRef.current) {
+          adminLogsEndRef.current.scrollIntoView({ behavior: "smooth" });
+        }
+      }, 150); // Wait for drawer/modal animation to settle
+      return () => clearTimeout(timer);
     }
-  }, [adminLogs]);
+  }, [dialogOpen, adminLogs]);
 
   // Scroll the expanded dialog list when it opens or logs change
   useEffect(() => {
@@ -417,7 +422,7 @@ export default function AdminPage() {
         if (expandedLogsEndRef.current) {
           expandedLogsEndRef.current.scrollIntoView({ behavior: "smooth" });
         }
-      }, 80);
+      }, 150); // Wait for dialog animation to settle
       return () => clearTimeout(timer);
     }
   }, [noteLogsModalOpen, adminLogs]);
