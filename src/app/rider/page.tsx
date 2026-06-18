@@ -1537,6 +1537,15 @@ export default function RiderPage() {
                                 </span>
                               </div>
                               <p className="text-xs leading-snug whitespace-pre-wrap line-clamp-2">{n.text}</p>
+                              {n.imageUrls && n.imageUrls.length > 0 && (
+                                <div className="flex gap-1 mt-1">
+                                  {n.imageUrls.map((url: string, idx: number) => (
+                                    <div key={idx} className="relative w-6 h-6 rounded border border-white/20 overflow-hidden bg-slate-100/10">
+                                      <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover" />
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </div>
                         );
@@ -1664,6 +1673,20 @@ export default function RiderPage() {
                         </span>
                       </div>
                       <p className="text-sm leading-snug whitespace-pre-wrap">{n.text}</p>
+                      {n.imageUrls && n.imageUrls.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {n.imageUrls.map((url: string, idx: number) => (
+                            <div 
+                              key={idx} 
+                              className={`relative w-16 h-16 rounded-lg border overflow-hidden cursor-pointer bg-slate-100 shadow-sm ${isMe ? 'border-indigo-400' : 'border-slate-200'}`}
+                              onClick={() => window.open(url, '_blank')}
+                              title="Click to view full image"
+                            >
+                              <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover hover:scale-105 transition-transform" />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

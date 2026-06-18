@@ -88,7 +88,8 @@ import {
   Wind,
   Shirt,
   Edit,
-  ClipboardList
+  ClipboardList,
+  Paperclip
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -383,19 +384,27 @@ export default function AdminPage() {
   const [billImageUrls, setBillImageUrls] = useState<string[]>([]);
   const [pickupProofImageUrls, setPickupProofImageUrls] = useState<string[]>([]);
   const [deliveryProofImageUrls, setDeliveryProofImageUrls] = useState<string[]>([]);
+  const [origBagImageUrls, setOrigBagImageUrls] = useState<string[]>([]);
+  const [origBillImageUrls, setOrigBillImageUrls] = useState<string[]>([]);
+  const [origPickupProofImageUrls, setOrigPickupProofImageUrls] = useState<string[]>([]);
+  const [origDeliveryProofImageUrls, setOrigDeliveryProofImageUrls] = useState<string[]>([]);
   const [isFreeDelivery, setIsFreeDelivery] = useState(false);
   const [adminNote, setAdminNote] = useState("");
   const [showAdminNote, setShowAdminNote] = useState(false);
   const [adminLogs, setAdminLogs] = useState<AdminNoteLog[]>([]);
   const [adminNoteInput, setAdminNoteInput] = useState("");
+  const [showNoteUploader, setShowNoteUploader] = useState(false);
+  const [isUploadingNote, setIsUploadingNote] = useState(false);
+  const noteUploaderRef = useRef<MultiImageUploaderRef>(null);
 
-  const handleAddAdminLog = async (text: string, isSystem = false) => {
-    if (!text.trim()) return;
+  const handleAddAdminLog = async (text: string, isSystem = false, imageUrls?: string[]) => {
+    if (!text.trim() && (!imageUrls || imageUrls.length === 0)) return;
     const newLog: AdminNoteLog = {
       id: Math.random().toString(36).substring(7),
       userId: isSystem ? "system" : (user?.id || "unknown"),
       userName: isSystem ? "System (CRM)" : ((user as any)?.name || user?.email || "Admin"),
       text: text.trim(),
+      imageUrls: imageUrls || [],
       timestamp: new Date().toISOString()
     };
     
@@ -412,6 +421,28 @@ export default function AdminPage() {
       } catch (err) {
         console.error("Failed to instantly save admin log:", err);
       }
+    }
+  };
+
+  const handleSendAdminLog = async () => {
+    const hasPendingImages = noteUploaderRef.current && noteUploaderRef.current.getPendingFilesCount() > 0;
+    if (!adminNoteInput.trim() && !hasPendingImages) return;
+
+    setIsUploadingNote(true);
+    let uploadedUrls: string[] = [];
+    try {
+      if (noteUploaderRef.current && hasPendingImages) {
+         uploadedUrls = await noteUploaderRef.current.startUpload();
+      }
+      await handleAddAdminLog(adminNoteInput, false, uploadedUrls);
+      setShowNoteUploader(false);
+      if (noteUploaderRef.current) {
+        noteUploaderRef.current.reset();
+      }
+    } catch (err) {
+      console.error("Failed to upload note images:", err);
+    } finally {
+      setIsUploadingNote(false);
     }
   };
   const [isPickupLobby, setIsPickupLobby] = useState(false);
@@ -463,6 +494,8 @@ export default function AdminPage() {
   const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
   const billUploaderRef = useRef<MultiImageUploaderRef>(null);
+  const pickupUploaderRef = useRef<MultiImageUploaderRef>(null);
+  const deliveryUploaderRef = useRef<MultiImageUploaderRef>(null);
 
   const handleLogout = () => {
     logout();
@@ -569,6 +602,10 @@ export default function AdminPage() {
     setBillImageUrls([]);
     setPickupProofImageUrls([]);
     setDeliveryProofImageUrls([]);
+    setOrigBagImageUrls([]);
+    setOrigBillImageUrls([]);
+    setOrigPickupProofImageUrls([]);
+    setOrigDeliveryProofImageUrls([]);
     setIsPickupLobby(false);
     setIsPickupMeet(false);
     setIsDeliveryLobby(false);
@@ -737,6 +774,10 @@ export default function AdminPage() {
     setBillImageUrls(localBillUrls);
     setPickupProofImageUrls(localPickupUrls);
     setDeliveryProofImageUrls(localDeliveryUrls);
+    setOrigBagImageUrls(localBagUrls);
+    setOrigBillImageUrls(localBillUrls);
+    setOrigPickupProofImageUrls(localPickupUrls);
+    setOrigDeliveryProofImageUrls(localDeliveryUrls);
 
     // No need to show blocking loader because we loaded images instantly!
     setIsDetailLoading(false);
@@ -825,12 +866,26 @@ export default function AdminPage() {
     setIsSubmitting(true);
     let finalBagImageUrls: string[] = [];
     let finalBillImageUrls: string[] = [];
+    let finalPickupProofUrls: string[] = [];
+    let finalDeliveryProofUrls: string[] = [];
     try {
       if (uploaderRef.current) {
         finalBagImageUrls = await uploaderRef.current.startUpload();
       }
       if (billUploaderRef.current) {
         finalBillImageUrls = await billUploaderRef.current.startUpload();
+      }
+
+      if (user?.role === 'admin') {
+        if (pickupUploaderRef.current) {
+          finalPickupProofUrls = await pickupUploaderRef.current.startUpload();
+        }
+        if (deliveryUploaderRef.current) {
+          finalDeliveryProofUrls = await deliveryUploaderRef.current.startUpload();
+        }
+      } else {
+        finalPickupProofUrls = pickupProofImageUrls;
+        finalDeliveryProofUrls = deliveryProofImageUrls;
       }
     } catch (err: any) {
       setIsSubmitting(false);
@@ -875,7 +930,7 @@ export default function AdminPage() {
       }
     });
 
-    const newJobData = {
+    const newJobData: any = {
       isStuck,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
@@ -898,8 +953,6 @@ export default function AdminPage() {
       deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
-      bagImageUrl: finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null,
-      billImageUrl: finalBillImageUrls.length > 0 ? JSON.stringify(finalBillImageUrls) : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
       fee,
@@ -928,6 +981,20 @@ export default function AdminPage() {
       actorRole: user?.role
     };
 
+    // Only set image properties if they were actually modified, to prevent stale overrides
+    if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
+      newJobData.bagImageUrl = finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null;
+    }
+    if (!editingJobId || JSON.stringify(finalBillImageUrls) !== JSON.stringify(origBillImageUrls)) {
+      newJobData.billImageUrl = finalBillImageUrls.length > 0 ? JSON.stringify(finalBillImageUrls) : null;
+    }
+    if (!editingJobId || JSON.stringify(finalPickupProofUrls) !== JSON.stringify(origPickupProofImageUrls)) {
+      newJobData.pickupProofImageUrl = finalPickupProofUrls.length > 0 ? JSON.stringify(finalPickupProofUrls) : null;
+    }
+    if (!editingJobId || JSON.stringify(finalDeliveryProofUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
+      newJobData.deliveryProofImageUrl = finalDeliveryProofUrls.length > 0 ? JSON.stringify(finalDeliveryProofUrls) : null;
+    }
+
     try {
       if (editingJobId) {
         await jobStore.updateJobDetails(editingJobId, newJobData as any);
@@ -953,6 +1020,10 @@ export default function AdminPage() {
       setBillImageUrls([]);
       setPickupProofImageUrls([]);
       setDeliveryProofImageUrls([]);
+      setOrigBagImageUrls([]);
+      setOrigBillImageUrls([]);
+      setOrigPickupProofImageUrls([]);
+      setOrigDeliveryProofImageUrls([]);
       setServiceType("wash_fold");
       setLaundryTypes([]);
       setServiceSpeed("standard");
@@ -1863,6 +1934,20 @@ export default function AdminPage() {
                                       </span>
                                     </div>
                                     <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
+                                    {log.imageUrls && log.imageUrls.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1.5">
+                                        {log.imageUrls.map((url, idx) => (
+                                          <div 
+                                            key={idx} 
+                                            className="relative w-10 h-10 rounded-lg border border-slate-200 overflow-hidden cursor-pointer bg-slate-100 shadow-sm"
+                                            onClick={() => window.open(url, '_blank')}
+                                            title="Click to view full image"
+                                          >
+                                            <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover hover:scale-110 transition-transform" />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                     {!editingJobId && (
                                       <button 
                                         type="button"
@@ -1879,27 +1964,58 @@ export default function AdminPage() {
                             ) : (
                               <div className="text-[10px] text-slate-400 italic px-1 flex-1 flex items-center justify-center border border-slate-100 bg-slate-50 rounded-lg">No notes yet...</div>
                             )}
-                            <div className="flex gap-1 shrink-0 mt-1">
-                              <Input
-                                placeholder="Type a note & press Enter..."
-                                value={adminNoteInput}
-                                onChange={(e) => setAdminNoteInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleAddAdminLog(adminNoteInput);
-                                  }
-                                }}
-                                className="h-8 text-xs bg-white flex-1 rounded-lg"
-                              />
-                              <Button 
-                                type="button" 
-                                size="sm" 
-                                className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
-                                onClick={() => handleAddAdminLog(adminNoteInput)}
-                              >
-                                <Plus size={14} /> Send
-                              </Button>
+                            <div className="flex flex-col gap-1 shrink-0 mt-1">
+                              <div className="flex gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className={`h-8 px-2 rounded-lg border ${showNoteUploader ? 'bg-indigo-50 border-indigo-300 text-indigo-600' : 'bg-white border-slate-200 text-slate-500'}`}
+                                  onClick={() => setShowNoteUploader(prev => !prev)}
+                                  disabled={isUploadingNote}
+                                  title="Attach images"
+                                >
+                                  <Paperclip size={14} />
+                                </Button>
+                                <Input
+                                  placeholder="Type a note & press Enter..."
+                                  value={adminNoteInput}
+                                  onChange={(e) => setAdminNoteInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleSendAdminLog();
+                                    }
+                                  }}
+                                  disabled={isUploadingNote}
+                                  className="h-8 text-xs bg-white flex-1 rounded-lg"
+                                />
+                                <Button 
+                                  type="button" 
+                                  size="sm" 
+                                  disabled={isUploadingNote}
+                                  className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
+                                  onClick={handleSendAdminLog}
+                                >
+                                  {isUploadingNote ? (
+                                    <Loader2 className="animate-spin" size={14} />
+                                  ) : (
+                                    <Plus size={14} />
+                                  )}
+                                  <span className="ml-1">Send</span>
+                                </Button>
+                              </div>
+                              {showNoteUploader && (
+                                <div className="border border-slate-200 bg-white p-1.5 rounded-lg shadow-sm mt-1 max-h-[140px] overflow-y-auto">
+                                  <MultiImageUploader
+                                    ref={noteUploaderRef}
+                                    entityType="job"
+                                    entityId={editingJobId || "temp-note"}
+                                    subType="proofs"
+                                    maxFiles={3}
+                                  />
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1950,24 +2066,28 @@ export default function AdminPage() {
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
                             <MultiImageUploader
+                              ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
                               entityType="job"
-                              entityId={editingJobId || "new"}
+                              entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={pickupProofImageUrls}
-                              maxFiles={pickupProofImageUrls.length}
-                              readOnly
+                              onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
+                              maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
+                              readOnly={user?.role !== 'admin'}
                             />
                           </div>
 
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
                             <MultiImageUploader
+                              ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
                               entityType="job"
-                              entityId={editingJobId || "new"}
+                              entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={deliveryProofImageUrls}
-                              maxFiles={deliveryProofImageUrls.length}
-                              readOnly
+                              onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
+                              maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
+                              readOnly={user?.role !== 'admin'}
                             />
                           </div>
                         </div>

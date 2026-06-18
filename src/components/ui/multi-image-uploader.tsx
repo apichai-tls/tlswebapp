@@ -58,6 +58,8 @@ function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 
 
 export interface MultiImageUploaderRef {
   startUpload: () => Promise<string[]>;
+  reset: () => void;
+  getPendingFilesCount: () => number;
 }
 
 interface MultiImageUploaderProps {
@@ -194,6 +196,12 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
 
         // After all successful uploads, return combined array
         return [...value, ...uploadedUrls];
+      },
+      reset: () => {
+        setPendingFiles([]);
+      },
+      getPendingFilesCount: () => {
+        return pendingFiles.length;
       }
     }));
 

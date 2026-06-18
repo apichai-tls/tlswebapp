@@ -139,6 +139,7 @@ export interface AdminNoteLog {
   userName: string;
   text: string;
   timestamp: string;
+  imageUrls?: string[];
 }
 
 export interface ServiceItem {
