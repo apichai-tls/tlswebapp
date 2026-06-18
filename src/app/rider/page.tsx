@@ -388,6 +388,7 @@ export default function RiderPage() {
   const [historyMode, setHistoryMode] = useState<"daily" | "monthly">("daily");
   const [riderNoteInput, setRiderNoteInput] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
+  const [previewChatImage, setPreviewChatImage] = useState<string | null>(null);
 
   // Sync selectedJob with background database updates (real-time chat/notes sync)
   useEffect(() => {
@@ -1710,7 +1711,7 @@ export default function RiderPage() {
                             <div 
                               key={idx} 
                               className={`relative w-16 h-16 rounded-lg border overflow-hidden cursor-pointer bg-slate-100 shadow-sm ${isMe ? 'border-indigo-400' : 'border-slate-200'}`}
-                              onClick={() => window.open(url, '_blank')}
+                              onClick={() => setPreviewChatImage(url)}
                               title="Click to view full image"
                             >
                               <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover hover:scale-105 transition-transform" />
@@ -1857,6 +1858,21 @@ export default function RiderPage() {
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* Chat Image Lightbox/Preview Modal */}
+      {previewChatImage && (
+        <Dialog open={!!previewChatImage} onOpenChange={(open) => !open && setPreviewChatImage(null)}>
+          <DialogContent className="sm:max-w-3xl w-[95vw] rounded-2xl mx-auto p-0 bg-black/95 border-none shadow-2xl overflow-hidden flex flex-col items-center justify-center h-[70vh] sm:h-[80vh] relative z-[99999]">
+            <button 
+              className="absolute top-4 right-4 sm:top-6 sm:right-6 text-white hover:text-red-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10"
+              onClick={() => setPreviewChatImage(null)}
+            >
+              <X size={24} />
+            </button>
+            <img src={previewChatImage} className="max-w-full max-h-[80vh] object-contain rounded-xl" alt="Enlarged Chat Image" />
+          </DialogContent>
+        </Dialog>
+      )}
     </ProtectedRoute>
   );
 }
