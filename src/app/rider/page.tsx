@@ -1862,7 +1862,7 @@ export default function RiderPage() {
       {/* Chat Image Lightbox/Preview Modal */}
       {previewChatImage && (
         <Dialog open={!!previewChatImage} onOpenChange={(open) => !open && setPreviewChatImage(null)}>
-          <DialogContent className="sm:max-w-3xl w-[95vw] rounded-2xl mx-auto p-0 bg-black/95 border-none shadow-2xl overflow-hidden flex flex-col items-center justify-center h-[70vh] sm:h-[80vh] relative z-[99999]">
+          <DialogContent className="sm:max-w-3xl w-[95vw] rounded-2xl mx-auto p-0 bg-black/95 border-none shadow-2xl overflow-hidden flex flex-col items-center justify-center h-[70vh] sm:h-[80vh] z-[99999]">
             <button 
               className="absolute top-4 right-4 sm:top-6 sm:right-6 text-white hover:text-red-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10"
               onClick={() => setPreviewChatImage(null)}

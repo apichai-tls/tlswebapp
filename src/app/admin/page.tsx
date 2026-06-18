@@ -400,6 +400,28 @@ export default function AdminPage() {
   const [noteLogsModalOpen, setNoteLogsModalOpen] = useState(false);
   const [previewAdminNoteImage, setPreviewAdminNoteImage] = useState<string | null>(null);
 
+  const adminLogsEndRef = useRef<HTMLDivElement>(null);
+  const expandedLogsEndRef = useRef<HTMLDivElement>(null);
+
+  // Scroll admin notes list to the bottom
+  useEffect(() => {
+    if (adminLogsEndRef.current) {
+      adminLogsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [adminLogs]);
+
+  // Scroll the expanded dialog list when it opens or logs change
+  useEffect(() => {
+    if (noteLogsModalOpen) {
+      const timer = setTimeout(() => {
+        if (expandedLogsEndRef.current) {
+          expandedLogsEndRef.current.scrollIntoView({ behavior: "smooth" });
+        }
+      }, 80);
+      return () => clearTimeout(timer);
+    }
+  }, [noteLogsModalOpen, adminLogs]);
+
   // Sync adminLogs with database updates in the background (real-time chat/notes sync)
   useEffect(() => {
     if (editingJobId) {
@@ -2001,6 +2023,7 @@ export default function AdminPage() {
                                     )}
                                   </div>
                                 ))}
+                                <div ref={adminLogsEndRef} />
                               </div>
                             ) : (
                               <div 
@@ -2494,6 +2517,7 @@ export default function AdminPage() {
                           )}
                         </div>
                       ))}
+                      <div ref={expandedLogsEndRef} />
                     </div>
                   ) : (
                     <div className="flex-1 flex flex-col items-center justify-center text-slate-400 space-y-2 py-12">
@@ -2562,7 +2586,7 @@ export default function AdminPage() {
             {/* Admin Note Image Lightbox/Preview Modal */}
             {previewAdminNoteImage && (
               <Dialog open={!!previewAdminNoteImage} onOpenChange={(open) => !open && setPreviewAdminNoteImage(null)}>
-                <DialogContent className="sm:max-w-3xl w-[95vw] rounded-2xl mx-auto p-0 bg-black/95 border-none shadow-2xl overflow-hidden flex flex-col items-center justify-center h-[70vh] sm:h-[80vh] relative z-[99999]">
+                <DialogContent className="sm:max-w-3xl w-[95vw] rounded-2xl mx-auto p-0 bg-black/95 border-none shadow-2xl overflow-hidden flex flex-col items-center justify-center h-[70vh] sm:h-[80vh] z-[99999]">
                   <button 
                     className="absolute top-4 right-4 sm:top-6 sm:right-6 text-white hover:text-red-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10"
                     onClick={() => setPreviewAdminNoteImage(null)}
