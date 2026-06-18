@@ -1948,7 +1948,7 @@ export default function AdminPage() {
                           <Label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1.5"><MessageSquare size={14} className="text-indigo-500" /> Admin Note Logs</Label>
                           <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
                             {adminLogs.length > 0 ? (
-                              <div className="flex-1 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-[10px]">
+                              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-[10px]">
                                 {adminLogs.map((log, i) => (
                                   <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm">
                                     <div className="flex justify-between items-center mb-1">
