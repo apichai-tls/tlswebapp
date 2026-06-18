@@ -397,6 +397,32 @@ export default function AdminPage() {
   const [isUploadingNote, setIsUploadingNote] = useState(false);
   const noteUploaderRef = useRef<MultiImageUploaderRef>(null);
 
+  // Sync adminLogs with database updates in the background (real-time chat/notes sync)
+  useEffect(() => {
+    if (editingJobId) {
+      const freshJob = jobs.find(j => j.id === editingJobId);
+      if (freshJob) {
+        let freshNotes: AdminNoteLog[] = [];
+        try {
+          if (freshJob.adminNotesJson) {
+            freshNotes = JSON.parse(freshJob.adminNotesJson);
+          }
+        } catch {}
+
+        // Check if there is a pending local note that hasn't synced to server yet
+        const hasPendingLocalNote = adminLogs.length > 0 &&
+          adminLogs[adminLogs.length - 1].userId === (user?.id || "unknown") &&
+          !freshNotes.some(fn => fn.id === adminLogs[adminLogs.length - 1].id);
+
+        if (!hasPendingLocalNote || freshNotes.length > adminLogs.length) {
+          if (JSON.stringify(freshNotes) !== JSON.stringify(adminLogs)) {
+            setAdminLogs(freshNotes);
+          }
+        }
+      }
+    }
+  }, [jobs, editingJobId, user?.id, adminLogs]);
+
   const handleAddAdminLog = async (text: string, isSystem = false, imageUrls?: string[]) => {
     if (!text.trim() && (!imageUrls || imageUrls.length === 0)) return;
     const newLog: AdminNoteLog = {

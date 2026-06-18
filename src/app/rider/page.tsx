@@ -388,6 +388,38 @@ export default function RiderPage() {
   const [historyMode, setHistoryMode] = useState<"daily" | "monthly">("daily");
   const [riderNoteInput, setRiderNoteInput] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
+
+  // Sync selectedJob with background database updates (real-time chat/notes sync)
+  useEffect(() => {
+    if (selectedJob) {
+      const freshJob = jobs.find(j => j.id === selectedJob.job.id);
+      if (freshJob) {
+        let freshNotes: AdminNoteLog[] = [];
+        let currentNotes: AdminNoteLog[] = [];
+        try {
+          if (freshJob.adminNotesJson) {
+            freshNotes = JSON.parse(freshJob.adminNotesJson);
+          }
+        } catch {}
+        try {
+          if (selectedJob.job.adminNotesJson) {
+            currentNotes = JSON.parse(selectedJob.job.adminNotesJson);
+          }
+        } catch {}
+
+        // Check if there is a pending local note that hasn't synced to server yet
+        const hasPendingLocalNote = currentNotes.length > 0 &&
+          currentNotes[currentNotes.length - 1].userId === user?.id &&
+          !freshNotes.some(fn => fn.id === currentNotes[currentNotes.length - 1].id);
+
+        if (!hasPendingLocalNote || freshNotes.length > currentNotes.length) {
+          if (JSON.stringify(freshJob) !== JSON.stringify(selectedJob.job)) {
+            setSelectedJob(prev => prev ? { ...prev, job: freshJob } : null);
+          }
+        }
+      }
+    }
+  }, [jobs, selectedJob, user?.id]);
   
   // Pull-to-refresh state and touch event handling
   const [pullDistance, setPullDistance] = useState(0);
@@ -511,13 +543,12 @@ export default function RiderPage() {
       
       const newJson = JSON.stringify(updatedLogs);
       setSelectedJob({ ...selectedJob, job: { ...selectedJob.job, adminNotesJson: newJson } });
-      
-      // Update store so it persists when modal closes
-      import("@/lib/api").then(m => m.refreshDb());
     }
 
     try {
       await addJobLogAction(jobId, newLog);
+      // Update store so it persists when modal closes
+      import("@/lib/api").then(m => m.refreshDb());
     } catch (err) {
       console.error("Failed to save rider log:", err);
       toast.error("Failed to send message");
