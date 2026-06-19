@@ -140,6 +140,7 @@ export interface AdminNoteLog {
   text: string;
   timestamp: string;
   imageUrls?: string[];
+  isNew?: boolean;
 }
 
 export interface ServiceItem {

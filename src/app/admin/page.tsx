@@ -90,7 +90,8 @@ import {
   Edit,
   ClipboardList,
   Paperclip,
-  Maximize2
+  Maximize2,
+  Trash2
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -402,6 +403,17 @@ export default function AdminPage() {
 
   const adminLogsEndRef = useRef<HTMLDivElement>(null);
   const expandedLogsEndRef = useRef<HTMLDivElement>(null);
+  const expandedNoteInputRef = useRef<HTMLInputElement>(null);
+
+  // Focus the input cursor when the expanded notes dialog opens
+  useEffect(() => {
+    if (noteLogsModalOpen) {
+      const timer = setTimeout(() => {
+        expandedNoteInputRef.current?.focus();
+      }, 150); // Wait for modal transition to settle
+      return () => clearTimeout(timer);
+    }
+  }, [noteLogsModalOpen]);
 
   // Scroll admin notes list to the bottom
   useEffect(() => {
@@ -453,6 +465,35 @@ export default function AdminPage() {
     }
   }, [jobs, editingJobId, user?.id, adminLogs]);
 
+  // Clean up isNew flags when the Edit Job dialog closes without saving
+  useEffect(() => {
+    if (!dialogOpen && editingJobId) {
+      const stripNewNotes = async () => {
+        const currentJob = jobs.find(j => j.id === editingJobId);
+        if (currentJob && currentJob.adminNotesJson) {
+          try {
+            const notes = JSON.parse(currentJob.adminNotesJson);
+            if (Array.isArray(notes)) {
+              const cleaned = notes.map((n: any) => {
+                const { isNew, ...rest } = n;
+                return rest;
+              });
+              if (JSON.stringify(notes) !== JSON.stringify(cleaned)) {
+                await jobStore.updateJobDetails(editingJobId, { 
+                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined 
+                });
+                import("@/lib/api").then(m => m.refreshDb());
+              }
+            }
+          } catch {}
+        }
+      };
+      stripNewNotes();
+      setEditingJobId(null);
+      setAdminLogs([]);
+    }
+  }, [dialogOpen, editingJobId, jobs]);
+
   const handleAddAdminLog = async (text: string, isSystem = false, imageUrls?: string[]) => {
     if (!text.trim() && (!imageUrls || imageUrls.length === 0)) return;
     const newLog: AdminNoteLog = {
@@ -461,7 +502,8 @@ export default function AdminPage() {
       userName: isSystem ? "System (CRM)" : ((user as any)?.name || user?.email || "Admin"),
       text: text.trim(),
       imageUrls: imageUrls || [],
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      isNew: !isSystem
     };
     
     // Add locally for instant UI update
@@ -476,6 +518,23 @@ export default function AdminPage() {
         import("@/lib/api").then(m => m.refreshDb());
       } catch (err) {
         console.error("Failed to instantly save admin log:", err);
+      }
+    }
+  };
+
+  const handleDeleteAdminLog = async (logId: string) => {
+    const filteredLogs = adminLogs.filter(log => log.id !== logId);
+    setAdminLogs(filteredLogs);
+
+    if (editingJobId) {
+      try {
+        await jobStore.updateJobDetails(editingJobId, {
+          adminNotesJson: filteredLogs.length > 0 ? JSON.stringify(filteredLogs) : undefined
+        });
+        import("@/lib/api").then(m => m.refreshDb());
+      } catch (err) {
+        console.error("Failed to delete admin log:", err);
+        toast.error("Failed to delete admin log");
       }
     }
   };
@@ -860,7 +919,12 @@ export default function AdminPage() {
     setAdminNote(job.remark || "");
     try {
       if (job.adminNotesJson) {
-        setAdminLogs(JSON.parse(job.adminNotesJson));
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (Array.isArray(parsed)) {
+          setAdminLogs(parsed.map((log: any) => ({ ...log, isNew: false })));
+        } else {
+          setAdminLogs([]);
+        }
       } else {
         setAdminLogs([]);
       }
@@ -1030,7 +1094,7 @@ export default function AdminPage() {
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
       ].filter(Boolean).join(" | ") || null,
-      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs) : null,
+      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
@@ -1644,7 +1708,7 @@ export default function AdminPage() {
                                   </Badge>
                                 )}
                                 {selectedMemberLabel && (
-                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0">
+                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0 select-text cursor-text" style={{ userSelect: 'text' }}>
                                     {selectedMemberId ? `ID: ${selectedMemberId}` : 'Member'}
                                   </Badge>
                                 )}
@@ -1997,19 +2061,32 @@ export default function AdminPage() {
                           <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
                             {adminLogs.length > 0 ? (
                               <div 
-                                className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-[10px] cursor-pointer hover:bg-slate-100/30 transition-colors"
-                                onClick={() => setNoteLogsModalOpen(true)}
-                                title="Click to expand note logs"
+                                className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-[10px]"
                               >
                                 {adminLogs.map((log, i) => (
-                                  <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm">
+                                  <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm pr-6">
                                     <div className="flex justify-between items-center mb-1">
                                       <span className={`font-bold text-[10px] uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
                                         {log.userName || (log as any).createdBy || "System"}
                                       </span>
-                                      <span className="text-[9px] text-slate-400">
-                                        {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
-                                      </span>
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-[9px] text-slate-400">
+                                          {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
+                                        </span>
+                                        {log.isNew && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleDeleteAdminLog(log.id!);
+                                            }}
+                                            className="text-slate-400 hover:text-rose-500 rounded p-0.5 transition-colors"
+                                            title="Delete note"
+                                          >
+                                            <Trash2 size={11} />
+                                          </button>
+                                        )}
+                                      </div>
                                     </div>
                                     <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
                                     {log.imageUrls && log.imageUrls.length > 0 && (
@@ -2032,9 +2109,7 @@ export default function AdminPage() {
                               </div>
                             ) : (
                               <div 
-                                className="text-[10px] text-slate-400 italic px-1 flex-1 flex items-center justify-center border border-slate-100 bg-slate-50 rounded-lg cursor-pointer hover:bg-slate-100/30 transition-colors"
-                                onClick={() => setNoteLogsModalOpen(true)}
-                                title="Click to expand note logs"
+                                className="text-[10px] text-slate-400 italic px-1 flex-1 flex items-center justify-center border border-slate-100 bg-slate-50 rounded-lg"
                               >
                                 No notes yet...
                               </div>
@@ -2045,11 +2120,9 @@ export default function AdminPage() {
                                   type="button"
                                   size="sm"
                                   variant="outline"
-                                  className="h-8 px-2 rounded-lg border bg-white border-slate-200 text-slate-500"
-                                  onClick={() => {
-                                    setNoteLogsModalOpen(true);
-                                    setShowNoteUploader(true);
-                                  }}
+                                  className={`h-8 px-2 rounded-lg border text-slate-500 ${showNoteUploader && !noteLogsModalOpen ? 'bg-indigo-50 border-indigo-300 text-indigo-600' : 'bg-white border-slate-200'}`}
+                                  onClick={() => setShowNoteUploader(prev => !prev)}
+                                  disabled={isUploadingNote}
                                   title="Attach images"
                                 >
                                   <Paperclip size={14} />
@@ -2058,19 +2131,41 @@ export default function AdminPage() {
                                   placeholder="Type a note & press Enter..."
                                   value={adminNoteInput}
                                   onChange={(e) => setAdminNoteInput(e.target.value)}
-                                  onClick={() => setNoteLogsModalOpen(true)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleSendAdminLog();
+                                    }
+                                  }}
+                                  disabled={isUploadingNote}
                                   className="h-8 text-xs bg-white flex-1 rounded-lg"
                                 />
                                 <Button 
                                   type="button" 
                                   size="sm" 
+                                  disabled={isUploadingNote}
                                   className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
-                                  onClick={() => setNoteLogsModalOpen(true)}
+                                  onClick={handleSendAdminLog}
                                 >
-                                  <Plus size={14} />
+                                  {isUploadingNote ? (
+                                    <Loader2 className="animate-spin" size={14} />
+                                  ) : (
+                                    <Plus size={14} />
+                                  )}
                                   <span className="ml-1">Send</span>
                                 </Button>
                               </div>
+                              {showNoteUploader && !noteLogsModalOpen && (
+                                <div className="border border-slate-200 bg-white p-2 rounded-lg shadow-sm mt-1 max-h-[160px] overflow-y-auto">
+                                  <MultiImageUploader
+                                    ref={noteUploaderRef}
+                                    entityType="job"
+                                    entityId={editingJobId || "temp-note"}
+                                    subType="proofs"
+                                    maxFiles={3}
+                                  />
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -2496,14 +2591,29 @@ export default function AdminPage() {
                   {adminLogs.length > 0 ? (
                     <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 p-1 text-slate-700">
                       {adminLogs.map((log, i) => (
-                        <div key={log.id || i} className="group relative p-3 rounded-xl bg-white border border-slate-200 shadow-sm">
+                        <div key={log.id || i} className="group relative p-3 rounded-xl bg-white border border-slate-200 shadow-sm pr-8">
                           <div className="flex justify-between items-center mb-1">
                             <span className={`font-bold text-xs uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
                               {log.userName || (log as any).createdBy || "System"}
                             </span>
-                            <span className="text-[10px] text-slate-400">
-                              {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, yyyy HH:mm")}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] text-slate-400">
+                                {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, yyyy HH:mm")}
+                              </span>
+                              {log.isNew && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteAdminLog(log.id!);
+                                  }}
+                                  className="text-slate-400 hover:text-rose-500 rounded p-1 transition-colors"
+                                  title="Delete note"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
+                            </div>
                           </div>
                           <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
                           {log.imageUrls && log.imageUrls.length > 0 && (
@@ -2546,6 +2656,7 @@ export default function AdminPage() {
                       <Paperclip size={16} />
                     </Button>
                     <Input
+                      ref={expandedNoteInputRef}
                       placeholder="Type a note & press Enter..."
                       value={adminNoteInput}
                       onChange={(e) => setAdminNoteInput(e.target.value)}
