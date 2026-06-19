@@ -122,9 +122,9 @@ export const refreshDb = async () => {
         parsed.jobs = parsed.jobs.map((serverJob: any) => {
           const memJob = memoryDb!.jobs.find(j => j.id === serverJob.id);
           if (memJob) {
-            // Stale polling overwrite protection: Keep the local in-memory job if edited within 10s
+            // Stale polling overwrite protection: Keep the local in-memory job if edited within 30s
             const lastUpdated = lastUpdatedJobs.get(serverJob.id);
-            if (lastUpdated && (Date.now() - lastUpdated) < 10000) {
+            if (lastUpdated && (Date.now() - lastUpdated) < 30000) {
               return memJob;
             }
 
