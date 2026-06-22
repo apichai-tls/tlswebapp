@@ -1117,6 +1117,7 @@ export default function AdminPage() {
     }
     if (!editingJobId || JSON.stringify(finalDeliveryProofUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
       newJobData.deliveryProofImageUrl = finalDeliveryProofUrls.length > 0 ? JSON.stringify(finalDeliveryProofUrls) : null;
+      newJobData.proofImageUrl = finalDeliveryProofUrls.length > 0 ? JSON.stringify(finalDeliveryProofUrls) : null;
     }
 
     try {
@@ -1822,7 +1823,21 @@ export default function AdminPage() {
                           {isPickup && (
                             <div className="space-y-1">
                               <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <MapPin size={14} className="text-emerald-600" />
+                                <span title="เปิดตำแหน่งใน Google Maps">
+                                  <MapPin 
+                                    size={14} 
+                                    className="text-emerald-600 cursor-pointer hover:text-emerald-800 transition-colors" 
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (pickupLoc) {
+                                        window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pickupLoc)}`, '_blank');
+                                      } else if (pickupCoords && (pickupCoords.lat !== 0 || pickupCoords.lng !== 0)) {
+                                        window.open(`https://www.google.com/maps/search/?api=1&query=${pickupCoords.lat},${pickupCoords.lng}`, '_blank');
+                                      }
+                                    }}
+                                  />
+                                </span>
                                 Pickup Address <span className="text-red-500">*</span>
                               </Label>
                               <div className="flex gap-2">
@@ -1862,7 +1877,21 @@ export default function AdminPage() {
                           {isDelivery && (
                             <div className="space-y-1">
                               <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <Navigation size={14} className="text-red-600" />
+                                <span title="เปิดตำแหน่งใน Google Maps">
+                                  <Navigation 
+                                    size={14} 
+                                    className="text-red-600 cursor-pointer hover:text-red-800 transition-colors" 
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (deliveryLoc) {
+                                        window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(deliveryLoc)}`, '_blank');
+                                      } else if (deliveryCoords && (deliveryCoords.lat !== 0 || deliveryCoords.lng !== 0)) {
+                                        window.open(`https://www.google.com/maps/search/?api=1&query=${deliveryCoords.lat},${deliveryCoords.lng}`, '_blank');
+                                      }
+                                    }}
+                                  />
+                                </span>
                                 Delivery Address <span className="text-red-500">*</span>
                               </Label>
                               <div className="flex gap-2">

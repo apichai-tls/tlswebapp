@@ -154,7 +154,10 @@ const RiderJobImages = ({
     fetch(`/api/jobs/${jobId}/details`)
       .then(r => r.json())
       .then(data => {
-        const urlData = data[imageType];
+        let urlData = data[imageType];
+        if (imageType === 'deliveryProofImageUrl' && !urlData) {
+          urlData = data.proofImageUrl;
+        }
         const remoteUrls = parseUrls(urlData);
         
         // Only update if it actually changed to prevent flickering or losing newly uploaded ones
@@ -770,7 +773,7 @@ export default function RiderPage() {
   const allTasks: RiderTask[] = [];
   if (activeRider) {
     jobs.forEach(j => {
-      if (j.pickupRiderId === activeRider.id || j.riderId === activeRider.id) {
+      if (j.pickupRiderId === activeRider.id || (!j.pickupRiderId && j.riderId === activeRider.id)) {
         const isPickupCompleted = ["picked_up", "billing", "active", "ready_to_wash", "washed", "delivery", "completed", "cancel"].includes(j.status);
         allTasks.push({
           taskId: `${j.id}-pickup`,
@@ -925,8 +928,9 @@ export default function RiderPage() {
       }
       
       const jsonProofUrls = JSON.stringify(finalProofUrls);
+      const legType = taskId.endsWith("-pickup") ? "pickup" : "delivery";
       
-      await jobStore.completeJob(jobId, jsonProofUrls);
+      await jobStore.completeJob(jobId, jsonProofUrls, legType);
       toast.success("Job marked as completed! 🎉");
       // Return to online status if no other active jobs
       if (activeRider && myJobs.filter(t => !t.isCompleted).length <= 1) {

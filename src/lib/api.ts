@@ -146,6 +146,7 @@ export const refreshDb = async () => {
                 completedAt: memJob.completedAt || serverJob.completedAt,
                 pickupProofImageUrl: memJob.pickupProofImageUrl || serverJob.pickupProofImageUrl,
                 deliveryProofImageUrl: memJob.deliveryProofImageUrl || serverJob.deliveryProofImageUrl,
+                proofImageUrl: memJob.proofImageUrl || serverJob.proofImageUrl,
               };
             }
 

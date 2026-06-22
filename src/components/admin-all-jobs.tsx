@@ -113,13 +113,30 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       if (job.status === 'tba') return false;
     }
 
+    const searchLower = searchTerm.toLowerCase().trim();
     const statusLabel = statusConfig[job.status]?.label || "";
+    const customer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
     const matchesSearch = 
-      job.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (job.customerName && job.customerName.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (job.customerPhone && job.customerPhone.includes(searchTerm)) ||
-      statusLabel.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      job.status.toLowerCase().includes(searchTerm.toLowerCase());
+      job.id.toLowerCase().includes(searchLower) ||
+      (job.customerName && job.customerName.toLowerCase().includes(searchLower)) ||
+      (job.customerPhone && job.customerPhone.includes(searchLower)) ||
+      (job.pickupLocation && job.pickupLocation.toLowerCase().includes(searchLower)) ||
+      (job.dropoffLocation && job.dropoffLocation.toLowerCase().includes(searchLower)) ||
+      (job.remark && job.remark.toLowerCase().includes(searchLower)) ||
+      statusLabel.toLowerCase().includes(searchLower) ||
+      job.status.toLowerCase().includes(searchLower) ||
+      (customer && (
+        (customer.name && customer.name.toLowerCase().includes(searchLower)) ||
+        (customer.phone && customer.phone.includes(searchLower)) ||
+        (customer.memberId && customer.memberId.toLowerCase().includes(searchLower)) ||
+        (customer.lineId && customer.lineId.toLowerCase().includes(searchLower)) ||
+        (customer.email && customer.email.toLowerCase().includes(searchLower)) ||
+        (customer.defaultAddress && customer.defaultAddress.toLowerCase().includes(searchLower)) ||
+        (customer.secondaryAddress && customer.secondaryAddress.toLowerCase().includes(searchLower)) ||
+        (customer.companyName && customer.companyName.toLowerCase().includes(searchLower)) ||
+        (customer.taxId && customer.taxId.toLowerCase().includes(searchLower)) ||
+        (customer.remark && customer.remark.toLowerCase().includes(searchLower))
+      ));
 
     let matchesDate = true;
     const isActive = !['completed', 'cancel', 'return'].includes(job.status);
@@ -185,10 +202,10 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <Input 
-              placeholder="Search ID or Customer..." 
+              placeholder="Search jobs, customers, address..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 w-[200px] bg-white border-slate-200" 
+              className="pl-9 w-[260px] bg-white border-slate-200" 
             />
           </div>
           
@@ -643,10 +660,23 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           </span>
                         </div>
                       )}
-                      <div className="text-xs text-slate-500 mb-3 flex items-start gap-1">
-                        <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
-                        <span className="line-clamp-2">{job.pickupLocation || "-"}</span>
-                      </div>
+                      {['billing', 'delivery', 'completed'].includes(job.status) ? (
+                        <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Delivery Address">
+                          <Navigation size={12} className="shrink-0 mt-0.5 text-rose-500" />
+                          <span className="line-clamp-2 font-medium text-slate-700">
+                            <span className="text-[9px] font-bold text-rose-600 uppercase mr-1 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">ส่ง</span>
+                            {job.dropoffLocation || "-"}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Pickup Address">
+                          <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
+                          <span className="line-clamp-2">
+                            <span className="text-[9px] font-bold text-emerald-600 uppercase mr-1 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">รับ</span>
+                            {job.pickupLocation || "-"}
+                          </span>
+                        </div>
+                      )}
                       <div className="flex flex-col gap-1.5 mb-2">
                         <div className="flex items-center gap-1.5 text-[10px]">
                           <Banknote size={12} className="text-slate-400" />

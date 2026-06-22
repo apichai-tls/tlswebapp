@@ -216,6 +216,7 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.completedAt !== undefined) data.completedAt = updates.completedAt;
   if (updates.pickupProofImageUrl !== undefined) data.pickupProofImageUrl = updates.pickupProofImageUrl;
   if (updates.deliveryProofImageUrl !== undefined) data.deliveryProofImageUrl = updates.deliveryProofImageUrl;
+  if (updates.proofImageUrl !== undefined) data.proofImageUrl = updates.proofImageUrl;
   if (updates.riderId !== undefined) data.riderId = updates.riderId;
   if (updates.legs) data.legsJson = JSON.stringify(updates.legs);
   if (updates.pickupRiderId !== undefined) data.pickupRiderId = updates.pickupRiderId;

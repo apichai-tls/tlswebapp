@@ -66,14 +66,14 @@ export interface Customer {
   isVIP?: boolean;
   isCorporate?: boolean;
   isWhatsapp?: boolean;
-  email?: string;
-  lineId?: string;
-  language?: string;
-  remark?: string;
-  secondaryAddress?: string;
-  dob?: string;
-  taxId?: string;
-  companyName?: string;
+  email?: string | null;
+  lineId?: string | null;
+  language?: string | null;
+  remark?: string | null;
+  secondaryAddress?: string | null;
+  dob?: string | null;
+  taxId?: string | null;
+  companyName?: string | null;
 }
 
 export interface Job {
@@ -466,7 +466,7 @@ export const jobStore = {
     emitJobChange();
   },
 
-  async completeJob(id: string, proofImageUrl?: string) {
+  async completeJob(id: string, proofImageUrl?: string, legType?: "pickup" | "delivery") {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
     if (!job) return;
@@ -489,8 +489,13 @@ export const jobStore = {
 
     const proofJson = toJsonArray(proofImageUrl);
 
+    // Determine completion leg
+    const isPickupLeg = legType 
+      ? legType === "pickup"
+      : ["pending", "pickup", "billing"].includes(job.status);
+
     // Add leg validation - legs might not exist for old jobs
-    if (["pending", "pickup", "billing"].includes(job.status)) {
+    if (isPickupLeg) {
       const updatedLegs = job.legs ? {
         ...job.legs,
         pickupOutbound: { ...job.legs.pickupOutbound, status: "completed" as const, completedAt: new Date() },
@@ -513,6 +518,7 @@ export const jobStore = {
         status: "completed",
         completedAt: job.completedAt || new Date(),
         deliveryProofImageUrl: proofJson,
+        proofImageUrl: proofJson,
         legs: updatedLegs,
       });
     }

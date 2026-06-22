@@ -153,6 +153,7 @@ export async function GET() {
           branchId: true,
           pickupProofImageUrl: true,
           deliveryProofImageUrl: true,
+          proofImageUrl: true,
           bagImageUrl: true,
           billImageUrl: true,
           paymentChannel: true,  // ✅ was missing — caused payment channel to not persist on reload
@@ -160,7 +161,6 @@ export async function GET() {
           createdBy: true,
           cashPlaced: true,
           isStuck: true,
-          // Exclude: proofImageUrl (deprecated)
         }
       }),
       prisma.rider.findMany(),
