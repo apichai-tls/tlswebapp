@@ -295,7 +295,9 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.status) {
     if (existingJob) {
       // Pickup completed
-      if (existingJob.status !== 'billing' && existingJob.status !== 'completed' && updates.status === 'billing' && existingJob.pickupCommission != null && existingJob.pickupRiderId) {
+      const finalPickupRiderId = updates.pickupRiderId !== undefined ? updates.pickupRiderId : existingJob.pickupRiderId;
+      const finalPickupCommission = updates.pickupCommission !== undefined ? updates.pickupCommission : existingJob.pickupCommission;
+      if (existingJob.status !== 'billing' && existingJob.status !== 'completed' && updates.status === 'billing' && finalPickupCommission != null && finalPickupRiderId) {
         // Check if transaction already exists to avoid duplicates
         const existingTx = await prisma.riderTransaction.findFirst({
           where: { jobId: id, type: 'commission_pickup' }
@@ -303,22 +305,24 @@ export async function updateJobAction(id: string, updates: any) {
         if (!existingTx) {
           await prisma.riderTransaction.create({
             data: {
-              riderId: existingJob.pickupRiderId,
+              riderId: finalPickupRiderId,
               jobId: id,
-              amount: existingJob.pickupCommission,
+              amount: finalPickupCommission,
               type: 'commission_pickup',
               detail: `Job ${id} - Pickup`
             }
           });
           await prisma.rider.update({
-            where: { id: existingJob.pickupRiderId },
-            data: { commissionBalance: { increment: existingJob.pickupCommission } }
+            where: { id: finalPickupRiderId },
+            data: { commissionBalance: { increment: finalPickupCommission } }
           });
         }
       }
       
       // Delivery completed
-      if (existingJob.status !== 'completed' && updates.status === 'completed' && existingJob.deliveryCommission != null && existingJob.deliveryRiderId) {
+      const finalDeliveryRiderId = updates.deliveryRiderId !== undefined ? updates.deliveryRiderId : existingJob.deliveryRiderId;
+      const finalDeliveryCommission = updates.deliveryCommission !== undefined ? updates.deliveryCommission : existingJob.deliveryCommission;
+      if (existingJob.status !== 'completed' && updates.status === 'completed' && finalDeliveryCommission != null && finalDeliveryRiderId) {
         // Check if transaction already exists to avoid duplicates
         const existingTx = await prisma.riderTransaction.findFirst({
           where: { jobId: id, type: 'commission_delivery' }
@@ -326,17 +330,36 @@ export async function updateJobAction(id: string, updates: any) {
         if (!existingTx) {
           await prisma.riderTransaction.create({
             data: {
-              riderId: existingJob.deliveryRiderId,
+              riderId: finalDeliveryRiderId,
               jobId: id,
-              amount: existingJob.deliveryCommission,
+              amount: finalDeliveryCommission,
               type: 'commission_delivery',
               detail: `Job ${id} - Delivery`
             }
           });
           await prisma.rider.update({
-            where: { id: existingJob.deliveryRiderId },
-            data: { commissionBalance: { increment: existingJob.deliveryCommission } }
+            where: { id: finalDeliveryRiderId },
+            data: { commissionBalance: { increment: finalDeliveryCommission } }
           });
+        }
+      }
+
+      // Drag back from completed to other status (revert delivery commission)
+      if (existingJob.status === 'completed' && updates.status !== 'completed') {
+        const existingTx = await prisma.riderTransaction.findFirst({
+          where: { jobId: id, type: 'commission_delivery' }
+        });
+        if (existingTx) {
+          // Decrement rider's commission balance
+          await prisma.rider.update({
+            where: { id: existingTx.riderId },
+            data: { commissionBalance: { decrement: existingTx.amount } }
+          });
+          // Delete the transaction record
+          await prisma.riderTransaction.delete({
+            where: { id: existingTx.id }
+          });
+          console.log(`[Commission Revert] Reverted delivery commission of ฿${existingTx.amount} for Rider ${existingTx.riderId} on Job ${id}`);
         }
       }
     }

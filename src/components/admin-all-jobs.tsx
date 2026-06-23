@@ -559,18 +559,36 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                     try {
                       const job = filteredJobs.find(j => j.id === jobId);
                       if (job && job.status !== status) {
-                         if (user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) {
-                           const updates: any = { 
-                             status,
-                             actorId: user?.id,
-                             actorName: user?.name || user?.email,
-                             actorRole: user?.role
-                           };
-                           await jobStore.updateJobDetails(jobId, updates);
-                           toast.success(`Job updated to ${statusConfig[status].label}`);
-                         } else {
-                           toast.error("You don't have permission to change status.");
-                         }
+                        const isDragFromCompleted = job.status === 'completed';
+                        if (isDragFromCompleted) {
+                          if (user?.role !== 'admin' && user?.role !== 'cso') {
+                            toast.error("Only Admins and CSOs can drag jobs out of Completed status.");
+                            return;
+                          }
+                          if (status !== 'delivery') {
+                            toast.error("Completed jobs can only be dragged back to Delivery status.");
+                            return;
+                          }
+                        }
+
+                        const hasAccess = 
+                          user?.role === 'admin' || 
+                          user?.role === 'cso' || 
+                          user?.permissions?.includes('jobs') || 
+                          user?.permissions?.includes('dashboard');
+
+                        if (hasAccess) {
+                          const updates: any = { 
+                            status,
+                            actorId: user?.id,
+                            actorName: user?.name || user?.email,
+                            actorRole: user?.role
+                          };
+                          await jobStore.updateJobDetails(jobId, updates);
+                          toast.success(`Job updated to ${statusConfig[status].label}`);
+                        } else {
+                          toast.error("You don't have permission to change status.");
+                        }
                       }
                     } catch(err: any) {
                       toast.error(`Error updating job: ${err.message}`);
@@ -598,13 +616,18 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                     return (
                     <div 
                       key={job.id}
-                      draggable={user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')}
+                      draggable={
+                        user?.role === 'admin' || 
+                        user?.role === 'cso' || 
+                        user?.permissions?.includes('jobs') || 
+                        user?.permissions?.includes('dashboard')
+                      }
                       onDragStart={(e) => {
                         e.dataTransfer.setData('jobId', job.id);
                         e.dataTransfer.effectAllowed = 'move';
                       }}
                       onClick={() => onEditJob && onEditJob(job)}
-                      className={`${job.isStuck ? 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70' : 'bg-white border-slate-200'} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
+                      className={`${job.isStuck ? 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70' : 'bg-white border-slate-200'} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.role === 'cso' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
                     >
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex flex-col gap-1 w-full">

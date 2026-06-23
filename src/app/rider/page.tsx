@@ -1367,7 +1367,7 @@ export default function RiderPage() {
                           showCommission={showCommission} 
                           isHistory={true}
                           branchName={shopLocations.find(s => s.id === task.job.branchId)?.name}
-                          onClick={() => {}} 
+                          onClick={() => setSelectedJob(task)} 
                         />
                       </motion.div>
                     );
@@ -1607,37 +1607,35 @@ export default function RiderPage() {
                       )}
                     </div>
 
-                    {selectedJob.job.status !== 'completed' && selectedJob.job.status !== 'cancel' && (
-                      <div className="flex gap-1.5 flex-shrink-0 mt-auto pt-1 border-t border-slate-200">
-                        <Input
-                          placeholder="Type a message..."
-                          value={riderNoteInput}
-                          onChange={(e) => setRiderNoteInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && riderNoteInput.trim()) {
-                              e.preventDefault();
-                              handleAddRiderLog(selectedJob.job.id, riderNoteInput);
-                              setRiderNoteInput("");
-                            }
-                          }}
-                          className="h-8 text-xs bg-white flex-1"
-                        />
-                        <Button 
-                          type="button" 
-                          size="sm" 
-                          className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white"
-                          onClick={() => {
-                            if (riderNoteInput.trim()) {
-                              handleAddRiderLog(selectedJob.job.id, riderNoteInput);
-                              setRiderNoteInput("");
-                            }
-                          }}
-                          disabled={!riderNoteInput.trim()}
-                        >
-                          Send
-                        </Button>
-                      </div>
-                    )}
+                    <div className="flex gap-1.5 flex-shrink-0 mt-auto pt-1 border-t border-slate-200">
+                      <Input
+                        placeholder="Type a message..."
+                        value={riderNoteInput}
+                        onChange={(e) => setRiderNoteInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && riderNoteInput.trim()) {
+                            e.preventDefault();
+                            handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                            setRiderNoteInput("");
+                          }
+                        }}
+                        className="h-8 text-xs bg-white flex-1"
+                      />
+                      <Button 
+                        type="button" 
+                        size="sm" 
+                        className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white"
+                        onClick={() => {
+                          if (riderNoteInput.trim()) {
+                            handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                            setRiderNoteInput("");
+                          }
+                        }}
+                        disabled={!riderNoteInput.trim()}
+                      >
+                        Send
+                      </Button>
+                    </div>
                     
                     {/* Expand Icon Hint */}
                     <div className="absolute top-2 right-2 text-slate-400 pointer-events-none">
@@ -1751,7 +1749,7 @@ export default function RiderPage() {
             <div ref={chatEndRef} />
           </div>
 
-          {selectedJob?.job.status !== 'completed' && selectedJob?.job.status !== 'cancel' && (
+          {selectedJob && (
             <div className="p-3 bg-white border-t border-slate-200 shrink-0">
               <div className="flex gap-2 relative">
                 <Input
