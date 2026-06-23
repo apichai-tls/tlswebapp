@@ -492,6 +492,7 @@ function BillingJobCard({
 export default function BillingPage() {
   const { user, logout } = useAuth();
   const jobs = useJobs();
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [search, setSearch] = useState("");
   
   // Track jobs that were uploaded in this session, to keep them visible
@@ -639,6 +640,17 @@ export default function BillingPage() {
       // Cut-off: Only show orders created on or after May 28, 2026
       const cutOffDate = new Date("2026-05-28T00:00:00.000Z");
       if (new Date(j.createdAt) < cutOffDate) return false;
+
+      // Filter by user's Area if they have a restricted area (e.g. BKK, PTY)
+      if (user?.area && user.area !== 'ALL') {
+        const branch = shopLocations.find(s => s.id === j.branchId);
+        if (branch?.area !== user.area) return false;
+      }
+
+      // Hide if Walk-In (source is 'pos' or type is 'in_store')
+      if (j.source === 'pos' || (j.type as string) === 'in_store') {
+        return false;
+      }
 
       return true;
     })

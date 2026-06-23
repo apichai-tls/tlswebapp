@@ -198,6 +198,28 @@ export async function addJobAction(data: any) {
     }
   });
 
+  // Write activity log
+  try {
+    await prisma.activityLog.create({
+      data: {
+        entityId: createdJob.id,
+        entityType: 'job',
+        action: 'create',
+        details: JSON.stringify({
+          status: createdJob.status,
+          subStatus: createdJob.subStatus,
+          customerName: createdJob.customerName,
+          totalAmount: createdJob.totalAmount,
+        }),
+        userId: data.actorId || null,
+        userName: data.actorName || null,
+      }
+    });
+    console.log(`[ActivityLog] Created job ${createdJob.id}`);
+  } catch (err: any) {
+    console.error("Failed to write ActivityLog on create:", err.message);
+  }
+
   return createdJob;
 }
 
@@ -320,7 +342,50 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
 
+  // Compare changes for logging
+  const changes: any = {};
+  if (existingJob) {
+    const logFields = [
+      'status', 'subStatus', 'isPaid', 'paymentChannel', 'riderId', 
+      'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 
+      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck'
+    ];
+    logFields.forEach(field => {
+      const oldVal = (existingJob as any)[field];
+      const newVal = data[field];
+      if (newVal !== undefined && oldVal !== newVal) {
+        if (oldVal instanceof Date || newVal instanceof Date) {
+          const oldTime = oldVal instanceof Date ? oldVal.getTime() : new Date(oldVal).getTime();
+          const newTime = newVal instanceof Date ? newVal.getTime() : new Date(newVal).getTime();
+          if (oldTime !== newTime) {
+            changes[field] = newVal;
+          }
+        } else {
+          changes[field] = newVal;
+        }
+      }
+    });
+  }
+
   const updatedJob = await prisma.job.update({ where: { id }, data });
+
+  if (Object.keys(changes).length > 0) {
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: id,
+          entityType: 'job',
+          action: 'update',
+          details: JSON.stringify(changes),
+          userId: updates.actorId || null,
+          userName: updates.actorName || null,
+        }
+      });
+      console.log(`[ActivityLog] Updated job ${id}:`, JSON.stringify(changes));
+    } catch (err: any) {
+      console.error("Failed to write ActivityLog on update:", err.message);
+    }
+  }
 
   return updatedJob;
 }

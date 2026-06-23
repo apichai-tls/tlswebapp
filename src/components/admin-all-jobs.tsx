@@ -59,6 +59,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [filterArea, setFilterArea] = useState<string>("ALL");
   
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -105,6 +106,12 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     setIsLoadingHistory(true);
     jobStore.fetchHistoricalJobs(start, end).finally(() => setIsLoadingHistory(false));
   }, [dateFilter, startDate, endDate]);
+
+  useEffect(() => {
+    if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
+      setFilterArea(user.area);
+    }
+  }, [user]);
 
   // Filter Logic
   const filteredJobs = jobs.filter((job) => {
@@ -169,7 +176,14 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       if (job.status === 'cancel' && !showCancelled && viewMode === "list") matchesStatus = false;
     }
 
-    return matchesSearch && matchesDate && matchesStatus;
+    // Area Filter
+    let matchesArea = true;
+    if (filterArea !== "ALL") {
+      const branch = shopLocations.find(s => s.id === job.branchId);
+      matchesArea = branch?.area === filterArea;
+    }
+
+    return matchesSearch && matchesDate && matchesStatus && matchesArea;
   });
 
   return (
@@ -207,6 +221,18 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-9 w-[260px] bg-white border-slate-200" 
             />
+          </div>
+
+          <div className="relative">
+            <select
+              value={filterArea}
+              onChange={(e) => setFilterArea(e.target.value)}
+              className="h-10 text-xs border border-slate-200 rounded-md px-3 bg-white font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 shadow-sm"
+            >
+              <option value="ALL">All Areas</option>
+              <option value="BKK">BKK</option>
+              <option value="PTY">PTY</option>
+            </select>
           </div>
           
           <div className="flex items-center gap-4 bg-white border border-slate-200 rounded-md px-3 py-1.5 h-10">

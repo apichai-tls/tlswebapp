@@ -196,13 +196,13 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -226,8 +226,8 @@ export default function AdminPage() {
     }
 
     // For all other roles: jump to the first tab they have access to
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "settings", "users"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => user.permissions?.includes(key);
     const firstTab = tabOrder.find(tab => hasPermission(tab));
@@ -296,7 +296,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -1345,6 +1345,19 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Settings</span>}
               </motion.a>
             )}
+
+            {hasAccess("activity-logs") && (
+              <motion.a
+                href="#activity-logs"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("activity-logs"); }}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "activity-logs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Activity Logs"
+              >
+                <ClipboardList size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
+              </motion.a>
+            )}
             
             {hasAccess("users") && (
               <motion.a
@@ -1431,9 +1444,23 @@ export default function AdminPage() {
                         )}
                       </div>
                       {editingJobId && (
-                        <span className="text-slate-500 font-mono text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200 ml-6">
-                          Order ID: #{editingJobId.split('-')[0].toUpperCase()}
-                        </span>
+                        <div className="flex items-center gap-2 ml-6">
+                          <span className="text-slate-500 font-mono text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                            Order ID: #{editingJobId.split('-')[0].toUpperCase()}
+                          </span>
+                          {hasAccess("activity-logs") && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowJobLogs(!showJobLogs)}
+                              className="h-7 px-2 text-xs flex items-center gap-1.5 border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all font-semibold rounded shadow-sm cursor-pointer"
+                            >
+                              <ClipboardList size={12} className="text-slate-500" />
+                              {showJobLogs ? "Back to Edit" : "Activity Logs"}
+                            </Button>
+                          )}
+                        </div>
                       )}
                     </DialogTitle>
                     <div className="relative w-full max-w-[400px] z-50 mt-0">
@@ -2566,7 +2593,11 @@ export default function AdminPage() {
                   </div>
                   ) : (
                     <div className="h-full w-full bg-white rounded-xl border border-slate-200 overflow-hidden">
-                      <AdminLogs jobId={editingJobId || undefined} />
+                      {hasAccess("activity-logs") ? (
+                        <AdminLogs jobId={editingJobId || undefined} />
+                      ) : (
+                        <div className="p-6 text-center text-slate-500 font-medium">Access Restricted</div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2757,6 +2788,7 @@ export default function AdminPage() {
         {activeTab === "calculator" && <FeeCalculatorPage />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
+          {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
 
 
           {/* Fallback for no access to current tab */}
