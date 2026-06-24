@@ -67,6 +67,10 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
       delete (newJobData as any).completedAt;
       delete (newJobData as any).customer;
       delete (newJobData as any).legs;
+      delete (newJobData as any).adminNotesJson;
+      delete (newJobData as any).pickupProofImageUrl;
+      delete (newJobData as any).deliveryProofImageUrl;
+      delete (newJobData as any).proofImageUrl;
       
       await jobStore.addJob({
         ...newJobData,
@@ -75,8 +79,10 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
         deliveryRiderId: undefined,
         bagImageUrl: undefined,
         billImageUrl: undefined,
-        proofImageUrl: undefined,
         createdBy: user?.name || user?.email || "Task Tracker",
+        creatorRole: user?.role,
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
       } as any);
 
       toast.success("Job duplicated and sent to Order Verify.");
