@@ -140,6 +140,7 @@ function BillingJobCard({
   onUpload?: () => void;
   onFinish?: () => void;
 }) {
+  const { user } = useAuth();
   const [billUrls, setBillUrls] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -207,7 +208,10 @@ function BillingJobCard({
       const newUrls = [...billUrls, publicUrl];
       await jobStore.updateJobDetails(job.id, {
         billImageUrl: JSON.stringify(newUrls),
-      });
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
+        actorRole: user?.role
+      } as any);
       setBillUrls(newUrls);
       toast.success("Bill uploaded successfully ✅");
       
@@ -230,7 +234,10 @@ function BillingJobCard({
     try {
       await jobStore.updateJobDetails(job.id, {
         billImageUrl: newUrls.length > 0 ? JSON.stringify(newUrls) : (null as any),
-      });
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
+        actorRole: user?.role
+      } as any);
       setBillUrls(newUrls);
       toast.success("Photo deleted successfully");
     } catch {

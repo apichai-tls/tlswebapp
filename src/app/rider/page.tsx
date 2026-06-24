@@ -930,7 +930,11 @@ export default function RiderPage() {
       const jsonProofUrls = JSON.stringify(finalProofUrls);
       const legType = taskId.endsWith("-pickup") ? "pickup" : "delivery";
       
-      await jobStore.completeJob(jobId, jsonProofUrls, legType);
+      await jobStore.completeJob(jobId, jsonProofUrls, legType, {
+        actorId: user?.id || activeRider?.id,
+        actorName: activeRider?.name || user?.name || user?.email || "Rider",
+        actorRole: user?.role || "rider"
+      });
       toast.success("Job marked as completed! 🎉");
       // Return to online status if no other active jobs
       if (activeRider && myJobs.filter(t => !t.isCompleted).length <= 1) {

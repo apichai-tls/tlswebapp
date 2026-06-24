@@ -371,7 +371,8 @@ export async function updateJobAction(id: string, updates: any) {
     const logFields = [
       'status', 'subStatus', 'isPaid', 'paymentChannel', 'riderId', 
       'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 
-      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck'
+      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck',
+      'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl'
     ];
     logFields.forEach(field => {
       const oldVal = (existingJob as any)[field];

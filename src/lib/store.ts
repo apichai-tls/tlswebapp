@@ -470,7 +470,7 @@ export const jobStore = {
     emitJobChange();
   },
 
-  async completeJob(id: string, proofImageUrl?: string, legType?: "pickup" | "delivery") {
+  async completeJob(id: string, proofImageUrl?: string, legType?: "pickup" | "delivery", actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
     if (!job) return;
@@ -510,6 +510,7 @@ export const jobStore = {
         status: "billing",
         pickupProofImageUrl: proofJson,
         legs: updatedLegs,
+        ...actorDetails
       });
     } else {
       const updatedLegs = job.legs ? {
@@ -524,6 +525,7 @@ export const jobStore = {
         deliveryProofImageUrl: proofJson,
         proofImageUrl: proofJson,
         legs: updatedLegs,
+        ...actorDetails
       });
     }
     emitJobChange();
