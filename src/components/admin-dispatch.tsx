@@ -122,6 +122,11 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
   // Filter & Map Jobs to Events
   const events = useMemo(() => {
     let jobs = allJobs.filter(j => j.status !== "pending" && j.status !== "cancel");
+
+    // Hide TBA jobs from Managers, matching Kanban board rules
+    if (user?.role === 'manager') {
+      jobs = jobs.filter(j => j.status !== 'tba');
+    }
     
     // Filter jobs by selected area
     if (filterArea !== "ALL") {
@@ -190,7 +195,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
     });
 
     return calendarEvents;
-  }, [allJobs, selectedRiderIds, showCompleted, filterArea, shopLocations]);
+  }, [allJobs, selectedRiderIds, showCompleted, filterArea, shopLocations, user]);
 
   const onEventDrop = async ({ event, start, end }: any) => {
     const e = event as CalendarEvent;

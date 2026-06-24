@@ -1,5 +1,5 @@
 import { useState, useEffect, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,11 +30,13 @@ export function AdminSettings() {
 
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [enableGoogleApi, setEnableGoogleApi] = useState(false);
+  const [commissionRateInput, setCommissionRateInput] = useState("2");
   
   useEffect(() => {
     if (systemSettings) {
       setGoogleApiKey(systemSettings.googleMapsApiKey || "");
       setEnableGoogleApi(systemSettings.enableGoogleApi === "true");
+      setCommissionRateInput(systemSettings.riderCommissionPerKm || "2");
     }
   }, [systemSettings]);
 
@@ -64,6 +66,22 @@ export function AdminSettings() {
     settingsStore.updateSetting("googleMapsApiKey", googleApiKey);
     settingsStore.updateSetting("enableGoogleApi", enableGoogleApi ? "true" : "false");
     toast.success("API Settings saved successfully");
+  };
+
+  const handleSaveCommissionSettings = async () => {
+    const val = parseFloat(commissionRateInput);
+    if (isNaN(val) || val < 0) {
+      toast.error("Please enter a valid commission rate");
+      return;
+    }
+    try {
+      await settingsStore.updateSetting("riderCommissionPerKm", commissionRateInput);
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success("Rider Commission Rate updated successfully");
+    } catch (err: any) {
+      toast.error("Failed to save setting: " + err.message);
+    }
   };
 
   const handleDuplicate = (baseList: PriceList) => {
@@ -310,6 +328,44 @@ export function AdminSettings() {
             
             <Button onClick={handleSaveApiSettings} disabled={isVerifyingKey} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
               {isVerifyingKey ? "Verifying Key..." : "Save API Settings"}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-amber-100 text-amber-600 rounded-xl">
+              <Coins size={24} />
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-slate-800">Rider Commission Settings</h3>
+              <p className="text-xs text-slate-500 font-medium">Configure the payout rate per kilometer for riders.</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="max-w-2xl space-y-4">
+            <div className="space-y-2">
+              <Label className="font-semibold text-slate-700">Rider Commission Rate (฿ per km)</Label>
+              <div className="relative max-w-[200px]">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
+                <Input 
+                  type="number" 
+                  step="0.1"
+                  value={commissionRateInput} 
+                  onChange={e => setCommissionRateInput(e.target.value)} 
+                  placeholder="2.0" 
+                  className="pl-8 font-bold"
+                />
+              </div>
+              <p className="text-[10px] text-slate-500">This rate is used to calculate pickup and delivery commissions based on distance. Default is ฿2.0 per km.</p>
+            </div>
+            
+            <Button onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
+              Save Commission Rate
             </Button>
           </div>
         </div>

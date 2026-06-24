@@ -358,9 +358,14 @@ export const api = {
     const dRider = jobDetails.deliveryRiderId;
 
     const isPOS = (jobDetails.source || jobDetails.source) === "pos";
-    // CSO creates as TBA (hidden from Manager), Manager/Admin creates as Pending
+    // CSO creates as TBA (hidden from Manager), Manager/Admin creates as Pending.
+    // If a rider is assigned during creation, initialize as Pending.
     const creatorRole = (jobDetails as any).creatorRole;
-    const initialStatus = isPOS ? "billing" : (creatorRole === 'manager' || creatorRole === 'admin' ? 'pending' : 'tba');
+    const initialStatus = isPOS ? "billing" : (
+      (creatorRole === 'manager' || creatorRole === 'admin' || jobDetails.pickupRiderId || jobDetails.deliveryRiderId) 
+        ? 'pending' 
+        : 'tba'
+    );
     const legStatus = (leg: "pickup" | "delivery") => {
       if (isPOS && leg === "pickup") return "completed";
       return "pending";
@@ -444,7 +449,13 @@ export const api = {
     const jobIndex = db.jobs.findIndex(j => j.id === id);
     if (jobIndex === -1) throw new Error("Job not found");
     
-    const updatedJob = { ...db.jobs[jobIndex], ...updates, updatedAt: new Date() };
+    const existingJob = db.jobs[jobIndex];
+    const finalUpdates = { ...updates };
+    if (updates.status === undefined && existingJob.status === 'tba' && (updates.pickupRiderId || updates.deliveryRiderId)) {
+      finalUpdates.status = 'pending';
+    }
+    
+    const updatedJob = { ...existingJob, ...finalUpdates, updatedAt: new Date() };
     db.jobs.splice(jobIndex, 1);
     db.jobs.unshift(updatedJob);
     

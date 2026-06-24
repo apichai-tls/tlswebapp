@@ -234,7 +234,11 @@ export async function updateJobAction(id: string, updates: any) {
   const existingJob = await prisma.job.findUnique({ where: { id } });
   const data: any = {};
   if (updates.type !== undefined) data.type = updates.type;
-  if (updates.status !== undefined) data.status = updates.status;
+  if (updates.status !== undefined) {
+    data.status = updates.status;
+  } else if (existingJob && existingJob.status === 'tba' && (updates.pickupRiderId || updates.deliveryRiderId)) {
+    data.status = 'pending';
+  }
   if (updates.subStatus !== undefined) data.subStatus = updates.subStatus;
   if (updates.completedAt !== undefined) data.completedAt = updates.completedAt;
   if (updates.pickupProofImageUrl !== undefined) data.pickupProofImageUrl = updates.pickupProofImageUrl;
@@ -549,14 +553,43 @@ export async function deletePOIAction(id: string) {
 
 // SETTINGS
 export async function updateSettingAction(key: string, value: string) {
-  return prisma.setting.upsert({
+  const result = await prisma.setting.upsert({
     where: { key },
     update: { value },
     create: { key, value },
   });
+
+  if (key === 'riderCommissionPerKm') {
+    const rate = parseFloat(value);
+    if (!isNaN(rate)) {
+      try {
+        await prisma.$executeRaw`
+          UPDATE "Job"
+          SET "pickupCommission" = FLOOR("pickupDistance") * ${rate}
+          WHERE "pickupDistance" > 0
+            AND ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
+            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true))
+            AND "status" NOT IN ('billing', 'completed', 'cancel')
+        `;
+        await prisma.$executeRaw`
+          UPDATE "Job"
+          SET "deliveryCommission" = FLOOR("deliveryDistance") * ${rate}
+          WHERE "deliveryDistance" > 0
+            AND ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
+            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true))
+            AND "status" NOT IN ('completed', 'cancel')
+        `;
+        console.log(`[Setting Update] Updated active job commissions to use new rate: ฿${rate}`);
+      } catch (err: any) {
+        console.error("Failed to update active job commissions on setting change:", err.message);
+      }
+    }
+  }
+
+  return result;
 }
 
-export async function addJobLogAction(id: string, logEntry: any) {
+export async function addJobLogAction(id: string, logEntry: any, actorId?: string, actorName?: string) {
   const job = await prisma.job.findUnique({ where: { id }, select: { adminNotesJson: true } });
   if (!job) throw new Error('Job not found');
   let notes = [];
@@ -570,10 +603,27 @@ export async function addJobLogAction(id: string, logEntry: any) {
   }
   notes.push(logEntry);
   const updatedJson = JSON.stringify(notes);
-  return prisma.job.update({ 
+  const updated = await prisma.job.update({ 
     where: { id }, 
     data: { adminNotesJson: updatedJson } 
   });
+
+  try {
+    await prisma.activityLog.create({
+      data: {
+        entityId: id,
+        entityType: 'job',
+        action: 'update',
+        details: JSON.stringify({ adminNotesJson: updatedJson }),
+        userId: actorId || null,
+        userName: actorName || null,
+      }
+    });
+  } catch (err: any) {
+    console.error("Failed to write ActivityLog on addJobLogAction:", err.message);
+  }
+
+  return updated;
 }
 
 export async function diagnoseJobAction(jobId: string) {
