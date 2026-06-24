@@ -360,7 +360,7 @@ export const api = {
     const isPOS = (jobDetails.source || jobDetails.source) === "pos";
     // CSO creates as TBA (hidden from Manager), Manager/Admin creates as Pending
     const creatorRole = (jobDetails as any).creatorRole;
-    const initialStatus = isPOS ? "billing" : (creatorRole === 'manager' ? 'pending' : 'tba');
+    const initialStatus = isPOS ? "billing" : (creatorRole === 'manager' || creatorRole === 'admin' ? 'pending' : 'tba');
     const legStatus = (leg: "pickup" | "delivery") => {
       if (isPOS && leg === "pickup") return "completed";
       return "pending";

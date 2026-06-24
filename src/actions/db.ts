@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/prisma';
+import { listFilesForJob } from '@/lib/gcs';
 
 // CUSTOMERS
 export async function addCustomerAction(data: any) {
@@ -573,4 +574,150 @@ export async function addJobLogAction(id: string, logEntry: any) {
     where: { id }, 
     data: { adminNotesJson: updatedJson } 
   });
+}
+
+export async function diagnoseJobAction(jobId: string) {
+  try {
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) {
+      return { success: false, error: 'Job not found' };
+    }
+    const gcsFiles = await listFilesForJob(jobId);
+    return {
+      success: true,
+      job: {
+        id: job.id,
+        customerName: job.customerName,
+        status: job.status,
+        subStatus: job.subStatus,
+        pickupRiderId: job.pickupRiderId,
+        deliveryRiderId: job.deliveryRiderId,
+        pickupProofImageUrl: job.pickupProofImageUrl,
+        deliveryProofImageUrl: job.deliveryProofImageUrl,
+        proofImageUrl: job.proofImageUrl,
+        legsJson: job.legsJson,
+        pickupCommission: job.pickupCommission,
+        deliveryCommission: job.deliveryCommission,
+      },
+      gcsFiles
+    };
+  } catch (error: any) {
+    console.error('Failed in diagnoseJobAction:', error);
+    return { success: false, error: error.message || 'Diagnostic failed' };
+  }
+}
+
+export async function resolveJobDiscrepancyAction(
+  jobId: string,
+  legType: 'pickup' | 'delivery',
+  fileUrls: string[],
+  actorId?: string,
+  actorName?: string
+) {
+  try {
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) return { success: false, error: 'Job not found' };
+
+    const proofJson = JSON.stringify(fileUrls);
+    const now = new Date();
+
+    const currentLegs = JSON.parse(job.legsJson || '{}');
+    let updatedLegs = { ...currentLegs };
+    let updateData: any = {};
+    let riderId = '';
+    let commission = 0;
+    let type = '';
+
+    if (legType === 'pickup') {
+      updateData = {
+        status: 'billing',
+        pickupProofImageUrl: proofJson,
+      };
+      updatedLegs.pickupOutbound = {
+        ...updatedLegs.pickupOutbound,
+        status: 'completed',
+        completedAt: now,
+      };
+      updatedLegs.pickupInbound = {
+        ...updatedLegs.pickupInbound,
+        status: 'completed',
+        completedAt: now,
+      };
+      riderId = job.pickupRiderId || '';
+      commission = job.pickupCommission || 0;
+      type = 'commission_pickup';
+    } else {
+      updateData = {
+        status: 'completed',
+        deliveryProofImageUrl: proofJson,
+        proofImageUrl: fileUrls[0] || null,
+        completedAt: now,
+      };
+      updatedLegs.deliveryOutbound = {
+        ...updatedLegs.deliveryOutbound,
+        status: 'completed',
+        completedAt: now,
+      };
+      updatedLegs.deliveryInbound = {
+        ...updatedLegs.deliveryInbound,
+        status: 'completed',
+        completedAt: now,
+      };
+      riderId = job.deliveryRiderId || '';
+      commission = job.deliveryCommission || 0;
+      type = 'commission_delivery';
+    }
+
+    updateData.legsJson = JSON.stringify(updatedLegs);
+
+    // Update job
+    await prisma.job.update({
+      where: { id: jobId },
+      data: updateData,
+    });
+
+    // Award commission if applicable
+    if (riderId && commission > 0) {
+      const existingTx = await prisma.riderTransaction.findFirst({
+        where: { jobId, type }
+      });
+      if (!existingTx) {
+        await prisma.riderTransaction.create({
+          data: {
+            riderId,
+            jobId,
+            amount: commission,
+            type,
+            detail: `Job ${jobId} - ${legType === 'pickup' ? 'Pickup' : 'Delivery'} (Diagnostic Sync)`
+          }
+        });
+        await prisma.rider.update({
+          where: { id: riderId },
+          data: { commissionBalance: { increment: commission } }
+        });
+      }
+    }
+
+    // Write Activity Log
+    await prisma.activityLog.create({
+      data: {
+        entityId: jobId,
+        entityType: 'job',
+        action: 'update',
+        details: JSON.stringify({
+          status: updateData.status,
+          ...(legType === 'pickup'
+            ? { pickupProofImageUrl: proofJson }
+            : { deliveryProofImageUrl: proofJson, proofImageUrl: updateData.proofImageUrl })
+        }),
+        userId: actorId || 'system-diag',
+        userName: actorName || 'Diagnostics Recovery'
+      }
+    });
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('Failed in resolveJobDiscrepancyAction:', error);
+    return { success: false, error: error.message || 'Resolve failed' };
+  }
 }

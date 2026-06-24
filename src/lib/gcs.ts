@@ -89,3 +89,22 @@ export async function generateDownloadUrl(filePath: string, expiresInMinutes: nu
 export function getPublicUrl(filePath: string): string {
   return `https://storage.googleapis.com/${bucketName}/${filePath}`;
 }
+
+/**
+ * List all files in the bucket matching a specific job ID.
+ */
+export async function listFilesForJob(jobId: string): Promise<Array<{ name: string; size?: string | number; created?: string; publicUrl: string }>> {
+  try {
+    const [files] = await storage.bucket(bucketName).getFiles();
+    const matchingFiles = files.filter(f => f.name.includes(jobId));
+    return matchingFiles.map(file => ({
+      name: file.name,
+      size: file.metadata.size,
+      created: file.metadata.timeCreated ? String(file.metadata.timeCreated) : undefined,
+      publicUrl: `https://storage.googleapis.com/${bucketName}/${file.name}`
+    }));
+  } catch (err: any) {
+    console.error('Error listing GCS files for job:', err.message);
+    return [];
+  }
+}

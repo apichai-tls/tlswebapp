@@ -845,6 +845,7 @@ export default function RiderPage() {
 
   const historyJobs = allTasks
     .filter(t => {
+      if (t.job.status === "cancel") return false;
       // Show tasks that are "done" (pickup completed, or delivery completed)
       if (!t.isCompleted) return false;
       // Use completedAt if available, otherwise fall back to scheduledAt for date matching
@@ -862,8 +863,8 @@ export default function RiderPage() {
       return bTime - aTime;
     });
 
-  const totalHistoryJobs = historyJobs.filter(t => t.job.status !== 'cancel').length;
-  const totalCommission = historyJobs.filter(t => t.job.status !== 'cancel').reduce((acc, t) => acc + t.commission, 0);
+  const totalHistoryJobs = historyJobs.length;
+  const totalCommission = historyJobs.reduce((acc, t) => acc + t.commission, 0);
 
   function handleAccept(jobId: string) {
     if (!activeRider) return;

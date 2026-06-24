@@ -1,9 +1,13 @@
 import { useState, useEffect } from "react";
 import { format } from "date-fns";
-import { Loader2, Search, ChevronDown } from "lucide-react";
+import { Loader2, Search, ChevronDown, Wrench, ShieldAlert, AlertTriangle, Check, FileImage, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/providers/auth-provider";
+import { diagnoseJobAction, resolveJobDiscrepancyAction } from "@/actions/db";
+import { toast } from "sonner";
 
 interface ActivityLog {
   id: string;
@@ -18,10 +22,65 @@ interface ActivityLog {
 }
 
 export function AdminLogs({ jobId }: { jobId?: string }) {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.email === "admin@tls.com";
+
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
+
+  // Diagnostics state
+  const [diagJobId, setDiagJobId] = useState("");
+  const [diagResult, setDiagResult] = useState<any>(null);
+  const [isDiagnosing, setIsDiagnosing] = useState(false);
+  const [isResolving, setIsResolving] = useState(false);
+
+  const handleDiagnose = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!diagJobId.trim()) return;
+    setIsDiagnosing(true);
+    setDiagResult(null);
+    try {
+      const res = await diagnoseJobAction(diagJobId.trim());
+      setDiagResult(res);
+      if (!res.success) {
+        toast.error(res.error || "Failed to diagnose job");
+      } else {
+        toast.success("Job diagnostic complete!");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Diagnostic failed");
+    } finally {
+      setIsDiagnosing(false);
+    }
+  };
+
+  const handleResolve = async (legType: 'pickup' | 'delivery', fileUrls: string[]) => {
+    if (!diagResult?.job?.id) return;
+    setIsResolving(true);
+    try {
+      const res = await resolveJobDiscrepancyAction(
+        diagResult.job.id,
+        legType,
+        fileUrls,
+        user?.id,
+        (user as any)?.name || user?.email || "Super Admin"
+      );
+      if (res.success) {
+        toast.success(`Successfully linked GCS files and completed ${legType} leg!`);
+        const updatedDiag = await diagnoseJobAction(diagResult.job.id);
+        setDiagResult(updatedDiag);
+        fetchLogs();
+      } else {
+        toast.error(res.error || "Failed to resolve discrepancy");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Resolution failed");
+    } finally {
+      setIsResolving(false);
+    }
+  };
 
   const fetchLogs = async (searchVal?: string) => {
     setIsLoading(true);
@@ -184,6 +243,179 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
             </div>
           </div>
         </div>
+
+        {isSuperAdmin && !jobId && (
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
+            <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
+              <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                <Wrench size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Job Image Diagnostic & Sync Tool</h3>
+                <p className="text-xs text-slate-500 font-medium">Verify GCS bucket files against database records and resolve sync issues instantly (Super Admin Only).</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleDiagnose} className="flex gap-3 max-w-md">
+              <Input
+                placeholder="Enter Job ID (e.g. 2026000937)..."
+                value={diagJobId}
+                onChange={e => setDiagJobId(e.target.value)}
+                className="h-10 border-slate-200 bg-slate-50/50 focus-visible:ring-indigo-500 rounded-xl text-xs font-semibold"
+              />
+              <Button 
+                type="submit" 
+                disabled={isDiagnosing}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-10 px-5 rounded-xl shadow-lg shadow-indigo-100 flex items-center gap-1.5 shrink-0"
+              >
+                {isDiagnosing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                {isDiagnosing ? "Diagnosing..." : "Run Diagnosis"}
+              </Button>
+            </form>
+
+            {diagResult && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-2">
+                {/* 1. Job Status in DB */}
+                <div className="lg:col-span-5 bg-slate-50/50 p-4 rounded-xl border border-slate-200/60 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Database Status</span>
+                    <Badge variant="outline" className="text-[10px] font-black capitalize bg-indigo-50 text-indigo-700 border-indigo-200">
+                      {diagResult.job?.status || 'N/A'}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Order ID:</span>
+                      <span className="font-bold text-slate-800">{diagResult.job?.id}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Customer:</span>
+                      <span className="font-bold text-slate-800">{diagResult.job?.customerName || '-'}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 pt-2 border-t border-slate-200/50">
+                      <span className="text-slate-400">Pickup Proof (DB):</span>
+                      <span className="font-mono text-[10px] break-all bg-white p-1.5 rounded border border-slate-200">
+                        {diagResult.job?.pickupProofImageUrl || 'null'}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 pt-1">
+                      <span className="text-slate-400">Delivery Proof (DB):</span>
+                      <span className="font-mono text-[10px] break-all bg-white p-1.5 rounded border border-slate-200">
+                        {diagResult.job?.deliveryProofImageUrl || 'null'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. GCS Files Status */}
+                <div className="lg:col-span-7 bg-slate-50/50 p-4 rounded-xl border border-slate-200/60 space-y-4 flex flex-col">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Google Cloud Storage Files</span>
+                    <span className="text-xs font-bold text-slate-500">
+                      Found {diagResult.gcsFiles?.length || 0} file(s)
+                    </span>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto max-h-[220px] space-y-2 pr-1">
+                    {diagResult.gcsFiles && diagResult.gcsFiles.length > 0 ? (
+                      diagResult.gcsFiles.map((file: any, idx: number) => (
+                        <div key={idx} className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/60 shadow-sm text-xs gap-3">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <div className="w-8 h-8 rounded-md bg-slate-100 flex items-center justify-center text-slate-400 shrink-0 border border-slate-200 overflow-hidden">
+                              <img src={file.publicUrl} alt="Thumbnail" className="w-full h-full object-cover" />
+                            </div>
+                            <div className="flex flex-col overflow-hidden">
+                              <span className="font-bold text-slate-700 truncate" title={file.name}>
+                                {file.name.split('/').pop()}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-medium">
+                                Uploaded: {file.created ? format(new Date(file.created), "dd MMM HH:mm") : 'unknown'}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-slate-500 font-bold shrink-0">
+                            {file.size ? `${(Number(file.size) / 1024 / 1024).toFixed(2)} MB` : 'N/A'}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-8 text-slate-400 italic text-xs">
+                        No files found in GCS for this Job ID.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 3. Discrepancy Analysis & Resolution Actions */}
+                <div className="lg:col-span-12">
+                  {(() => {
+                    if (!diagResult.job) return null;
+                    const status = diagResult.job.status;
+                    const gcsFiles = diagResult.gcsFiles || [];
+                    const pickupFiles = gcsFiles.filter((f: any) => f.name.includes('/proofs-') || f.name.includes('/proofs/'));
+                    const hasUnlinkedPickupProof = status === 'pickup' && pickupFiles.length > 0 && !diagResult.job.pickupProofImageUrl;
+                    const hasUnlinkedDeliveryProof = status === 'delivery' && pickupFiles.length > 0 && !diagResult.job.deliveryProofImageUrl;
+
+                    if (hasUnlinkedPickupProof) {
+                      return (
+                        <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-300">
+                          <div className="flex items-start gap-3">
+                            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+                            <div>
+                              <h4 className="text-sm font-black text-amber-900">Sync Discrepancy Found (Pickup Leg)</h4>
+                              <p className="text-xs text-amber-700 font-semibold mt-0.5">Rider uploaded {pickupFiles.length} proof image(s) to GCS, but the job status remains "Pickup" and database URLs are empty.</p>
+                            </div>
+                          </div>
+                          <Button
+                            disabled={isResolving}
+                            onClick={() => handleResolve('pickup', pickupFiles.map((f: any) => f.publicUrl))}
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-bold h-9 px-4 rounded-lg shadow-md shrink-0 flex items-center gap-1 text-xs cursor-pointer"
+                          >
+                            {isResolving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                            Sync GCS & Complete Pickup
+                          </Button>
+                        </div>
+                      );
+                    }
+
+                    if (hasUnlinkedDeliveryProof) {
+                      return (
+                        <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-300">
+                          <div className="flex items-start gap-3">
+                            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+                            <div>
+                              <h4 className="text-sm font-black text-amber-900">Sync Discrepancy Found (Delivery Leg)</h4>
+                              <p className="text-xs text-amber-700 font-semibold mt-0.5">Rider uploaded {pickupFiles.length} proof image(s) to GCS, but the job status remains "Delivery" and database URLs are empty.</p>
+                            </div>
+                          </div>
+                          <Button
+                            disabled={isResolving}
+                            onClick={() => handleResolve('delivery', pickupFiles.map((f: any) => f.publicUrl))}
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-bold h-9 px-4 rounded-lg shadow-md shrink-0 flex items-center gap-1 text-xs cursor-pointer"
+                          >
+                            {isResolving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                            Sync GCS & Complete Delivery
+                          </Button>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center gap-3 animate-in fade-in duration-300">
+                        <Check className="text-emerald-600 shrink-0" size={18} />
+                        <div>
+                          <h4 className="text-sm font-black text-emerald-900">Database & GCS are in sync</h4>
+                          <p className="text-xs text-emerald-700 font-semibold mt-0.5">No discrepancies detected for this job. All uploaded images are correctly registered in the database.</p>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <Table>

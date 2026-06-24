@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -102,6 +102,13 @@ export function AdminCRM() {
 
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance">("all");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  // Reset page to 1 when search or tab filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, activeTab]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 
@@ -241,6 +248,44 @@ export function AdminCRM() {
       return statsB.ltv - statsA.ltv;
     });
   }, [filteredCustomers, customerAnalytics]);
+
+  const paginatedCustomers = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize;
+    return sortedCustomers.slice(startIndex, startIndex + pageSize);
+  }, [sortedCustomers, currentPage, pageSize]);
+
+  const totalItems = sortedCustomers.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    const maxVisiblePages = 5;
+    
+    if (totalPages <= maxVisiblePages) {
+      for (let i = 1; i <= totalPages; i++) {
+        pages.push(i);
+      }
+    } else {
+      pages.push(1);
+      const start = Math.max(2, currentPage - 1);
+      const end = Math.min(totalPages - 1, currentPage + 1);
+      
+      if (start > 2) {
+        pages.push("...");
+      }
+      
+      for (let i = start; i <= end; i++) {
+        pages.push(i);
+      }
+      
+      if (end < totalPages - 1) {
+        pages.push("...");
+      }
+      
+      pages.push(totalPages);
+    }
+    return pages;
+  };
 
   return (
     <div className="flex-1 overflow-auto p-6 lg:p-8 space-y-6 bg-slate-50/50">
@@ -438,7 +483,7 @@ export function AdminCRM() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  sortedCustomers.map((customer, index) => {
+                  paginatedCustomers.map((customer, index) => {
                     const stats = customerAnalytics[customer.id] || { jobsCount: 0, ltv: 0 };
                     const isNewCustomer = stats.jobsCount === 0;
                     
@@ -643,6 +688,81 @@ export function AdminCRM() {
             </TableBody>
           </Table>
         </div>
+
+        {/* Pagination Controls */}
+        {totalItems > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+            <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
+              <span>
+                Showing {Math.min(totalItems, (currentPage - 1) * pageSize + 1)}-{Math.min(totalItems, currentPage * pageSize)} of {totalItems} customers
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400">Show:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="h-8 rounded-lg border border-slate-200 bg-white px-2 py-0 text-xs font-bold text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none cursor-pointer"
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 rounded-lg border-slate-200 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+              >
+                <span className="sr-only">Previous Page</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+              </Button>
+
+              {getPageNumbers().map((p, idx) => {
+                if (p === "...") {
+                  return (
+                    <span key={`ell-${idx}`} className="px-2 text-xs font-semibold text-slate-400">
+                      ...
+                    </span>
+                  );
+                }
+                const isSelected = p === currentPage;
+                return (
+                  <Button
+                    key={`page-${p}`}
+                    variant={isSelected ? "default" : "outline"}
+                    className={`h-8 min-w-[32px] px-2.5 text-xs font-bold rounded-lg transition-all ${
+                      isSelected
+                        ? "bg-indigo-600 hover:bg-indigo-700 text-white border-transparent shadow-sm"
+                        : "border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    }`}
+                    onClick={() => setCurrentPage(Number(p))}
+                  >
+                    {p}
+                  </Button>
+                );
+              })}
+
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 rounded-lg border-slate-200 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                disabled={currentPage === totalPages}
+              >
+                <span className="sr-only">Next Page</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+              </Button>
+            </div>
+          </div>
+        )}
       </motion.div>
 
       {/* dialog for customer add/edit */}
