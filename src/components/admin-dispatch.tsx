@@ -122,6 +122,11 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
   // Filter & Map Jobs to Events
   const events = useMemo(() => {
     let jobs = allJobs.filter(j => j.status !== "pending" && j.status !== "cancel");
+
+    // Hide TBA jobs from Managers, matching Kanban board rules
+    if (user?.role === 'manager') {
+      jobs = jobs.filter(j => j.status !== 'tba');
+    }
     
     // Filter jobs by selected area
     if (filterArea !== "ALL") {
@@ -190,15 +195,20 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
     });
 
     return calendarEvents;
-  }, [allJobs, selectedRiderIds, showCompleted, filterArea, shopLocations]);
+  }, [allJobs, selectedRiderIds, showCompleted, filterArea, shopLocations, user]);
 
   const onEventDrop = async ({ event, start, end }: any) => {
     const e = event as CalendarEvent;
     try {
+      const actorInfo = {
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
+        actorRole: user?.role
+      };
       if (e.type === 'pickup') {
-        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end, pickupRiderId: e.riderId || undefined });
+        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end, pickupRiderId: e.riderId || undefined, ...actorInfo });
       } else {
-        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end, deliveryRiderId: e.riderId || undefined });
+        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end, deliveryRiderId: e.riderId || undefined, ...actorInfo });
       }
       toast.success(`Updated ${e.type} time successfully`);
     } catch (error) {
@@ -209,10 +219,15 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
   const onEventResize = async ({ event, start, end }: any) => {
     const e = event as CalendarEvent;
     try {
+      const actorInfo = {
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
+        actorRole: user?.role
+      };
       if (e.type === 'pickup') {
-        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end });
+        await jobStore.updateJobDetails(e.jobId, { pickupScheduledAt: start, pickupScheduledEndAt: end, ...actorInfo });
       } else {
-        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end });
+        await jobStore.updateJobDetails(e.jobId, { deliveryScheduledAt: start, deliveryScheduledEndAt: end, ...actorInfo });
       }
       toast.success(`Updated ${e.type} duration successfully`);
     } catch (error) {
@@ -253,6 +268,10 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
       delete (newJobData as any).completedAt;
       delete (newJobData as any).customer;
       delete (newJobData as any).legs;
+      delete (newJobData as any).adminNotesJson;
+      delete (newJobData as any).pickupProofImageUrl;
+      delete (newJobData as any).deliveryProofImageUrl;
+      delete (newJobData as any).proofImageUrl;
       
       await jobStore.addJob({
         ...newJobData,
@@ -261,8 +280,10 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
         deliveryRiderId: undefined,
         bagImageUrl: undefined,
         billImageUrl: undefined,
-        proofImageUrl: undefined,
         createdBy: user?.name || user?.email || "Dispatcher",
+        creatorRole: user?.role,
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
       } as any);
 
       toast.success("Job duplicated and sent to Order Verify.");

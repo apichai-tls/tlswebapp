@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer } from "@/lib/store";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
@@ -97,6 +97,12 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 
+const getCommissionRate = (settings: Record<string, string> | undefined | null) => {
+  if (!settings) return 2;
+  const val = parseFloat(settings.riderCommissionPerKm);
+  return isNaN(val) ? 2 : val;
+};
+
 const statusConfig: Record<string, { label: string; className: string }> = {
   pending: {
     label: "Pending",
@@ -170,6 +176,7 @@ export default function AdminPage() {
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
+  const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
 
   const localDataForSearch = useMemo(() => {
     return pois.map(p => ({
@@ -307,6 +314,7 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const activeJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
@@ -480,7 +488,10 @@ export default function AdminPage() {
               });
               if (JSON.stringify(notes) !== JSON.stringify(cleaned)) {
                 await jobStore.updateJobDetails(editingJobId, { 
-                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined 
+                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined,
+                  actorId: user?.id,
+                  actorName: user?.name || user?.email,
+                  actorRole: user?.role
                 });
                 import("@/lib/api").then(m => m.refreshDb());
               }
@@ -513,7 +524,7 @@ export default function AdminPage() {
     // Save instantly to DB if editing an existing job
     if (editingJobId) {
       try {
-        await addJobLogAction(editingJobId, newLog);
+        await addJobLogAction(editingJobId, newLog, user?.id, user?.name || user?.email);
         // Sync local store so other parts of the app update immediately
         import("@/lib/api").then(m => m.refreshDb());
       } catch (err) {
@@ -529,7 +540,10 @@ export default function AdminPage() {
     if (editingJobId) {
       try {
         await jobStore.updateJobDetails(editingJobId, {
-          adminNotesJson: filteredLogs.length > 0 ? JSON.stringify(filteredLogs) : undefined
+          adminNotesJson: filteredLogs.length > 0 ? JSON.stringify(filteredLogs) : undefined,
+          actorId: user?.id,
+          actorName: user?.name || user?.email,
+          actorRole: user?.role
         });
         import("@/lib/api").then(m => m.refreshDb());
       } catch (err) {
@@ -1084,8 +1098,16 @@ export default function AdminPage() {
       serviceType,
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
-      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) ? Math.floor(pickupDist) * 2 : 0,
-      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) ? Math.floor(deliveryDist) * 2 : 0,
+      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
+        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
+            ? (existingJob.pickupCommission ?? 0) 
+            : Math.floor(pickupDist) * getCommissionRate(systemSettings)) 
+        : 0,
+      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) 
+        ? ((editingJobId && existingJob && existingJob.status === 'completed') 
+            ? (existingJob.deliveryCommission ?? 0) 
+            : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
+        : 0,
       remark: [
         ...customRemarks,
         isFreeDelivery ? "Free Delivery" : "",
@@ -2576,11 +2598,22 @@ export default function AdminPage() {
                           <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
                             <div className="flex flex-col">
                               <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
-                              <span className="text-[10px] text-slate-500">Distance × 2฿</span>
+                              <span className="text-[10px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
                             </div>
                             <div className="text-right">
                               <span className="text-lg font-bold text-amber-400">
-                                ฿{selectedVIPLabel || isFreeDelivery ? "0" : ((isPickup ? Math.floor(pickupDist) * 2 : 0) + (isDelivery ? Math.floor(deliveryDist) * 2 : 0)).toFixed(0)}
+                                ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
+                                  (isPickup ? (
+                                    (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
+                                      ? (activeJob.pickupCommission ?? 0)
+                                      : Math.floor(pickupDist) * getCommissionRate(systemSettings)
+                                  ) : 0) +
+                                  (isDelivery ? (
+                                    (editingJobId && activeJob && activeJob.status === 'completed')
+                                      ? (activeJob.deliveryCommission ?? 0)
+                                      : Math.floor(deliveryDist) * getCommissionRate(systemSettings)
+                                  ) : 0)
+                                ).toFixed(0)}
                               </span>
                             </div>
                           </div>
