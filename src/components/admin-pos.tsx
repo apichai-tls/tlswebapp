@@ -3047,7 +3047,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     </motion.div>
                   )}
 
-                  {isPaid && paymentMethod === "transfer" && settings?.enablePromptPay === "true" && (
+                  {isPaid && paymentMethod === "transfer" && false && (
                     <motion.div
                       key="transfer-panel"
                       initial={{ opacity: 0, y: -10 }}
@@ -3090,13 +3090,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                             <div className="flex flex-col gap-0.5 mt-2 bg-card rounded-lg p-2 border border-border text-left">
                               <div className="flex justify-between items-center text-[10px]">
                                 <span className="text-muted-foreground">ID:</span>
-                                <span className="font-bold text-foreground font-mono">{promptpayConfig.id}</span>
+                                <span className="font-bold text-foreground font-mono">{promptpayConfig?.id}</span>
                               </div>
-                              {promptpayConfig.name && (
+                              {promptpayConfig?.name && (
                                 <div className="flex justify-between items-center text-[10px]">
                                   <span className="text-muted-foreground">{currentLanguage === "en" ? "Account:" : "ชื่อบัญชี:"}</span>
-                                  <span className="font-bold text-foreground truncate max-w-[120px]" title={promptpayConfig.name}>
-                                    {promptpayConfig.name}
+                                  <span className="font-bold text-foreground truncate max-w-[120px]" title={promptpayConfig?.name || ""}>
+                                    {promptpayConfig?.name}
                                   </span>
                                 </div>
                               )}
