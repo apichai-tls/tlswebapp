@@ -891,7 +891,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   // Dynamically compute unique categories from active services
   const categories = useMemo(() => {
     const activeServices = services.filter(s => s.isActive !== false);
-    const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean)));
+    const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
     if (isStandardPlan) {
       return ["All", ...uniqueCats];
     }

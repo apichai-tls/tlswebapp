@@ -46,7 +46,7 @@ export function AdminServiceMenu() {
     nameEn: "",
     price: 0,
     memberPrice: 0,
-    category: "Weight",
+    category: "DRY CLEAN",
     unit: ""
   });
 
@@ -74,7 +74,7 @@ export function AdminServiceMenu() {
         nameEn: "",
         price: 0,
         memberPrice: 0,
-        category: "Weight",
+        category: "DRY CLEAN",
         unit: ""
       });
     }
@@ -260,11 +260,14 @@ export function AdminServiceMenu() {
                     value={formData.category}
                     onChange={e => setFormData({ ...formData, category: e.target.value })}
                   >
-                    <option value="Weight">Weight</option>
-                    <option value="Clothing">Clothing</option>
-                    <option value="Bedding">Bedding</option>
-                    <option value="Dry Clean">Dry Clean</option>
-                    <option value="Add-on">Add-on</option>
+                    <option value="DRY CLEAN">DRY CLEAN</option>
+                    <option value="IRON">IRON</option>
+                    <option value="KILO">KILO</option>
+                    <option value="LINENS">LINENS</option>
+                    <option value="OTHERS">OTHERS</option>
+                    <option value="PACKAGE">PACKAGE</option>
+                    <option value="PCS">PCS</option>
+                    <option value="SHOES">SHOES</option>
                   </select>
                 </div>
                 <div className="space-y-2">
