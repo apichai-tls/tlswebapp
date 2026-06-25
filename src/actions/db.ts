@@ -376,14 +376,35 @@ export async function updateJobAction(id: string, updates: any) {
     const logFields = [
       'status', 'subStatus', 'isPaid', 'paymentChannel', 'riderId', 
       'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 
-      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck',
+      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck', 'cashPlaced',
       'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl'
     ];
     logFields.forEach(field => {
       const oldVal = (existingJob as any)[field];
       const newVal = data[field];
       if (newVal !== undefined && oldVal !== newVal) {
-        if (oldVal instanceof Date || newVal instanceof Date) {
+        if (field === 'adminNotesJson') {
+          try {
+            const oldNotes = oldVal ? JSON.parse(oldVal) : [];
+            const newNotes = newVal ? JSON.parse(newVal) : [];
+            if (Array.isArray(oldNotes) && Array.isArray(newNotes)) {
+              const oldIds = new Set(oldNotes.map(n => n.id).filter(Boolean));
+              const addedNotes = newNotes.filter(n => !oldIds.has(n.id));
+              if (addedNotes.length > 0) {
+                changes[field] = addedNotes.map(n => {
+                  const textPart = n.text ? `"${n.text}"` : '';
+                  const imgPart = (n.imageUrls && n.imageUrls.length > 0) ? 'uploaded image(s)' : '';
+                  const parts = [textPart, imgPart].filter(Boolean).join(' ');
+                  return `${n.userName}: ${parts || 'updated note'}`;
+                }).join(', ');
+              }
+            } else {
+              changes[field] = newVal;
+            }
+          } catch (e) {
+            changes[field] = newVal;
+          }
+        } else if (oldVal instanceof Date || newVal instanceof Date) {
           const oldTime = oldVal instanceof Date ? oldVal.getTime() : new Date(oldVal).getTime();
           const newTime = newVal instanceof Date ? newVal.getTime() : new Date(newVal).getTime();
           if (oldTime !== newTime) {

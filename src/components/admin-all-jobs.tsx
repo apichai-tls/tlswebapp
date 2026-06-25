@@ -706,7 +706,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                             {isSameDay(new Date(job.deliveryScheduledAt), new Date())
                               ? format(new Date(job.deliveryScheduledAt), "HH:mm")
                               : format(new Date(job.deliveryScheduledAt), "dd MMM, HH:mm")}
-                            {job.pickupLocation && job.dropoffLocation && 
+                            {job.type === 'full_service' && job.pickupLocation && job.dropoffLocation && 
                              job.pickupLocation.trim().toLowerCase() !== job.dropoffLocation.trim().toLowerCase() && (
                               <Badge className="text-[8px] font-extrabold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border border-rose-200 flex items-center gap-0.5 shadow-sm uppercase shrink-0 animate-pulse">
                                 <MapPin size={9} className="text-rose-600 shrink-0" />
