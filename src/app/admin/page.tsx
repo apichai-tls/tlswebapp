@@ -42,6 +42,7 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
+import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -91,7 +92,8 @@ import {
   ClipboardList,
   Paperclip,
   Maximize2,
-  Trash2
+  Trash2,
+  Printer
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -316,6 +318,16 @@ export default function AdminPage() {
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const activeJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
+  const [showReceipt, setShowReceipt] = useState(false);
+  
+  const activeShop = useMemo(() => {
+    if (!activeJob) return shopLocations[0];
+    return shopLocations.find(s => s.id === activeJob.branchId) || shopLocations[0];
+  }, [activeJob, shopLocations]);
+
+  const currentLanguage = systemSettings?.language || "th";
+  const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
+
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
   const [laundryTypes, setLaundryTypes] = useState<string[]>([]);
@@ -1483,6 +1495,16 @@ export default function AdminPage() {
                               {showJobLogs ? "Back to Edit" : "Activity Logs"}
                             </Button>
                           )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowReceipt(true)}
+                            className="h-7 px-2 text-xs flex items-center gap-1.5 border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all font-semibold rounded shadow-sm cursor-pointer"
+                          >
+                            <Printer size={12} className="text-slate-500" />
+                            {currentLanguage === "en" ? "Print Receipt" : "พิมพ์ใบเสร็จ"}
+                          </Button>
                         </div>
                       )}
                     </DialogTitle>
@@ -2901,6 +2923,15 @@ export default function AdminPage() {
         open={profileOpen}
         onOpenChange={setProfileOpen}
         customer={selectedProfileCustomer}
+      />
+      
+      <ThermalReceiptDialog
+        open={showReceipt}
+        onOpenChange={setShowReceipt}
+        receiptData={activeJob ? formatJobToReceiptData(activeJob) : null}
+        activeShop={activeShop}
+        receiptPaperSize={receiptPaperSize}
+        currentLanguage={currentLanguage}
       />
     </ProtectedRoute>
   );

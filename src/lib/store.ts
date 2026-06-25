@@ -33,10 +33,10 @@ export interface ShopLocation {
   coords: LatLng;
   noCommission?: boolean;
   area?: string;
-  logoUrl?: string;
-  phone?: string;
-  taxId?: string;
-  plan?: string;
+  logoUrl?: string | null;
+  phone?: string | null;
+  taxId?: string | null;
+  plan?: string | null;
 }
 
 export interface POI {

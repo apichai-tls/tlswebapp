@@ -1,5 +1,5 @@
 import { useState, useEffect, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,12 @@ export function AdminSettings() {
   const [shopCoords, setShopCoords] = useState({ lat: 13.736717, lng: 100.523186 });
   const [shopNoCommission, setShopNoCommission] = useState(false);
   const [shopArea, setShopArea] = useState("BKK");
+  const [shopLogoUrl, setShopLogoUrl] = useState("");
+  const [shopPhone, setShopPhone] = useState("");
+  const [shopTaxId, setShopTaxId] = useState("");
+
+  const [receiptPaperSize, setReceiptPaperSize] = useState("80mm");
+  const [currentLanguage, setCurrentLanguage] = useState("th");
 
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [enableGoogleApi, setEnableGoogleApi] = useState(false);
@@ -40,6 +46,8 @@ export function AdminSettings() {
       setEnableGoogleApi(systemSettings.enableGoogleApi === "true");
       setCommissionRateInput(systemSettings.riderCommissionPerKm || "2");
       setEnablePromptPay(systemSettings.enablePromptPay === "true");
+      setReceiptPaperSize(systemSettings.receiptPaperSize || "80mm");
+      setCurrentLanguage(systemSettings.language || "th");
       
       const pp: Record<string, string> = {};
       pp["global_id"] = systemSettings.promptpayId_global || "";
@@ -168,6 +176,17 @@ export function AdminSettings() {
     setServicePrices(prev => ({ ...prev, [serviceId]: isNaN(num) ? 0 : num }));
   };
 
+  const handleUpdateReceiptSetting = async (key: string, value: string) => {
+    try {
+      await settingsStore.updateSetting(key, value);
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success("POS Receipt settings updated");
+    } catch (err) {
+      toast.error("Failed to update receipt settings: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
   const handleEditShop = (shop: ShopLocation) => {
     setEditingShop(shop);
     setShopName(shop.name);
@@ -175,6 +194,9 @@ export function AdminSettings() {
     setShopCoords(shop.coords);
     setShopNoCommission(shop.noCommission || false);
     setShopArea(shop.area || "BKK");
+    setShopLogoUrl(shop.logoUrl || "");
+    setShopPhone(shop.phone || "");
+    setShopTaxId(shop.taxId || "");
     setIsShopModalOpen(true);
   };
 
@@ -185,6 +207,9 @@ export function AdminSettings() {
     setShopCoords({ lat: 13.736717, lng: 100.523186 });
     setShopNoCommission(false);
     setShopArea("BKK");
+    setShopLogoUrl("");
+    setShopPhone("");
+    setShopTaxId("");
     setIsShopModalOpen(true);
   };
 
@@ -201,11 +226,21 @@ export function AdminSettings() {
       toast.error("Please fill in all fields");
       return;
     }
+    const payload = {
+      name: shopName,
+      address: shopAddress,
+      coords: shopCoords,
+      noCommission: shopNoCommission,
+      area: shopArea,
+      logoUrl: shopLogoUrl.trim() || null,
+      phone: shopPhone.trim() || null,
+      taxId: shopTaxId.trim() || null,
+    };
     if (editingShop) {
-      shopStore.updateShopLocation(editingShop.id, { name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission, area: shopArea });
+      shopStore.updateShopLocation(editingShop.id, payload);
       toast.success("Branch updated");
     } else {
-      shopStore.addShopLocation({ name: shopName, address: shopAddress, coords: shopCoords, noCommission: shopNoCommission, area: shopArea });
+      shopStore.addShopLocation(payload);
       toast.success("Branch added");
     }
     setIsShopModalOpen(false);
@@ -398,6 +433,54 @@ export function AdminSettings() {
             <Button onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
               Save Commission Rate
             </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
+            <Printer size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">POS Receipt Settings</h3>
+            <p className="text-xs text-slate-500 font-medium">Configure global printer options and language for POS receipts.</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="max-w-2xl space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="font-semibold text-slate-700">Receipt Paper Size</Label>
+                <select
+                  value={receiptPaperSize}
+                  onChange={e => {
+                    setReceiptPaperSize(e.target.value);
+                    handleUpdateReceiptSetting("receiptPaperSize", e.target.value);
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
+                >
+                  <option value="80mm">80mm (Standard)</option>
+                  <option value="58mm">58mm (Small)</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-slate-700">Default Print Language</Label>
+                <select
+                  value={currentLanguage}
+                  onChange={e => {
+                    setCurrentLanguage(e.target.value);
+                    handleUpdateReceiptSetting("language", e.target.value);
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
+                >
+                  <option value="th">ไทย (TH)</option>
+                  <option value="en">English (EN)</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -650,6 +733,36 @@ export function AdminSettings() {
                   />
                 </div>
               </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Logo URL</Label>
+                  <Input 
+                    value={shopLogoUrl} 
+                    onChange={e => setShopLogoUrl(e.target.value)} 
+                    placeholder="https://.../logo.png" 
+                    className="h-10 text-xs font-mono" 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Phone Number</Label>
+                  <Input 
+                    value={shopPhone} 
+                    onChange={e => setShopPhone(e.target.value)} 
+                    placeholder="02-123-4567" 
+                    className="h-10 text-sm font-bold" 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Tax ID</Label>
+                  <Input 
+                    value={shopTaxId} 
+                    onChange={e => setShopTaxId(e.target.value)} 
+                    placeholder="13-digit Tax ID" 
+                    className="h-10 text-sm font-mono" 
+                  />
+                </div>
+              </div>
+
               <div className="flex items-center gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl p-3">
                 <input 
                   type="checkbox" 

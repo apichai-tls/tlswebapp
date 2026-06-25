@@ -1,5 +1,5 @@
 import * as dbActions from '@/actions/db';
-import type { Customer, Job, Rider, ServiceItem, PriceList } from './store'; // we'll use types from store.ts for now
+import type { Customer, Job, Rider, ServiceItem, PriceList, ShopLocation } from './store'; // we'll use types from store.ts for now
 
 const DB_KEY = 'that_laundry_shop_db';
 
@@ -13,7 +13,7 @@ interface Database {
   riders: Rider[];
   services: ServiceItem[];
   priceLists: PriceList[];
-  shopLocations: { id: string; name: string; address: string; coords: { lat: number; lng: number } }[];
+  shopLocations: ShopLocation[];
   pois: { id: string; name: string; address: string; coords: { lat: number; lng: number }; placeId?: string; closestShopId?: string; distanceKm?: number }[];
   settings: Record<string, string>;
 }
@@ -616,24 +616,22 @@ export const api = {
     
     return initDb().shopLocations;
   },
-  async addShopLocation(shop: Omit<{ id: string; name: string; address: string; coords: { lat: number; lng: number }; noCommission?: boolean }, 'id'>) {
-    
+  async addShopLocation(shop: Omit<ShopLocation, 'id'>) {
     const db = initDb();
     const newShop = {
       ...shop,
       id: `SHOP-${Date.now().toString(36).toUpperCase()}`,
-    };
+    } as ShopLocation;
     db.shopLocations = [...db.shopLocations, newShop];
     await dbActions.addShopLocationAction(newShop);
     return newShop;
   },
-  async updateShopLocation(id: string, updates: Partial<{ id: string; name: string; address: string; coords: { lat: number; lng: number }; noCommission?: boolean }>) {
-    
+  async updateShopLocation(id: string, updates: Partial<ShopLocation>) {
     const db = initDb();
     let updatedShop = null;
     db.shopLocations = db.shopLocations.map(s => {
       if (s.id === id) {
-        updatedShop = { ...s, ...updates };
+        updatedShop = { ...s, ...updates } as ShopLocation;
         return updatedShop;
       }
       return s;

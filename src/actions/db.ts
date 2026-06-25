@@ -499,6 +499,9 @@ export async function addShopLocationAction(data: any) {
       lng: data.coords.lng,
       noCommission: data.noCommission || false,
       area: data.area || "BKK",
+      logoUrl: data.logoUrl || null,
+      phone: data.phone || null,
+      taxId: data.taxId || null,
     }
   });
 }
@@ -515,6 +518,9 @@ export async function updateShopLocationAction(id: string, updates: any) {
     data.noCommission = updates.noCommission;
   }
   if (updates.area !== undefined) data.area = updates.area;
+  if (updates.logoUrl !== undefined) data.logoUrl = updates.logoUrl;
+  if (updates.phone !== undefined) data.phone = updates.phone;
+  if (updates.taxId !== undefined) data.taxId = updates.taxId;
   return prisma.shopLocation.update({ where: { id }, data });
 }
 

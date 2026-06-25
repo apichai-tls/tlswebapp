@@ -160,6 +160,9 @@ model ShopLocation {
   lng          Float
   noCommission Boolean @default(false)
   area         String  @default("BKK")
+  logoUrl      String?
+  phone        String?
+  taxId        String?
   riders       Rider[]
   jobs         Job[]
   shifts       CashierShift[]
