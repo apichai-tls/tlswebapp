@@ -33,6 +33,10 @@ export interface ShopLocation {
   coords: LatLng;
   noCommission?: boolean;
   area?: string;
+  logoUrl?: string;
+  phone?: string;
+  taxId?: string;
+  plan?: string;
 }
 
 export interface POI {
@@ -131,6 +135,7 @@ export interface Job {
   createdBy?: string | null;
   cashPlaced?: boolean;
   isStuck?: boolean;
+  shiftId?: string | null;
 }
 
 export interface AdminNoteLog {
@@ -146,10 +151,13 @@ export interface AdminNoteLog {
 export interface ServiceItem {
   id: string;
   name: string;
+  nameEn?: string | null;
   price: number;
   memberPrice: number; // Legacy
   category: string;
   unit?: string;
+  isActive?: boolean;
+  icon?: string | null;
 }
 
 export interface Rider {
@@ -643,3 +651,128 @@ export const poiStore = {
 api.subscribe(() => {
   emitAllChanges();
 });
+
+// --- CASHIER SHIFT INTERFACE & STORE ---
+export interface CashierShift {
+  id: string;
+  branchId: string;
+  userId: string;
+  userName: string;
+  openedAt: Date | string;
+  closedAt?: Date | string | null;
+  startingCash: number;
+  expectedCash: number;
+  actualCash?: number | null;
+  cashSales: number;
+  transferSales: number;
+  cardSales: number;
+  creditSales: number;
+  shortageOverage?: number | null;
+  status: string;
+  notes?: string | null;
+}
+
+const shiftListeners: Set<Listener> = new Set();
+let activeShift: CashierShift | null = null;
+let branchActiveShift: CashierShift | null = null;
+let hasLoadedActiveShift = false;
+let shiftSnapshot: { activeShift: CashierShift | null; branchActiveShift: CashierShift | null; hasLoaded: boolean } = { activeShift, branchActiveShift, hasLoaded: hasLoadedActiveShift };
+
+function emitShiftChange() {
+  shiftSnapshot = { activeShift, branchActiveShift, hasLoaded: hasLoadedActiveShift };
+  shiftListeners.forEach((l) => l());
+}
+
+export const shiftStore = {
+  subscribe(listener: Listener): () => void {
+    shiftListeners.add(listener);
+    return () => shiftListeners.delete(listener);
+  },
+  getSnapshot() {
+    return shiftSnapshot;
+  },
+  async fetchActiveShift(userId: string, branchId?: string) {
+    try {
+      const [userRes, branchRes] = await Promise.all([
+        api.getActiveCashierShift(userId),
+        branchId ? api.getBranchActiveCashierShift(branchId) : Promise.resolve(null)
+      ]);
+
+      activeShift = userRes ? (JSON.parse(JSON.stringify(userRes), (key, value) => {
+        if (key.includes('At') && value) return new Date(value);
+        return value;
+      }) as CashierShift) : null;
+
+      branchActiveShift = branchRes ? (JSON.parse(JSON.stringify(branchRes), (key, value) => {
+        if (key.includes('At') && value) return new Date(value);
+        return value;
+      }) as CashierShift) : null;
+
+      if (activeShift && !branchActiveShift) {
+        branchActiveShift = activeShift;
+      }
+
+      hasLoadedActiveShift = true;
+      emitShiftChange();
+      return activeShift;
+    } catch (e) {
+      console.error("Failed to fetch active cashier shift:", e);
+      hasLoadedActiveShift = true;
+      emitShiftChange();
+      return null;
+    }
+  },
+  async openShift(userId: string, userName: string, branchId: string, startingCash: number, notes?: string) {
+    try {
+      const res = await api.openCashierShift(userId, userName, branchId, startingCash, notes);
+      activeShift = res ? (JSON.parse(JSON.stringify(res), (key, value) => {
+        if (key.includes('At') && value) return new Date(value);
+        return value;
+      }) as CashierShift) : null;
+      branchActiveShift = activeShift;
+      hasLoadedActiveShift = true;
+      emitShiftChange();
+      return activeShift;
+    } catch (e) {
+      console.error("Failed to open cashier shift:", e);
+      throw e;
+    }
+  },
+  async closeShift(id: string, actualCash: number, notes?: string) {
+    try {
+      const res = await api.closeCashierShift(id, actualCash, notes);
+      activeShift = null;
+      branchActiveShift = null;
+      hasLoadedActiveShift = true;
+      emitShiftChange();
+      return res;
+    } catch (e) {
+      console.error("Failed to close cashier shift:", e);
+      throw e;
+    }
+  },
+  clearActiveShiftLocal() {
+    activeShift = null;
+    branchActiveShift = null;
+    hasLoadedActiveShift = false;
+    emitShiftChange();
+  },
+  async getClosedShifts(tenantId?: string) {
+    try {
+      const res = await api.getClosedCashierShifts(tenantId);
+      return JSON.parse(JSON.stringify(res), (key, value) => {
+        if (key.includes('At') && value) return new Date(value);
+        return value;
+      }) as (CashierShift & {
+        totalOrders?: number;
+        cashOrders?: number;
+        transferOrders?: number;
+        cardOrders?: number;
+        creditOrders?: number;
+      })[];
+    } catch (e) {
+      console.error("Failed to get closed shifts:", e);
+      return [];
+    }
+  }
+};

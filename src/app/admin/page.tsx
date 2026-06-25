@@ -1412,7 +1412,8 @@ export default function AdminPage() {
         {/* Main Content */}
         <main className="flex-1 flex flex-col">
           {/* Top bar */}
-          <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm">
+          {activeTab !== "pos" && (
+            <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm">
             <div className="flex items-center gap-3 lg:hidden px-2 py-2">
               <Logo />
             </div>
@@ -2808,6 +2809,7 @@ export default function AdminPage() {
             )}
             </div>
           </header>
+          )}
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}

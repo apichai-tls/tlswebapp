@@ -1,5 +1,5 @@
 import { useState, useEffect, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,14 +31,24 @@ export function AdminSettings() {
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [enableGoogleApi, setEnableGoogleApi] = useState(false);
   const [commissionRateInput, setCommissionRateInput] = useState("2");
+  const [ppSettings, setPpSettings] = useState<Record<string, string>>({});
   
   useEffect(() => {
     if (systemSettings) {
       setGoogleApiKey(systemSettings.googleMapsApiKey || "");
       setEnableGoogleApi(systemSettings.enableGoogleApi === "true");
       setCommissionRateInput(systemSettings.riderCommissionPerKm || "2");
+      
+      const pp: Record<string, string> = {};
+      pp["global_id"] = systemSettings.promptpayId_global || "";
+      pp["global_name"] = systemSettings.promptpayName_global || "";
+      shopLocations.forEach(shop => {
+        pp[`id_${shop.id}`] = systemSettings[`promptpayId_${shop.id}`] || "";
+        pp[`name_${shop.id}`] = systemSettings[`promptpayName_${shop.id}`] || "";
+      });
+      setPpSettings(pp);
     }
-  }, [systemSettings]);
+  }, [systemSettings, shopLocations]);
 
   const [isVerifyingKey, setIsVerifyingKey] = useState(false);
 
@@ -55,7 +65,7 @@ export function AdminSettings() {
           setIsVerifyingKey(false);
           return;
         }
-      } catch (error) {
+      } catch {
         toast.error("Failed to verify API Key. Please check your connection.");
         setIsVerifyingKey(false);
         return;
@@ -79,8 +89,26 @@ export function AdminSettings() {
       const { refreshDb } = await import("@/lib/api");
       await refreshDb();
       toast.success("Rider Commission Rate updated successfully");
-    } catch (err: any) {
-      toast.error("Failed to save setting: " + err.message);
+    } catch (err) {
+      toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  const handleSavePromptPaySettings = async () => {
+    try {
+      await settingsStore.updateSetting("promptpayId_global", ppSettings["global_id"] || "");
+      await settingsStore.updateSetting("promptpayName_global", ppSettings["global_name"] || "");
+      
+      for (const shop of shopLocations) {
+        await settingsStore.updateSetting(`promptpayId_${shop.id}`, ppSettings[`id_${shop.id}`] || "");
+        await settingsStore.updateSetting(`promptpayName_${shop.id}`, ppSettings[`name_${shop.id}`] || "");
+      }
+      
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success("PromptPay settings saved successfully");
+    } catch (err) {
+      toast.error("Failed to save PromptPay settings: " + (err instanceof Error ? err.message : "Unknown error"));
     }
   };
 
@@ -366,6 +394,89 @@ export function AdminSettings() {
             
             <Button onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
               Save Commission Rate
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
+              <QrCode size={24} />
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-slate-800">PromptPay Configuration</h3>
+              <p className="text-xs text-slate-500 font-medium">Configure dynamic PromptPay QR code parameters for POS bank transfers.</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="max-w-4xl space-y-6">
+            {/* Global Config */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-4 border-b border-slate-100">
+              <div className="space-y-2">
+                <Label className="font-semibold text-slate-700">Global PromptPay ID (Mobile or Tax ID)</Label>
+                <Input 
+                  value={ppSettings["global_id"] || ""} 
+                  onChange={e => setPpSettings(prev => ({ ...prev, global_id: e.target.value }))} 
+                  placeholder="e.g. 0812345678 or 1234567890123" 
+                  className="font-mono"
+                />
+                <p className="text-[10px] text-slate-500">Default PromptPay ID if branch-specific is not set. 10-digit mobile number or 13-digit Tax ID.</p>
+              </div>
+              <div className="space-y-2">
+                <Label className="font-semibold text-slate-700">Global Account Name</Label>
+                <Input 
+                  value={ppSettings["global_name"] || ""} 
+                  onChange={e => setPpSettings(prev => ({ ...prev, global_name: e.target.value }))} 
+                  placeholder="e.g. THAI LAUNDRY SERVICE" 
+                />
+                <p className="text-[10px] text-slate-500">Optional account holder display name.</p>
+              </div>
+            </div>
+
+            {/* Branch Specific Config */}
+            <div className="space-y-4">
+              <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider text-[11px] text-slate-400 font-semibold">Branch-Specific Configurations</h4>
+              
+              {shopLocations.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">No shop locations configured yet.</p>
+              ) : (
+                <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2">
+                  {shopLocations.map(shop => (
+                    <div key={shop.id} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center p-3 border border-slate-100 rounded-xl bg-slate-50/50">
+                      <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        <Store size={14} className="text-slate-400 shrink-0" />
+                        {shop.name}
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-slate-500">PromptPay ID</Label>
+                        <Input 
+                          value={ppSettings[`id_${shop.id}`] || ""} 
+                          onChange={e => setPpSettings(prev => ({ ...prev, [`id_${shop.id}`]: e.target.value }))} 
+                          placeholder="Mobile / Tax ID for this branch" 
+                          className="h-8 text-xs font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] text-slate-500">Account Name</Label>
+                        <Input 
+                          value={ppSettings[`name_${shop.id}`] || ""} 
+                          onChange={e => setPpSettings(prev => ({ ...prev, [`name_${shop.id}`]: e.target.value }))} 
+                          placeholder="Account owner name for this branch" 
+                          className="h-8 text-xs"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <Button onClick={handleSavePromptPaySettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
+              Save PromptPay Settings
             </Button>
           </div>
         </div>

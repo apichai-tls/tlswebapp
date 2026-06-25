@@ -414,6 +414,7 @@ export const api = {
       paymentChannel: jobDetails.paymentChannel as string,
       createdBy: jobDetails.createdBy as string | null || null,
       cashPlaced: jobDetails.cashPlaced as boolean || false,
+      shiftId: jobDetails.shiftId as string | null || null,
       legs: {
         pickupOutbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
         pickupInbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
@@ -692,5 +693,33 @@ export const api = {
     const db = initDb();
     db.pois = db.pois.filter(p => p.id !== id);
     await dbActions.deletePOIAction(id);
+  },
+  async getActiveCashierShift(userId: string) {
+    return dbActions.getOpenShiftAction(userId);
+  },
+  async getBranchActiveCashierShift(branchId: string) {
+    return dbActions.getBranchOpenShiftAction(branchId);
+  },
+  async openCashierShift(userId: string, userName: string, branchId: string, startingCash: number, notes?: string) {
+    const res = await dbActions.openShiftAction({
+      userId,
+      userName,
+      branchId,
+      startingCash
+    });
+    if (!res.success) throw new Error(res.error || "Failed to open shift");
+    return res.shift;
+  },
+  async closeCashierShift(id: string, actualCash: number, notes?: string) {
+    const res = await dbActions.closeShiftAction({
+      shiftId: id,
+      actualCash,
+      notes
+    });
+    if (!res.success) throw new Error(res.error || "Failed to close shift");
+    return res.shift;
+  },
+  async getClosedCashierShifts(tenantId?: string) {
+    return dbActions.getClosedShiftsAction();
   }
 };

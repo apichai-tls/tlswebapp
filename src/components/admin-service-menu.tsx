@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Plus, 
@@ -8,11 +8,6 @@ import {
   Edit3, 
   Trash2, 
   Tag, 
-  MoreVertical, 
-  ChevronRight,
-  Save,
-  X,
-  Zap,
   Layers,
   Shirt,
   WashingMachine
@@ -48,6 +43,7 @@ export function AdminServiceMenu() {
   // Form state
   const [formData, setFormData] = useState<Omit<ServiceItem, "id">>({
     name: "",
+    nameEn: "",
     price: 0,
     memberPrice: 0,
     category: "Weight",
@@ -56,6 +52,7 @@ export function AdminServiceMenu() {
 
   const filteredServices = services.filter(s => 
     s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    (s.nameEn && s.nameEn.toLowerCase().includes(searchTerm.toLowerCase())) ||
     s.category.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
@@ -64,6 +61,7 @@ export function AdminServiceMenu() {
       setEditingService(service);
       setFormData({
         name: service.name,
+        nameEn: service.nameEn || "",
         price: service.price,
         memberPrice: service.memberPrice,
         category: service.category,
@@ -73,6 +71,7 @@ export function AdminServiceMenu() {
       setEditingService(null);
       setFormData({
         name: "",
+        nameEn: "",
         price: 0,
         memberPrice: 0,
         category: "Weight",
@@ -158,6 +157,9 @@ export function AdminServiceMenu() {
                       </div>
                       <div>
                         <div className="font-bold text-slate-900">{service.name}</div>
+                        {service.nameEn && (
+                          <div className="text-[11px] font-medium text-slate-500">{service.nameEn}</div>
+                        )}
                         <div className="text-[10px] font-mono text-slate-400 mt-0.5 uppercase">{service.id}</div>
                       </div>
                     </div>
@@ -214,13 +216,23 @@ export function AdminServiceMenu() {
             
             <div className="p-6 space-y-5 bg-white">
               <div className="space-y-2">
-                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Service Name</Label>
+                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Service Name (Thai) *</Label>
                 <Input 
                   required
                   className="rounded-xl border-slate-200 h-11 focus:ring-slate-900"
-                  placeholder="e.g. Wash & Fold (kg)"
+                  placeholder="เช่น ซักอบพับทั่วไป"
                   value={formData.name}
                   onChange={e => setFormData({ ...formData, name: e.target.value })}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Service Name (English)</Label>
+                <Input 
+                  className="rounded-xl border-slate-200 h-11 focus:ring-slate-900"
+                  placeholder="e.g. Wash & Fold"
+                  value={formData.nameEn || ""}
+                  onChange={e => setFormData({ ...formData, nameEn: e.target.value })}
                 />
               </div>
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { User, ShieldCheck, Plus, Trash2, Edit, Save, X } from "lucide-react";
+import { ShieldCheck, Plus, Trash2, Edit, Save, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
@@ -16,6 +16,7 @@ interface AdminUser {
   password?: string;
   permissions: string;
   area?: string | null;
+  branchId?: string | null;
 }
 
 const MENU_PERMISSIONS = [
@@ -48,6 +49,7 @@ export function AdminUsers() {
   const [name, setName] = useState("");
   const [role, setRole] = useState("staff");
   const [area, setArea] = useState("BKK");
+  const [branchId, setBranchId] = useState("");
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
 
   const fetchUsers = async () => {
@@ -59,8 +61,9 @@ export function AdminUsers() {
       } else {
         toast.error(res?.error || "Failed to load users");
       }
-    } catch (error: any) {
-      toast.error("Network error: " + error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      toast.error("Network error: " + msg);
     } finally {
       setIsLoading(false);
     }
@@ -76,6 +79,7 @@ export function AdminUsers() {
     setName("");
     setRole("staff");
     setArea("BKK");
+    setBranchId("");
     setSelectedPerms([]);
     setEditingId(null);
     setIsEditing(false);
@@ -87,9 +91,10 @@ export function AdminUsers() {
     setName(user.name);
     setRole(user.role);
     setArea(user.area || "BKK");
+    setBranchId(user.branchId || "");
     try {
       setSelectedPerms(JSON.parse(user.permissions));
-    } catch (e) {
+    } catch {
       setSelectedPerms([]);
     }
     setEditingId(user.id);
@@ -117,29 +122,37 @@ export function AdminUsers() {
     if (!email || !name) return toast.error("Email and Name are required");
 
     try {
-      const data = {
-        email,
-        password: password || undefined,
-        name,
-        role,
-        area: area || null,
-        permissions: JSON.stringify(selectedPerms)
-      };
-
       if (editingId) {
-        const res = await updateUser(editingId, { name, email, password: password || undefined, role, area: area || null, permissions: selectedPerms });
+        const res = await updateUser(editingId, { 
+          name, 
+          email, 
+          password: password || undefined, 
+          role, 
+          area: area || null, 
+          branchId: branchId || null, 
+          permissions: selectedPerms 
+        });
         if (!res?.success) throw new Error(res?.error || "Failed to update user");
         toast.success("User updated successfully");
       } else {
         if (!password) return toast.error("Password is required for new users");
-        const res = await createUser({ name, email, password, role, area: area || null, permissions: selectedPerms });
+        const res = await createUser({ 
+          name, 
+          email, 
+          password, 
+          role, 
+          area: area || null, 
+          branchId: branchId || null, 
+          permissions: selectedPerms 
+        });
         if (!res?.success) throw new Error(res?.error || "Failed to create user");
         toast.success("User created successfully");
       }
       resetForm();
       fetchUsers();
-    } catch (error: any) {
-      toast.error(error.message || "Operation failed");
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      toast.error(msg || "Operation failed");
     }
   };
 
@@ -151,8 +164,9 @@ export function AdminUsers() {
       
       toast.success("User deleted successfully");
       fetchUsers();
-    } catch (error: any) {
-      toast.error(error.message || "Failed to delete user");
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      toast.error(msg || "Failed to delete user");
     }
   };
 
@@ -217,17 +231,18 @@ export function AdminUsers() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Area / Branch</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Area / Region</label>
                 <select 
-                  value={area} 
+                  value={area || "BKK"} 
                   onChange={e => setArea(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
                 >
-                  <option value="ALL">ALL (All Branches)</option>
-                  <option value="BKK">BKK (Bangkok)</option>
-                  <option value="PTY">PTY (Pattaya)</option>
+                  <option value="ALL">ALL (All Regions)</option>
+                  <option value="BKK">BKK (Bangkok Region)</option>
+                  <option value="PTY">PTY (Pattaya Region)</option>
                 </select>
               </div>
+
             </div>
 
             <div>
@@ -297,7 +312,7 @@ export function AdminUsers() {
               ) : (
                 users.map(user => {
                   let perms: string[] = [];
-                  try { perms = JSON.parse(user.permissions); } catch(e){}
+                  try { perms = JSON.parse(user.permissions); } catch {}
                   
                   return (
                     <tr key={user.id} className="hover:bg-slate-50 transition-colors">

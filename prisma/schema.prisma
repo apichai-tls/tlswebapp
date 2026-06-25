@@ -97,11 +97,14 @@ model Job {
 
   customer Customer?     @relation(fields: [customerId], references: [id])
   branch   ShopLocation? @relation(fields: [branchId], references: [id])
+  shiftId  String?
+  shift    CashierShift? @relation(fields: [shiftId], references: [id], onDelete: SetNull)
 }
 
 model ServiceItem {
   id          String  @id @default(uuid())
   name        String
+  nameEn      String?
   price       Float
   memberPrice Float
   category    String
@@ -159,6 +162,8 @@ model ShopLocation {
   area         String  @default("BKK")
   riders       Rider[]
   jobs         Job[]
+  shifts       CashierShift[]
+  staff        AdminUser[]
 }
 
 model POI {
@@ -197,6 +202,31 @@ model AdminUser {
   role        String   @default("staff") // "admin", "manager", "cso", "staff"
   permissions String // JSON string array of allowed menu keys: '["jobs", "crm"]'
   area        String? // e.g. "BKK", "PTY"
+  branchId    String? // Optional branch location ID for staff/managers
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  
+  branch      ShopLocation? @relation(fields: [branchId], references: [id])
+}
+
+model CashierShift {
+  id              String    @id @default(uuid())
+  branchId        String    // The ShopLocation ID the shift belongs to
+  userId          String    // Cashier user ID (AdminUser ID)
+  userName        String    // Cashier name (AdminUser name)
+  openedAt        DateTime  @default(now())
+  closedAt        DateTime?
+  startingCash    Float     // Cash in drawer at start
+  expectedCash    Float     @default(0) // Calculated: startingCash + cashSales
+  actualCash      Float?    // Declared cash by cashier on close
+  cashSales       Float     @default(0) // Total cash sales in this shift
+  transferSales   Float     @default(0) // Total bank transfer sales in this shift
+  cardSales       Float     @default(0) // Total credit card sales in this shift
+  creditSales     Float     @default(0) // Total store credit sales in this shift
+  shortageOverage Float?    // Difference: actualCash - expectedCash
+  status          String    @default("open") // "open" | "closed"
+  notes           String?
+
+  branch          ShopLocation @relation(fields: [branchId], references: [id])
+  jobs            Job[]
 }

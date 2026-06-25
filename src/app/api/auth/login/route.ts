@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
         role: user.role,
         permissions: permissionsArray,
         area: user.area || undefined,
+        branchId: user.branchId || null
       },
     });
   } catch (error: any) {

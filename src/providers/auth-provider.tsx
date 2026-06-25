@@ -11,6 +11,7 @@ export interface User {
   role: 'admin' | 'rider' | 'manager' | 'cso' | 'staff';
   permissions: string[];
   area?: string;
+  branchId?: string | null;
 }
 
 interface AuthContextType {

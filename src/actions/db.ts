@@ -196,6 +196,7 @@ export async function addJobAction(data: any) {
       createdBy: data.createdBy,
       cashPlaced: data.cashPlaced || false,
       isStuck: data.isStuck || false,
+      shiftId: data.shiftId || null,
     }
   });
 
@@ -550,7 +551,6 @@ export async function updatePOIAction(id: string, updates: any) {
 export async function deletePOIAction(id: string) {
   return prisma.pOI.delete({ where: { id } });
 }
-
 // SETTINGS
 export async function updateSettingAction(key: string, value: string) {
   const result = await prisma.setting.upsert({
@@ -766,8 +766,143 @@ export async function resolveJobDiscrepancyAction(
     });
 
     return { success: true };
-  } catch (error: any) {
+  } catch (error) {
     console.error('Failed in resolveJobDiscrepancyAction:', error);
-    return { success: false, error: error.message || 'Resolve failed' };
+    return { success: false, error: (error as Error).message || 'Resolve failed' };
+  }
+}
+
+// CASHIER SHIFT OPERATIONS
+export async function getOpenShiftAction(userId: string) {
+  try {
+    const shift = await prisma.cashierShift.findFirst({
+      where: { userId, status: 'open' }
+    });
+    return shift;
+  } catch (e) {
+    console.error("Error in getOpenShiftAction:", e);
+    return null;
+  }
+}
+
+export async function getBranchOpenShiftAction(branchId: string) {
+  try {
+    const shift = await prisma.cashierShift.findFirst({
+      where: { branchId, status: 'open' }
+    });
+    return shift;
+  } catch (e) {
+    console.error("Error in getBranchOpenShiftAction:", e);
+    return null;
+  }
+}
+
+
+export async function openShiftAction(data: { userId: string, userName: string, branchId: string, startingCash: number }) {
+  try {
+    // Check if there is already an open shift for this user
+    const existingOpen = await prisma.cashierShift.findFirst({
+      where: { userId: data.userId, status: 'open' }
+    });
+    if (existingOpen) {
+      throw new Error("You already have an open shift.");
+    }
+
+    const newShift = await prisma.cashierShift.create({
+      data: {
+        userId: data.userId,
+        userName: data.userName,
+        branchId: data.branchId,
+        startingCash: data.startingCash,
+        expectedCash: data.startingCash,
+        status: 'open'
+      }
+    });
+    return { success: true, shift: newShift };
+  } catch (e) {
+    console.error("Error in openShiftAction:", e);
+    return { success: false, error: (e as Error).message || "Failed to open shift" };
+  }
+}
+
+export async function closeShiftAction(data: { shiftId: string, actualCash: number, notes?: string }) {
+  try {
+    const shift = await prisma.cashierShift.findUnique({
+      where: { id: data.shiftId }
+    });
+    if (!shift) {
+      throw new Error("Shift not found");
+    }
+    if (shift.status === 'closed') {
+      throw new Error("Shift is already closed");
+    }
+
+    // Fetch all jobs linked to this shift
+    const jobs = await prisma.job.findMany({
+      where: { shiftId: data.shiftId }
+    });
+
+    let cashSales = 0;
+    let transferSales = 0;
+    let cardSales = 0;
+    let creditSales = 0;
+
+    jobs.forEach(job => {
+      // Skip cancelled jobs in sales calculation
+      if (job.status === 'cancel') return;
+
+      const amount = job.totalAmount || 0;
+      const channel = job.paymentChannel || '';
+
+      if (channel === 'Cash / COD' || channel.toLowerCase() === 'cash') {
+        cashSales += amount;
+      } else if (channel === 'Transfer' || channel.toLowerCase() === 'transfer') {
+        transferSales += amount;
+      } else if (channel === 'Credit Card' || channel.toLowerCase() === 'card') {
+        cardSales += amount;
+      } else if (channel === 'HQ/Credit' || channel.toLowerCase() === 'credit') {
+        creditSales += amount;
+      } else {
+        // Fallback default
+        cashSales += amount;
+      }
+    });
+
+    const expectedCash = shift.startingCash + cashSales;
+    const shortageOverage = data.actualCash - expectedCash;
+
+    const closedShift = await prisma.cashierShift.update({
+      where: { id: data.shiftId },
+      data: {
+        closedAt: new Date(),
+        actualCash: data.actualCash,
+        cashSales,
+        transferSales,
+        cardSales,
+        creditSales,
+        expectedCash,
+        shortageOverage,
+        status: 'closed',
+        notes: data.notes || null
+      }
+    });
+
+    return { success: true, shift: closedShift };
+  } catch (e) {
+    console.error("Error in closeShiftAction:", e);
+    return { success: false, error: (e as Error).message || "Failed to close shift" };
+  }
+}
+
+export async function getClosedShiftsAction() {
+  try {
+    const shifts = await prisma.cashierShift.findMany({
+      where: { status: 'closed' },
+      orderBy: { closedAt: 'desc' }
+    });
+    return shifts;
+  } catch (e) {
+    console.error("Error in getClosedShiftsAction:", e);
+    return [];
   }
 }

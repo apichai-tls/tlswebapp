@@ -15,7 +15,7 @@ export async function getUsers() {
   }
 }
 
-export async function createUser(data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null }) {
+export async function createUser(data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null; branchId?: string | null }) {
   try {
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
@@ -32,7 +32,8 @@ export async function createUser(data: { name: string; email: string; password?:
         password: data.password || 'password123',
         role: data.role,
         permissions: JSON.stringify(data.permissions),
-        area: data.area
+        area: data.area,
+        branchId: data.branchId
       }
     });
 
@@ -57,7 +58,7 @@ export async function createUser(data: { name: string; email: string; password?:
   }
 }
 
-export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null }) {
+export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null; branchId?: string | null }) {
   try {
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
@@ -72,7 +73,8 @@ export async function updateUser(id: string, data: { name: string; email: string
       email: data.email.toLowerCase().trim(),
       role: data.role,
       permissions: JSON.stringify(data.permissions),
-      area: data.area
+      area: data.area,
+      branchId: data.branchId
     };
 
     if (data.password) {
