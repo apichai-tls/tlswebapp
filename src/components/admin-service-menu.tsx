@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Plus, 
@@ -37,6 +37,7 @@ import { toast } from "sonner";
 export function AdminServiceMenu() {
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("All");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingService, setEditingService] = useState<ServiceItem | null>(null);
 
@@ -50,11 +51,21 @@ export function AdminServiceMenu() {
     unit: ""
   });
 
-  const filteredServices = services.filter(s => 
-    s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    (s.nameEn && s.nameEn.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    s.category.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Dynamically compute unique categories from services
+  const categories = useMemo(() => {
+    const uniqueCats = Array.from(new Set(services.map(s => s.category).filter(Boolean))).sort();
+    return ["All", ...uniqueCats];
+  }, [services]);
+
+  const filteredServices = services.filter(s => {
+    const matchesSearch = s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      (s.nameEn && s.nameEn.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      s.category.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    const matchesCategory = selectedCategory === "All" || s.category === selectedCategory;
+    
+    return matchesSearch && matchesCategory;
+  });
 
   const handleOpenModal = (service?: ServiceItem) => {
     if (service) {
@@ -124,6 +135,24 @@ export function AdminServiceMenu() {
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
         />
+      </div>
+
+      {/* Categories Bar */}
+      <div className="flex gap-1.5 overflow-x-auto pb-2 scrollbar-hide shrink-0">
+        {categories.map(cat => (
+          <motion.button
+            whileTap={{ scale: 0.95 }}
+            key={cat}
+            onClick={() => setSelectedCategory(cat)}
+            className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all whitespace-nowrap uppercase tracking-wider cursor-pointer ${
+              selectedCategory === cat 
+                ? "bg-slate-900 text-white shadow-md shadow-slate-200" 
+                : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-900"
+            }`}
+          >
+            {cat}
+          </motion.button>
+        ))}
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
