@@ -1062,6 +1062,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   const promptpayConfig = useMemo(() => {
     if (!settings) return null;
+    if (settings.enablePromptPay !== "true") return null;
     const branchId = activeBranchId;
     const ppId = settings[`promptpayId_${branchId}`]?.trim() || settings[`promptpayId_global`]?.trim() || "";
     const ppName = settings[`promptpayName_${branchId}`]?.trim() || settings[`promptpayName_global`]?.trim() || "";
@@ -3046,7 +3047,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     </motion.div>
                   )}
 
-                  {isPaid && paymentMethod === "transfer" && (
+                  {isPaid && paymentMethod === "transfer" && settings?.enablePromptPay === "true" && (
                     <motion.div
                       key="transfer-panel"
                       initial={{ opacity: 0, y: -10 }}
