@@ -612,6 +612,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     shiftStore.getSnapshot
   );
 
+  // Determine if Admin is viewing in Spectator Mode (view-only)
+  const isSpectatorMode = useMemo(() => {
+    if (user?.role !== 'admin') return false;
+    if (!branchActiveShift) return false;
+    return branchActiveShift.userId !== user.id;
+  }, [user, branchActiveShift]);
+
   const [isCloseShiftOpen, setIsCloseShiftOpen] = useState(false);
   const [startingCash, setStartingCash] = useState<string>("");
   const [openShiftNotes, setOpenShiftNotes] = useState<string>("");
@@ -1682,12 +1689,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     );
   }
 
-  // Determine if Admin is viewing in Spectator Mode (view-only)
-  const isSpectatorMode = useMemo(() => {
-    if (user?.role !== 'admin') return false;
-    if (!branchActiveShift) return false;
-    return branchActiveShift.userId !== user.id;
-  }, [user, branchActiveShift]);
 
   // Branch Selection Portal (shown to any user who has multiple branches and has not selected one yet)
   if (shops.length > 1 && !activeBranchId) {
