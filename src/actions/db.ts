@@ -912,3 +912,17 @@ export async function getClosedShiftsAction() {
     return [];
   }
 }
+
+export async function getOpenShiftsAction() {
+  try {
+    const shifts = await prisma.cashierShift.findMany({
+      where: { status: 'open' },
+      orderBy: { openedAt: 'desc' }
+    });
+    return shifts;
+  } catch (e) {
+    console.error("Error in getOpenShiftsAction:", e);
+    return [];
+  }
+}
+

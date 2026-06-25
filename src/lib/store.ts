@@ -774,5 +774,17 @@ export const shiftStore = {
       console.error("Failed to get closed shifts:", e);
       return [];
     }
+  },
+  async getOpenShifts() {
+    try {
+      const res = await api.getOpenCashierShifts();
+      return JSON.parse(JSON.stringify(res), (key, value) => {
+        if (key.includes('At') && value) return new Date(value);
+        return value;
+      }) as CashierShift[];
+    } catch (e) {
+      console.error("Failed to get open shifts:", e);
+      return [];
+    }
   }
 };

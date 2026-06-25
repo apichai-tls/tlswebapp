@@ -719,5 +719,8 @@ export const api = {
   },
   async getClosedCashierShifts(tenantId?: string) {
     return dbActions.getClosedShiftsAction();
+  },
+  async getOpenCashierShifts() {
+    return dbActions.getOpenShiftsAction();
   }
 };
