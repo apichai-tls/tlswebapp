@@ -1,11 +1,13 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, MessageCircle, Clock, AlertTriangle } from "lucide-react";
+import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle } from "lucide-react";
 import { format } from "date-fns";
-import { type Customer } from "@/lib/store";
+import { type Customer, shopStore } from "@/lib/store";
+import { useSyncExternalStore } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { useMemo } from "react";
+import { motion } from "framer-motion";
 
 // Helper to extract initials for avatar
 const getInitials = (name: string) => {
@@ -32,6 +34,21 @@ const getAvatarBg = (name: string) => {
   return gradients[sum % gradients.length];
 };
 
+const getAvatarStylesForProfile = (customer: Customer, isStandardPlan?: boolean) => {
+  if (!isStandardPlan) {
+    if (customer.isVIP) {
+      return "bg-gradient-to-tr from-rose-300 via-amber-200 via-teal-200 to-purple-300 border-pink-200 text-indigo-950 shadow-md shadow-purple-200/30";
+    }
+    if (customer.isMember) {
+      return "bg-gradient-to-r from-slate-300 via-slate-100 to-slate-400 border-slate-300 text-slate-800 shadow-sm";
+    }
+  }
+  if (customer.isCorporate) {
+    return "bg-gradient-to-br from-slate-600 to-slate-700 border-slate-400 text-white shadow-slate-200/30 shadow-sm";
+  }
+  return getAvatarBg(customer.name);
+};
+
 export function AdminCustomerProfileModal({ 
   open, 
   onOpenChange, 
@@ -42,17 +59,56 @@ export function AdminCustomerProfileModal({
   customer: Customer | null;
 }) {
   const jobs = useJobs();
+  const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const activeShop = shops[0];
+  const isStandardPlan = activeShop?.plan === 'standard';
 
   const { jobsCount, ltv, customerJobs } = useMemo(() => {
     if (!customer) return { jobsCount: 0, ltv: 0, customerJobs: [] };
     const custJobs = jobs.filter(j => j.customerPhone === customer.phone || j.customerId === customer.id);
-    const completedJobs = custJobs.filter(j => j.status === "completed");
+    const countedJobs = custJobs.filter(j => isStandardPlan ? j.isPaid : j.status === "completed");
     return {
       customerJobs: custJobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-      jobsCount: completedJobs.length,
-      ltv: completedJobs.reduce((sum, j) => sum + (j.totalAmount || j.fee || 0), 0)
+      jobsCount: countedJobs.length,
+      ltv: countedJobs.reduce((sum, j) => sum + (j.totalAmount || j.fee || 0), 0)
     };
-  }, [jobs, customer]);
+  }, [jobs, customer, isStandardPlan]);
+
+  const progression = useMemo(() => {
+    let nextTierName = "";
+    let targetLtv = 0;
+    let percent = 0;
+    let currentTierName = "Standard";
+    let tierColor = "bg-slate-400";
+
+    if (ltv < 1000) {
+      currentTierName = "Standard";
+      nextTierName = "Member";
+      targetLtv = 1000;
+      percent = Math.min(100, Math.max(0, (ltv / 1000) * 100));
+      tierColor = "bg-slate-400";
+    } else if (ltv < 5000) {
+      currentTierName = "Member";
+      nextTierName = "VIP Gold";
+      targetLtv = 5000;
+      percent = Math.min(100, Math.max(0, ((ltv - 1000) / 4000) * 100));
+      tierColor = "bg-gradient-to-r from-slate-300 via-slate-100 to-slate-400";
+    } else {
+      currentTierName = "VIP Gold";
+      nextTierName = "Max Tier";
+      targetLtv = 5000;
+      percent = 100;
+      tierColor = "bg-gradient-to-r from-pink-300 via-purple-300 via-amber-200 to-pink-300";
+    }
+
+    return {
+      currentTierName,
+      nextTierName,
+      targetLtv,
+      percent,
+      tierColor
+    };
+  }, [ltv]);
 
   if (!customer) return null;
 
@@ -65,16 +121,16 @@ export function AdminCustomerProfileModal({
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div className="flex items-center gap-4">
               {/* Dynamic Gradient Avatar */}
-              <div className={`w-14 h-14 rounded-2xl border flex items-center justify-center font-bold text-lg shrink-0 shadow-md ${getAvatarBg(customer.name)}`}>
+              <div className={`w-14 h-14 rounded-2xl border flex items-center justify-center font-bold text-lg shrink-0 shadow-md ${getAvatarStylesForProfile(customer, isStandardPlan)}`}>
                 {getInitials(customer.name)}
               </div>
               
               <div className="space-y-1">
                 <DialogTitle className="flex flex-wrap items-center gap-1.5 text-xl font-black text-slate-900 tracking-tight">
                   {customer.name}
-                  {customer.isVIP && (
-                    <Badge className="bg-amber-50 text-amber-700 border border-amber-250/50 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
-                      <Star size={8} className="text-amber-500 fill-amber-500" /> VIP
+                  {!isStandardPlan && customer.isVIP && (
+                    <Badge className="bg-gradient-to-r from-pink-100 via-purple-100 to-amber-100 text-indigo-950 border border-pink-200 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                      <Star size={8} className="text-indigo-950 fill-indigo-950" /> VIP
                     </Badge>
                   )}
                   {customer.isCorporate && (
@@ -82,9 +138,14 @@ export function AdminCustomerProfileModal({
                       <Building size={8} className="text-indigo-500" /> B2B
                     </Badge>
                   )}
-                  {customer.isMember && customer.memberId && (
+                  {!isStandardPlan && customer.isMember && !customer.isVIP && (
+                    <Badge className="bg-gradient-to-r from-slate-200 via-slate-100 to-slate-300 text-slate-700 border border-slate-300 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                      <Crown size={8} className="text-slate-700" /> MEMBER
+                    </Badge>
+                  )}
+                  {!isStandardPlan && customer.isMember && customer.memberId && (
                     <Badge className="bg-slate-100 text-slate-700 border border-slate-200 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-bold rounded-md">
-                      MEMBER ID: {customer.memberId}
+                      ID: {customer.memberId}
                     </Badge>
                   )}
                 </DialogTitle>
@@ -99,14 +160,16 @@ export function AdminCustomerProfileModal({
             </div>
             
             {/* Wallet Credit Balance */}
-            <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm text-right shrink-0 min-w-[140px]">
-              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-end gap-1 mb-0.5">
-                <Wallet size={10} className="text-emerald-500" /> Credit Wallet
+            {!isStandardPlan && (
+              <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm text-right shrink-0 min-w-[140px]">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-end gap-1 mb-0.5">
+                  <Wallet size={10} className="text-emerald-500" /> Credit Wallet
+                </div>
+                <div className="text-xl font-black text-emerald-600">
+                  ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </div>
               </div>
-              <div className="text-xl font-black text-emerald-600">
-                ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-              </div>
-            </div>
+            )}
           </div>
         </DialogHeader>
 
@@ -133,6 +196,32 @@ export function AdminCustomerProfileModal({
               </span>
             </div>
           </div>
+
+          {/* LTV Progression Progress Bar */}
+          {!isStandardPlan && (
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2.5">
+              <div className="flex justify-between items-center text-xs font-bold">
+                <span className="text-slate-400 uppercase tracking-wider">Milestone Progression</span>
+                <span className="text-indigo-600 font-bold">฿{ltv.toLocaleString()} / ฿{progression.targetLtv.toLocaleString()}</span>
+              </div>
+              <div className="w-full bg-slate-100 border border-slate-200 h-3 rounded-full overflow-hidden relative">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progression.percent}%` }}
+                  transition={{ duration: 0.8, ease: "easeOut" }}
+                  className={`h-full ${progression.tierColor}`}
+                />
+              </div>
+              <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                <span>Current: <strong className="text-slate-900">{progression.currentTierName}</strong></span>
+                {progression.percent < 100 ? (
+                  <span>Next: <strong className="text-indigo-600">{progression.nextTierName}</strong> (Need ฿{(progression.targetLtv - ltv).toLocaleString()} more)</span>
+                ) : (
+                  <span className="text-amber-500 font-extrabold flex items-center gap-0.5"><Crown size={10} /> Ultimate VIP Status reached</span>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Special Instructions/Remarks (Crucial Banner) */}
           {customer.remark && (
