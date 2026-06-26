@@ -193,6 +193,7 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
           pickupCommission: "Pickup Commission",
           deliveryCommission: "Delivery Commission",
           adminNotesJson: "Admin Note",
+          serviceSpeed: "Service Speed",
         };
         return labels[key] || key;
       };

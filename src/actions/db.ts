@@ -377,7 +377,8 @@ export async function updateJobAction(id: string, updates: any) {
       'status', 'subStatus', 'isPaid', 'paymentChannel', 'riderId', 
       'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 
       'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck', 'cashPlaced',
-      'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl'
+      'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
+      'adminNotesJson'
     ];
     logFields.forEach(field => {
       const oldVal = (existingJob as any)[field];
@@ -404,6 +405,24 @@ export async function updateJobAction(id: string, updates: any) {
           } catch (e) {
             changes[field] = newVal;
           }
+        } else if (field === 'remark') {
+          const getSpeedFromRemark = (r: any) => {
+            if (typeof r !== 'string') return 'standard';
+            if (r.includes('Express 100%')) return 'express_100';
+            if (r.includes('Express 50%')) return 'express_50';
+            return 'standard';
+          };
+          const oldSpeed = getSpeedFromRemark(oldVal);
+          const newSpeed = getSpeedFromRemark(newVal);
+          if (oldSpeed !== newSpeed) {
+            const speedLabels: Record<string, string> = {
+              standard: 'Regular',
+              express_50: 'Express 50%',
+              express_100: 'Express 100%'
+            };
+            changes['serviceSpeed'] = speedLabels[newSpeed];
+          }
+          changes[field] = newVal;
         } else if (oldVal instanceof Date || newVal instanceof Date) {
           const oldTime = oldVal instanceof Date ? oldVal.getTime() : new Date(oldVal).getTime();
           const newTime = newVal instanceof Date ? newVal.getTime() : new Date(newVal).getTime();

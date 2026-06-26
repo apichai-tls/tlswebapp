@@ -426,6 +426,20 @@ export default function RiderPage() {
   }, [jobs, selectedJob, user?.id]);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const lastOpenedJobIdRef = useRef<string | null>(null);
+
+  // Auto-open chat screen first when a Rider clicks to view job details
+  useEffect(() => {
+    if (selectedJob) {
+      if (lastOpenedJobIdRef.current !== selectedJob.job.id) {
+        lastOpenedJobIdRef.current = selectedJob.job.id;
+        setChatOpen(true);
+      }
+    } else {
+      lastOpenedJobIdRef.current = null;
+      setChatOpen(false);
+    }
+  }, [selectedJob]);
 
   // Scroll chat list to bottom when chat opens or messages change
   useEffect(() => {

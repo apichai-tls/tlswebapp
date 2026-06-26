@@ -142,17 +142,6 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
   if (!shops || shops.length === 0) return "";
   if (shops.length === 1) return shops[0].id;
 
-  // 1. Try mapping by Zip Code extracted from address
-  if (address) {
-    const shopIdByZip = getShopIdByZipCode(address);
-    if (shopIdByZip) {
-      const matchedShop = shops.find(s => s.id === shopIdByZip);
-      if (matchedShop) {
-        return matchedShop.id;
-      }
-    }
-  }
-
   try {
     // As requested, we won't reduce scope. We will check the distance matrix against all shops.
     const candidateShops = shops;
