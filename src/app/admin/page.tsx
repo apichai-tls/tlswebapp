@@ -2174,66 +2174,129 @@ export default function AdminPage() {
                           </div>
                         </div>
 
-                        {/* Job Photos Unified Section */}
-                        <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm space-y-3">
-                          <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2">
-                            <Camera size={14} className="text-indigo-600" />
-                            <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">Job Photos</span>
+                        {/* Admin Notes & Options */}
+                        <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-1.5 flex-1 min-h-[180px]">
+                          <div className="flex items-center justify-between shrink-0">
+                            <Label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5"><MessageSquare size={14} className="text-indigo-500" /> Admin Note Logs</Label>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded"
+                              onClick={() => setNoteLogsModalOpen(true)}
+                              title="Expand Notes"
+                            >
+                              <Maximize2 size={12} />
+                            </Button>
                           </div>
-                          
-                          <div className="grid grid-cols-2 gap-x-3 gap-y-4">
-                            <div className="space-y-1.5">
-                              <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Laundry Bags</Label>
-                              <MultiImageUploader
-                                ref={uploaderRef}
-                                entityType="job"
-                                entityId={editingJobId || Date.now().toString()}
-                                subType="bags"
-                                value={bagImageUrls}
-                                onValueChange={setBagImageUrls}
-                                maxFiles={5}
-                              />
-                            </div>
-
-                            <div className="space-y-1.5">
-                              <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Bill / Transfer</Label>
-                              <MultiImageUploader
-                                ref={billUploaderRef}
-                                entityType="job"
-                                entityId={editingJobId || Date.now().toString()}
-                                subType="bills"
-                                value={billImageUrls}
-                                onValueChange={setBillImageUrls}
-                                maxFiles={4}
-                              />
-                            </div>
-
-                            <div className="space-y-1.5">
-                              <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
-                              <MultiImageUploader
-                                ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
-                                entityType="job"
-                                entityId={editingJobId || Date.now().toString()}
-                                subType="proofs"
-                                value={pickupProofImageUrls}
-                                onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
-                                maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
-                                readOnly={user?.role !== 'admin'}
-                              />
-                            </div>
-
-                            <div className="space-y-1.5">
-                              <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
-                              <MultiImageUploader
-                                ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
-                                entityType="job"
-                                entityId={editingJobId || Date.now().toString()}
-                                subType="proofs"
-                                value={deliveryProofImageUrls}
-                                onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
-                                maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
-                                readOnly={user?.role !== 'admin'}
-                              />
+                          <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
+                            {adminLogs.length > 0 ? (
+                              <div 
+                                className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-xs"
+                              >
+                                {adminLogs.map((log, i) => (
+                                  <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm pr-6">
+                                    <div className="flex justify-between items-center mb-1">
+                                      <span className={`font-bold text-xs uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
+                                        {log.userName || (log as any).createdBy || "System"}
+                                      </span>
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-[10px] text-slate-400">
+                                          {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
+                                        </span>
+                                        {log.isNew && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleDeleteAdminLog(log.id!);
+                                            }}
+                                            className="text-slate-400 hover:text-rose-500 rounded p-0.5 transition-colors"
+                                            title="Delete note"
+                                          >
+                                            <Trash2 size={11} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
+                                    {log.imageUrls && log.imageUrls.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1.5">
+                                        {log.imageUrls.map((url, idx) => (
+                                          <div 
+                                            key={idx} 
+                                            className="relative w-10 h-10 rounded-lg border border-slate-200 overflow-hidden cursor-pointer bg-slate-100 shadow-sm"
+                                            onClick={(e) => { e.stopPropagation(); setPreviewAdminNoteImage(url); }}
+                                            title="Click to view full image"
+                                          >
+                                            <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover hover:scale-110 transition-transform" />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                                <div ref={adminLogsEndRef} />
+                              </div>
+                            ) : (
+                              <div 
+                                className="text-[10px] text-slate-400 italic px-1 flex-1 flex items-center justify-center border border-slate-100 bg-slate-50 rounded-lg"
+                              >
+                                No notes yet...
+                              </div>
+                            )}
+                            <div className="flex flex-col gap-1 shrink-0 mt-1">
+                              <div className="flex gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className={`h-8 px-2 rounded-lg border text-slate-500 ${showNoteUploader && !noteLogsModalOpen ? 'bg-indigo-50 border-indigo-300 text-indigo-600' : 'bg-white border-slate-200'}`}
+                                  onClick={() => setShowNoteUploader(prev => !prev)}
+                                  disabled={isUploadingNote}
+                                  title="Attach images"
+                                >
+                                  <Paperclip size={14} />
+                                </Button>
+                                <Input
+                                  placeholder="Type a note & press Enter..."
+                                  value={adminNoteInput}
+                                  onChange={(e) => setAdminNoteInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleSendAdminLog();
+                                    }
+                                  }}
+                                  disabled={isUploadingNote}
+                                  className="h-8 text-xs bg-white flex-1 rounded-lg"
+                                />
+                                <Button 
+                                  type="button" 
+                                  size="sm" 
+                                  disabled={isUploadingNote}
+                                  className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
+                                  onClick={handleSendAdminLog}
+                                >
+                                  {isUploadingNote ? (
+                                    <Loader2 className="animate-spin" size={14} />
+                                  ) : (
+                                    <Plus size={14} />
+                                  )}
+                                  <span className="ml-1">Send</span>
+                                </Button>
+                              </div>
+                              {showNoteUploader && !noteLogsModalOpen && (
+                                <div className="border border-slate-200 bg-white p-2 rounded-lg shadow-sm mt-1 max-h-[160px] overflow-y-auto">
+                                  <MultiImageUploader
+                                    ref={noteUploaderRef}
+                                    entityType="job"
+                                    entityId={editingJobId || "temp-note"}
+                                    subType="proofs"
+                                    maxFiles={3}
+                                  />
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -2247,129 +2310,66 @@ export default function AdminPage() {
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.15, duration: 0.3 }}
                     >
-                      {/* Admin Notes & Options */}
-                      <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-1.5 flex-1 min-h-[180px]">
-                        <div className="flex items-center justify-between shrink-0">
-                          <Label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5"><MessageSquare size={14} className="text-indigo-500" /> Admin Note Logs</Label>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded"
-                            onClick={() => setNoteLogsModalOpen(true)}
-                            title="Expand Notes"
-                          >
-                            <Maximize2 size={12} />
-                          </Button>
+                      {/* Job Photos Unified Section */}
+                      <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm space-y-3">
+                        <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                          <Camera size={14} className="text-indigo-600" />
+                          <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">Job Photos</span>
                         </div>
-                        <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
-                          {adminLogs.length > 0 ? (
-                            <div 
-                              className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-xs"
-                            >
-                              {adminLogs.map((log, i) => (
-                                <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm pr-6">
-                                  <div className="flex justify-between items-center mb-1">
-                                    <span className={`font-bold text-xs uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
-                                      {log.userName || (log as any).createdBy || "System"}
-                                    </span>
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="text-[10px] text-slate-400">
-                                        {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
-                                      </span>
-                                      {log.isNew && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteAdminLog(log.id!);
-                                          }}
-                                          className="text-slate-400 hover:text-rose-500 rounded p-0.5 transition-colors"
-                                          title="Delete note"
-                                        >
-                                          <Trash2 size={11} />
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
-                                  {log.imageUrls && log.imageUrls.length > 0 && (
-                                    <div className="flex flex-wrap gap-1 mt-1.5">
-                                      {log.imageUrls.map((url, idx) => (
-                                        <div 
-                                          key={idx} 
-                                          className="relative w-10 h-10 rounded-lg border border-slate-200 overflow-hidden cursor-pointer bg-slate-100 shadow-sm"
-                                          onClick={(e) => { e.stopPropagation(); setPreviewAdminNoteImage(url); }}
-                                          title="Click to view full image"
-                                        >
-                                          <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover hover:scale-110 transition-transform" />
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                              <div ref={adminLogsEndRef} />
-                            </div>
-                          ) : (
-                            <div 
-                              className="text-[10px] text-slate-400 italic px-1 flex-1 flex items-center justify-center border border-slate-100 bg-slate-50 rounded-lg"
-                            >
-                              No notes yet...
-                            </div>
-                          )}
-                          <div className="flex flex-col gap-1 shrink-0 mt-1">
-                            <div className="flex gap-1">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className={`h-8 px-2 rounded-lg border text-slate-500 ${showNoteUploader && !noteLogsModalOpen ? 'bg-indigo-50 border-indigo-300 text-indigo-600' : 'bg-white border-slate-200'}`}
-                                onClick={() => setShowNoteUploader(prev => !prev)}
-                                disabled={isUploadingNote}
-                                title="Attach images"
-                              >
-                                <Paperclip size={14} />
-                              </Button>
-                              <Input
-                                placeholder="Type a note & press Enter..."
-                                value={adminNoteInput}
-                                onChange={(e) => setAdminNoteInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleSendAdminLog();
-                                  }
-                                }}
-                                disabled={isUploadingNote}
-                                className="h-8 text-xs bg-white flex-1 rounded-lg"
-                              />
-                              <Button 
-                                type="button" 
-                                size="sm" 
-                                disabled={isUploadingNote}
-                                className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
-                                onClick={handleSendAdminLog}
-                              >
-                                {isUploadingNote ? (
-                                  <Loader2 className="animate-spin" size={14} />
-                                ) : (
-                                  <Plus size={14} />
-                                )}
-                                <span className="ml-1">Send</span>
-                              </Button>
-                            </div>
-                            {showNoteUploader && !noteLogsModalOpen && (
-                              <div className="border border-slate-200 bg-white p-2 rounded-lg shadow-sm mt-1 max-h-[160px] overflow-y-auto">
-                                <MultiImageUploader
-                                  ref={noteUploaderRef}
-                                  entityType="job"
-                                  entityId={editingJobId || "temp-note"}
-                                  subType="proofs"
-                                  maxFiles={3}
-                                />
-                              </div>
-                            )}
+                        
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Laundry Bags</Label>
+                            <MultiImageUploader
+                              ref={uploaderRef}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="bags"
+                              value={bagImageUrls}
+                              onValueChange={setBagImageUrls}
+                              maxFiles={5}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Bill / Transfer</Label>
+                            <MultiImageUploader
+                              ref={billUploaderRef}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="bills"
+                              value={billImageUrls}
+                              onValueChange={setBillImageUrls}
+                              maxFiles={4}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
+                            <MultiImageUploader
+                              ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="proofs"
+                              value={pickupProofImageUrls}
+                              onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
+                              maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
+                              readOnly={user?.role !== 'admin'}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
+                            <MultiImageUploader
+                              ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="proofs"
+                              value={deliveryProofImageUrls}
+                              onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
+                              maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
+                              readOnly={user?.role !== 'admin'}
+                            />
                           </div>
                         </div>
                       </div>
