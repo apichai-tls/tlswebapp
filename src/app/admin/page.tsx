@@ -1152,14 +1152,14 @@ export default function AdminPage() {
           const data = newJobData as any;
           
           const fieldsToCompare = [
-            'isStuck', 'customerId', 'type', 'subStatus', 'source', 'customerName', 'customerPhone',
+            'isStuck', 'customerId', 'type', 'status', 'subStatus', 'source', 'customerName', 'customerPhone',
             'pickupLocation', 'dropoffLocation', 'pickupCoords', 'dropoffCoords', 'scheduledAt',
             'pickupScheduledAt', 'pickupScheduledEndAt', 'deliveryScheduledAt', 'deliveryScheduledEndAt',
             'pickupRiderId', 'deliveryRiderId', 'isPaid', 'fee', 'totalAmount', 'serviceType',
             'pickupDistance', 'deliveryDistance', 'pickupCommission', 'deliveryCommission',
             'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
-            'laundryTypes', 'items'
+            'laundryTypes', 'items', 'paymentChannel'
           ];
           
           fieldsToCompare.forEach(f => {
