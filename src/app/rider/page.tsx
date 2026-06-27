@@ -428,12 +428,14 @@ export default function RiderPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const lastOpenedJobIdRef = useRef<string | null>(null);
 
-  // Auto-open chat screen first when a Rider clicks to view job details
+  // Auto-open chat screen first when a Rider clicks to view job details (but not for completed history tasks)
   useEffect(() => {
     if (selectedJob) {
       if (lastOpenedJobIdRef.current !== selectedJob.job.id) {
         lastOpenedJobIdRef.current = selectedJob.job.id;
-        setChatOpen(true);
+        if (!selectedJob.isCompleted) {
+          setChatOpen(true);
+        }
       }
     } else {
       lastOpenedJobIdRef.current = null;
