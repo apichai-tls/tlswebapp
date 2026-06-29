@@ -1123,7 +1123,7 @@ export default function AdminPage() {
       paymentChannel: paymentChannel || null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
-      cashPlaced,
+      cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
       actorId: user?.id,
       actorName: user?.name || user?.email,
       actorRole: user?.role
