@@ -66,7 +66,7 @@ test.describe('Admin Edit Job Flow', () => {
     
     // Save changes
     await page.click('button:has-text("Save Changes")');
-    await expect(page.locator('text=Job updated successfully!')).toBeVisible();
+    await expect(page.locator('text=Job updated successfully!').first()).toBeVisible();
     await expect(page.locator('#customer-search')).not.toBeVisible();
 
     // 6. Open the job again to verify the update saved
@@ -78,7 +78,7 @@ test.describe('Admin Edit Job Flow', () => {
     // 7. Test Process Substatus -> Ready
     await page.click('button:has-text("Ready")');
     await page.click('button:has-text("Save Changes")');
-    await expect(page.locator('text=Job updated successfully!')).toBeVisible();
+    await expect(page.locator('text=Job updated successfully!').first()).toBeVisible();
     await expect(page.locator('#customer-search')).not.toBeVisible();
 
     // Verify it is visible on the Jobs page

@@ -1,4 +1,4 @@
-import { useState, useEffect, useSyncExternalStore } from "react";
+import { useState, useEffect, useSyncExternalStore, useRef } from "react";
 import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
 import { Button } from "@/components/ui/button";
@@ -32,11 +32,34 @@ export function AdminSettings() {
   const [enableGoogleApi, setEnableGoogleApi] = useState(false);
   const [commissionRateInput, setCommissionRateInput] = useState("2");
   
+  const lastLoadedSettingsRef = useRef<{
+    googleMapsApiKey?: string;
+    enableGoogleApi?: string;
+    riderCommissionPerKm?: string;
+  }>({});
+
   useEffect(() => {
     if (systemSettings) {
-      setGoogleApiKey(systemSettings.googleMapsApiKey || "");
-      setEnableGoogleApi(systemSettings.enableGoogleApi === "true");
-      setCommissionRateInput(systemSettings.riderCommissionPerKm || "2");
+      const last = lastLoadedSettingsRef.current;
+      const serverKey = systemSettings.googleMapsApiKey || "";
+      const serverEnable = systemSettings.enableGoogleApi || "false";
+      const serverRate = systemSettings.riderCommissionPerKm || "2";
+
+      if (
+        serverKey !== last.googleMapsApiKey ||
+        serverEnable !== last.enableGoogleApi ||
+        serverRate !== last.riderCommissionPerKm
+      ) {
+        setGoogleApiKey(serverKey);
+        setEnableGoogleApi(serverEnable === "true");
+        setCommissionRateInput(serverRate);
+
+        lastLoadedSettingsRef.current = {
+          googleMapsApiKey: serverKey,
+          enableGoogleApi: serverEnable,
+          riderCommissionPerKm: serverRate
+        };
+      }
     }
   }, [systemSettings]);
 
@@ -353,6 +376,7 @@ export function AdminSettings() {
               <div className="relative max-w-[200px]">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
                 <Input 
+                  id="rider-commission-input"
                   type="number" 
                   step="0.1"
                   value={commissionRateInput} 
@@ -364,7 +388,7 @@ export function AdminSettings() {
               <p className="text-[10px] text-slate-500">This rate is used to calculate pickup and delivery commissions based on distance. Default is ฿2.0 per km.</p>
             </div>
             
-            <Button onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
+            <Button id="save-commission-btn" onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
               Save Commission Rate
             </Button>
           </div>

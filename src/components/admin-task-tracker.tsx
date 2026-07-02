@@ -12,6 +12,17 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { TimePicker } from "@/components/ui/time-picker";
 
+function formatTimeSafely(dateInput: any, fallback = "--:--"): string {
+  if (!dateInput) return fallback;
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return fallback;
+  try {
+    return format(d, "HH:mm");
+  } catch (e) {
+    return fallback;
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function Step({ title, desc, legKey, leg, icon, toggleLegStatus, getRiderName }: any) {
   const isCompleted = leg.status === "completed";
@@ -36,7 +47,7 @@ function Step({ title, desc, legKey, leg, icon, toggleLegStatus, getRiderName }:
             {title}
           </h4>
           <span className="text-xs font-semibold text-slate-400 bg-slate-50 px-2 py-0.5 rounded">
-            {format(new Date(leg.scheduledAt), "HH:mm")}
+            {formatTimeSafely(leg.scheduledAt)}
           </span>
         </div>
         <p className="text-xs text-slate-500 mt-1 mb-2.5 leading-relaxed">{desc}</p>
@@ -54,7 +65,7 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
   const { user } = useAuth();
   const [deliveryRiderId, setDeliveryRiderId] = useState(job.legs?.deliveryOutbound.riderId || "");
   const [deliveryTime, setDeliveryTime] = useState(
-    job.legs?.deliveryOutbound.scheduledAt ? format(new Date(job.legs.deliveryOutbound.scheduledAt), "HH:mm") : ""
+    formatTimeSafely(job.legs?.deliveryOutbound.scheduledAt, "")
   );
   
 

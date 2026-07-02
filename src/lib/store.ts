@@ -385,11 +385,8 @@ export const jobStore = {
     const job = jobs.find(j => j.id === id);
 
     if (job && job.status === "completed") {
-      if (updates.status === "delivery") {
+      if (updates.status) {
         updates.completedAt = null as any;
-      } else {
-        delete updates.status;
-        delete updates.completedAt;
       }
     }
 

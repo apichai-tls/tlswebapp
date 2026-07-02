@@ -88,12 +88,12 @@ export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
   return (
     <div className={`relative flex flex-col h-full bg-slate-50 w-full overflow-hidden ${minimal ? '' : 'flex-1 rounded-tl-xl border-t border-l border-slate-200'}`}>
       {!minimal && (
-        <div className="absolute top-4 left-6 z-[1000] flex items-center gap-3 pointer-events-none">
-          <div className="flex items-center gap-3 pointer-events-auto">
-            <h2 className="text-lg font-bold text-slate-900 bg-white/95 px-5 py-2.5 rounded-xl shadow-lg border border-slate-200/60 backdrop-blur-md">
+        <div className="absolute top-4 left-4 sm:left-6 z-[1000] flex flex-col sm:flex-row items-start sm:items-center gap-2 pointer-events-none">
+          <div className="flex flex-wrap items-center gap-2 pointer-events-auto">
+            <h2 className="text-sm sm:text-lg font-bold text-slate-900 bg-white/95 px-3 py-1.5 sm:px-5 sm:py-2.5 rounded-xl shadow-lg border border-slate-200/60 backdrop-blur-md">
               Live Fleet Monitor
             </h2>
-            <div className="flex gap-2 text-xs font-medium bg-white/95 px-4 py-2.5 rounded-xl shadow-lg border border-slate-200/60">
+            <div className="flex gap-2 text-[10px] sm:text-xs font-medium bg-white/95 px-2.5 py-1.5 sm:px-4 sm:py-2.5 rounded-xl shadow-lg border border-slate-200/60 animate-in fade-in duration-300">
               <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Online ({activeRiders.filter(r => r.status === 'online').length})</span>
               <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500" /> Busy ({activeRiders.filter(r => r.status === 'busy').length})</span>
             </div>
@@ -101,10 +101,10 @@ export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
         </div>
       )}
 
-      <div className={`absolute z-[1000] pointer-events-auto ${minimal ? 'top-2 right-2' : 'top-4 right-6'} bg-white/95 px-3 py-2 rounded-xl shadow-lg border border-slate-200/60 flex items-center gap-2`}>
-        {!minimal && <label className="text-xs font-bold text-slate-700 uppercase tracking-widest hidden sm:block">Region Focus</label>}
+      <div className={`absolute z-[1000] pointer-events-auto ${minimal ? 'top-2 right-2' : 'top-4 right-4 sm:right-6'} bg-white/95 px-2 py-1.5 sm:px-3 sm:py-2 rounded-xl shadow-lg border border-slate-200/60 flex items-center gap-2`}>
+        {!minimal && <label className="text-[10px] sm:text-xs font-bold text-slate-700 uppercase tracking-widest hidden md:block">Region Focus</label>}
         <select 
-          className="text-sm border border-slate-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+          className="text-xs sm:text-sm border border-slate-200 rounded px-1.5 py-0.5 sm:px-2 sm:py-1 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 font-semibold"
           onChange={(e) => {
             if (e.target.value === "bangkok") setMapCenter([13.736717, 100.523186]);
             if (e.target.value === "pattaya") setMapCenter([12.9236, 100.8825]);

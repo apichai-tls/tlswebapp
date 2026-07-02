@@ -165,9 +165,9 @@ export function AdminPOS() {
   };
 
   return (
-    <div className="flex h-full gap-6 bg-slate-50/30 p-8 overflow-hidden font-sans">
+    <div className="flex flex-col xl:flex-row h-full gap-6 bg-slate-50/30 p-4 xl:p-8 overflow-y-auto xl:overflow-hidden font-sans">
       {/* Selection Area (Left) */}
-      <div className="flex-1 flex flex-col gap-6 overflow-hidden">
+      <div className="flex-none xl:flex-1 flex flex-col gap-6 overflow-hidden">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Point of Sale</h1>
@@ -203,8 +203,7 @@ export function AdminPOS() {
           ))}
         </div>
 
-        {/* Product Grid */}
-        <div className="flex-1 overflow-y-auto pr-2">
+        <div className="flex-1 xl:overflow-y-auto pr-2 min-h-[340px] xl:min-h-0">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4 pb-4">
             <AnimatePresence mode="popLayout">
               {filteredProducts.map(product => (
@@ -238,7 +237,7 @@ export function AdminPOS() {
       </div>
 
       {/* Cart Area (Right) */}
-      <aside className="w-[400px] flex flex-col gap-6">
+      <aside className="w-full xl:w-[400px] flex flex-col gap-6">
         {/* Customer Select */}
         <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
           <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 block">Customer Information</Label>

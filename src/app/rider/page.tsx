@@ -826,18 +826,16 @@ export default function RiderPage() {
         return false;
       }
 
-      // Hide future delivery tasks from the rider until the scheduled date arrives
-      if (t.legType === "delivery") {
-        const scheduledDate = new Date(t.scheduledAt);
-        const today = new Date();
-        
-        // Clear time to compare only the calendar dates
-        today.setHours(0, 0, 0, 0);
-        scheduledDate.setHours(0, 0, 0, 0);
-        
-        if (scheduledDate > today) {
-          return false;
-        }
+      // Hide future tasks (both pickup and delivery) from the rider until the scheduled date arrives
+      const scheduledDate = new Date(t.scheduledAt);
+      const today = new Date();
+      
+      // Clear time to compare only the calendar dates
+      today.setHours(0, 0, 0, 0);
+      scheduledDate.setHours(0, 0, 0, 0);
+      
+      if (scheduledDate > today) {
+        return false;
       }
       return true;
     })

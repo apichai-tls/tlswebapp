@@ -127,7 +127,7 @@ export function AdminServiceMenu() {
         />
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow className="bg-slate-50 border-none hover:bg-slate-50">

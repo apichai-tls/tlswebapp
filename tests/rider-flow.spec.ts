@@ -55,4 +55,48 @@ test.describe('Rider App Workflow', () => {
     await expect(page.locator('h2:has-text("Job Chat")')).not.toBeVisible();
     await expect(page.locator('text=Delivery Proof')).toBeVisible();
   });
+
+  test('should hide future pickup jobs from the rider task list until the scheduled date', async ({ page }) => {
+    const { PrismaClient } = await import('@prisma/client');
+    const prisma = new PrismaClient();
+
+    // 1. Update the active job (John Doe #2026001045) to be scheduled for tomorrow
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    await prisma.job.update({
+      where: { id: '2026001045' },
+      data: {
+        pickupScheduledAt: tomorrow,
+        scheduledAt: tomorrow
+      }
+    });
+
+    // 2. Login as Rider
+    await page.goto('/login');
+    await page.fill('#email', 'rider1@tls.com');
+    await page.fill('#password', 'rider1234');
+    await page.click('button:has-text("Sign In")');
+
+    // Wait for redirect to rider dashboard
+    await expect(page).toHaveURL('/rider');
+
+    // 3. Verify that the job card for John Doe is HIDDEN (since it is scheduled for tomorrow)
+    await expect(page.locator('h3:has-text("John Doe")')).not.toBeVisible();
+    await expect(page.locator('text=No jobs yet')).toBeVisible();
+
+    // 4. Update the active job schedule back to today
+    await prisma.job.update({
+      where: { id: '2026001045' },
+      data: {
+        pickupScheduledAt: new Date(),
+        scheduledAt: new Date()
+      }
+    });
+
+    // 5. Reload page or wait for refresh, then check if it becomes visible
+    await page.reload();
+    await expect(page.locator('h3:has-text("John Doe")').first()).toBeVisible();
+
+    await prisma.$disconnect();
+  });
 });

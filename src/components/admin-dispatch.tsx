@@ -347,7 +347,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
 
       {/* Main Calendar Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <div className="p-4 border-b border-slate-200 bg-white flex justify-between items-center shrink-0">
+        <div className="p-4 border-b border-slate-200 bg-white flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-4 shrink-0">
           <div className="shrink-0">
             <h2 className="text-lg font-bold text-slate-900">Task Schedule Calendar</h2>
             <div className="text-xs text-slate-500 flex gap-4 mt-1">
@@ -358,7 +358,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
           </div>
 
           {/* Rider Filters inside header */}
-          <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar flex-1 mx-6 justify-center">
+          <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar w-full lg:w-auto lg:flex-1 lg:mx-6 justify-start lg:justify-center py-1">
             <div className="flex items-center gap-2 pr-4 border-r border-slate-200 shrink-0">
               <select
                 className="text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700"
@@ -401,7 +401,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
             </div>
           </div>
 
-          <Label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors shrink-0">
+          <Label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors shrink-0 self-start lg:self-auto">
             <input 
               type="checkbox"
               className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-4 w-4 cursor-pointer"

@@ -27,6 +27,16 @@ echo "Service    : $SERVICE_NAME"
 echo "Region     : $REGION"
 echo "===================================================="
 
+# Run E2E tests before deploying
+echo "Running E2E tests before deploying..."
+npm run test:e2e
+if [ $? -ne 0 ]; then
+    echo "❌ Error: E2E tests failed. Deployment aborted!"
+    exit 1
+fi
+echo "✅ E2E tests passed successfully. Proceeding with deployment..."
+echo "===================================================="
+
 # Submit the build and deploy
 gcloud run deploy $SERVICE_NAME \
   --source . \
