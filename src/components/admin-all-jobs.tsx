@@ -612,7 +612,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           if (!job) return;
                           
                           // Check if moving out of completed status
-                          if (job.status === 'completed' && status !== 'completed') {
+                          if (job.status === 'completed') {
                             setReopenDialog({
                               isOpen: true,
                               jobId,
@@ -705,7 +705,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
 
                             <div className="text-xs font-bold text-slate-800 mb-1 truncate">{job.customerName || "Guest"}</div>
 
-                            {job.isDelivery ? (
+                            {['billing', 'delivery', 'completed'].includes(job.status) ? (
                               <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Delivery Address">
                                 <Navigation size={12} className="shrink-0 mt-0.5 text-rose-500" />
                                 <span className="line-clamp-2 font-medium text-slate-700">
