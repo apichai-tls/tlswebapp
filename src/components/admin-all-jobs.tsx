@@ -703,7 +703,58 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                               </div>
                             </div>
 
-                            <div className="text-xs font-bold text-slate-800 mb-1 truncate">{job.customerName || "Guest"}</div>
+                            <div className="text-xs font-bold text-slate-800 mb-1 flex items-center gap-1.5">
+                              {job.customerName || "Walk-in Guest"}
+                              {(() => {
+                                const c = customers.find(c => c.id === job.customerId || (job.customerPhone && c.phone === job.customerPhone));
+                                if (!c) return null;
+                                return (
+                                  <>
+                                    {c.isVIP && <Badge className="text-[8px] px-1 py-0 h-3 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-bold">VIP</Badge>}
+                                    {c.isMember && <Badge className="text-[8px] px-1 py-0 h-3 bg-blue-100 text-blue-700 border-none font-bold">MEMBER</Badge>}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                            <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+                              <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">P Date:</span>
+                              <span className="font-medium text-slate-600 flex items-center gap-1">
+                                {job.scheduledAt
+                                  ? isSameDay(new Date(job.scheduledAt), new Date())
+                                    ? format(new Date(job.scheduledAt), "HH:mm")
+                                    : format(new Date(job.scheduledAt), "dd MMM, HH:mm")
+                                  : "-"}
+                                {job.remark?.includes("Express 50%") && (
+                                  <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-orange-50 text-orange-600 border-orange-200">
+                                    EXP 50%
+                                  </Badge>
+                                )}
+                                {job.remark?.includes("Express 100%") && (
+                                  <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-red-50 text-red-600 border-red-200">
+                                    EXP 100%
+                                  </Badge>
+                                )}
+                              </span>
+                            </div>
+                            {job.deliveryScheduledAt && (
+                              <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+                                <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">D Date:</span>
+                                <span className="font-medium text-slate-600 flex items-center gap-1.5 flex-wrap">
+                                  {isSameDay(new Date(job.deliveryScheduledAt), new Date())
+                                    ? format(new Date(job.deliveryScheduledAt), "HH:mm")
+                                    : format(new Date(job.deliveryScheduledAt), "dd MMM, HH:mm")}
+                                  {job.type === 'full_service' && job.pickupLocation && job.dropoffLocation && 
+                                   job.pickupLocation.trim().toLowerCase() !== job.dropoffLocation.trim().toLowerCase() && (
+                                    <Badge className="text-[8px] font-extrabold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border border-rose-200 flex items-center gap-0.5 shadow-sm uppercase shrink-0 animate-pulse">
+                                      <MapPin size={9} className="text-rose-600 shrink-0" />
+                                      รับ-ส่งคนละที่
+                                    </Badge>
+                                  )}
+                                </span>
+                              </div>
+                            )}
 
                             {['billing', 'delivery', 'completed'].includes(job.status) ? (
                               <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Delivery Address">
