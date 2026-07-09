@@ -31,7 +31,7 @@ import {
   DialogTitle, 
   DialogFooter 
 } from "@/components/ui/dialog";
-import { serviceStore, type ServiceItem } from "@/lib/store";
+import { serviceStore, type ServiceItem, getServiceSKU } from "@/lib/store";
 import { toast } from "sonner";
 
 export function AdminServiceMenu() {
@@ -189,7 +189,7 @@ export function AdminServiceMenu() {
                         {service.nameEn && (
                           <div className="text-[11px] font-medium text-slate-500">{service.nameEn}</div>
                         )}
-                        <div className="text-[10px] font-mono text-slate-400 mt-0.5 uppercase">{service.id}</div>
+                        <div className="text-[10px] font-mono text-slate-400 mt-0.5 uppercase">{getServiceSKU(service, services)}</div>
                       </div>
                     </div>
                   </TableCell>

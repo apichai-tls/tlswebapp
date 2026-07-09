@@ -11,6 +11,7 @@ import {
   UserPlus,
   Plus, 
   Minus, 
+  ArrowLeft,
   Trash2, 
   CreditCard, 
   Banknote, 
@@ -255,6 +256,7 @@ interface CartItem {
   price: number;
   basePrice: number; // To track original rate vs override
   quantity: number;
+  category?: string;
 }
 
 interface AdminPOSProps {
@@ -434,6 +436,58 @@ function ShiftHistoryDialog({
   );
 }
 
+const getCategoryStyles = (category: string) => {
+  const cat = category.toUpperCase();
+  if (cat.includes("WASH") || cat.includes("FOLD") || cat.includes("KILO")) {
+    return {
+      bg: "bg-blue-500/10 text-blue-500 border-blue-200/50 dark:border-blue-900/30",
+      hover: "hover:border-blue-400 hover:shadow-blue-500/5",
+      icon: <WashingMachine size={24} />
+    };
+  }
+  if (cat.includes("DRY") || cat.includes("CLEAN")) {
+    return {
+      bg: "bg-purple-500/10 text-purple-500 border-purple-200/50 dark:border-purple-900/30",
+      hover: "hover:border-purple-400 hover:shadow-purple-500/5",
+      icon: <Sparkles size={24} />
+    };
+  }
+  if (cat.includes("IRON") || cat.includes("PRESS")) {
+    return {
+      bg: "bg-orange-500/10 text-orange-500 border-orange-200/50 dark:border-orange-900/30",
+      hover: "hover:border-orange-400 hover:shadow-orange-500/5",
+      icon: <Zap size={24} />
+    };
+  }
+  if (cat.includes("LINEN") || cat.includes("BED")) {
+    return {
+      bg: "bg-teal-500/10 text-teal-500 border-teal-200/50 dark:border-teal-900/30",
+      hover: "hover:border-teal-400 hover:shadow-teal-500/5",
+      icon: <Bed size={24} />
+    };
+  }
+  if (cat.includes("SHOE") || cat.includes("LEATHER")) {
+    return {
+      bg: "bg-amber-500/10 text-amber-500 border-amber-200/50 dark:border-amber-900/30",
+      hover: "hover:border-amber-400 hover:shadow-amber-500/5",
+      icon: <Footprints size={24} />
+    };
+  }
+  if (cat.includes("PACKAGE")) {
+    return {
+      bg: "bg-emerald-500/10 text-emerald-500 border-emerald-200/50 dark:border-emerald-900/30",
+      hover: "hover:border-emerald-400 hover:shadow-emerald-500/5",
+      icon: <Layers size={24} />
+    };
+  }
+  // Default fallback
+  return {
+    bg: "bg-slate-500/10 text-slate-500 border-slate-200/50 dark:border-slate-800/30",
+    hover: "hover:border-slate-400 hover:shadow-slate-500/5",
+    icon: <Shirt size={24} />
+  };
+};
+
 export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPreselected }: AdminPOSProps = {}) {
   const { user } = useAuth();
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
@@ -451,16 +505,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return shops.find(s => s.id === activeBranchId) || shops[0];
   }, [shops, activeBranchId]);
 
-  useEffect(() => {
-    if (shops.length === 1) {
-      setActiveBranchId(shops[0].id);
-    } else if (shops.length > 1 && !activeBranchId) {
-      const saved = localStorage.getItem("pos_active_branch_id");
-      if (saved && shops.some(s => s.id === saved)) {
-        setActiveBranchId(saved);
-      }
-    }
-  }, [shops, activeBranchId]);
+
 
   const isStandardPlan = false;
   const settings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
@@ -509,7 +554,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [manualAdjustment, setManualAdjustment] = useState(0);
   const [serviceSpeed, setServiceSpeed] = useState<string>("standard");
   const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string>("");
+  const [proformaRevision, setProformaRevision] = useState<number>(0);
+  const [lastProformaCartHash, setLastProformaCartHash] = useState<string>("");
   const [deliveryScheduledTime, setDeliveryScheduledTime] = useState<string>(() => getTomorrowDateTimeString());
+
+  const isPaidJob = loadedJobId ? (jobs.find(j => j.id === loadedJobId)?.isPaid || false) : false;
 
   // Calculate valid shop hours and minutes based on settings
   const posHourPart = deliveryScheduledTime && deliveryScheduledTime.includes('T') ? deliveryScheduledTime.split('T')[1].split(':')[0] : "00";
@@ -613,12 +662,36 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     shiftStore.getSnapshot
   );
 
+  useEffect(() => {
+    if (shops.length === 1) {
+      setActiveBranchId(shops[0].id);
+    } else if (shops.length > 1 && !activeBranchId && hasLoadedShift && activeShift) {
+      const saved = localStorage.getItem("pos_active_branch_id");
+      if (saved && shops.some(s => s.id === saved)) {
+        setActiveBranchId(saved);
+      }
+    }
+  }, [shops, activeBranchId, hasLoadedShift, activeShift]);
+
   // Determine if Admin is viewing in Spectator Mode (view-only)
   const isSpectatorMode = useMemo(() => {
     if (user?.role !== 'admin') return false;
     if (!branchActiveShift) return false;
     return branchActiveShift.userId !== user.id;
   }, [user, branchActiveShift]);
+
+  const [allOpenShifts, setAllOpenShifts] = useState<CashierShift[]>([]);
+
+  // Fetch all open shifts when activeBranchId is empty (on branch portal view)
+  useEffect(() => {
+    if (!activeBranchId) {
+      shiftStore.getOpenShifts().then(res => {
+        setAllOpenShifts(res || []);
+      }).catch(e => {
+        console.error("Failed to fetch open shifts for branch select portal:", e);
+      });
+    }
+  }, [activeBranchId]);
 
   const [isCloseShiftOpen, setIsCloseShiftOpen] = useState(false);
   const [startingCash, setStartingCash] = useState<string>("");
@@ -818,7 +891,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setCart(prev => {
       if (prev.length === 0) return prev;
       return prev.map(item => {
-        if (item.id === "topup-member-item") return item;
+        if (item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") return item;
         const service = services.find(s => s.id === item.id);
         if (!service) return item;
         const newPrice = getProductPrice(service);
@@ -847,11 +920,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       setSelectedCustomer(preselectedCustomer);
     }
     if (preselectedCategory) {
-      if (preselectedCategory === "Topup Member" && isStandardPlan) {
+      if ((preselectedCategory === "Topup Member" || preselectedCategory === "PACKAGE") && isStandardPlan) {
         setSelectedCategory("All");
       } else {
-        setSelectedCategory(preselectedCategory);
-        if (preselectedCategory === "Topup Member") {
+        setSelectedCategory(preselectedCategory === "Topup Member" ? "PACKAGE" : preselectedCategory);
+        if (preselectedCategory === "Topup Member" || preselectedCategory === "PACKAGE") {
           setIsMemberRate(true);
         }
       }
@@ -893,11 +966,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const categories = useMemo(() => {
     const activeServices = services.filter(s => s.isActive !== false);
     const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
-    if (isStandardPlan) {
-      return ["All", ...uniqueCats];
-    }
-    return ["All", ...uniqueCats, "Topup Member"];
-  }, [services, isStandardPlan]);
+    return ["All", ...uniqueCats];
+  }, [services]);
 
   // Auto-apply member rate and auto-select Member payment method if customer has wallet balance
   useEffect(() => {
@@ -923,56 +993,19 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
   }, [paymentMethod, isPaid, selectedCustomer]);
 
-  // Reset selectedCategory to "All" if it is set to "Topup Member" but we are on standard plan
-  useEffect(() => {
-    if (isStandardPlan && selectedCategory === "Topup Member") {
-      setSelectedCategory("All");
-    }
-  }, [isStandardPlan, selectedCategory]);
+  // SelectedCategory standard plan reset checks
 
   // Filter products based on category and search (matching both Thai and English names)
   const filteredProducts = useMemo(() => {
-    if (selectedCategory === "Topup Member") {
-      if (isStandardPlan) return [];
-      const virtualTopupProduct: ServiceItem = {
-        id: "topup-member-item",
-        name: "Topup Member",
-        nameEn: "Topup Member",
-        price: 0,
-        memberPrice: 0,
-        category: "Topup Member",
-        isActive: true,
-      };
-      if ("topup member".includes(searchQuery.toLowerCase())) {
-        return [virtualTopupProduct];
-      }
-      return [];
-    }
-
     const activeServices = services.filter(p => p.isActive !== false);
-    const regularFiltered = activeServices.filter(p => {
+    return activeServices.filter(p => {
       const matchesCategory = selectedCategory === "All" || p.category === selectedCategory;
       const nameMatch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
       const nameEnMatch = p.nameEn ? p.nameEn.toLowerCase().includes(searchQuery.toLowerCase()) : false;
       const matchesSearch = nameMatch || nameEnMatch;
       return matchesCategory && matchesSearch;
     });
-
-    if (!isStandardPlan && selectedCategory === "All" && "topup member".includes(searchQuery.toLowerCase())) {
-      const virtualTopupProduct: ServiceItem = {
-        id: "topup-member-item",
-        name: "Topup Member",
-        nameEn: "Topup Member",
-        price: 0,
-        memberPrice: 0,
-        category: "Topup Member",
-        isActive: true,
-      };
-      return [...regularFiltered, virtualTopupProduct];
-    }
-
-    return regularFiltered;
-  }, [selectedCategory, searchQuery, services, isStandardPlan]);
+  }, [selectedCategory, searchQuery, services]);
 
   // Cart logic
   const addToCart = (product: ServiceItem, customPrice?: number) => {
@@ -980,15 +1013,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       toast.error(currentLanguage === "en" ? "Spectator Mode - Actions are disabled" : "โหมดผู้เฝ้าดู - ไม่สามารถทำรายการได้");
       return;
     }
-    const hasTopup = cart.some(item => item.id === "topup-member-item");
-    if (hasTopup && product.id !== "topup-member-item") {
-      toast.error("Cannot add other services when Topup Member is in the cart");
+    const isPackage = product.category === "PACKAGE" || product.name === "PACKAGE";
+    const hasPackage = cart.some(item => item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item");
+    if (hasPackage && !isPackage) {
+      toast.error(currentLanguage === "en" ? "Cannot add other services when Package is in the cart" : "ไม่สามารถเพิ่มรายการอื่นได้เมื่อมีแพ็กเกจอยู่ในตะกร้า");
       return;
     }
 
-    const hasRegularItems = cart.some(item => item.id !== "topup-member-item");
-    if (hasRegularItems && product.id === "topup-member-item") {
-      toast.error("Cannot add Topup Member when other services are in the cart");
+    const hasRegularItems = cart.some(item => item.category !== "PACKAGE" && item.name !== "PACKAGE" && item.id !== "topup-member-item");
+    if (hasRegularItems && isPackage) {
+      toast.error(currentLanguage === "en" ? "Cannot add Package when other services are in the cart" : "ไม่สามารถเพิ่มแพ็กเกจได้เมื่อมีรายการบริการอื่นอยู่ในตะกร้า");
       return;
     }
 
@@ -1002,7 +1036,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         }
         return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
       }
-      return [...prev, { id: product.id, name: product.name, nameEn: product.nameEn, price: price, basePrice: price, quantity: 1 }];
+      return [...prev, { id: product.id, name: product.name, nameEn: product.nameEn, price: price, basePrice: price, quantity: 1, category: product.category }];
     });
   };
 
@@ -1123,7 +1157,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         vatAmount: jobVatAmount,
         deliveryScheduledAt: latestJob.deliveryScheduledAt,
         status: latestJob.status,
-        adminNotesJson: latestJob.adminNotesJson
+        adminNotesJson: latestJob.adminNotesJson,
+        deliveryFee: latestJob.fee || 0
       };
     }
 
@@ -1134,8 +1169,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
 
+    const baseProforma = proformaReceiptNumber || "PROFORMA";
+    const displayProforma = proformaRevision > 0 ? `${baseProforma}-R${proformaRevision}` : baseProforma;
+
     return {
-      id: proformaReceiptNumber || "PROFORMA",
+      id: displayProforma,
       createdAt: new Date(),
       customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
       customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
@@ -1154,9 +1192,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       vatAmount: vatAmount,
       deliveryScheduledAt: new Date(deliveryScheduledTime),
       status: undefined,
-      adminNotesJson: JSON.stringify({ payments: draftPayments })
+      adminNotesJson: JSON.stringify({ payments: draftPayments }),
+      deliveryFee: 0
     };
-  }, [isDraftPreview, latestJob, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber]);
+  }, [isDraftPreview, latestJob, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
 
   const handleCheckout = async () => {
     if (isSpectatorMode) {
@@ -1198,7 +1237,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     let topUpTotal = 0;
     cart.forEach(item => {
-      if (item.id === "topup-member-item") {
+      if (item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") {
         topUpTotal += item.price * item.quantity;
       }
     });
@@ -1222,7 +1261,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     try {
       const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
       const vatText = vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : "";
-      const finalRemark = [remark, expressText, vatText].filter(Boolean).join(" | ") || undefined;
+      const finalRemark = [
+        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}${proformaRevision > 0 ? `-R${proformaRevision}` : ""}` : "",
+        remark,
+        expressText,
+        vatText
+      ].filter(Boolean).join(" | ") || undefined;
 
       // Fetch loaded job payments if editing a saved order
       const loadedJob = jobs.find(j => j.id === loadedJobId);
@@ -1283,6 +1327,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           status: undefined,
           completedAt: isPaidFlag && isStandardPlan ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
+          shiftId: activeShift?.id || undefined,
         });
 
         const allJobs = jobStore.getSnapshot();
@@ -1294,7 +1339,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
           customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
           pickupLocation: "POS Counter (Walk-in)",
-          dropoffLocation: shops[0]?.name || "That Laundry Shop (Branch 1)",
+          dropoffLocation: activeShop?.name || "That Laundry Shop (Branch 1)",
           pickupCoords: { lat: 13.7417, lng: 100.5526 }, // Shop coords
           dropoffCoords: { lat: 13.7417, lng: 100.5526 },
           totalAmount: total,
@@ -1304,7 +1349,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           status: "billing",
           completedAt: isStandardPlan && isPaidFlag ? new Date() : undefined,
           fee: 0, 
-          branchId: shops[0]?.id,
+          branchId: activeShop?.id || activeBranchId,
+          shiftId: activeShift?.id || undefined,
           isPaid: isPaidFlag,
           paymentMethod: isPaidFlag ? finalMethod : undefined,
           paymentChannel: isPaidFlag ? finalChannel : undefined,
@@ -1723,6 +1769,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {shops.map(shop => {
+              const activeShopShift = allOpenShifts.find(s => s.branchId === shop.id);
               return (
                 <motion.button
                   key={shop.id}
@@ -1733,11 +1780,45 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     localStorage.setItem("pos_active_branch_id", shop.id);
                     playAudioFeedback("click");
                   }}
-                  className="flex flex-col items-start text-left p-4.5 bg-muted/20 hover:bg-muted/40 border border-border hover:border-primary/40 rounded-xl cursor-pointer transition-all shadow-sm w-full"
+                  className="flex flex-col items-start text-left p-4.5 bg-muted/20 hover:bg-muted/40 border border-border hover:border-primary/40 rounded-xl cursor-pointer transition-all shadow-sm w-full relative overflow-hidden"
                 >
-                  <Store size={16} className="text-primary mb-2" />
+                  <div className="flex items-center justify-between w-full mb-2">
+                    <Store size={16} className="text-primary" />
+                    {activeShopShift ? (
+                      <div className="flex items-center gap-1 bg-emerald-500/10 dark:bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/25">
+                        <span className="flex h-1.5 w-1.5 relative">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                        </span>
+                        <span className="text-[8px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
+                          {currentLanguage === "en" ? "Active" : "เปิดกะอยู่"}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="bg-muted px-2 py-0.5 rounded-full border border-border/40">
+                        <span className="text-[8px] font-bold text-muted-foreground uppercase tracking-wider">
+                          {currentLanguage === "en" ? "No Shift" : "ยังไม่เปิดกะ"}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                   <span className="text-xs font-black text-foreground">{shop.name}</span>
                   <span className="text-[9px] text-muted-foreground font-semibold mt-1 line-clamp-2 leading-relaxed">{shop.address}</span>
+                  
+                  <div className="mt-3.5 pt-2 border-t border-border/40 w-full flex items-center justify-between text-[8.5px] font-bold">
+                    <span className="text-muted-foreground/80">
+                      {currentLanguage === "en" ? "Cashier Session:" : "สถานะรอบกะ:"}
+                    </span>
+                    {activeShopShift ? (
+                      <span className="text-emerald-600 dark:text-emerald-400 font-extrabold truncate max-w-[130px]">
+                        {activeShopShift.userName}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/60">
+                        {currentLanguage === "en" ? "No active session" : "ยังไม่มีการเปิดกะ"}
+                      </span>
+                    )}
+                  </div>
                 </motion.button>
               );
             })}
@@ -1914,6 +1995,20 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     </>
                   )}
                 </Button>
+                {shops.length > 1 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setActiveBranchId("");
+                      localStorage.removeItem("pos_active_branch_id");
+                      playAudioFeedback("delete");
+                    }}
+                    className="w-full border-border text-foreground font-bold h-10 rounded-xl cursor-pointer"
+                  >
+                    {currentLanguage === "en" ? "Change Selected Branch" : "เปลี่ยนสาขาอื่น / ย้อนกลับ"}
+                  </Button>
+                )}
               </div>
             ) : (
               <form onSubmit={handleOpenShift} className="space-y-4">
@@ -1954,7 +2049,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   />
                 </div>
 
-                <div className="pt-3">
+                <div className="pt-3 space-y-2">
                   <Button
                     type="submit"
                     disabled={isShiftSubmitting}
@@ -1971,6 +2066,20 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       </>
                     )}
                   </Button>
+                  {shops.length > 1 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setActiveBranchId("");
+                        localStorage.removeItem("pos_active_branch_id");
+                        playAudioFeedback("delete");
+                      }}
+                      className="w-full border-border text-foreground font-bold h-10 rounded-xl cursor-pointer"
+                    >
+                      {currentLanguage === "en" ? "Change Selected Branch" : "เปลี่ยนสาขาอื่น / ย้อนกลับ"}
+                    </Button>
+                  )}
                 </div>
               </form>
             )}
@@ -2173,130 +2282,176 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             </div>
           )}
 
-        {/* Categories Bar */}
-        <div className="flex gap-1.5 overflow-x-auto pb-2 scrollbar-hide shrink-0">
-          {categories.map(cat => (
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              key={cat}
-              onClick={() => setSelectedCategory(cat)}
-              className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all whitespace-nowrap uppercase tracking-wider cursor-pointer ${
-                selectedCategory === cat 
-                  ? "bg-primary text-primary-foreground shadow-md shadow-brand/10" 
-                  : "bg-card text-muted-foreground border border-border hover:bg-muted hover:text-foreground"
-              }`}
+        {/* Categories Header / Back Navigation */}
+        <div className="flex items-center gap-3 pb-3.5 shrink-0 select-none">
+          {selectedCategory !== "All" || searchQuery ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSelectedCategory("All");
+                setSearchQuery("");
+                playAudioFeedback("click");
+              }}
+              className="border-border text-foreground font-bold h-8.5 rounded-xl cursor-pointer text-xs flex items-center gap-1.5 hover:bg-muted"
             >
-              {cat}
-            </motion.button>
-          ))}
+              <ArrowLeft size={13} />
+              {currentLanguage === "en" ? "Back to Categories" : "ย้อนกลับไปหน้าหมวดหมู่"}
+            </Button>
+          ) : null}
+          
+          <h2 className="text-xs font-black text-foreground uppercase tracking-wider">
+            {selectedCategory === "All" 
+              ? (searchQuery ? `Search Results: "${searchQuery}"` : "Service Categories") 
+              : selectedCategory}
+          </h2>
         </div>
- 
-        {/* Product Cards Grid (Scrollable Container) */}
-        <div className="flex-1 overflow-y-auto pr-1 min-h-0">
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5 pb-4">
-            <AnimatePresence mode="popLayout">
-              {filteredProducts.length > 0 ? (
-                filteredProducts.map(product => {
-                  const displayName = (currentLanguage === "en" && product.nameEn) ? product.nameEn : product.name;
-                  const isDisabled = (
-                    (cart.some(item => item.id === "topup-member-item") && product.id !== "topup-member-item") ||
-                    (cart.some(item => item.id !== "topup-member-item") && product.id === "topup-member-item")
-                  );
-                  return (
-                    <motion.div
-                      layout
-                      key={product.id}
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      whileHover={isDisabled || isSpectatorMode || product.id === "topup-member-item" ? {} : { y: -2 }}
-                      whileTap={isDisabled || isSpectatorMode || product.id === "topup-member-item" ? {} : { scale: 0.96 }}
-                      onClick={isDisabled || isSpectatorMode || product.id === "topup-member-item" ? undefined : () => addToCart(product)}
-                      className={`bg-card p-3 rounded-xl border border-border shadow-sm transition-all group flex flex-col justify-between ${
-                        (isDisabled || isSpectatorMode) ? "opacity-40 pointer-events-none select-none" : ""
-                      } ${
-                        (product.id === "topup-member-item" || isSpectatorMode) ? "" : "cursor-pointer hover:shadow-md hover:border-primary/25"
-                      }`}
-                    >
-                      <div className="flex items-start gap-2 mb-2">
-                        <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center group-hover:bg-primary/10 transition-colors shrink-0">
-                          {getProductIcon(product.icon, product.name, product.nameEn, product.category)}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-bold text-foreground text-[13px] line-clamp-2 leading-tight" title={displayName}>
-                            {displayName}
-                          </h3>
-                        </div>
-                      </div>
-                      {product.id === "topup-member-item" ? (
-                        <div className="space-y-2 mt-1 pt-1 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
-                          <div className="relative">
-                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground font-bold">฿</span>
-                            <input
-                              type="number"
-                              disabled={isSpectatorMode}
-                              placeholder={currentLanguage === "en" ? "Amount" : "จำนวนเงิน"}
-                              className="h-7 pl-5 pr-1 text-[11px] font-bold bg-muted border border-border w-full text-foreground rounded-lg focus:ring-1 focus:ring-primary outline-none"
-                              value={topUpInputVal}
-                              onChange={(e) => setTopUpInputVal(e.target.value)}
-                            />
-                          </div>
-                          <Button
-                            type="button"
-                            disabled={isSpectatorMode}
-                            onClick={() => {
-                              const amt = parseFloat(topUpInputVal);
-                              if (isNaN(amt) || amt <= 0) {
-                                toast.error("Please enter a valid amount");
-                                return;
-                              }
-                              addToCart(product, amt);
-                              setTopUpInputVal("");
-                            }}
-                            className={`w-full h-7 text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg border-none cursor-pointer ${isSpectatorMode ? "opacity-50 pointer-events-none" : ""}`}
-                          >
-                            {currentLanguage === "en" ? "Top Up" : "เติมเงิน"}
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-between mt-1 pt-1 border-t border-border/50">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[13px] font-black text-foreground">฿{getProductPrice(product)}</span>
-                            {getProductPrice(product) !== product.price && (
-                              <span className="text-[9px] line-through text-muted-foreground/60 font-semibold">฿{product.price}</span>
-                            )}
-                          </div>
-                          <Badge variant="secondary" className="text-[8px] font-bold uppercase py-0 px-1 h-3.5 bg-muted text-muted-foreground scale-90 origin-right">
-                            {product.category}
-                          </Badge>
-                        </div>
-                      )}
-                    </motion.div>
-                  );
-                })
-              ) : (
-                <div className="col-span-full py-12 flex flex-col items-center justify-center text-center bg-card rounded-2xl border border-border shadow-sm p-6 max-w-sm mx-auto mt-6">
-                  <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
-                    <Search className="text-muted-foreground" size={20} />
-                  </div>
-                  <h3 className="text-xs font-bold text-foreground">No services found</h3>
-                  <p className="text-[10px] text-muted-foreground font-medium max-w-[200px] mt-1 mb-4">
-                    We couldn&apos;t find any services matching &quot;{searchQuery}&quot;
-                  </p>
-                  <Button
-                    type="button"
+
+        {/* Dynamic Category Portal vs Product Grid View */}
+        {selectedCategory === "All" && !searchQuery ? (
+          <div className="flex-1 overflow-y-auto pr-1 min-h-0 select-none">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 pb-4">
+              {categories.filter(cat => cat !== "All").map(cat => {
+                const style = getCategoryStyles(cat);
+                const count = services.filter(s => s.isActive !== false && s.category === cat).length;
+                return (
+                  <motion.div
+                    whileHover={{ y: -3, scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    key={cat}
                     onClick={() => {
-                      setSearchQuery("");
-                      playAudioFeedback("delete");
+                      setSelectedCategory(cat);
+                      playAudioFeedback("click");
                     }}
-                    className="h-8 px-4 bg-accent hover:bg-primary/10 text-primary font-bold text-xs rounded-xl border-none cursor-pointer"
+                    className={`bg-card border border-border ${style.hover} p-6 rounded-2xl shadow-sm cursor-pointer transition-all flex flex-col items-center justify-center text-center h-44 relative group overflow-hidden`}
                   >
-                    Clear Search
-                  </Button>
-                </div>
-              )}
-            </AnimatePresence>
+                    <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <div className={`w-14 h-14 rounded-2xl ${style.bg} flex items-center justify-center mb-4 shadow-sm group-hover:scale-110 transition-transform`}>
+                      {style.icon}
+                    </div>
+                    <h3 className="font-black text-foreground text-sm uppercase tracking-wide group-hover:text-primary transition-colors">
+                      {cat}
+                    </h3>
+                    <span className="text-[10px] text-muted-foreground font-semibold mt-1.5 bg-muted px-2 py-0.5 rounded-full">
+                      {count} {count === 1 ? "Item" : "Items"}
+                    </span>
+                  </motion.div>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        ) : (
+          /* Product Cards Grid (Scrollable Container) */
+          <div className="flex-1 overflow-y-auto pr-1 min-h-0">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5 pb-4">
+              <AnimatePresence mode="popLayout">
+                {filteredProducts.length > 0 ? (
+                  filteredProducts.map(product => {
+                    const displayName = (currentLanguage === "en" && product.nameEn) ? product.nameEn : product.name;
+                    const isDisabled = (
+                      isPaidJob ||
+                      (cart.some(item => item.category === "PACKAGE" || item.name === "PACKAGE") && product.category !== "PACKAGE" && product.name !== "PACKAGE") ||
+                      (cart.some(item => item.category !== "PACKAGE" && item.name !== "PACKAGE") && (product.category === "PACKAGE" || product.name === "PACKAGE"))
+                    );
+                    const isPkgProduct = product.category === "PACKAGE" || product.name === "PACKAGE";
+                    return (
+                      <motion.div
+                        layout
+                        key={product.id}
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        whileHover={isDisabled || isSpectatorMode || isPkgProduct ? {} : { y: -2 }}
+                        whileTap={isDisabled || isSpectatorMode || isPkgProduct ? {} : { scale: 0.96 }}
+                        onClick={isDisabled || isSpectatorMode || isPkgProduct ? undefined : () => addToCart(product)}
+                        className={`bg-card p-3 rounded-xl border border-border shadow-sm transition-all group flex flex-col justify-between ${
+                          (isDisabled || isSpectatorMode) ? "opacity-40 pointer-events-none select-none" : ""
+                        } ${
+                          (isPkgProduct || isSpectatorMode) ? "" : "cursor-pointer hover:shadow-md hover:border-primary/25"
+                        }`}
+                      >
+                        <div className="flex items-start gap-2 mb-2">
+                          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center group-hover:bg-primary/10 transition-colors shrink-0">
+                            {getProductIcon(product.icon, product.name, product.nameEn, product.category)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <h3 className="font-bold text-foreground text-[13px] line-clamp-2 leading-tight" title={displayName}>
+                              {displayName}
+                            </h3>
+                          </div>
+                        </div>
+                        
+                        {isPkgProduct ? (
+                          <div className="space-y-2 mt-1 pt-1 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
+                            <div className="relative">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground font-bold">฿</span>
+                              <input
+                                type="number"
+                                disabled={isSpectatorMode}
+                                placeholder={currentLanguage === "en" ? "Amount" : "จำนวนเงิน"}
+                                className="h-7 pl-5 pr-1 text-[11px] font-bold bg-muted border border-border w-full text-foreground rounded-lg focus:ring-1 focus:ring-primary outline-none"
+                                value={topUpInputVal}
+                                onChange={(e) => setTopUpInputVal(e.target.value)}
+                              />
+                            </div>
+                            <Button
+                              type="button"
+                              disabled={isSpectatorMode || isPaidJob}
+                              onClick={() => {
+                                const amt = parseFloat(topUpInputVal);
+                                if (isNaN(amt) || amt <= 0) {
+                                  toast.error("Please enter a valid amount");
+                                  return;
+                                }
+                                addToCart(product, amt);
+                                setTopUpInputVal("");
+                              }}
+                              className={`w-full h-7 text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg border-none cursor-pointer ${isSpectatorMode || isPaidJob ? "opacity-50 pointer-events-none" : ""}`}
+                            >
+                              {currentLanguage === "en" ? "Buy Package" : "ซื้อแพ็กเกจ"}
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between mt-1 pt-1 border-t border-border/50">
+                            <div className="flex items-center gap-1">
+                              <span className="text-[13px] font-black text-foreground">฿{getProductPrice(product)}</span>
+                              {getProductPrice(product) !== product.price && (
+                                <span className="text-[9px] line-through text-muted-foreground/60 font-semibold">฿{product.price}</span>
+                              )}
+                            </div>
+                            <Badge variant="secondary" className="text-[8px] font-bold uppercase py-0 px-1 h-3.5 bg-muted text-muted-foreground scale-90 origin-right">
+                              {product.category}
+                            </Badge>
+                          </div>
+                        )}
+                      </motion.div>
+                    );
+                  })
+                ) : (
+                  <div className="col-span-full py-12 flex flex-col items-center justify-center text-center bg-card rounded-2xl border border-border shadow-sm p-6 max-w-sm mx-auto mt-6">
+                    <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
+                      <Search className="text-muted-foreground" size={20} />
+                    </div>
+                    <h3 className="text-xs font-bold text-foreground">No services found</h3>
+                    <p className="text-[10px] text-muted-foreground font-medium max-w-[200px] mt-1 mb-4">
+                      We couldn&apos;t find any services matching &quot;{searchQuery}&quot;
+                    </p>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery("");
+                        playAudioFeedback("delete");
+                      }}
+                      className="h-8 px-4 bg-accent hover:bg-primary/10 text-primary font-bold text-xs rounded-xl border-none cursor-pointer"
+                    >
+                      Clear Search
+                    </Button>
+                  </div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        )}
       </div>
  
       {/* Cart & Checkout Panel (Right) */}
@@ -2453,6 +2608,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 playAudioFeedback("delete");
                 setEditingPriceItemId(null);
                 setDeliveryScheduledTime(getTomorrowDateTimeString());
+                setProformaReceiptNumber("");
               }}
               title={currentLanguage === "en" ? "Clear Cart" : "ล้างตะกร้า"}
             >
@@ -2545,27 +2701,30 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     {/* Middle: Compact Qty Controls */}
                     <div className="flex items-center bg-card border border-border rounded-lg overflow-hidden w-20 h-7.5 shadow-sm shrink-0">
                       <motion.button 
-                        whileTap={{ scale: 0.85 }}
-                        whileHover={{ backgroundColor: "var(--muted)" }}
+                        whileTap={isPaidJob ? {} : { scale: 0.85 }}
+                        whileHover={isPaidJob ? {} : { backgroundColor: "var(--muted)" }}
                         type="button"
+                        disabled={isPaidJob}
                         onClick={() => updateQuantity(item.id, -1)}
-                        className="w-6.5 h-7.5 text-muted-foreground border-r border-border transition-colors flex items-center justify-center cursor-pointer active:scale-95"
+                        className={`w-6.5 h-7.5 text-muted-foreground border-r border-border transition-colors flex items-center justify-center ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
                       >
                         <Minus size={10} />
                       </motion.button>
                       <input 
                         type="number" 
                         step="0.1" 
-                        className="h-7.5 w-7 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground"
+                        disabled={isPaidJob}
+                        className="h-7.5 w-7 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                         value={item.quantity}
                         onChange={(e) => updateCartItem(item.id, { quantity: parseFloat(e.target.value) || 0 })}
                       />
                       <motion.button 
-                        whileTap={{ scale: 0.85 }}
-                        whileHover={{ backgroundColor: "var(--muted)" }}
+                        whileTap={isPaidJob ? {} : { scale: 0.85 }}
+                        whileHover={isPaidJob ? {} : { backgroundColor: "var(--muted)" }}
                         type="button"
+                        disabled={isPaidJob}
                         onClick={() => updateQuantity(item.id, 1)}
-                        className="w-6.5 h-7.5 text-muted-foreground border-l border-border transition-colors flex items-center justify-center cursor-pointer active:scale-95"
+                        className={`w-6.5 h-7.5 text-muted-foreground border-l border-border transition-colors flex items-center justify-center ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
                       >
                         <Plus size={10} />
                       </motion.button>
@@ -2573,7 +2732,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
  
                     {/* Right: Interactive Price & Delete */}
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {editingPriceItemId === item.id ? (
+                      {editingPriceItemId === item.id && !isPaidJob ? (
                         <div className="relative w-16">
                           <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[9px] text-muted-foreground font-bold">฿</span>
                           <input 
@@ -2594,9 +2753,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       ) : (
                         <button
                           type="button"
-                          onClick={() => setEditingPriceItemId(item.id)}
-                          className="text-right px-1.5 py-0.5 rounded hover:bg-muted transition-colors cursor-pointer shrink-0"
-                          title="Click to edit unit price"
+                          disabled={isPaidJob}
+                          onClick={() => !isPaidJob && setEditingPriceItemId(item.id)}
+                          className={`text-right px-1.5 py-0.5 rounded transition-colors shrink-0 ${isPaidJob ? 'cursor-default' : 'hover:bg-muted cursor-pointer'}`}
+                          title={isPaidJob ? undefined : "Click to edit unit price"}
                         >
                           <p className="text-[13px] font-extrabold text-foreground">฿{(item.price * item.quantity).toFixed(2)}</p>
                           {item.price !== item.basePrice && (
@@ -2604,14 +2764,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           )}
                         </button>
                       )}
-                      <motion.button 
-                        whileTap={{ scale: 0.9 }}
-                        onClick={() => removeFromCart(item.id)}
-                        className="text-muted-foreground/60 hover:text-red-500 transition-colors p-1 shrink-0 cursor-pointer"
-                        title="Remove item"
-                      >
-                        <Trash2 size={12} />
-                      </motion.button>
+                      {!isPaidJob && (
+                        <motion.button 
+                          whileTap={{ scale: 0.9 }}
+                          onClick={() => removeFromCart(item.id)}
+                          className="text-muted-foreground/60 hover:text-red-500 transition-colors p-1 shrink-0 cursor-pointer"
+                          title="Remove item"
+                        >
+                          <Trash2 size={12} />
+                        </motion.button>
+                      )}
                     </div>
                   </motion.div>
                 );
@@ -2629,7 +2791,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           </div>
  
           {/* Surcharge / Rate Settings Block */}
-          {!cart.some(item => item.id === "topup-member-item") && (
+          {!cart.some(item => item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") && (
             <div className="px-4 py-3 bg-muted/30 border-t border-border space-y-2.5 shrink-0">
               {isMemberRate && (
                 <motion.div 
@@ -2796,7 +2958,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           )}
  
           {/* Delivery & Pickup Service Option (Enabled via Shop Settings) */}
-          {isDeliveryEnabled && !cart.some(item => item.id === "topup-member-item") && (
+          {isDeliveryEnabled && !cart.some(item => item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") && (
             <div className="px-4 py-2 bg-muted/30 border-t border-border flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-3">
                 {/* Option 1: Pickup & Delivery */}
@@ -3174,6 +3336,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 disabled={cart.length === 0 || isProcessing}
                 onClick={async () => {
                   playAudioFeedback("click");
+                  const cartHash = JSON.stringify(cart.map(it => ({ id: it.id, q: it.quantity, price: it.price })));
                   if (!proformaReceiptNumber) {
                     const shopId = activeShop?.id || "default";
                     const proformaKey = `proformaSeq_${shopId}`;
@@ -3206,6 +3369,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     }
                     
                     setProformaReceiptNumber(`PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`);
+                    setProformaRevision(0);
+                    setLastProformaCartHash(cartHash);
+                  } else {
+                    if (cartHash !== lastProformaCartHash) {
+                      setProformaRevision(prev => prev + 1);
+                      setLastProformaCartHash(cartHash);
+                    }
                   }
                   setIsDraftPreview(true);
                   setShowReceipt(true);

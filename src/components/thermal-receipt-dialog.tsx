@@ -35,6 +35,9 @@ export interface ReceiptData {
   deliveryScheduledAt?: Date | string | null;
   status?: string | null;
   adminNotesJson?: string | null;
+  deliveryFee?: number;
+  proformaId?: string;
+  jobId?: string;
 }
 
 export interface ShopInfo {
@@ -97,6 +100,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     deliveryScheduledAt?: Date | string | null; 
     status?: string | null; 
     adminNotesJson?: string;
+    fee?: number;
   };
 
   const jobItems = Array.isArray(job.items) 
@@ -117,6 +121,9 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   } else if (jobVatType === "exclusive") {
     jobVatAmount = baseTotal * (jobVatRate / 100);
   }
+
+  const proformaMatch = job.remark?.match(/Proforma:\s*(PR-[\w\-]+)/i);
+  const proformaId = proformaMatch ? proformaMatch[1] : undefined;
 
   return {
     id: job.id ? job.id.split('-')[0].toUpperCase() : "",
@@ -143,7 +150,10 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     vatAmount: jobVatAmount,
     deliveryScheduledAt: job.deliveryScheduledAt,
     status: job.status,
-    adminNotesJson: job.adminNotesJson
+    adminNotesJson: job.adminNotesJson,
+    deliveryFee: rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0),
+    proformaId: proformaId,
+    jobId: job.id
   };
 }
 
@@ -175,6 +185,76 @@ export function ThermalReceiptDialog({
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    if (!open || !receiptData || receiptData.isDraft || !receiptData.jobId) return;
+
+    // Run a small timeout to make sure the DOM is fully painted
+    const captureTimer = setTimeout(() => {
+      const element = document.getElementById("thermal-receipt-capture-area");
+      if (!element) return;
+
+      import("html2canvas").then((html2canvasModule) => {
+        const html2canvas = html2canvasModule.default;
+        html2canvas(element, {
+          backgroundColor: "#ffffff",
+          scale: 2, // Capture at 2x scale for high resolution readability
+          logging: false
+        }).then(async (canvas) => {
+          canvas.toBlob(async (blob) => {
+            if (!blob) return;
+
+            // Generate file payload
+            const file = new File([blob], `receipt-${receiptData.jobId}.png`, { type: "image/png" });
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("entityType", "jobs");
+            formData.append("entityId", receiptData.jobId || "unknown");
+            formData.append("subType", "proofs");
+
+            try {
+              // Upload to local storage / Cloud storage
+              const res = await fetch("/api/upload-local", {
+                method: "POST",
+                body: formData
+              });
+              const uploadResult = await res.json();
+              if (uploadResult.success && uploadResult.publicUrl) {
+                // Update the job details in db
+                const { jobStore } = await import("@/lib/store");
+                const currentJob = jobStore.getSnapshot().find(j => j.id === receiptData.jobId);
+                if (currentJob) {
+                  // Merge with existing bills
+                  let existingBills: string[] = [];
+                  try {
+                    if (currentJob.billImageUrl) {
+                      const parsed = JSON.parse(currentJob.billImageUrl);
+                      if (Array.isArray(parsed)) existingBills = parsed;
+                      else if (typeof parsed === 'string') existingBills = [parsed];
+                    }
+                  } catch {}
+                  
+                  if (!existingBills.includes(uploadResult.publicUrl)) {
+                    const newBills = [...existingBills, uploadResult.publicUrl];
+                    await jobStore.updateJobDetails(receiptData.jobId!, {
+                      billImageUrl: JSON.stringify(newBills)
+                    });
+                    console.log("Successfully saved receipt image to Bill/Transfer field:", uploadResult.publicUrl);
+                  }
+                }
+              }
+            } catch (err) {
+              console.error("Failed to capture and upload receipt image:", err);
+            }
+          }, "image/png");
+        });
+      }).catch(err => {
+        console.error("Failed to load html2canvas module:", err);
+      });
+    }, 800); // 800ms delay to make sure rendering is complete
+
+    return () => clearTimeout(captureTimer);
+  }, [open, receiptData]);
+
   if (!receiptData) return null;
 
   const paperSize = receiptPaperSize;
@@ -203,6 +283,7 @@ export function ThermalReceiptDialog({
   const renderReceiptContent = (printMode: boolean = false) => {
     return (
       <div 
+        id={!printMode ? "thermal-receipt-capture-area" : undefined}
         data-paper-size={paperSize} 
         className={
           printMode 
@@ -281,6 +362,12 @@ export function ThermalReceiptDialog({
             <span>{receiptData.isDraft ? (currentLanguage === "en" ? "PROFORMA NO:" : "เลขที่ใบชั่วคราว:") : "RECEIPT NO:"}</span>
             <span>{receiptData.isDraft ? receiptData.id : `#${receiptData.id}`}</span>
           </div>
+          {!receiptData.isDraft && receiptData.proformaId && (
+            <div className="flex justify-between text-neutral-600 font-medium italic">
+              <span>{currentLanguage === "en" ? "PROFORMA REF:" : "อ้างอิงใบชั่วคราว:"}</span>
+              <span>{receiptData.proformaId}</span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span>DATE:</span>
             <span>{format(receiptData.createdAt, "dd/MM/yyyy HH:mm")}</span>
@@ -351,6 +438,12 @@ export function ThermalReceiptDialog({
               <span>฿{receiptData.vatAmount.toFixed(2)}</span>
             </div>
           )}
+          {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
+            <div className="flex justify-between text-neutral-700 font-bold">
+              <span>{currentLanguage === "en" ? "DELIVERY FEE:" : "ค่ารับ-ส่ง:"}</span>
+              <span>+฿{receiptData.deliveryFee.toFixed(2)}</span>
+            </div>
+          )}
           {receiptData.discount > 0 && (
             <div className="flex justify-between text-rose-700 font-bold">
               <span>MANUAL ADJUST:</span>
@@ -409,25 +502,25 @@ export function ThermalReceiptDialog({
         {/* Payment & Remarks */}
         <div className="space-y-1.5 text-center flex flex-col items-center">
           {receiptData.status === "cancel" ? (
-            <div className={`${isSmall ? "text-[8.5px] py-0.5 px-2.5" : "text-[10px] py-1 px-3"} bg-red-100/80 text-red-800 border-red-300 font-black rounded-md inline-block uppercase border`}>
+            <div className={`${isSmall ? "text-[10px]" : "text-[11px]"} text-black font-black uppercase`}>
               {currentLanguage === "en" ? "VOIDED / REFUNDED" : "ยกเลิกและคืนเงินแล้ว"}
             </div>
           ) : (() => {
             if (receiptData.isPaid) {
               return (
-                <div className={`${isSmall ? "text-[8.5px] py-0.5 px-2.5" : "text-[10px] py-1 px-3"} bg-emerald-100/80 text-emerald-800 border-emerald-300/50 font-black rounded-md inline-block uppercase border`}>
+                <div className={`${isSmall ? "text-[10px]" : "text-[11px]"} text-black font-black uppercase`}>
                   {currentLanguage === "en" ? `PAID (${receiptData.paymentChannel || "CASH"})` : `ชำระเงินแล้ว (${receiptData.paymentChannel || "CASH"})`}
                 </div>
               );
             } else if (totalPaid > 0) {
               return (
-                <div className={`${isSmall ? "text-[8.5px] py-0.5 px-2.5" : "text-[10px] py-1 px-3"} bg-amber-100/80 text-amber-800 border-amber-300/50 font-black rounded-md inline-block uppercase border`}>
+                <div className={`${isSmall ? "text-[10px]" : "text-[11px]"} text-black font-black uppercase`}>
                   {currentLanguage === "en" ? `PARTIAL PAID (฿${totalPaid.toFixed(2)})` : `จ่ายมัดจำแล้ว (฿${totalPaid.toFixed(2)})`}
                 </div>
               );
             } else {
               return (
-                <div className={`${isSmall ? "text-[8.5px] py-0.5 px-2.5" : "text-[10px] py-1 px-3"} bg-red-100/80 text-red-800 border-red-300/50 font-black rounded-md inline-block uppercase border`}>
+                <div className={`${isSmall ? "text-[10px]" : "text-[11px]"} text-black font-black uppercase`}>
                   {currentLanguage === "en" ? "UNPAID - PAY ON PICKUP" : "ยังไม่ชำระ - จ่ายตอนรับผ้า"}
                 </div>
               );

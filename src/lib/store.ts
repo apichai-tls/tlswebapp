@@ -160,6 +160,39 @@ export interface ServiceItem {
   icon?: string | null;
 }
 
+export function getServiceSKU(service: ServiceItem, allServices: ServiceItem[]): string {
+  if (!service) return "";
+  const serviceId = service.id || "";
+  const parts = serviceId.split('-');
+  if (parts.length === 3 && parts[0].length === 3 && parts[1].length === 3 && parts[2].length === 3) {
+    return serviceId.toUpperCase();
+  }
+
+  const catServices = allServices
+    .filter(s => s.category === service.category)
+    .sort((a, b) => (a.nameEn || a.name || "").localeCompare(b.nameEn || b.name || ""));
+
+  const index = catServices.findIndex(s => s.id === serviceId);
+  const counter = index !== -1 ? index + 1 : 1;
+
+  let catAbbr = (service.category || "").toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (catAbbr.length < 3) {
+    catAbbr = (catAbbr + "XXX").substring(0, 3);
+  } else {
+    catAbbr = catAbbr.substring(0, 3);
+  }
+
+  let itemName = (service.nameEn || service.name || "").toUpperCase();
+  let itemAbbr = itemName.replace(/[^A-Z0-9]/g, '');
+  if (itemAbbr.length < 3) {
+    itemAbbr = (itemAbbr + "XXX").substring(0, 3);
+  } else {
+    itemAbbr = itemAbbr.substring(0, 3);
+  }
+
+  return `${catAbbr}-${itemAbbr}-${String(counter).padStart(3, '0')}`;
+}
+
 export interface Rider {
   id: string;
   name: string;
@@ -670,6 +703,11 @@ export interface CashierShift {
   shortageOverage?: number | null;
   status: string;
   notes?: string | null;
+  totalOrders?: number;
+  cashOrders?: number;
+  transferOrders?: number;
+  cardOrders?: number;
+  creditOrders?: number;
 }
 
 const shiftListeners: Set<Listener> = new Set();

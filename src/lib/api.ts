@@ -1,5 +1,5 @@
 import * as dbActions from '@/actions/db';
-import type { Customer, Job, Rider, ServiceItem, PriceList, ShopLocation } from './store'; // we'll use types from store.ts for now
+import { getServiceSKU, type Customer, type Job, type Rider, type ServiceItem, type PriceList, type ShopLocation } from './store';
 
 const DB_KEY = 'that_laundry_shop_db';
 
@@ -483,7 +483,7 @@ export const api = {
     const db = initDb();
     const newService = {
       ...service,
-      id: `SRV-${String(db.services.length + 1).padStart(3, "0")}`,
+      id: getServiceSKU({ ...service, id: "" } as ServiceItem, db.services),
     };
     db.services = [newService, ...db.services];
     await dbActions.addServiceAction(newService);

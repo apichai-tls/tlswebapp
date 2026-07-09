@@ -283,6 +283,7 @@ export async function updateJobAction(id: string, updates: any) {
   }
   if (updates.remark !== undefined) data.remark = updates.remark;
   if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
+  if (updates.shiftId !== undefined) data.shiftId = updates.shiftId;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
   if (updates.branchId !== undefined) data.branchId = updates.branchId;
   if (updates.source !== undefined) data.source = updates.source;
@@ -784,7 +785,49 @@ export async function getOpenShiftAction(userId: string) {
     const shift = await prisma.cashierShift.findFirst({
       where: { userId, status: 'open' }
     });
-    return shift;
+    if (!shift) return null;
+
+    // Fetch all jobs linked to this shift
+    const jobs = await prisma.job.findMany({
+      where: { shiftId: shift.id }
+    });
+
+    let cashSales = 0;
+    let transferSales = 0;
+    let cardSales = 0;
+    let creditSales = 0;
+
+    jobs.forEach(job => {
+      if (job.status === 'cancel') return;
+      const amount = job.totalAmount || 0;
+      const channel = job.paymentChannel || '';
+
+      if (channel === 'Cash / COD' || channel.toLowerCase() === 'cash') {
+        cashSales += amount;
+      } else if (channel === 'Transfer' || channel.toLowerCase() === 'transfer') {
+        transferSales += amount;
+      } else if (channel === 'Credit Card' || channel.toLowerCase() === 'card') {
+        cardSales += amount;
+      } else if (channel === 'HQ/Credit' || channel.toLowerCase() === 'credit') {
+        creditSales += amount;
+      } else {
+        cashSales += amount;
+      }
+    });
+
+    return {
+      ...shift,
+      cashSales,
+      transferSales,
+      cardSales,
+      creditSales,
+      expectedCash: shift.startingCash + cashSales,
+      totalOrders: jobs.filter(job => job.status !== 'cancel').length,
+      cashOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'Cash / COD' || job.paymentChannel?.toLowerCase() === 'cash')).length,
+      transferOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'Transfer' || job.paymentChannel?.toLowerCase() === 'transfer')).length,
+      cardOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'Credit Card' || job.paymentChannel?.toLowerCase() === 'card')).length,
+      creditOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'HQ/Credit' || job.paymentChannel?.toLowerCase() === 'credit')).length
+    };
   } catch (e) {
     console.error("Error in getOpenShiftAction:", e);
     return null;
@@ -796,7 +839,49 @@ export async function getBranchOpenShiftAction(branchId: string) {
     const shift = await prisma.cashierShift.findFirst({
       where: { branchId, status: 'open' }
     });
-    return shift;
+    if (!shift) return null;
+
+    // Fetch all jobs linked to this shift
+    const jobs = await prisma.job.findMany({
+      where: { shiftId: shift.id }
+    });
+
+    let cashSales = 0;
+    let transferSales = 0;
+    let cardSales = 0;
+    let creditSales = 0;
+
+    jobs.forEach(job => {
+      if (job.status === 'cancel') return;
+      const amount = job.totalAmount || 0;
+      const channel = job.paymentChannel || '';
+
+      if (channel === 'Cash / COD' || channel.toLowerCase() === 'cash') {
+        cashSales += amount;
+      } else if (channel === 'Transfer' || channel.toLowerCase() === 'transfer') {
+        transferSales += amount;
+      } else if (channel === 'Credit Card' || channel.toLowerCase() === 'card') {
+        cardSales += amount;
+      } else if (channel === 'HQ/Credit' || channel.toLowerCase() === 'credit') {
+        creditSales += amount;
+      } else {
+        cashSales += amount;
+      }
+    });
+
+    return {
+      ...shift,
+      cashSales,
+      transferSales,
+      cardSales,
+      creditSales,
+      expectedCash: shift.startingCash + cashSales,
+      totalOrders: jobs.filter(job => job.status !== 'cancel').length,
+      cashOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'Cash / COD' || job.paymentChannel?.toLowerCase() === 'cash')).length,
+      transferOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'Transfer' || job.paymentChannel?.toLowerCase() === 'transfer')).length,
+      cardOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'Credit Card' || job.paymentChannel?.toLowerCase() === 'card')).length,
+      creditOrders: jobs.filter(job => job.status !== 'cancel' && (job.paymentChannel === 'HQ/Credit' || job.paymentChannel?.toLowerCase() === 'credit')).length
+    };
   } catch (e) {
     console.error("Error in getBranchOpenShiftAction:", e);
     return null;

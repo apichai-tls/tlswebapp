@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
@@ -93,7 +93,9 @@ import {
   Paperclip,
   Maximize2,
   Trash2,
-  Printer
+  Printer,
+  Banknote,
+  PackageOpen
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -179,6 +181,12 @@ export default function AdminPage() {
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
+  const { activeShift } = useSyncExternalStore(shiftStore.subscribe, shiftStore.getSnapshot, shiftStore.getSnapshot);
+
+  const categories = useMemo(() => {
+    const activeServices = services.filter(s => s.isActive !== false);
+    return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
+  }, [services]);
 
   const localDataForSearch = useMemo(() => {
     return pois.map(p => ({
@@ -386,6 +394,17 @@ export default function AdminPage() {
     setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
   };
   const [serviceType, setServiceType] = useState<string>("");
+  const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
+  const [dialogCart, setDialogCart] = useState<any[]>([]);
+  const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string | null>(null);
+  const [proformaRevision, setProformaRevision] = useState<number>(0);
+  const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
+  const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
+
+
+  const isPaidJob = activeJob ? !!activeJob.isPaid : false;
+  const isPricingLocked = isPaidJob || !activeShift;
+  const isCartLocked = isPaidJob || !activeShift;
   const roundToNearest30 = (date: Date) => {
     const ms = 1000 * 60 * 30;
     const rounded = new Date(Math.round(date.getTime() / ms) * ms);
@@ -694,6 +713,13 @@ export default function AdminPage() {
 
   const handleCreateNewJob = () => {
     setEditingJobId(null);
+    setDialogSelectedCategory(null);
+    setDialogCart([]);
+    setProformaReceiptNumber(null);
+    setProformaRevision(0);
+    setLastProformaCartHash(null);
+    setIsDraftPreview(false);
+    setShowReceipt(false);
     setShowJobLogs(false);
     setIsDetailLoading(false);
     setEditingSubStatus(null);
@@ -772,6 +798,26 @@ export default function AdminPage() {
     setShowJobLogs(false);
     setEditingSubStatus(job.subStatus || null);
     setIsStuck(job.isStuck || false);
+    setDialogSelectedCategory(null);
+    const itemsList = Array.isArray(job.items) ? job.items : [];
+    const mappedCart = itemsList.map((item: any) => {
+      const matched = services.find(s => s.name === item.name || s.nameEn === item.nameEn || s.id === item.serviceId);
+      return {
+        id: matched?.id || item.serviceId || Math.random().toString(),
+        name: item.name,
+        nameEn: item.nameEn || item.name,
+        quantity: item.quantity || 1,
+        price: item.price || 0,
+        category: matched?.category || "",
+        unit: matched?.unit || "piece"
+      };
+    });
+    setDialogCart(mappedCart);
+    setProformaReceiptNumber((job as any).proformaReceiptNumber || null);
+    setProformaRevision((job as any).proformaRevision || 0);
+    setLastProformaCartHash((job as any).proformaReceiptNumber ? JSON.stringify(mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price }))) : null);
+    setIsDraftPreview(false);
+    setShowReceipt(false);
     const rawLaundry = job.laundryTypes as any;
     setLaundryTypes(
       Array.isArray(rawLaundry) 
@@ -1057,28 +1103,20 @@ export default function AdminPage() {
       });
     }
 
-    const itemsPayload: { name: string; quantity: number; price: number }[] = [];
-    const labelsMap: Record<string, string> = {
-      polo: "Polo Shirt",
-      tshirt: "T-Shirt",
-      pants: "Pants",
-      dress: "Dress",
-      bedsheet: "Bedsheet"
-    };
+    const itemsPayload = dialogCart.map(item => ({
+      name: item.name,
+      nameEn: item.nameEn || item.name,
+      quantity: item.quantity,
+      price: item.price,
+      serviceId: item.id
+    }));
 
-    Object.entries(clothingItems).forEach(([key, val]) => {
-      if (val.selected) {
-        let name = labelsMap[key];
-        if (key === 'other') {
-          name = otherClothingName.trim() || "Other";
-        }
-        itemsPayload.push({
-          name: name || key,
-          quantity: val.quantity,
-          price: 0
-        });
-      }
-    });
+    const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
+    const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
+
+    const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
+    const calculatedTotal = subtotal + surcharge + fee;
 
     const newJobData: any = {
       isStuck,
@@ -1089,7 +1127,7 @@ export default function AdminPage() {
       source: isWalkIn ? "pos" : "app",
       // Auto-advance to Delivery or Completed when Process is set to Ready (only if job is not already completed)
       ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
-      laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
+      laundryTypes: derivedLaundryTypes,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       pickupLocation: isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shop.address,
@@ -1106,10 +1144,11 @@ export default function AdminPage() {
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
       fee,
-      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
-      serviceType,
+      totalAmount: calculatedTotal,
+      serviceType: dialogCart[0]?.id || "wash_fold",
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
+      shiftId: activeShift?.id || (existingJob ? (existingJob as any).shiftId : null) || null,
       pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
         ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
             ? (existingJob.pickupCommission ?? 0) 
@@ -1131,6 +1170,8 @@ export default function AdminPage() {
       adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
+      proformaReceiptNumber: proformaReceiptNumber || null,
+      proformaRevision: proformaReceiptNumber ? proformaRevision : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced,
@@ -1202,6 +1243,54 @@ export default function AdminPage() {
       setIsSubmitting(false);
     }
   }
+
+  const dialogReceiptData = useMemo(() => {
+    if (showReceipt && isDraftPreview) {
+      const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
+      const calculatedTotal = subtotal + surcharge + fee;
+      
+      const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
+      const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
+      
+      const remarkParts = [
+        isFreeDelivery ? "Free Delivery" : "",
+        serviceSpeed === "express_50" ? "Express 50%" : "",
+        serviceSpeed === "express_100" ? "Express 100%" : "",
+        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}` : "",
+        proformaReceiptNumber ? `Revision: ${proformaRevision}` : ""
+      ].filter(Boolean);
+      
+      const mockJob: any = {
+        id: editingJobId || "DRAFT",
+        createdAt: new Date(),
+        customerName: customerName || "Walk-In",
+        customerPhone: customerPhone || "-",
+        items: dialogCart.map(item => ({
+          name: item.name,
+          nameEn: item.nameEn || item.name,
+          quantity: item.quantity,
+          price: item.price
+        })),
+        totalAmount: calculatedTotal,
+        fee,
+        isPaid: paymentMethod === 'paid',
+        paymentChannel: paymentChannel || null,
+        remark: remarkParts.join(" | ") || null,
+        status: editingSubStatus || "billing",
+        laundryTypes: derivedLaundryTypes,
+        proformaReceiptNumber,
+        proformaRevision
+      };
+      
+      const formatted = formatJobToReceiptData(mockJob);
+      formatted.isDraft = true; // Mark as draft preview
+      return formatted;
+    } else if (activeJob) {
+      return formatJobToReceiptData(activeJob);
+    }
+    return null;
+  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob]);
 
   return (
     <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
@@ -2345,114 +2434,279 @@ export default function AdminPage() {
                       </div>
 
                       {/* Laundry Service Type & Speed */}
-                      <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm space-y-1.5">
-                        <div className={`grid gap-2 ${serviceType === "other" ? "grid-cols-1" : "grid-cols-[1fr_80px]"}`}>
-                          <div className="space-y-1">
-                            <Label htmlFor="service-select" className="flex items-center gap-1.5 text-xs font-medium">
-                              <ArrowDownUp size={14} className="text-purple-600" />
-                              Laundry Service Type
-                            </Label>
-                            <select 
-                              id="service-select"
-                              className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                              value={serviceType}
-                              onChange={(e) => handleServiceOrSpeedChange(e.target.value, serviceSpeed, serviceWeight)}
-                            >
-                              <option value="" disabled>Select a service</option>
-                              {washServices.map(s => (
-                                <option key={s.id} value={s.id}>{s.name}</option>
-                              ))}
-                              <option value="other">Other (Custom Price)</option>
-                            </select>
+                      <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex-1 flex flex-col gap-2 min-h-[350px]">
+                        {!activeShift ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
+                            <ShieldAlert size={36} className="text-amber-500 mb-2 animate-bounce" />
+                            <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
+                              {currentLanguage === "en" ? "Cashier Shift Required" : "จำเป็นต้องเปิดกะแคชเชียร์ก่อน"}
+                            </h3>
+                            <p className="text-[10px] text-slate-500 font-medium max-w-[280px] leading-relaxed">
+                              {currentLanguage === "en" 
+                                ? "Please open a cashier shift at the POS counter to manage products, pricing, and checkout."
+                                : "กรุณาเปิดกะพนักงานขายที่หน้าลิ้นชัก POS เพื่อเริ่มต้นจัดการรายการสินค้า ราคา และการคิดเงิน"}
+                            </p>
                           </div>
-                          {serviceType !== "other" && (
-                            <div className="space-y-1">
-                              <Label htmlFor="service-weight" className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
-                                Weight (kg)
+                        ) : (
+                          <div className="flex-1 flex flex-col gap-1">
+                            <span className="flex items-center justify-between pb-1.5 border-b border-slate-100 shrink-0 select-none">
+                              <Label className="flex items-center gap-1.5 text-xs font-bold text-slate-500 border-none pb-0">
+                                <ArrowDownUp size={14} className="text-purple-600" />
+                                Laundry Service Type
                               </Label>
-                              <Input 
-                                id="service-weight"
-                                type="number" 
-                                min="2"
-                                step="0.01"
-                                className="h-8 text-xs text-center px-2"
-                                value={serviceWeight || ""}
-                                onChange={(e) => handleServiceOrSpeedChange(serviceType, serviceSpeed, Math.max(2, parseFloat(e.target.value) || 2))}
-                              />
-                            </div>
-                          )}
-                        </div>
+                              {dialogSelectedCategory !== null && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-6 px-2 text-[10px] font-bold uppercase text-slate-500 hover:bg-slate-50 border-slate-200 rounded-md shadow-sm flex items-center gap-1 cursor-pointer"
+                                  onClick={() => setDialogSelectedCategory(null)}
+                                >
+                                  <ArrowLeft size={9} />
+                                  Back to Categories
+                                </Button>
+                              )}
+                            </span>
 
-                        <div className="space-y-1 pt-1 border-t border-slate-100">
-                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Clothing Types</Label>
-                          <div className="grid grid-cols-2 gap-1">
-                            {[
-                              { id: 'other', label: 'Other (Specify)' },
-                              { id: 'polo', label: 'Polo Shirt' },
-                              { id: 'tshirt', label: 'T-Shirt' },
-                              { id: 'pants', label: 'Pants' },
-                              { id: 'dress', label: 'Dress' },
-                              { id: 'bedsheet', label: 'Bedsheet' },
-                            ].map(item => (
-                              <div key={item.id} className="flex flex-col gap-1 col-span-1">
-                                <div className="flex items-center gap-2">
-                                  <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-3.5 w-3.5 shrink-0"
-                                      checked={clothingItems[item.id].selected}
-                                      onChange={(e) => setClothingItems(prev => ({
-                                        ...prev,
-                                        [item.id]: { ...prev[item.id], selected: e.target.checked }
-                                      }))}
-                                    />
-                                    <span className="truncate">{item.label}</span>
-                                  </Label>
-                                  {clothingItems[item.id].selected && (
-                                    <Input 
-                                      type="number" 
-                                      min="1"
-                                      className="w-12 h-6 text-xs text-center p-1 shrink-0"
-                                      value={clothingItems[item.id].quantity}
-                                      onChange={(e) => setClothingItems(prev => ({
-                                        ...prev,
-                                        [item.id]: { ...prev[item.id], quantity: Math.max(1, parseInt(e.target.value) || 1) }
-                                      }))}
-                                    />
-                                  )}
-                                </div>
-                                {item.id === 'other' && clothingItems[item.id].selected && (
-                                  <Input
-                                    type="text"
-                                    placeholder="Specify item..."
-                                    className="h-6 text-xs px-2 w-full mt-0.5"
-                                    value={otherClothingName}
-                                    onChange={(e) => setOtherClothingName(e.target.value)}
-                                  />
-                                )}
+                            {dialogSelectedCategory === null ? (
+                              <div className="grid grid-cols-2 grid-rows-[repeat(5,1fr)] gap-2.5 pt-2 flex-1">
+                                {categories.map((cat) => (
+                                  <Button
+                                    key={cat}
+                                    type="button"
+                                    variant="outline"
+                                    disabled={isPricingLocked}
+                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-indigo-50 hover:text-indigo-600 border-slate-200 rounded-lg shadow-sm"
+                                    onClick={() => setDialogSelectedCategory(cat)}
+                                  >
+                                    {cat}
+                                  </Button>
+                                ))}
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={isPricingLocked}
+                                  className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
+                                  onClick={() => {
+                                    handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
+                                    setDialogCart(prev => {
+                                      if (prev.some(x => x.id === "other")) return prev;
+                                      return [...prev, {
+                                        id: "other",
+                                        name: "Other (Custom Price)",
+                                        nameEn: "Other (Custom Price)",
+                                        quantity: 1,
+                                        price: laundryPrice || 0,
+                                        category: "other",
+                                        unit: "piece"
+                                      }];
+                                    });
+                                  }}
+                                >
+                                  Other (Custom Price)
+                                </Button>
                               </div>
-                            ))}
+                            ) : (
+                              <div className="flex-1 flex flex-col gap-2 pt-2">
+                                <div className="grid grid-cols-3 auto-rows-max gap-2 overflow-y-auto flex-1 pr-0.5 animate-in fade-in duration-200">
+                                  {services
+                                    .filter((s) => s.category === dialogSelectedCategory)
+                                    .filter((s) => {
+                                      const name = (s.name || "").toLowerCase();
+                                      const en = (s.nameEn || "").toLowerCase();
+                                      return !name.includes("delivery") && !en.includes("delivery") &&
+                                             !name.includes("pickup") && !en.includes("pickup") &&
+                                             !name.includes("pick up") && !en.includes("pick up") &&
+                                             !name.includes("express") && !en.includes("express") &&
+                                             !name.includes("ผ้าด่วน");
+                                    })
+                                    .map((s) => {
+                                      const cartItem = dialogCart.find(item => item.id === s.id);
+                                      const quantity = cartItem ? cartItem.quantity : 0;
+                                      return (
+                                        <Button
+                                          key={s.id}
+                                          type="button"
+                                          variant={quantity > 0 ? "default" : "outline"}
+                                          disabled={isPricingLocked}
+                                          className={`relative h-10 text-xs font-semibold justify-center rounded-lg shadow-sm transition-all ${
+                                            quantity > 0 
+                                              ? 'bg-indigo-600 text-white hover:bg-indigo-700 font-bold border-none' 
+                                              : 'hover:bg-indigo-50 hover:text-indigo-600 border-slate-200'
+                                          }`}
+                                          onClick={() => {
+                                            handleServiceOrSpeedChange(s.id, serviceSpeed, serviceWeight);
+                                            setDialogCart(prev => {
+                                              const existing = prev.find(item => item.id === s.id);
+                                              let updated;
+                                              if (existing) {
+                                                updated = prev.map(item => 
+                                                  item.id === s.id 
+                                                    ? { ...item, quantity: item.quantity + 1 }
+                                                    : item
+                                                );
+                                              } else {
+                                                updated = [...prev, {
+                                                  id: s.id,
+                                                  name: s.name,
+                                                  nameEn: s.nameEn || s.name,
+                                                  quantity: 1,
+                                                  price: s.price,
+                                                  category: s.category || "",
+                                                  unit: s.unit || "piece"
+                                                }];
+                                              }
+                                              const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                              setLaundryPrice(totalSum);
+                                              return updated;
+                                            });
+                                          }}
+                                        >
+                                          <span className="truncate pr-3">{s.name}</span>
+                                          {quantity > 0 && (
+                                            <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[9px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center border border-white shadow-sm animate-in zoom-in duration-200">
+                                              {quantity}
+                                            </span>
+                                          )}
+                                        </Button>
+                                      );
+                                    })}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        </div>
-
-
-
-
+                        )}
                       </div>
                       </motion.div>
 
                     {/* COL 3: Fulfillment & Summary (span 4) */}
                     <motion.div
-                      className="lg:col-span-4 flex flex-col gap-2 overflow-y-auto pl-1 pb-4 lg:pb-0"
+                      className="lg:col-span-4 flex flex-col gap-2 overflow-y-auto pl-1 pb-4 lg:pb-0 h-full"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.2, duration: 0.3 }}
                     >
+                      {/* Cart / Order Items List */}
+                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md flex-1 flex flex-col gap-2 min-h-[220px] max-h-[300px]">
+                        <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider select-none shrink-0">
+                          <Package size={14} className="text-slate-500" />
+                          Order Items Cart
+                        </span>
+                        <div id="order-items-list" className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar">
+                          {!activeShift ? (
+                            <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
+                              <PackageOpen size={24} className="text-slate-600 mb-1.5" />
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                {currentLanguage === "en" ? "No Active Shift" : "ไม่มีรอบกะที่รันอยู่"}
+                              </span>
+                            </div>
+                          ) : dialogCart.length > 0 ? (
+                            dialogCart.map((item, idx) => (
+                              <div key={item.id || idx} className="flex justify-between items-center bg-slate-800/40 hover:bg-slate-800/80 p-1.5 rounded border border-slate-700/30 text-[11px] transition-all">
+                                <div className="flex-1 min-w-0 pr-1.5 flex items-center gap-1">
+                                  <span className="font-bold text-white truncate">{item.name}</span>
+                                  <span className="text-[9px] text-slate-400 font-bold uppercase shrink-0">({item.category})</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <div className="flex items-center border border-slate-700 rounded bg-slate-900 p-0.5">
+                                    <button
+                                      type="button"
+                                      disabled={isPaidJob}
+                                      className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'hover:text-rose-400'}`}
+                                      onClick={() => {
+                                        setDialogCart(prev => {
+                                          const updated = prev.map(it => 
+                                            it.id === item.id 
+                                              ? { ...it, quantity: Math.max(0, it.quantity - 1) }
+                                              : it
+                                          ).filter(it => it.quantity > 0);
+                                          const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                          setLaundryPrice(totalSum);
+                                          return updated;
+                                        });
+                                      }}
+                                    >
+                                      -
+                                    </button>
+                                    <span className="w-5 text-center text-[10px] font-black text-slate-300">
+                                      {item.quantity}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      disabled={isPaidJob}
+                                      className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400'}`}
+                                      onClick={() => {
+                                        setDialogCart(prev => {
+                                          const updated = prev.map(it => 
+                                            it.id === item.id 
+                                              ? { ...it, quantity: it.quantity + 1 }
+                                              : it
+                                          );
+                                          const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                          setLaundryPrice(totalSum);
+                                          return updated;
+                                        });
+                                      }}
+                                    >
+                                      +
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1 py-0.5 w-18">
+                                    <span className="text-[10px] text-slate-500 font-bold mr-0.5">฿</span>
+                                    <input 
+                                      type="number"
+                                      disabled={isPaidJob}
+                                      value={item.price}
+                                      className="w-full text-right text-[10px] font-black text-slate-200 bg-transparent border-none p-0 focus:ring-0 focus:outline-none"
+                                      onChange={e => {
+                                        const val = parseFloat(e.target.value) || 0;
+                                        setDialogCart(prev => {
+                                          const updated = prev.map(it => 
+                                            it.id === item.id 
+                                              ? { ...it, price: val }
+                                              : it
+                                          );
+                                          const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                          setLaundryPrice(totalSum);
+                                          return updated;
+                                        });
+                                      }}
+                                    />
+                                  </div>
+                                  {!isPaidJob && (
+                                    <button
+                                      type="button"
+                                      className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-red-400 transition-colors cursor-pointer shrink-0 animate-in fade-in"
+                                      onClick={() => {
+                                        setDialogCart(prev => {
+                                          const updated = prev.filter(it => it.id !== item.id);
+                                          const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                          setLaundryPrice(totalSum);
+                                          return updated;
+                                        });
+                                      }}
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/20 rounded border border-dashed border-slate-700/30 text-center text-slate-500">
+                              <PackageOpen size={20} className="mb-1" />
+                              <span className="text-[10px] italic">
+                                {currentLanguage === "en" ? "No items selected" : "ไม่มีสินค้าในตะกร้า"}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
                       {/* Summary Card */}
-                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md shrink-0">
+                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md shrink-0 flex flex-col gap-1.5">
                         {(user?.role === 'admin' || user?.role === 'cso') && (
-                          <div className="flex justify-between items-center pb-2 mb-2 border-b border-slate-700/50">
-                            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Job Flag</span>
+                          <div className="flex justify-between items-center pb-1.5 border-b border-slate-800">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Job Flag</span>
                             <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
                               <input 
                                 type="checkbox" 
@@ -2464,7 +2718,7 @@ export default function AdminPage() {
                             </Label>
                           </div>
                         )}
-                        <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-700">
+                        <div className="flex flex-col gap-1 pb-1.5 border-b border-slate-800">
                           {isPickup && (
                             <div className="flex justify-between items-center text-xs">
                               <span className="text-slate-400">Pickup Dist.</span>
@@ -2479,61 +2733,33 @@ export default function AdminPage() {
                           )}
                         </div>
 
-                        <div className="flex flex-col mb-3">
-                          <div className="flex justify-between items-center mb-1">
-                            <Label className="text-xs font-medium text-slate-300">Laundry Price</Label>
-                            <div className="relative w-24">
-                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
-                              <Input 
-                                type="number"
-                                className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
-                                value={laundryPrice || ""}
-                                onChange={e => setLaundryPrice(parseFloat(e.target.value) || 0)}
-                              />
-                            </div>
-                          </div>
-                          <span className="text-[10px] text-indigo-300 font-medium">
-                            {(() => {
-                              if (serviceType === "other") return "Custom service: Enter price manually";
-                              const baseService = services.find(s => s.id === serviceType);
-                              if (!baseService) return "Please select a service";
-                              let pricePerKg = baseService.price;
-                              if (customerPriceListId) {
-                                const customPl = priceLists.find(pl => pl.id === customerPriceListId);
-                                if (customPl && customPl.servicePrices[serviceType] !== undefined) pricePerKg = customPl.servicePrices[serviceType];
-                              } else {
-                                const defaultPl = priceLists.find(pl => pl.isDefault);
-                                if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
-                              }
-                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${serviceWeight} = ${Math.ceil(pricePerKg * serviceWeight)}฿)`;
-                            })()}
-                          </span>
+                        <div className="flex flex-col">
                           {serviceSpeed !== "standard" && (
-                            <div className="flex justify-between items-center mt-2">
+                            <div className="flex justify-between items-center pb-1">
                               <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
                               <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
                             </div>
                           )}
 
-                          <div className="space-y-0.5 pt-2 mt-2 border-t border-slate-700">
+                          <div className="space-y-0.5 pb-1.5">
                             <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-3">
                               <Label className="flex items-center gap-1 cursor-pointer">
-                                <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
                                 <span className="text-[11px] text-slate-200">Standard</span>
                               </Label>
                               <Label className="flex items-center gap-1 cursor-pointer">
-                                <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
                                 <span className="text-[11px] text-slate-200">Exp 50%</span>
                               </Label>
                               <Label className="flex items-center gap-1 cursor-pointer">
-                                <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
                                 <span className="text-[11px] text-slate-200">Exp 100%</span>
                               </Label>
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-2 pt-2 mt-2 border-t border-slate-700">
+                          <div className="grid grid-cols-2 gap-2 pt-1.5 border-t border-slate-800">
                             <div className="space-y-0.5">
                               <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
                                 <CreditCard size={12} className="text-slate-500" />
@@ -2541,7 +2767,7 @@ export default function AdminPage() {
                               </Label>
                               <select
                                 id="payment-channel"
-                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
                                 value={paymentChannel}
                                 onChange={(e) => setPaymentChannel(e.target.value)}
                               >
@@ -2558,7 +2784,6 @@ export default function AdminPage() {
 
                             <div className="space-y-0.5">
                               <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                <CreditCard size={12} className="text-slate-500" />
                                 Status
                               </Label>
                               <div className="flex items-center gap-2 h-6">
@@ -2583,7 +2808,7 @@ export default function AdminPage() {
                                   <span className="font-medium text-emerald-400">Paid</span>
                                 </Label>
                                 {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                  <Label className="flex items-center gap-1.5 cursor-pointer text-[11px] ml-2 animate-in fade-in duration-200">
+                                  <Label className="flex items-center gap-1.5 cursor-pointer text-[11px] ml-1 animate-in fade-in duration-200">
                                     <input 
                                       type="checkbox" 
                                       checked={cashPlaced} 
@@ -2598,7 +2823,7 @@ export default function AdminPage() {
                           </div>
                         </div>
                         
-                        <div className="flex justify-between items-end mb-2">
+                        <div className="flex justify-between items-end pb-1 border-t border-slate-800 pt-1.5">
                           <div className="flex flex-col gap-0.5">
                              <Label className="flex items-center gap-1 cursor-pointer">
                                 <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
@@ -2612,19 +2837,19 @@ export default function AdminPage() {
                           </div>
                         </div>
                         
-                        <div className="flex justify-between items-end border-t border-slate-700 pt-2">
+                        <div className="flex justify-between items-end border-t border-slate-800 pt-1.5">
                           <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
                           <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                         </div>
 
                         {(isPickup || isDelivery) && (
-                          <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
+                          <div className="flex justify-between items-end mt-1 pt-1.5 border-t border-slate-800">
                             <div className="flex flex-col">
-                              <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
-                              <span className="text-[10px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
+                              <span className="text-[10px] text-amber-400 font-medium uppercase tracking-wider">Est. Rider Commission</span>
+                              <span className="text-[9px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
                             </div>
                             <div className="text-right">
-                              <span className="text-lg font-bold text-amber-400">
+                              <span className="text-md font-bold text-amber-400">
                                 ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
                                   (isPickup ? (
                                     (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
@@ -2641,10 +2866,76 @@ export default function AdminPage() {
                             </div>
                           </div>
                         )}
+
+                        {/* Consolidated Checkout Buttons under summary card */}
+                        <div className="flex gap-2 mt-2 pt-2 border-t border-slate-800 select-none">
+                          <Button 
+                            type="button"
+                            variant="outline"
+                            disabled={dialogCart.length === 0}
+                            onClick={async () => {
+                              const cartHash = JSON.stringify(dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })));
+                              if (!proformaReceiptNumber) {
+                                const shopId = activeShop?.id || "default";
+                                const proformaKey = `proformaSeq_${shopId}`;
+                                const currentSeq = parseInt(systemSettings?.[proformaKey] || "0", 10);
+                                const nextSeq = currentSeq + 1;
+                                await settingsStore.updateSetting(proformaKey, String(nextSeq));
+                                
+                                let branchCode = "";
+                                if (activeShop?.name) {
+                                  const getInitials = (name: string) => {
+                                    const words = name.trim().split(/\s+/);
+                                    if (words.length > 1) {
+                                      return words.map(w => w.charAt(0)).join("").toUpperCase();
+                                    }
+                                    return name.substring(0, 3).toUpperCase();
+                                  };
+                                  
+                                  const myInitials = getInitials(activeShop.name);
+                                  const isDuplicate = shopLocations.some(s => s.id !== activeShop.id && getInitials(s.name) === myInitials);
+                                  
+                                  if (isDuplicate) {
+                                    const suffix = (activeShop.id || "").slice(-3).toUpperCase();
+                                    branchCode = `${myInitials}${suffix}`;
+                                  } else {
+                                    branchCode = myInitials;
+                                  }
+                                }
+                                if (!branchCode || branchCode.length < 2) {
+                                  branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase();
+                                }
+                                
+                                setProformaReceiptNumber(`PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`);
+                                setProformaRevision(0);
+                                setLastProformaCartHash(cartHash);
+                              } else {
+                                if (cartHash !== lastProformaCartHash) {
+                                  setProformaRevision(prev => prev + 1);
+                                  setLastProformaCartHash(cartHash);
+                                }
+                              }
+                              setIsDraftPreview(true);
+                              setShowReceipt(true);
+                            }}
+                            className="flex-1 h-9 rounded-lg text-[11px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1.5 cursor-pointer"
+                            title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
+                          >
+                            <Eye size={12} />
+                            {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
+                          </Button>
+
+                          <Button 
+                            type="button"
+                            disabled={isSubmitting || isDetailLoading || dialogCart.length === 0}
+                            onClick={handleCreate}
+                            className="flex-[1.4] h-9 rounded-lg text-[11px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <Banknote size={13} />
+                            Pay ฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(2)}
+                          </Button>
+                        </div>
                       </div>
-
-
-
                     </motion.div>
                   </div>
                   ) : (
@@ -2905,8 +3196,28 @@ export default function AdminPage() {
               setSelectedMemberLabel("");
               setSelectedMemberId("");
             }
-            setCustomerPriceListId(c.priceListId || null);
-            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
+            const newPlId = c.priceListId || null;
+            setCustomerPriceListId(newPlId);
+            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, newPlId);
+            
+            // Update item prices in dialogCart based on the new customer's price list
+            setDialogCart(prev => {
+              if (!prev || prev.length === 0) return prev;
+              const pl = newPlId ? priceLists.find(p => p.id === newPlId) : priceLists.find(p => p.isDefault);
+              const updated = prev.map(item => {
+                if (item.id === "other") return item;
+                const baseService = services.find(s => s.id === item.id);
+                if (!baseService) return item;
+                let price = baseService.price;
+                if (pl && pl.servicePrices[item.id] !== undefined) {
+                  price = pl.servicePrices[item.id];
+                }
+                return { ...item, price };
+              });
+              const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+              setLaundryPrice(totalSum);
+              return updated;
+            });
             
             setCustomerSearchQuery("");
             setShowCustomerDropdown(false);
@@ -2928,10 +3239,14 @@ export default function AdminPage() {
       <ThermalReceiptDialog
         open={showReceipt}
         onOpenChange={setShowReceipt}
-        receiptData={activeJob ? formatJobToReceiptData(activeJob) : null}
+        receiptData={dialogReceiptData}
         activeShop={activeShop}
         receiptPaperSize={receiptPaperSize}
         currentLanguage={currentLanguage}
+        onCloseComplete={() => {
+          setIsDraftPreview(false);
+          setLatestJob(null);
+        }}
       />
     </ProtectedRoute>
   );
