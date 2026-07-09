@@ -721,6 +721,41 @@ export default function AdminPage() {
     return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
   }, [services]);
 
+
+  const resetDialogStates = () => {
+    setPickupLoc("");
+    setPickupRoom("");
+    setDeliveryLoc("");
+    setDeliveryRoom("");
+    setIsDeliveryDirty(false);
+    setIsFreeDelivery(false);
+    setIsStuck(false);
+    setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
+    setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+    setPaymentMethod("unpaid");
+    setPickupRiderId("");
+    setDeliveryRiderId("");
+    setBagImageUrls([]);
+    setBillImageUrls([]);
+    setPickupProofImageUrls([]);
+    setDeliveryProofImageUrls([]);
+    setOrigBagImageUrls([]);
+    setOrigBillImageUrls([]);
+    setOrigPickupProofImageUrls([]);
+    setOrigDeliveryProofImageUrls([]);
+    setServiceType("wash_fold");
+    setLaundryTypes([]);
+    setServiceSpeed("standard");
+    setSelectedVIPLabel("");
+    setAdminNote("");
+    setAdminNoteInput("");
+    setShowAdminNote(false);
+    setEditingJobId(null);
+    setNoteLogsModalOpen(false);
+    setPreviewAdminNoteImage(null);
+    setShowJobLogs(false);
+  };
+
   const handleCreateNewJob = () => {
     setEditingJobId(null);
     setDialogSelectedCategory(null);
@@ -1206,46 +1241,20 @@ export default function AdminPage() {
     }
 
     try {
+      let savedJobId = editingJobId;
       if (editingJobId) {
         await jobStore.updateJobDetails(editingJobId, newJobData as any);
         toast.success(`Job updated successfully!`);
       } else {
         const job = await jobStore.addJob(newJobData as any);
+        savedJobId = job.id;
         toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
       }
 
-      setPickupLoc("");
-      setPickupRoom("");
-      setDeliveryLoc("");
-      setDeliveryRoom("");
-      setIsDeliveryDirty(false);
-      setIsFreeDelivery(false);
-      setIsStuck(false);
-      setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
-      setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
-      setPaymentMethod("unpaid");
-      setPickupRiderId("");
-      setDeliveryRiderId("");
-      setBagImageUrls([]);
-      setBillImageUrls([]);
-      setPickupProofImageUrls([]);
-      setDeliveryProofImageUrls([]);
-      setOrigBagImageUrls([]);
-      setOrigBillImageUrls([]);
-      setOrigPickupProofImageUrls([]);
-      setOrigDeliveryProofImageUrls([]);
-      setServiceType("wash_fold");
-      setLaundryTypes([]);
-      setServiceSpeed("standard");
-      setSelectedVIPLabel("");
-      setAdminNote("");
-      setAdminNoteInput("");
-      setShowAdminNote(false);
-      setEditingJobId(null);
-      setNoteLogsModalOpen(false);
-      setPreviewAdminNoteImage(null);
-      setShowJobLogs(false);
       setDialogOpen(false);
+      setEditingJobId(savedJobId);
+      setIsDraftPreview(false);
+      setShowReceipt(true);
     } catch (err: any) {
       console.error("Job Save Error:", err);
       toast.error(`Failed to save job: ${err.message || 'Unknown error'}`);
@@ -3517,6 +3526,9 @@ export default function AdminPage() {
         currentLanguage={currentLanguage}
         onCloseComplete={() => {
           setIsDraftPreview(false);
+          if (!dialogOpen) {
+            resetDialogStates();
+          }
         }}
         onBillImageUploaded={(newUrl) => {
           setBillImageUrls(prev => {
