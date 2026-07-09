@@ -479,37 +479,6 @@ export default function AdminPage() {
     }
   }, [jobs, editingJobId, user?.id, adminLogs]);
 
-  // Clean up isNew flags when the Edit Job dialog closes without saving
-  useEffect(() => {
-    if (!dialogOpen && editingJobId) {
-      const stripNewNotes = async () => {
-        const currentJob = jobs.find(j => j.id === editingJobId);
-        if (currentJob && currentJob.adminNotesJson) {
-          try {
-            const notes = JSON.parse(currentJob.adminNotesJson);
-            if (Array.isArray(notes)) {
-              const cleaned = notes.map((n: any) => {
-                const { isNew, ...rest } = n;
-                return rest;
-              });
-              if (JSON.stringify(notes) !== JSON.stringify(cleaned)) {
-                await jobStore.updateJobDetails(editingJobId, { 
-                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined,
-                  actorId: user?.id,
-                  actorName: user?.name || user?.email,
-                  actorRole: user?.role
-                });
-                import("@/lib/api").then(m => m.refreshDb());
-              }
-            }
-          } catch {}
-        }
-      };
-      stripNewNotes();
-      setEditingJobId(null);
-      setAdminLogs([]);
-    }
-  }, [dialogOpen, editingJobId, jobs]);
 
   const handleAddAdminLog = async (text: string, isSystem = false, imageUrls?: string[]) => {
     if (!text.trim() && (!imageUrls || imageUrls.length === 0)) return;
@@ -720,6 +689,37 @@ export default function AdminPage() {
     const activeServices = services.filter(s => s.isActive !== false);
     return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
   }, [services]);
+  // Clean up isNew flags when the Edit Job dialog closes without saving
+  useEffect(() => {
+    if (!dialogOpen && editingJobId && !showReceipt) {
+      const stripNewNotes = async () => {
+        const currentJob = jobs.find(j => j.id === editingJobId);
+        if (currentJob && currentJob.adminNotesJson) {
+          try {
+            const notes = JSON.parse(currentJob.adminNotesJson);
+            if (Array.isArray(notes)) {
+              const cleaned = notes.map((n: any) => {
+                const { isNew, ...rest } = n;
+                return rest;
+              });
+              if (JSON.stringify(notes) !== JSON.stringify(cleaned)) {
+                await jobStore.updateJobDetails(editingJobId, { 
+                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined,
+                  actorId: user?.id,
+                  actorName: user?.name || user?.email,
+                  actorRole: user?.role
+                });
+                import("@/lib/api").then(m => m.refreshDb());
+              }
+            }
+          } catch {}
+        }
+      };
+      stripNewNotes();
+      setEditingJobId(null);
+      setAdminLogs([]);
+    }
+  }, [dialogOpen, editingJobId, jobs, showReceipt]);
 
 
   const resetDialogStates = () => {
