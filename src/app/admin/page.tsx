@@ -1568,11 +1568,12 @@ export default function AdminPage() {
                         )}
                       </div>
                       {editingJobId && (
-                        <div className="flex items-center gap-2 ml-6">
+                        <div className="flex items-center gap-2 select-none">
                           <span className="text-slate-500 font-mono text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                             Order ID: #{editingJobId.split('-')[0].toUpperCase()}
                           </span>
-                          {hasAccess("activity-logs") && (
+                          {/* Only show logs to admin/cso */}
+                          {(user?.role === 'admin' || user?.role === 'cso') && (
                             <Button
                               type="button"
                               variant="outline"
@@ -1584,16 +1585,6 @@ export default function AdminPage() {
                               {showJobLogs ? "Back to Edit" : "Activity Logs"}
                             </Button>
                           )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setShowReceipt(true)}
-                            className="h-7 px-2 text-xs flex items-center gap-1.5 border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all font-semibold rounded shadow-sm cursor-pointer"
-                          >
-                            <Printer size={12} className="text-slate-500" />
-                            {currentLanguage === "en" ? "Print Receipt" : "พิมพ์ใบเสร็จ"}
-                          </Button>
                         </div>
                       )}
                     </DialogTitle>
@@ -2590,19 +2581,26 @@ export default function AdminPage() {
                         
                         {/* Cart / Order Items List */}
                         <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-hidden">
-                          <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider select-none shrink-0">
-                            <Package size={14} className="text-slate-500" />
-                            Order Items Cart
-                          </span>
+                          <div className="flex justify-between items-center shrink-0 select-none pb-0.5">
+                            <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                              <Package size={14} className="text-slate-500" />
+                              Order Items Cart
+                            </span>
+                            
+                            {(user?.role === 'admin' || user?.role === 'cso') && (
+                              <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
+                                <input 
+                                  type="checkbox" 
+                                  checked={isStuck} 
+                                  onChange={(e) => setIsStuck(e.target.checked)} 
+                                  className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3 w-3 cursor-pointer"
+                                />
+                                <span className="text-[10px] font-bold uppercase tracking-wider">Stuck</span>
+                              </Label>
+                            )}
+                          </div>
                           <div id="order-items-list" className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar">
-                            {!activeShift ? (
-                              <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
-                                <PackageOpen size={24} className="text-slate-600 mb-1.5" />
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                                  {currentLanguage === "en" ? "No Active Shift" : "ไม่มีรอบกะที่รันอยู่"}
-                                </span>
-                              </div>
-                            ) : dialogCart.length > 0 ? (
+                            {dialogCart.length > 0 ? (
                               dialogCart.map((item, idx) => (
                                 <div key={item.id || idx} className="flex justify-between items-center bg-slate-800/40 hover:bg-slate-800/80 p-1.5 rounded border border-slate-700/30 text-[11px] transition-all">
                                   <div className="flex-1 min-w-0 pr-1.5 flex items-center gap-1">
@@ -2613,8 +2611,8 @@ export default function AdminPage() {
                                     <div className="flex items-center border border-slate-700 rounded bg-slate-900 p-0.5">
                                       <button
                                         type="button"
-                                        disabled={isPaidJob}
-                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'hover:text-rose-400'}`}
+                                        disabled={isCartLocked}
+                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-rose-400'}`}
                                         onClick={() => {
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => 
@@ -2635,8 +2633,8 @@ export default function AdminPage() {
                                       </span>
                                       <button
                                         type="button"
-                                        disabled={isPaidJob}
-                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400'}`}
+                                        disabled={isCartLocked}
+                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400'}`}
                                         onClick={() => {
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => 
@@ -2657,7 +2655,7 @@ export default function AdminPage() {
                                       <span className="text-[10px] text-slate-500 font-bold mr-0.5">฿</span>
                                       <input 
                                         type="number"
-                                        disabled={isPaidJob}
+                                        disabled={isCartLocked}
                                         value={item.price}
                                         className="w-full text-right text-[10px] font-black text-slate-200 bg-transparent border-none p-0 focus:ring-0 focus:outline-none"
                                         onChange={e => {
@@ -2675,7 +2673,7 @@ export default function AdminPage() {
                                         }}
                                       />
                                     </div>
-                                    {!isPaidJob && (
+                                    {!isCartLocked && (
                                       <button
                                         type="button"
                                         className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-red-400 transition-colors cursor-pointer shrink-0 animate-in fade-in"
@@ -2694,6 +2692,13 @@ export default function AdminPage() {
                                   </div>
                                 </div>
                               ))
+                            ) : !activeShift ? (
+                              <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
+                                <PackageOpen size={24} className="text-slate-600 mb-1.5" />
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                  {currentLanguage === "en" ? "No Active Shift" : "ไม่มีรอบกะที่รันอยู่"}
+                                </span>
+                              </div>
                             ) : (
                               <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/20 rounded border border-dashed border-slate-700/30 text-center text-slate-500">
                                 <PackageOpen size={20} className="mb-1" />
@@ -2706,153 +2711,48 @@ export default function AdminPage() {
                         </div>
 
                         {/* Summary and Controls (Bottom Section) */}
-                        <div className="border-t border-slate-800/80 pt-2 flex flex-col gap-2 shrink-0">
-                          {(user?.role === 'admin' || user?.role === 'cso') && (
-                            <div className="flex justify-between items-center pb-1 border-b border-slate-800">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Job Flag</span>
-                              <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
-                                <input 
-                                  type="checkbox" 
-                                  checked={isStuck} 
-                                  onChange={(e) => setIsStuck(e.target.checked)} 
-                                  className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3.5 w-3.5"
-                                />
-                                <span className="text-xs font-bold">Stuck</span>
-                              </Label>
-                            </div>
-                          )}
-                          <div className="flex flex-col gap-1 pb-1 border-b border-slate-800">
-                            {isPickup && (
-                              <div className="flex justify-between items-center text-xs">
-                                <span className="text-slate-400">Pickup Dist.</span>
-                                <span className="font-medium">{pickupDist} km (×2)</span>
-                              </div>
-                            )}
-                            {isDelivery && (
-                              <div className="flex justify-between items-center text-xs">
-                                <span className="text-slate-400">Delivery Dist.</span>
-                                <span className="font-medium">{deliveryDist} km</span>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="flex flex-col">
+                        <div className="border-t border-slate-800/80 pt-1 flex flex-col gap-1 shrink-0">
+                          {/* Service Speed */}
+                          <div className="flex flex-col pb-0.5">
                             {serviceSpeed !== "standard" && (
-                              <div className="flex justify-between items-center pb-1">
-                                <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                                <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
+                              <div className="flex justify-between items-center pb-0.5">
+                                <span className="text-[9px] text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
+                                <span className="text-xs font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
                               </div>
                             )}
 
-                            <div className="space-y-0.5 pb-1.5">
-                              <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
+                            <div className="space-y-0.5">
+                              <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
                               <div className="flex items-center gap-3">
                                 <Label className="flex items-center gap-1 cursor-pointer">
-                                  <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
-                                  <span className="text-[11px] text-slate-200">Standard</span>
+                                  <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                  <span className="text-[10px] text-slate-200">Standard</span>
                                 </Label>
                                 <Label className="flex items-center gap-1 cursor-pointer">
-                                  <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
-                                  <span className="text-[11px] text-slate-200">Exp 50%</span>
+                                  <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                  <span className="text-[10px] text-slate-200">Exp 50%</span>
                                 </Label>
                                 <Label className="flex items-center gap-1 cursor-pointer">
-                                  <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
-                                  <span className="text-[11px] text-slate-200">Exp 100%</span>
+                                  <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                  <span className="text-[10px] text-slate-200">Exp 100%</span>
                                 </Label>
                               </div>
                             </div>
-
-                            <div className="grid grid-cols-2 gap-2 pt-1.5 border-t border-slate-800">
-                              <div className="space-y-0.5">
-                                <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <CreditCard size={12} className="text-slate-500" />
-                                  Payment Channel
-                                </Label>
-                                <select
-                                  id="payment-channel"
-                                  className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
-                                  value={paymentChannel}
-                                  onChange={(e) => setPaymentChannel(e.target.value)}
-                                >
-                                  <option value="">Select Channel</option>
-                                  <option value="Cash / COD">Cash / COD</option>
-                                  <option value="Transfer">Transfer</option>
-                                  <option value="Credit Card">Credit Card</option>
-                                  <option value="Gateway">Gateway</option>
-                                  <option value="PromptPay">PromptPay</option>
-                                  <option value="Deduct Member">Deduct Member</option>
-                                  <option value="HQ/Credit">HQ/Credit</option>
-                                </select>
-                              </div>
-
-                              <div className="space-y-0.5">
-                                <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                  Status
-                                </Label>
-                                <div className="flex items-center gap-2 h-6">
-                                  <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
-                                    <input 
-                                      type="radio" 
-                                      name="payment-status"
-                                      checked={paymentMethod === 'unpaid'} 
-                                      onChange={() => setPaymentMethod('unpaid')} 
-                                      className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" 
-                                    />
-                                    <span className="font-medium text-slate-200">Unpaid</span>
-                                  </Label>
-                                  <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
-                                    <input 
-                                      type="radio" 
-                                      name="payment-status"
-                                      checked={paymentMethod === 'paid'} 
-                                      onChange={() => setPaymentMethod('paid')} 
-                                      className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600" 
-                                    />
-                                    <span className="font-medium text-emerald-400">Paid</span>
-                                  </Label>
-                                  {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                    <Label className="flex items-center gap-1.5 cursor-pointer text-[11px] ml-1 animate-in fade-in duration-200">
-                                      <input 
-                                        type="checkbox" 
-                                        checked={cashPlaced} 
-                                        onChange={(e) => setCashPlaced(e.target.checked)} 
-                                        className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3"
-                                      />
-                                      <span className="font-medium text-amber-400">วางเงินแล้ว</span>
-                                    </Label>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                          
-                          <div className="flex justify-between items-end pb-1 border-t border-slate-800 pt-1.5">
-                            <div className="flex flex-col gap-0.5">
-                               <Label className="flex items-center gap-1 cursor-pointer">
-                                  <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
-                                  <span className="text-xs text-slate-300">Free Delivery</span>
-                                </Label>
-                                <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
-                            </div>
-                            <div className="text-right">
-                              {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">฿{baseFee.toFixed(0)}</span>}
-                              <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>฿{fee.toFixed(0)}</span>
-                            </div>
-                          </div>
-                          
-                          <div className="flex justify-between items-end border-t border-slate-800 pt-1.5">
-                            <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                            <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                           </div>
 
+                          {/* Consolidated Delivery & Rider Details Section */}
                           {(isPickup || isDelivery) && (
-                            <div className="flex justify-between items-end mt-1 pt-1.5 border-t border-slate-800">
-                              <div className="flex flex-col">
-                                <span className="text-[10px] text-amber-400 font-medium uppercase tracking-wider">Est. Rider Commission</span>
-                                <span className="text-[9px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
+                            <div className="flex justify-between items-center text-[9px] text-slate-300 pb-1 border-t border-slate-800/60 pt-1 mt-0.5 animate-in fade-in duration-200">
+                              <div className="flex items-center gap-1">
+                                <Truck size={11} className="text-slate-500 mr-0.5" />
+                                <span className="text-slate-400 font-bold">Logistics:</span>
+                                {isPickup && <span>P: {pickupDist} km (×2)</span>}
+                                {isPickup && isDelivery && <span className="text-slate-600 px-0.5">/</span>}
+                                {isDelivery && <span>D: {deliveryDist} km</span>}
                               </div>
-                              <div className="text-right">
-                                <span className="text-md font-bold text-amber-400">
+                              <div className="flex items-center gap-1">
+                                <span className="text-amber-400 font-medium">Rider Comm:</span>
+                                <span className="font-bold text-amber-400">
                                   ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
                                     (isPickup ? (
                                       (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
@@ -2870,8 +2770,100 @@ export default function AdminPage() {
                             </div>
                           )}
 
+                          {/* Free Delivery checkbox (placed before Grand Total) */}
+                          {(isPickup || isDelivery) && (
+                            <div className="flex justify-between items-center text-[10px] border-t border-slate-800 pt-1 pb-1 animate-in fade-in duration-200">
+                              <div className="flex flex-col gap-0.5">
+                                 <Label className="flex items-center gap-1 cursor-pointer text-slate-300 select-none">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={isFreeDelivery} 
+                                      onChange={(e) => setIsFreeDelivery(e.target.checked)} 
+                                      className="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer"
+                                    />
+                                    <span className="font-bold">Free Delivery</span>
+                                  </Label>
+                                  <span className="text-[8px] text-slate-500 ml-4.5">Rate: {selectedVIPLabel ? '4' : '10'}฿/km</span>
+                              </div>
+                              <div className="text-right select-none">
+                                {isFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-1.5">฿{baseFee.toFixed(0)}</span>}
+                                <span className={`text-[11px] font-black ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-200'}`}>Fee: ฿{fee.toFixed(0)}</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Grand Total */}
+                          <div className="flex justify-between items-end border-t border-slate-800 pt-1 pb-1">
+                            <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
+                            <span className="text-xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
+                          </div>
+
+                          {/* Payment Channel / Status */}
+                          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 pb-1">
+                            <div className="space-y-0.5">
+                              <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                <CreditCard size={11} className="text-slate-500" />
+                                Payment Channel
+                              </Label>
+                              <select
+                                id="payment-channel"
+                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
+                                value={paymentChannel}
+                                onChange={(e) => setPaymentChannel(e.target.value)}
+                              >
+                                <option value="">Select Channel</option>
+                                <option value="Cash / COD">Cash / COD</option>
+                                <option value="Transfer">Transfer</option>
+                                <option value="Credit Card">Credit Card</option>
+                                <option value="Gateway">Gateway</option>
+                                <option value="PromptPay">PromptPay</option>
+                                <option value="Deduct Member">Deduct Member</option>
+                                <option value="HQ/Credit">HQ/Credit</option>
+                              </select>
+                            </div>
+
+                            <div className="space-y-0.5">
+                              <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                Status
+                              </Label>
+                              <div className="flex items-center gap-2 h-6">
+                                <Label className="flex items-center gap-1 cursor-pointer text-[10px]">
+                                  <input 
+                                    type="radio" 
+                                    name="payment-status"
+                                    checked={paymentMethod === 'unpaid'} 
+                                    onChange={() => setPaymentMethod('unpaid')} 
+                                    className="w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" 
+                                  />
+                                  <span className="font-medium text-slate-200">Unpaid</span>
+                                </Label>
+                                <Label className="flex items-center gap-1 cursor-pointer text-[10px]">
+                                  <input 
+                                    type="radio" 
+                                    name="payment-status"
+                                    checked={paymentMethod === 'paid'} 
+                                    onChange={() => setPaymentMethod('paid')} 
+                                    className="w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600" 
+                                  />
+                                  <span className="font-medium text-emerald-400">Paid</span>
+                                </Label>
+                                {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                                  <Label className="flex items-center gap-1 cursor-pointer text-[10px] ml-0.5 animate-in fade-in duration-200">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={cashPlaced} 
+                                      onChange={(e) => setCashPlaced(e.target.checked)} 
+                                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-2.5 w-2.5"
+                                    />
+                                    <span className="font-medium text-amber-400">วางเงิน</span>
+                                  </Label>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
                           {/* Consolidated Checkout Buttons under summary card */}
-                          <div className="flex gap-2 mt-2 pt-2 border-t border-slate-800 select-none">
+                          <div className="flex gap-2 mt-1 pt-1 border-t border-slate-800 select-none">
                             <Button 
                               type="button"
                               variant="outline"
@@ -2921,20 +2913,20 @@ export default function AdminPage() {
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
                               }}
-                              className="flex-1 h-9 rounded-lg text-[11px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1.5 cursor-pointer"
+                              className="flex-1 h-8 rounded-lg text-[10px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                               title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
                             >
-                              <Eye size={12} />
+                              <Eye size={11} />
                               {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
                             </Button>
 
                             <Button 
                               type="button"
-                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0}
+                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked}
                               onClick={handleCreate}
-                              className="flex-[1.4] h-9 rounded-lg text-[11px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                              <Banknote size={13} />
+                              <Banknote size={12} />
                               Pay ฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(2)}
                             </Button>
                           </div>
@@ -3250,7 +3242,6 @@ export default function AdminPage() {
         currentLanguage={currentLanguage}
         onCloseComplete={() => {
           setIsDraftPreview(false);
-          setLatestJob(null);
         }}
       />
     </ProtectedRoute>

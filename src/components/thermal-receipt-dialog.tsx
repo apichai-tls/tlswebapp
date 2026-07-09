@@ -186,7 +186,7 @@ export function ThermalReceiptDialog({
   }, []);
 
   useEffect(() => {
-    if (!open || !receiptData || receiptData.isDraft || !receiptData.jobId) return;
+    if (!open || !receiptData || !receiptData.jobId) return;
 
     // Run a small timeout to make sure the DOM is fully painted
     const captureTimer = setTimeout(() => {
@@ -204,7 +204,10 @@ export function ThermalReceiptDialog({
             if (!blob) return;
 
             // Generate file payload
-            const file = new File([blob], `receipt-${receiptData.jobId}.png`, { type: "image/png" });
+            const filename = receiptData.isDraft 
+              ? `proforma-${receiptData.proformaId || receiptData.jobId}.png`
+              : `receipt-${receiptData.jobId}.png`;
+            const file = new File([blob], filename, { type: "image/png" });
             const formData = new FormData();
             formData.append("file", file);
             formData.append("entityType", "jobs");
