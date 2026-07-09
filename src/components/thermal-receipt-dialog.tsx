@@ -193,7 +193,7 @@ export function ThermalReceiptDialog({
       const element = document.getElementById("thermal-receipt-capture-area");
       if (!element) return;
 
-      import("html2canvas").then((html2canvasModule) => {
+      import("html2canvas-pro").then((html2canvasModule) => {
         const html2canvas = html2canvasModule.default;
         html2canvas(element, {
           backgroundColor: "#ffffff",
