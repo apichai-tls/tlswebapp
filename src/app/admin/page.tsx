@@ -3518,6 +3518,14 @@ export default function AdminPage() {
         onCloseComplete={() => {
           setIsDraftPreview(false);
         }}
+        onBillImageUploaded={(newUrl) => {
+          setBillImageUrls(prev => {
+            if (!prev.includes(newUrl)) {
+              return [...prev, newUrl];
+            }
+            return prev;
+          });
+        }}
       />
 
     </ProtectedRoute>

@@ -166,6 +166,7 @@ interface ThermalReceiptDialogProps {
   receiptPaperSize?: string;
   currentLanguage?: string;
   onCloseComplete?: () => void;
+  onBillImageUploaded?: (url: string) => void;
 }
 
 export function ThermalReceiptDialog({
@@ -175,7 +176,8 @@ export function ThermalReceiptDialog({
   activeShop,
   receiptPaperSize = "80mm",
   currentLanguage = "th",
-  onCloseComplete
+  onCloseComplete,
+  onBillImageUploaded
 }: ThermalReceiptDialogProps) {
   const [mounted, setMounted] = useState(false);
 
@@ -245,6 +247,9 @@ export function ThermalReceiptDialog({
                 });
                 const uploadResult = await res.json();
                 if (uploadResult.success && uploadResult.publicUrl) {
+                  if (onBillImageUploaded) {
+                    onBillImageUploaded(uploadResult.publicUrl);
+                  }
                   // Update the job details in db
                   const currentJob = jobStore.getSnapshot().find(j => j.id === receiptData.jobId);
                   if (currentJob) {
