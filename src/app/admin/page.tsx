@@ -42,7 +42,6 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
-import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -93,9 +92,10 @@ import {
   Paperclip,
   Maximize2,
   Trash2,
+  Menu,
   Printer,
   Banknote,
-  PackageOpen
+  PackageOpen,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -171,6 +171,7 @@ const rowVariant = {
   animate: { opacity: 1, x: 0, transition: { duration: 0.3, ease: [0, 0, 0.2, 1] as const } },
 };
 
+import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 export default function AdminPage() {
   const { user, logout } = useAuth();
   const jobs = useJobs();
@@ -181,12 +182,6 @@ export default function AdminPage() {
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
-  const { activeShift } = useSyncExternalStore(shiftStore.subscribe, shiftStore.getSnapshot, shiftStore.getSnapshot);
-
-  const categories = useMemo(() => {
-    const activeServices = services.filter(s => s.isActive !== false);
-    return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
-  }, [services]);
 
   const localDataForSearch = useMemo(() => {
     return pois.map(p => ({
@@ -215,6 +210,7 @@ export default function AdminPage() {
 
   const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
@@ -326,16 +322,6 @@ export default function AdminPage() {
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const activeJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
-  const [showReceipt, setShowReceipt] = useState(false);
-  
-  const activeShop = useMemo(() => {
-    if (!activeJob) return shopLocations[0];
-    return shopLocations.find(s => s.id === activeJob.branchId) || shopLocations[0];
-  }, [activeJob, shopLocations]);
-
-  const currentLanguage = systemSettings?.language || "th";
-  const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
-
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
   const [laundryTypes, setLaundryTypes] = useState<string[]>([]);
@@ -394,17 +380,6 @@ export default function AdminPage() {
     setSelectedStoreIndex(getClosestShopIndex(coords, shopLocations));
   };
   const [serviceType, setServiceType] = useState<string>("");
-  const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
-  const [dialogCart, setDialogCart] = useState<any[]>([]);
-  const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string | null>(null);
-  const [proformaRevision, setProformaRevision] = useState<number>(0);
-  const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
-  const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
-
-
-  const isPaidJob = activeJob ? !!activeJob.isPaid : false;
-  const isPricingLocked = isPaidJob || !activeShift;
-  const isCartLocked = isPaidJob || !activeShift;
   const roundToNearest30 = (date: Date) => {
     const ms = 1000 * 60 * 30;
     const rounded = new Date(Math.round(date.getTime() / ms) * ms);
@@ -656,6 +631,7 @@ export default function AdminPage() {
   const billUploaderRef = useRef<MultiImageUploaderRef>(null);
   const pickupUploaderRef = useRef<MultiImageUploaderRef>(null);
   const deliveryUploaderRef = useRef<MultiImageUploaderRef>(null);
+  const originalJobRef = useRef<Job | null>(null);
 
   const handleLogout = () => {
     logout();
@@ -710,6 +686,40 @@ export default function AdminPage() {
       dropoffLabel: j.dropoffLocation,
       status: j.status,
     }));
+
+
+  // --- POS/Cashier Shift Enhancements ---
+  const [dialogCart, setDialogCart] = useState<any[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string>("");
+  const [categorySearch, setCategorySearch] = useState<string>("");
+  
+  // Cashier shift state
+  const { activeShift } = useSyncExternalStore(shiftStore.subscribe, shiftStore.getSnapshot, shiftStore.getSnapshot);
+  const currentLanguage = systemSettings?.language || "th";
+  
+  // Derived lock states
+  const isPaidJob = editingJobId ? (jobStore.getSnapshot().find(j => j.id === editingJobId)?.status === 'completed' || jobStore.getSnapshot().find(j => j.id === editingJobId)?.isPaid) : false;
+  const isPricingLocked = isPaidJob || !activeShift;
+  const isCartLocked = isPaidJob || !activeShift;
+  const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
+
+  // Proforma states
+  const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string | null>(null);
+  const [proformaRevision, setProformaRevision] = useState<number>(0);
+  const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
+  const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
+  const [showReceipt, setShowReceipt] = useState<boolean>(false);
+  const [receiptPaperSize, setReceiptPaperSize] = useState<string>("80mm");
+
+  const activeShop = useMemo(() => {
+    return shopLocations[selectedStoreIndex] || shopLocations[0];
+  }, [shopLocations, selectedStoreIndex]);
+
+  // Derived category list
+  const categories = useMemo(() => {
+    const activeServices = services.filter(s => s.isActive !== false);
+    return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
+  }, [services]);
 
   const handleCreateNewJob = () => {
     setEditingJobId(null);
@@ -1510,12 +1520,298 @@ export default function AdminPage() {
           </div>
         </aside>
 
+        {/* Mobile Navigation Drawer */}
+        <AnimatePresence>
+          {isMobileMenuOpen && (
+            <>
+              {/* Drawer Backdrop */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.4 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="fixed inset-0 bg-black z-40 lg:hidden"
+              />
+              {/* Drawer Sidebar Menu */}
+              <motion.div
+                initial={{ x: "-100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "-100%" }}
+                transition={{ type: "spring", damping: 25, stiffness: 200 }}
+                className="fixed inset-y-0 left-0 w-72 bg-white shadow-2xl z-50 lg:hidden flex flex-col h-full border-r border-slate-200"
+              >
+                {/* Header logo & close action */}
+                <div className="flex h-20 items-center justify-between border-b border-slate-100 px-6">
+                  <Logo />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={20} />
+                  </Button>
+                </div>
+
+                {/* Sidebar Tab Nav Items */}
+                <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto hide-scrollbar">
+                  {hasAccess("dashboard") && (
+                    <a
+                      href="#dashboard"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("dashboard");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <LayoutDashboard size={18} />
+                      <span>Dashboard</span>
+                    </a>
+                  )}
+
+                  {hasAccess("services") && (
+                    <a
+                      href="#services"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("services");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "services" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Tag size={18} />
+                      <span>Service Menu</span>
+                    </a>
+                  )}
+
+                  {hasAccess("pos") && (
+                    <a
+                      href="#pos"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("pos");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <CreditCard size={18} />
+                      <span>POS</span>
+                    </a>
+                  )}
+
+                  {hasAccess("jobs") && (
+                    <a
+                      href="#jobs"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("jobs");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Package size={18} />
+                      <span>All Jobs</span>
+                    </a>
+                  )}
+
+                  {hasAccess("customers") && (
+                    <a
+                      href="#customers"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("customers");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Users size={18} />
+                      <span>Customers (CRM)</span>
+                    </a>
+                  )}
+
+                  {hasAccess("dispatch") && (
+                    <a
+                      href="#dispatch"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("dispatch");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <CalendarClock size={18} />
+                      <span>Dispatch Schedule</span>
+                    </a>
+                  )}
+
+                  <a
+                    href="#billing"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleTabChange("verify");
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                      activeTab === "verify" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    <Camera size={18} />
+                    <span>Billing</span>
+                  </a>
+
+                  {hasAccess("riders") && (
+                    <a
+                      href="#riders"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("riders");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Truck size={18} />
+                      <span>Riders</span>
+                    </a>
+                  )}
+
+                  {hasAccess("map") && (
+                    <a
+                      href="#map"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("map");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Map size={18} />
+                      <span>Live Map</span>
+                    </a>
+                  )}
+
+                  <a
+                    href="#calculator"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleTabChange("calculator");
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                      activeTab === "calculator" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    <Calculator size={18} />
+                    <span>Distance Calculator</span>
+                  </a>
+
+                  {hasAccess("settings") && (
+                    <a
+                      href="#settings"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("settings");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Settings size={18} />
+                      <span>Settings</span>
+                    </a>
+                  )}
+
+                  {hasAccess("activity-logs") && (
+                    <a
+                      href="#activity-logs"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("activity-logs");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "activity-logs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <ClipboardList size={18} />
+                      <span>Activity Logs</span>
+                    </a>
+                  )}
+
+                  {hasAccess("users") && (
+                    <a
+                      href="#users"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("users");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "users" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <ShieldCheck size={18} />
+                      <span>Manage Users</span>
+                    </a>
+                  )}
+                </nav>
+
+                {/* Drawer Footer Actions */}
+                <div className="border-t border-slate-100 p-4 space-y-2">
+                  <Link href="/privacy" onClick={() => setIsMobileMenuOpen(false)}>
+                    <Button variant="ghost" size="sm" className="w-full gap-3 text-slate-500 hover:text-slate-900 justify-start">
+                      <ShieldCheck size={16} />
+                      <span>Privacy Policy</span>
+                    </Button>
+                  </Link>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full gap-3 text-red-500 hover:text-red-600 hover:bg-red-50 justify-start"
+                    onClick={() => {
+                      handleLogout();
+                      setIsMobileMenuOpen(false);
+                    }}
+                  >
+                    <LogOut size={16} />
+                    <span>Logout</span>
+                  </Button>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+
         {/* Main Content */}
         <main className="flex-1 flex flex-col">
           {/* Top bar */}
-          {activeTab !== "pos" && (
-            <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm">
+          <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm">
             <div className="flex items-center gap-3 lg:hidden px-2 py-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsMobileMenuOpen(true)}
+                className="text-slate-600 hover:text-slate-900 mr-1"
+              >
+                <Menu size={20} />
+              </Button>
               <Logo />
             </div>
             <h1 className="hidden lg:block text-lg font-semibold text-slate-900">
@@ -1556,7 +1852,7 @@ export default function AdminPage() {
                   </motion.div>
                   <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
                 <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 items-start lg:items-center">
-                  <div className="col-span-6 lg:col-span-7 flex flex-row items-center gap-4 w-full">
+                  <div className="col-span-6 lg:col-span-6 flex flex-row items-center gap-4 w-full">
                     <DialogTitle className="flex flex-col items-start gap-1 text-lg shrink-0">
                       <div className="flex items-center gap-2">
                         <Package size={18} />
@@ -1568,12 +1864,11 @@ export default function AdminPage() {
                         )}
                       </div>
                       {editingJobId && (
-                        <div className="flex items-center gap-2 select-none">
+                        <div className="flex items-center gap-2 ml-6">
                           <span className="text-slate-500 font-mono text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                             Order ID: #{editingJobId.split('-')[0].toUpperCase()}
                           </span>
-                          {/* Only show logs to admin/cso */}
-                          {(user?.role === 'admin' || user?.role === 'cso') && (
+                          {hasAccess("activity-logs") && (
                             <Button
                               type="button"
                               variant="outline"
@@ -1588,13 +1883,13 @@ export default function AdminPage() {
                         </div>
                       )}
                     </DialogTitle>
-                    <div className="relative w-full max-w-[400px] z-50 mt-0">
+                    <div className="relative w-full max-w-[320px] z-50 mt-0">
                       <div className="flex items-center gap-2">
                         <div className="relative flex-1">
                           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                           <Input
                             id="customer-search"
-                            placeholder="Search customer by name or phone..."
+                            placeholder="Search customer by name/phone..."
                             value={customerSearchQuery}
                             disabled={!!editingJobId}
                             onChange={(e) => {
@@ -1704,11 +1999,11 @@ export default function AdminPage() {
                     </div>
                   </div>
                   
-                  <div className="col-span-6 lg:col-span-5 w-full flex justify-end pr-10 lg:pr-12">
+                  <div className="col-span-6 lg:col-span-6 w-full flex justify-end pr-8 lg:pr-12">
                     {editingJobId && (
-                      <div className="flex flex-row gap-4 items-center justify-end w-full">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type:</span>
+                      <div className="flex flex-row gap-1.5 sm:gap-3 items-center justify-end w-full">
+                        <div className="flex items-center gap-1 sm:gap-2">
+                          <span className="hidden sm:inline text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type:</span>
                           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
                             {[
                               { id: 'W', label: 'Wash' },
@@ -1723,17 +2018,17 @@ export default function AdminPage() {
                                 key={t.id}
                                 type="button"
                                 onClick={() => setLaundryTypes(prev => prev.includes(t.id) ? prev.filter(x => x !== t.id) : [...prev, t.id])}
-                                className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
+                                className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
                                   laundryTypes.includes(t.id)
                                     ? 'bg-slate-800 shadow-sm'
                                     : 'hover:bg-white text-slate-500 hover:text-slate-800'
                                 }`}
                                 title={t.label}
                               >
-                                <span className={`text-[14px] font-black leading-none h-[16px] flex items-center justify-center ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-700'}`}>
+                                <span className={`text-[11px] sm:text-[14px] font-black leading-none flex items-center justify-center ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-700'}`}>
                                   {t.id}
                                 </span>
-                                <span className={`text-[9px] font-bold leading-none ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-500'}`}>
+                                <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-500'}`}>
                                   {t.label === 'Dryclean' ? 'Dry' : t.label}
                                 </span>
                               </button>
@@ -1741,91 +2036,91 @@ export default function AdminPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
+                        <div className="flex items-center gap-1 sm:gap-2">
+                          <span className="hidden sm:inline text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
                           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
 
                             {/* Billing — auto-indicator, not clickable */}
                           <div
-                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] cursor-default ${
+                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 cursor-default ${
                               billImageUrls.length > 0
                                 ? 'bg-violet-600 shadow-sm text-white'
                                 : 'text-slate-400'
                             }`}
                             title={billImageUrls.length > 0 ? 'Bill uploaded' : 'No bill uploaded'}
                           >
-                            <div className="h-[16px] flex items-center justify-center">
-                              <Receipt size={14} className={billImageUrls.length > 0 ? 'text-white' : 'text-slate-400'} strokeWidth={2} />
+                            <div className="flex items-center justify-center">
+                              <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2} />
                             </div>
-                            <span className={`text-[9px] font-bold leading-none ${billImageUrls.length > 0 ? 'text-white' : 'text-slate-400'}`}>Bill</span>
+                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${billImageUrls.length > 0 ? 'text-white' : 'text-slate-400'}`}>Bill</span>
                           </div>
 
                           {/* Wash */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'wash' ? null : 'wash')}
-                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
+                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
                               editingSubStatus === 'wash'
                                 ? 'bg-blue-600 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Washing"
                           >
-                            <div className="h-[16px] flex items-center justify-center">
-                              <Droplets size={14} className={editingSubStatus === 'wash' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="flex items-center justify-center">
+                              <Droplets className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'wash' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'wash' ? 'text-white' : 'text-slate-500'}`}>Wash</span>
+                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'wash' ? 'text-white' : 'text-slate-500'}`}>Wash</span>
                           </button>
 
                           {/* Dry */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'dry' ? null : 'dry')}
-                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
+                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
                               editingSubStatus === 'dry'
                                 ? 'bg-orange-600 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Drying"
                           >
-                            <div className="h-[16px] flex items-center justify-center">
-                              <Wind size={14} className={editingSubStatus === 'dry' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="flex items-center justify-center">
+                              <Wind className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'dry' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'dry' ? 'text-white' : 'text-slate-500'}`}>Dry</span>
+                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'dry' ? 'text-white' : 'text-slate-500'}`}>Dry</span>
                           </button>
 
                           {/* Iron */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'iron' ? null : 'iron')}
-                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
+                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
                               editingSubStatus === 'iron'
                                 ? 'bg-indigo-700 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Ironing"
                           >
-                            <div className="h-[16px] flex items-center justify-center">
-                              <Shirt size={14} className={editingSubStatus === 'iron' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="flex items-center justify-center">
+                              <Shirt className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'iron' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'iron' ? 'text-white' : 'text-slate-500'}`}>Iron</span>
+                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'iron' ? 'text-white' : 'text-slate-500'}`}>Iron</span>
                           </button>
 
                           {/* Ready */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'ready' ? null : 'ready')}
-                            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded transition-all min-w-[40px] ${
+                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
                               editingSubStatus === 'ready'
                                 ? 'bg-emerald-600 shadow-sm text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Ready"
                           >
-                            <div className="h-[16px] flex items-center justify-center">
-                              <CheckCircle2 size={14} className={editingSubStatus === 'ready' ? 'text-white' : ''} strokeWidth={2} />
+                            <div className="flex items-center justify-center">
+                              <CheckCircle2 className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'ready' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`text-[9px] font-bold leading-none ${editingSubStatus === 'ready' ? 'text-white' : 'text-slate-500'}`}>Ready</span>
+                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'ready' ? 'text-white' : 'text-slate-500'}`}>Ready</span>
                           </button>
 
                         </div>
@@ -1838,18 +2133,18 @@ export default function AdminPage() {
                 {/* Main Content Grid */}
                 <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3">
                   {!showJobLogs ? (
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-full">
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-auto lg:h-full">
                     
                     {/* COL 1: Basic Info (span 4) */}
                     <motion.div
-                      className="lg:col-span-4 flex flex-col gap-2 overflow-y-auto pr-1 pb-4 lg:pb-0"
+                      className="lg:col-span-4 flex flex-col gap-2 lg:overflow-y-auto pr-1 pb-4 lg:pb-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.1, duration: 0.3 }}
                     >
                       {/* Customer Info & Logistics Card */}
                       <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2 shrink-0">
-                        <div className="grid grid-cols-2 gap-2 pb-1 border-b border-slate-100">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pb-1 border-b border-slate-100">
                           <div className="space-y-1">
                             <div className="flex items-center justify-between">
                               <Label htmlFor="custName" className="flex items-center gap-1 text-xs font-medium text-slate-500 whitespace-nowrap">
@@ -1905,8 +2200,8 @@ export default function AdminPage() {
                           </div>
                         </div>
                         
-                        <div className="flex items-end gap-3 mb-1 pb-2 border-b border-slate-100 shrink-0">
-                          <div className="space-y-1 flex-1">
+                        <div className="flex flex-col sm:flex-row sm:items-end gap-2.5 mb-1 pb-2 border-b border-slate-100 shrink-0">
+                          <div className="space-y-1 w-full sm:flex-1">
                             <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
                               <Store size={14} className="text-blue-600" />
                               Origin Store Branch
@@ -1926,7 +2221,7 @@ export default function AdminPage() {
                             </select>
                           </div>
 
-                          <div className="flex items-center gap-3 pb-1">
+                          <div className="flex items-center justify-start gap-4 pb-1 w-full sm:w-auto flex-wrap sm:flex-nowrap">
                             <Label className="flex items-center gap-1.5 cursor-pointer">
                               <input 
                                 type="checkbox" 
@@ -2019,7 +2314,7 @@ export default function AdminPage() {
                                     placeholder="Room"
                                     value={pickupRoom}
                                     onChange={(e) => setPickupRoom(e.target.value)}
-                                    className="h-9 text-xs"
+                                    className="h-9 text-xs px-2"
                                   />
                                 </div>
                               </div>
@@ -2073,7 +2368,7 @@ export default function AdminPage() {
                                     placeholder="Room"
                                     value={deliveryRoom}
                                     onChange={(e) => setDeliveryRoom(e.target.value)}
-                                    className="h-9 text-xs"
+                                    className="h-9 text-xs px-2"
                                   />
                                 </div>
                               </div>
@@ -2242,16 +2537,16 @@ export default function AdminPage() {
                           <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
                             {adminLogs.length > 0 ? (
                               <div 
-                                className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-[10px]"
+                                className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-xs"
                               >
                                 {adminLogs.map((log, i) => (
                                   <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm pr-6">
                                     <div className="flex justify-between items-center mb-1">
-                                      <span className={`font-bold text-[10px] uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
+                                      <span className={`font-bold text-xs uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
                                         {log.userName || (log as any).createdBy || "System"}
                                       </span>
                                       <div className="flex items-center gap-1.5">
-                                        <span className="text-[9px] text-slate-400">
+                                        <span className="text-[10px] text-slate-400">
                                           {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
                                         </span>
                                         {log.isNew && (
@@ -2269,7 +2564,7 @@ export default function AdminPage() {
                                         )}
                                       </div>
                                     </div>
-                                    <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
+                                    <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
                                     {log.imageUrls && log.imageUrls.length > 0 && (
                                       <div className="flex flex-wrap gap-1 mt-1.5">
                                         {log.imageUrls.map((url, idx) => (
@@ -2947,7 +3242,7 @@ export default function AdminPage() {
                 </div>
                 
                 {!showJobLogs && (
-                  <DialogFooter className="mt-0 p-4 border-t border-slate-200 bg-white shrink-0">
+                  <DialogFooter className="mx-0 mb-0 mt-0 p-4 border-t border-slate-200 bg-white shrink-0">
                     <div className="flex gap-3">
                     <Button variant="outline" className="flex-1" onClick={() => setDialogOpen(false)} disabled={isSubmitting}>
                       Cancel
@@ -3119,10 +3414,9 @@ export default function AdminPage() {
             )}
             </div>
           </header>
-          )}
 
           {/* Dynamic Content Views */}
-          {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} onTabChange={handleTabChange} />}
+          {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
           {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={handleEditFullJob} onCreateJob={handleCreateNewJob} />}
           {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={handleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
@@ -3193,28 +3487,8 @@ export default function AdminPage() {
               setSelectedMemberLabel("");
               setSelectedMemberId("");
             }
-            const newPlId = c.priceListId || null;
-            setCustomerPriceListId(newPlId);
-            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, newPlId);
-            
-            // Update item prices in dialogCart based on the new customer's price list
-            setDialogCart(prev => {
-              if (!prev || prev.length === 0) return prev;
-              const pl = newPlId ? priceLists.find(p => p.id === newPlId) : priceLists.find(p => p.isDefault);
-              const updated = prev.map(item => {
-                if (item.id === "other") return item;
-                const baseService = services.find(s => s.id === item.id);
-                if (!baseService) return item;
-                let price = baseService.price;
-                if (pl && pl.servicePrices[item.id] !== undefined) {
-                  price = pl.servicePrices[item.id];
-                }
-                return { ...item, price };
-              });
-              const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
-              setLaundryPrice(totalSum);
-              return updated;
-            });
+            setCustomerPriceListId(c.priceListId || null);
+            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
             
             setCustomerSearchQuery("");
             setShowCustomerDropdown(false);
@@ -3232,7 +3506,7 @@ export default function AdminPage() {
         onOpenChange={setProfileOpen}
         customer={selectedProfileCustomer}
       />
-      
+
       <ThermalReceiptDialog
         open={showReceipt}
         onOpenChange={setShowReceipt}
@@ -3244,6 +3518,7 @@ export default function AdminPage() {
           setIsDraftPreview(false);
         }}
       />
+
     </ProtectedRoute>
   );
 }
