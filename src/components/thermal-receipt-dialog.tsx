@@ -38,6 +38,7 @@ export interface ReceiptData {
   deliveryFee?: number;
   proformaId?: string;
   jobId?: string;
+  proformaRevision?: number;
 }
 
 export interface ShopInfo {
@@ -188,74 +189,101 @@ export function ThermalReceiptDialog({
   useEffect(() => {
     if (!open || !receiptData || !receiptData.jobId) return;
 
-    // Run a small timeout to make sure the DOM is fully painted
-    const captureTimer = setTimeout(() => {
-      const element = document.getElementById("thermal-receipt-capture-area");
-      if (!element) return;
+    let active = true;
+    let captureTimer: any = null;
 
-      import("html2canvas-pro").then((html2canvasModule) => {
-        const html2canvas = html2canvasModule.default;
-        html2canvas(element, {
-          backgroundColor: "#ffffff",
-          scale: 2, // Capture at 2x scale for high resolution readability
-          logging: false
-        }).then(async (canvas) => {
-          canvas.toBlob(async (blob) => {
-            if (!blob) return;
+    const runCapture = async () => {
+      const { jobStore } = await import("@/lib/store");
+      const currentJob = jobStore.getSnapshot().find(j => j.id === receiptData.jobId);
+      if (currentJob && currentJob.billImageUrl) {
+        try {
+          const parsed = JSON.parse(currentJob.billImageUrl);
+          const existingBills = Array.isArray(parsed) ? parsed : [parsed];
+          const searchPattern = receiptData.isDraft 
+            ? `-rev${receiptData.proformaRevision || 0}.png`
+            : `receipt-${receiptData.jobId}.png`;
+          if (existingBills.some(url => url.includes(searchPattern))) {
+            console.log("Receipt/Proforma is already uploaded for this version. Skipping capture.");
+            return;
+          }
+        } catch {}
+      }
 
-            // Generate file payload
-            const filename = receiptData.isDraft 
-              ? `proforma-${receiptData.proformaId || receiptData.jobId}.png`
-              : `receipt-${receiptData.jobId}.png`;
-            const file = new File([blob], filename, { type: "image/png" });
-            const formData = new FormData();
-            formData.append("file", file);
-            formData.append("entityType", "jobs");
-            formData.append("entityId", receiptData.jobId || "unknown");
-            formData.append("subType", "proofs");
+      if (!active) return;
 
-            try {
-              // Upload to local storage / Cloud storage
-              const res = await fetch("/api/upload-local", {
-                method: "POST",
-                body: formData
-              });
-              const uploadResult = await res.json();
-              if (uploadResult.success && uploadResult.publicUrl) {
-                // Update the job details in db
-                const { jobStore } = await import("@/lib/store");
-                const currentJob = jobStore.getSnapshot().find(j => j.id === receiptData.jobId);
-                if (currentJob) {
-                  // Merge with existing bills
-                  let existingBills: string[] = [];
-                  try {
-                    if (currentJob.billImageUrl) {
-                      const parsed = JSON.parse(currentJob.billImageUrl);
-                      if (Array.isArray(parsed)) existingBills = parsed;
-                      else if (typeof parsed === 'string') existingBills = [parsed];
+      // Run a small timeout to make sure the DOM is fully painted
+      captureTimer = setTimeout(() => {
+        const element = document.getElementById("thermal-receipt-capture-area");
+        if (!element) return;
+
+        import("html2canvas-pro").then((html2canvasModule) => {
+          const html2canvas = html2canvasModule.default;
+          html2canvas(element, {
+            backgroundColor: "#ffffff",
+            scale: 2, // Capture at 2x scale for high resolution readability
+            logging: false
+          }).then(async (canvas) => {
+            canvas.toBlob(async (blob) => {
+              if (!blob) return;
+
+              // Generate file payload
+              const filename = receiptData.isDraft 
+                ? `proforma-${receiptData.proformaId || receiptData.jobId}-rev${receiptData.proformaRevision || 0}.png`
+                : `receipt-${receiptData.jobId}.png`;
+              const file = new File([blob], filename, { type: "image/png" });
+              const formData = new FormData();
+              formData.append("file", file);
+              formData.append("entityType", "jobs");
+              formData.append("entityId", receiptData.jobId || "unknown");
+              formData.append("subType", "proofs");
+
+              try {
+                // Upload to local storage / Cloud storage
+                const res = await fetch("/api/upload-local", {
+                  method: "POST",
+                  body: formData
+                });
+                const uploadResult = await res.json();
+                if (uploadResult.success && uploadResult.publicUrl) {
+                  // Update the job details in db
+                  const currentJob = jobStore.getSnapshot().find(j => j.id === receiptData.jobId);
+                  if (currentJob) {
+                    // Merge with existing bills
+                    let existingBills: string[] = [];
+                    try {
+                      if (currentJob.billImageUrl) {
+                        const parsed = JSON.parse(currentJob.billImageUrl);
+                        if (Array.isArray(parsed)) existingBills = parsed;
+                        else if (typeof parsed === 'string') existingBills = [parsed];
+                      }
+                    } catch {}
+                    
+                    if (!existingBills.includes(uploadResult.publicUrl)) {
+                      const newBills = [...existingBills, uploadResult.publicUrl];
+                      await jobStore.updateJobDetails(receiptData.jobId!, {
+                        billImageUrl: JSON.stringify(newBills)
+                      });
+                      console.log("Successfully saved receipt image to Bill/Transfer field:", uploadResult.publicUrl);
                     }
-                  } catch {}
-                  
-                  if (!existingBills.includes(uploadResult.publicUrl)) {
-                    const newBills = [...existingBills, uploadResult.publicUrl];
-                    await jobStore.updateJobDetails(receiptData.jobId!, {
-                      billImageUrl: JSON.stringify(newBills)
-                    });
-                    console.log("Successfully saved receipt image to Bill/Transfer field:", uploadResult.publicUrl);
                   }
                 }
+              } catch (err) {
+                console.error("Failed to capture and upload receipt image:", err);
               }
-            } catch (err) {
-              console.error("Failed to capture and upload receipt image:", err);
-            }
-          }, "image/png");
+            }, "image/png");
+          });
+        }).catch(err => {
+          console.error("Failed to load html2canvas-pro module:", err);
         });
-      }).catch(err => {
-        console.error("Failed to load html2canvas module:", err);
-      });
-    }, 800); // 800ms delay to make sure rendering is complete
+      }, 800); // 800ms delay to make sure rendering is complete
+    };
 
-    return () => clearTimeout(captureTimer);
+    runCapture();
+
+    return () => {
+      active = false;
+      if (captureTimer) clearTimeout(captureTimer);
+    };
   }, [open, receiptData]);
 
   if (!receiptData) return null;

@@ -1295,6 +1295,7 @@ export default function AdminPage() {
       
       const formatted = formatJobToReceiptData(mockJob);
       formatted.isDraft = true; // Mark as draft preview
+      formatted.proformaRevision = proformaRevision;
       return formatted;
     } else if (activeJob) {
       return formatJobToReceiptData(activeJob);
