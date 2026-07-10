@@ -1812,7 +1812,7 @@ export default function AdminPage() {
         {/* Main Content */}
         <main className="flex-1 flex flex-col">
           {/* Top bar */}
-          <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm">
+          <header className={`flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm ${activeTab === 'pos' ? 'lg:hidden' : ''}`}>
             <div className="flex items-center gap-3 lg:hidden px-2 py-2">
               <Button
                 variant="ghost"
