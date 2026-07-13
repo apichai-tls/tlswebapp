@@ -91,10 +91,11 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
     jobStore.fetchHistoricalJobs(start, end);
   }, [currentDate, currentView]);
 
-  // Filter riders by selected area
+  // Filter riders by selected area (only active riders with branch assigned)
   const filteredRiders = useMemo(() => {
-    if (filterArea === "ALL") return allRiders;
-    return allRiders.filter(r => {
+    const activeRiders = allRiders.filter(r => r.branchId);
+    if (filterArea === "ALL") return activeRiders;
+    return activeRiders.filter(r => {
       const branch = shopLocations.find(s => s.id === r.branchId);
       return branch?.area === filterArea;
     });

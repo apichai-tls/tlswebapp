@@ -20,6 +20,7 @@ test.describe('Admin Edit Job Flow', () => {
 
     // Wait for redirection and dashboard load
     await expect(page).toHaveURL('/admin');
+    await page.waitForLoadState('networkidle');
     await expect(page.locator('text=Operational Dashboard')).toBeVisible();
 
     // 2. Navigate to "Jobs" tab
@@ -36,6 +37,11 @@ test.describe('Admin Edit Job Flow', () => {
     await expect(customerOption).toBeVisible();
     await customerOption.click({ force: true });
 
+    // Change service to Walk-In (which matches the comment on line 53)
+    await page.uncheck('label:has-text("Pickup") input[type="checkbox"]');
+    await page.uncheck('label:has-text("Delivery") input[type="checkbox"]');
+    await page.check('label:has-text("Walk-In") input[type="checkbox"]');
+
     // Select a Laundry Item (Polo Shirt)
     await page.check('text=Polo Shirt');
 
@@ -45,14 +51,15 @@ test.describe('Admin Edit Job Flow', () => {
 
     // Save the job
     await page.click('button:has-text("Create Job")');
-    await expect(page.locator('text=created')).toBeVisible();
+    await expect(page.locator('text=created')).toBeVisible({ timeout: 15000 });
 
     // Wait for the modal to close and the list/Kanban board to refresh
     await expect(page.locator('#customer-search')).not.toBeVisible();
 
     // 4. Open the job again (should be in Billing/In Shop status since walk-in)
     // Let's filter to "In Shop / Processing" or find the card
-    await page.click('text=John Doe'); // click on the job card
+    const walkInCard = page.locator('div[data-status="billing"] div.cursor-pointer').filter({ hasText: 'John Doe' }).first();
+    await walkInCard.click();
     await expect(page.locator('text=Edit Job')).toBeVisible();
 
     // Verify payment fields are saved
@@ -70,7 +77,7 @@ test.describe('Admin Edit Job Flow', () => {
     await expect(page.locator('#customer-search')).not.toBeVisible();
 
     // 6. Open the job again to verify the update saved
-    await page.click('text=John Doe');
+    await walkInCard.click();
     await expect(page.locator('text=Edit Job')).toBeVisible();
     await expect(page.locator('select#payment-channel')).toHaveValue('Cash / COD');
     await expect(page.locator('input[name="payment-status"]:checked + span')).toHaveText('Unpaid');

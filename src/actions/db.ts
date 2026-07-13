@@ -118,7 +118,77 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.taxId !== undefined) data.taxId = updates.taxId;
   if (updates.companyName !== undefined) data.companyName = updates.companyName;
 
-  return prisma.customer.update({ where: { id }, data });
+  const updatedCustomer = await prisma.customer.update({ where: { id }, data });
+
+  // Sync to active jobs if remark was updated
+  if (updates.remark !== undefined) {
+    try {
+      const activeJobs = await prisma.job.findMany({
+        where: {
+          customerId: id,
+          status: { notIn: ['completed', 'cancel'] }
+        },
+        select: { id: true, adminNotesJson: true }
+      });
+
+      for (const job of activeJobs) {
+        let notes: any[] = [];
+        if (job.adminNotesJson) {
+          try {
+            notes = JSON.parse(job.adminNotesJson);
+            if (!Array.isArray(notes)) notes = [];
+          } catch {
+            notes = [];
+          }
+        }
+
+        // Find existing CRM Remark system log
+        const crmNoteIndex = notes.findIndex(n => 
+          n.userId === 'system' && 
+          n.userName === 'System (CRM)' && 
+          typeof n.text === 'string' && 
+          n.text.startsWith('CRM Remark:')
+        );
+
+        const cleanRemark = updates.remark ? updates.remark.trim() : "";
+
+        if (cleanRemark === "") {
+          // Remove existing CRM remark log if empty
+          if (crmNoteIndex >= 0) {
+            notes.splice(crmNoteIndex, 1);
+          }
+        } else {
+          const newText = `CRM Remark: ${cleanRemark}`;
+          if (crmNoteIndex >= 0) {
+            // Update existing CRM note text and timestamp
+            notes[crmNoteIndex].text = newText;
+            notes[crmNoteIndex].timestamp = new Date().toISOString();
+          } else {
+            // Add new CRM note log
+            notes.push({
+              id: Math.random().toString(36).substring(7),
+              userId: "system",
+              userName: "System (CRM)",
+              text: newText,
+              timestamp: new Date().toISOString(),
+              imageUrls: []
+            });
+          }
+        }
+
+        await prisma.job.update({
+          where: { id: job.id },
+          data: {
+            adminNotesJson: notes.length > 0 ? JSON.stringify(notes) : null
+          }
+        });
+      }
+    } catch (err: any) {
+      console.error("Failed to sync customer remark to active jobs:", err.message);
+    }
+  }
+
+  return updatedCustomer;
 }
 
 export async function deleteCustomerAction(id: string) {

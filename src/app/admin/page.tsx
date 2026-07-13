@@ -978,8 +978,16 @@ export default function AdminPage() {
       toast.error("Please fill in the pickup location.");
       return;
     }
+    if (isPickup && pickupLoc.trim() && !pickupCoords) {
+      toast.error("กรุณาเลือกที่อยู่ขารับจากรายการแนะนำของ Google Maps");
+      return;
+    }
     if (isDelivery && !deliveryLoc.trim()) {
       toast.error("Please fill in the delivery location.");
+      return;
+    }
+    if (isDelivery && deliveryLoc.trim() && !deliveryCoords) {
+      toast.error("กรุณาเลือกที่อยู่ขาส่งจากรายการแนะนำของ Google Maps");
       return;
     }
     if (!isWalkIn && !isPickup && !isDelivery) {
@@ -1121,7 +1129,7 @@ export default function AdminPage() {
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
-      branchId: shop.id,
+      branchId: editingJobId && existingJob ? (existingJob.branchId || shop.id) : shop.id,
       paymentChannel: paymentChannel || null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
@@ -2240,6 +2248,7 @@ export default function AdminPage() {
                                     localData={localDataForSearch}
                                     onChange={(v) => {
                                       setPickupLoc(v);
+                                      setPickupCoords(null);
                                     }}
                                     onSelectLocation={(loc) => {
                                       const newCoords = { lat: loc.lat, lng: loc.lng };
@@ -2262,6 +2271,11 @@ export default function AdminPage() {
                                   />
                                 </div>
                               </div>
+                              {isPickup && pickupLoc.trim() !== "" && !pickupCoords && (
+                                <span className="text-[10px] text-red-500 font-semibold block mt-1">
+                                  ⚠️ กรุณาเลือกที่อยู่จากรายการแนะนำเพื่อระบุพิกัด
+                                </span>
+                              )}
                             </div>
                           )}
 
@@ -2295,6 +2309,7 @@ export default function AdminPage() {
                                     onChange={(v) => {
                                       setDeliveryLoc(v);
                                       setIsDeliveryDirty(true);
+                                      setDeliveryCoords(null);
                                     }}
                                     onSelectLocation={(loc) => {
                                       const newCoords = { lat: loc.lat, lng: loc.lng };
@@ -2316,6 +2331,11 @@ export default function AdminPage() {
                                   />
                                 </div>
                               </div>
+                              {isDelivery && deliveryLoc.trim() !== "" && !deliveryCoords && (
+                                <span className="text-[10px] text-red-500 font-semibold block mt-1">
+                                  ⚠️ กรุณาเลือกที่อยู่จากรายการแนะนำเพื่อระบุพิกัด
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2397,7 +2417,7 @@ export default function AdminPage() {
                                   onChange={(e) => setPickupRiderId(e.target.value)}
                                 >
                                   <option value="">-- Assign Rider --</option>
-                                  {riders.map(r => (
+                                  {riders.filter(r => r.branchId || r.id === pickupRiderId).map(r => (
                                     <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
                                   ))}
                                 </select>
@@ -2453,7 +2473,7 @@ export default function AdminPage() {
                                     onChange={(e) => setDeliveryRiderId(e.target.value)}
                                   >
                                     <option value="">-- Assign Rider --</option>
-                                    {riders.map(r => (
+                                    {riders.filter(r => r.branchId || r.id === deliveryRiderId).map(r => (
                                       <option key={`d-${r.id}`} value={r.id}>{r.name}</option>
                                     ))}
                                   </select>

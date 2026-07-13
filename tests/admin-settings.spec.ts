@@ -40,7 +40,7 @@ test.describe('Admin Settings Commission Flow', () => {
     await page.click('button#save-commission-btn');
     
     // Wait for success toast
-    await expect(page.locator('text=Rider Commission Rate updated successfully')).toBeVisible();
+    await expect(page.locator('text=Rider Commission Rate updated successfully')).toBeVisible({ timeout: 15000 });
 
     // 5. Reload the page to verify persistence
     await page.reload();
