@@ -704,11 +704,10 @@ export default function AdminPage() {
       const hasSufficient = (selectedProfileCustomer?.creditBalance || 0) >= dialogTotal;
       if (!hasSufficient) {
         setPaymentMethod("unpaid");
-      } else if (paymentMethod === "paid") {
-        setPaymentChannel("Deduct Member");
       }
+      setPaymentChannel("Deduct Member");
     }
-  }, [forceMemberPaymentDialog, paymentMethod, dialogTotal, selectedProfileCustomer?.creditBalance]);
+  }, [forceMemberPaymentDialog, dialogTotal, selectedProfileCustomer?.creditBalance]);
 
   const activeShop = useMemo(() => {
     return shopLocations[selectedStoreIndex] || shopLocations[0];
@@ -3172,9 +3171,9 @@ export default function AdminPage() {
                               </Label>
                               <select
                                 id="payment-channel"
-                                disabled={forceMemberPaymentDialog && paymentMethod === 'paid'}
+                                disabled={forceMemberPaymentDialog}
                                 className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
-                                value={forceMemberPaymentDialog && paymentMethod === 'paid' ? "Deduct Member" : paymentChannel}
+                                value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
                                 onChange={(e) => setPaymentChannel(e.target.value)}
                               >
                                 <option value="">Select Channel</option>
