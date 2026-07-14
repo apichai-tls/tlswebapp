@@ -42,6 +42,7 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
+import { AdminReports } from "@/components/admin-reports";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -75,6 +76,7 @@ import {
   Settings,
   CalendarClock,
   Calculator,
+  BarChart3,
   ShieldAlert,
   Loader2,
   ChevronLeft,
@@ -208,14 +210,14 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "reports"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -309,7 +311,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -1501,6 +1503,19 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
               </motion.a>
             )}
+
+            {hasAccess("reports") && (
+              <motion.a
+                href="#reports"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("reports"); }}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "reports" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Reports & Analytics"
+              >
+                <BarChart3 size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
+              </motion.a>
+            )}
             
             {hasAccess("users") && (
               <motion.a
@@ -1762,6 +1777,23 @@ export default function AdminPage() {
                     >
                       <ClipboardList size={18} />
                       <span>Activity Logs</span>
+                    </a>
+                  )}
+
+                  {hasAccess("reports") && (
+                    <a
+                      href="#reports"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("reports");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "reports" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <BarChart3 size={18} />
+                      <span>Reports & Analytics</span>
                     </a>
                   )}
 
@@ -3438,6 +3470,7 @@ export default function AdminPage() {
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
+          {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
 
 
           {/* Fallback for no access to current tab */}

@@ -969,6 +969,24 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return ["All", ...uniqueCats];
   }, [services]);
 
+  const forceMemberPayment = useMemo(() => {
+    if (!selectedCustomer?.isMember) return false;
+    return cart.some(item => 
+      item.category !== "PACKAGE" && 
+      item.id !== "topup-member-item" && 
+      item.id !== "delivery-pickup-service-item" && 
+      item.id !== "delivery-only-service-item"
+    );
+  }, [selectedCustomer, cart]);
+
+  // Force member payment method (credit) for member customers adding non-package items
+  useEffect(() => {
+    if (forceMemberPayment) {
+      setIsPaid(true);
+      setPaymentMethod("credit");
+    }
+  }, [forceMemberPayment]);
+
   // Auto-apply member rate and auto-select Member payment method if customer has wallet balance
   useEffect(() => {
     if (selectedCustomer?.isMember) {
@@ -3083,10 +3101,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     </button>
                     <button
                       type="button"
+                      disabled={forceMemberPayment}
                       onClick={() => {
                         setIsPaid(false);
                       }}
-                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all cursor-pointer ${!isPaid ? "bg-amber-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all ${forceMemberPayment ? "opacity-40 cursor-not-allowed" : "cursor-pointer"} ${!isPaid ? "bg-amber-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     >
                       UNPAID
                     </button>
@@ -3100,12 +3119,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     <div className="flex bg-muted rounded-xl p-0.5 border border-border">
                       {(selectedCustomer && !isStandardPlan ? ["cash", "transfer", "card", "credit"] : ["cash", "transfer", "card"]).map((m) => {
                         const active = paymentMethod === m;
+                        const isMethodDisabled = forceMemberPayment && m !== "credit";
                         return (
                           <button
                             key={m}
                             type="button"
+                            disabled={isMethodDisabled}
                             onClick={() => setPaymentMethod(m as any)}
-                            className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all capitalize cursor-pointer ${active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                            className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all capitalize ${isMethodDisabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"} ${active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                           >
                             {m === "credit" ? "Member" : m}
                           </button>
