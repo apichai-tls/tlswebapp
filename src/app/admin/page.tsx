@@ -685,6 +685,31 @@ export default function AdminPage() {
   const [showReceipt, setShowReceipt] = useState<boolean>(false);
   const [receiptPaperSize, setReceiptPaperSize] = useState<string>("80mm");
 
+  const forceMemberPaymentDialog = useMemo(() => {
+    if (!selectedProfileCustomer?.isMember) return false;
+    return dialogCart.some(item => 
+      item.category !== "PACKAGE" && 
+      item.id !== "topup-member-item" && 
+      item.id !== "delivery-pickup-service-item" && 
+      item.id !== "delivery-only-service-item"
+    );
+  }, [selectedProfileCustomer, dialogCart]);
+
+  const dialogTotal = useMemo(() => {
+    return laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee;
+  }, [laundryPrice, serviceSpeed, fee]);
+
+  useEffect(() => {
+    if (forceMemberPaymentDialog) {
+      const hasSufficient = (selectedProfileCustomer?.creditBalance || 0) >= dialogTotal;
+      if (!hasSufficient) {
+        setPaymentMethod("unpaid");
+      } else if (paymentMethod === "paid") {
+        setPaymentChannel("Deduct Member");
+      }
+    }
+  }, [forceMemberPaymentDialog, paymentMethod, dialogTotal, selectedProfileCustomer?.creditBalance]);
+
   const activeShop = useMemo(() => {
     return shopLocations[selectedStoreIndex] || shopLocations[0];
   }, [shopLocations, selectedStoreIndex]);
@@ -3147,8 +3172,9 @@ export default function AdminPage() {
                               </Label>
                               <select
                                 id="payment-channel"
-                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
-                                value={paymentChannel}
+                                disabled={forceMemberPaymentDialog && paymentMethod === 'paid'}
+                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+                                value={forceMemberPaymentDialog && paymentMethod === 'paid' ? "Deduct Member" : paymentChannel}
                                 onChange={(e) => setPaymentChannel(e.target.value)}
                               >
                                 <option value="">Select Channel</option>
@@ -3177,13 +3203,14 @@ export default function AdminPage() {
                                   />
                                   <span className="font-medium text-slate-200">Unpaid</span>
                                 </Label>
-                                <Label className="flex items-center gap-1 cursor-pointer text-[10px]">
+                                <Label className={`flex items-center gap-1 text-[10px] ${forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
                                   <input 
                                     type="radio" 
                                     name="payment-status"
+                                    disabled={forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal}
                                     checked={paymentMethod === 'paid'} 
                                     onChange={() => setPaymentMethod('paid')} 
-                                    className="w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600" 
+                                    className="w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" 
                                   />
                                   <span className="font-medium text-emerald-400">Paid</span>
                                 </Label>
