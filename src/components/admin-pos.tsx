@@ -969,23 +969,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return ["All", ...uniqueCats];
   }, [services]);
 
-  const forceMemberPayment = useMemo(() => {
-    if (!selectedCustomer?.isMember) return false;
-    return cart.some(item => 
-      item.category !== "PACKAGE" && 
-      item.id !== "topup-member-item" && 
-      item.id !== "delivery-pickup-service-item" && 
-      item.id !== "delivery-only-service-item"
-    );
-  }, [selectedCustomer, cart]);
-
-  // Force member payment method (credit) for member customers adding non-package items
-  useEffect(() => {
-    if (forceMemberPayment) {
-      setIsPaid(true);
-      setPaymentMethod("credit");
-    }
-  }, [forceMemberPayment]);
 
   // Auto-apply member rate and auto-select Member payment method if customer has wallet balance
   useEffect(() => {
@@ -1112,6 +1095,28 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     const vat = vatType === "exclusive" ? (baseTotal * (vatRate / 100)) : 0;
     return baseTotal + vat + manualAdjustment;
   }, [subtotal, expressSurcharge, vatType, vatRate, manualAdjustment]);
+
+  const forceMemberPayment = useMemo(() => {
+    if (!selectedCustomer?.isMember) return false;
+    return cart.some(item => 
+      item.category !== "PACKAGE" && 
+      item.id !== "topup-member-item" && 
+      item.id !== "delivery-pickup-service-item" && 
+      item.id !== "delivery-only-service-item"
+    );
+  }, [selectedCustomer, cart]);
+
+  // Force member payment method (credit) for member customers adding non-package items
+  useEffect(() => {
+    if (forceMemberPayment) {
+      const hasSufficient = (selectedCustomer?.creditBalance || 0) >= total;
+      if (!hasSufficient) {
+        setIsPaid(false);
+      } else if (isPaid) {
+        setPaymentMethod("credit");
+      }
+    }
+  }, [forceMemberPayment, isPaid, total, selectedCustomer?.creditBalance]);
 
   const promptpayConfig = useMemo(() => {
     if (!settings) return null;
@@ -3092,20 +3097,24 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   <div className="flex bg-muted rounded-xl p-0.5 border border-border">
                     <button
                       type="button"
+                      disabled={forceMemberPayment && (selectedCustomer?.creditBalance || 0) < total}
                       onClick={() => {
                         setIsPaid(true);
                       }}
-                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all cursor-pointer ${isPaid ? "bg-emerald-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all ${
+                        forceMemberPayment && (selectedCustomer?.creditBalance || 0) < total
+                          ? "opacity-40 cursor-not-allowed"
+                          : "cursor-pointer"
+                      } ${isPaid ? "bg-emerald-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     >
                       PAID
                     </button>
                     <button
                       type="button"
-                      disabled={forceMemberPayment}
                       onClick={() => {
                         setIsPaid(false);
                       }}
-                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all ${forceMemberPayment ? "opacity-40 cursor-not-allowed" : "cursor-pointer"} ${!isPaid ? "bg-amber-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all cursor-pointer ${!isPaid ? "bg-amber-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     >
                       UNPAID
                     </button>
