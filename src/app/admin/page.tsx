@@ -463,16 +463,19 @@ export default function AdminPage() {
         let freshNotes: AdminNoteLog[] = [];
         try {
           if (freshJob.adminNotesJson) {
-            freshNotes = JSON.parse(freshJob.adminNotesJson);
+            const parsed = JSON.parse(freshJob.adminNotesJson);
+            if (Array.isArray(parsed)) {
+              freshNotes = parsed;
+            }
           }
         } catch {}
 
         // Check if there is a pending local note that hasn't synced to server yet
-        const hasPendingLocalNote = adminLogs.length > 0 &&
+        const hasPendingLocalNote = Array.isArray(adminLogs) && adminLogs.length > 0 &&
           adminLogs[adminLogs.length - 1].userId === (user?.id || "unknown") &&
           !freshNotes.some(fn => fn.id === adminLogs[adminLogs.length - 1].id);
 
-        if (!hasPendingLocalNote || freshNotes.length > adminLogs.length) {
+        if (!hasPendingLocalNote || freshNotes.length > (Array.isArray(adminLogs) ? adminLogs.length : 0)) {
           if (JSON.stringify(freshNotes) !== JSON.stringify(adminLogs)) {
             setAdminLogs(freshNotes);
           }
@@ -1139,7 +1142,7 @@ export default function AdminPage() {
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
     const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
 
-    let finalAdminLogs = [...adminLogs];
+    let finalAdminLogs = Array.isArray(adminLogs) ? [...adminLogs] : [];
     if (adminNoteInput.trim()) {
       finalAdminLogs.push({
         id: Math.random().toString(36).substring(7),
