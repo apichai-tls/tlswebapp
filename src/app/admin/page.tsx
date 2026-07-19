@@ -775,7 +775,11 @@ export default function AdminPage() {
     setCustomerName(job.customerName || "");
     setCustomerPhone(job.customerPhone || "");
     
-    const foundCustomer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
+    const foundCustomer = customers.find(c => {
+      if (job.customerId) return c.id === job.customerId;
+      const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+      return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+    });
     setSelectedProfileCustomer(foundCustomer || null);
     const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation);
     const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation);
@@ -822,11 +826,12 @@ export default function AdminPage() {
     setServiceType(job.serviceType || "wash_fold");
     setEditingFeeLock(job.fee);
     
-    const matchedCustomer = customers.find(c => 
-      (job.customerId && c.id === job.customerId) || 
-      (job.customerName && c.name === job.customerName) || 
-      (job.customerPhone && c.phone === job.customerPhone)
-    );
+    const matchedCustomer = customers.find(c => {
+      if (job.customerId) return c.id === job.customerId;
+      const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+      const matchesPhone = cleanPhone.length >= 5 && c.phone === job.customerPhone;
+      return matchesPhone || (job.customerName && c.name === job.customerName);
+    });
     setSelectedVIPLabel(matchedCustomer?.isVIP ? "VIP" : "");
     setSelectedMemberLabel(matchedCustomer?.isMember ? "Member" : "");
     setSelectedMemberId(matchedCustomer?.memberId || "");

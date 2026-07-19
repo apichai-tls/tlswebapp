@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { verifyPassword, hashPassword } from "@/lib/crypto";
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,8 +20,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid email or password" }, { status: 401 });
     }
 
-    if (!password || password !== user.password) {
+    if (!password) {
       return NextResponse.json({ success: false, error: "Invalid email or password" }, { status: 401 });
+    }
+
+    const { isValid, shouldRehash } = verifyPassword(password, user.password);
+    if (!isValid) {
+      return NextResponse.json({ success: false, error: "Invalid email or password" }, { status: 401 });
+    }
+
+    // Lazy migration: Auto-hash plain text password on successful API login
+    if (shouldRehash) {
+      try {
+        await prisma.adminUser.update({
+          where: { id: user.id },
+          data: { password: hashPassword(password) }
+        });
+      } catch (e) {
+        console.error("Failed to rehash password for user during lazy migration in API:", e);
+      }
     }
 
     let permissionsArray: string[] = [];

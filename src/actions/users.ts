@@ -2,6 +2,15 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { hashPassword } from "@/lib/crypto";
+
+function safeRevalidatePath(path: string) {
+  try {
+    revalidatePath(path);
+  } catch (e) {
+    // Expected in standalone tests where static generation store is not initialized
+  }
+}
 
 export async function getUsers() {
   try {
@@ -29,7 +38,7 @@ export async function createUser(data: { name: string; email: string; password?:
       data: {
         name: data.name,
         email: data.email.toLowerCase().trim(),
-        password: data.password || 'password123',
+        password: hashPassword(data.password || 'password123'),
         role: data.role,
         permissions: JSON.stringify(data.permissions),
         area: data.area
@@ -49,7 +58,7 @@ export async function createUser(data: { name: string; email: string; password?:
       });
     }
 
-    revalidatePath('/admin');
+    safeRevalidatePath('/admin');
     return { success: true, data: newUser };
   } catch (error: any) {
     console.error("Failed to create user:", error);
@@ -76,7 +85,7 @@ export async function updateUser(id: string, data: { name: string; email: string
     };
 
     if (data.password) {
-      updateData.password = data.password;
+      updateData.password = hashPassword(data.password);
     }
 
     const updated = await prisma.adminUser.update({
@@ -105,7 +114,7 @@ export async function updateUser(id: string, data: { name: string; email: string
       }
     }
 
-    revalidatePath('/admin');
+    safeRevalidatePath('/admin');
     return { success: true, data: updated };
   } catch (error: any) {
     console.error("Failed to update user:", error);
@@ -141,7 +150,7 @@ export async function deleteUser(id: string, currentUserEmail: string) {
       }
     }
 
-    revalidatePath('/admin');
+    safeRevalidatePath('/admin');
     return { success: true, data: deleted };
   } catch (error: any) {
     console.error("Failed to delete user:", error);

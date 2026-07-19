@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { verifyPassword, hashPassword } from "@/lib/crypto";
 
 export async function loginUser(email: string, password?: string) {
   try {
@@ -14,8 +15,25 @@ export async function loginUser(email: string, password?: string) {
       return { success: false, error: "Invalid email or password" };
     }
 
-    if (!password || password !== user.password) {
+    if (!password) {
       return { success: false, error: "Invalid email or password" };
+    }
+
+    const { isValid, shouldRehash } = verifyPassword(password, user.password);
+    if (!isValid) {
+      return { success: false, error: "Invalid email or password" };
+    }
+
+    // Lazy migration: Auto-hash plain text password on successful login
+    if (shouldRehash) {
+      try {
+        await prisma.adminUser.update({
+          where: { id: user.id },
+          data: { password: hashPassword(password) }
+        });
+      } catch (e) {
+        console.error("Failed to rehash password for user during lazy migration:", e);
+      }
     }
 
     let permissionsArray: string[] = [];

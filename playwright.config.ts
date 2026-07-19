@@ -1,4 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
+import 'dotenv/config';
+
+// Force E2E tests and Next.js dev server to run on the isolated local E2E database
+process.env.DATABASE_URL = "postgresql://postgres:123456@localhost:5432/tls_e2e_test";
+process.env.DIRECT_URL = "postgresql://postgres:123456@localhost:5432/tls_e2e_test";
 
 /**
  * See https://playwright.dev/docs/test-configuration.

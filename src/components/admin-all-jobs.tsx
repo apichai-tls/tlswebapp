@@ -141,7 +141,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
 
     const searchLower = searchTerm.toLowerCase().trim();
     const statusLabel = statusConfig[job.status]?.label || "";
-    const customer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
+    const customer = customers.find(c => {
+      if (job.customerId) return c.id === job.customerId;
+      const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+      return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+    });
     const matchesSearch = 
       job.id.toLowerCase().includes(searchLower) ||
       (job.customerName && job.customerName.toLowerCase().includes(searchLower)) ||
@@ -422,7 +426,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                         <div className="font-medium text-[11px] text-slate-900 flex items-center gap-1 flex-wrap">
                           {job.customerName || "Walk-in Guest"}
                           {(() => {
-                            const c = customers.find(c => c.id === job.customerId || (job.customerPhone && c.phone === job.customerPhone));
+                            const c = customers.find(c => {
+                              if (job.customerId) return c.id === job.customerId;
+                              const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+                              return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+                            });
                             if (!c) return null;
                             return (
                               <>
@@ -706,7 +714,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                             <div className="text-xs font-bold text-slate-800 mb-1 flex items-center gap-1.5">
                               {job.customerName || "Walk-in Guest"}
                               {(() => {
-                                const c = customers.find(c => c.id === job.customerId || (job.customerPhone && c.phone === job.customerPhone));
+                                const c = customers.find(c => {
+                                  if (job.customerId) return c.id === job.customerId;
+                                  const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+                                  return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+                                });
                                 if (!c) return null;
                                 return (
                                   <>
