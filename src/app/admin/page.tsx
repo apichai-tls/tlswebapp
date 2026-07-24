@@ -620,7 +620,8 @@ export default function AdminPage() {
       }
     }
 
-    setLaundryPrice(Math.ceil(pricePerKg * newWeight));
+    const effectiveWeight = newWeight > 0 ? Math.max(2, newWeight) : 2;
+    setLaundryPrice(Math.ceil(pricePerKg * effectiveWeight));
   };
   const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
@@ -1134,7 +1135,7 @@ export default function AdminPage() {
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
-      branchId: editingJobId && existingJob ? (existingJob.branchId || shop.id) : shop.id,
+      branchId: shop.id,
       paymentChannel: paymentChannel || null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
@@ -2721,7 +2722,15 @@ export default function AdminPage() {
                                 step="0.01"
                                 className="h-8 text-xs text-center px-2"
                                 value={serviceWeight || ""}
-                                onChange={(e) => handleServiceOrSpeedChange(serviceType, serviceSpeed, Math.max(2, parseFloat(e.target.value) || 2))}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  handleServiceOrSpeedChange(serviceType, serviceSpeed, isNaN(val) ? 0 : val);
+                                }}
+                                onBlur={() => {
+                                  if (serviceWeight < 2) {
+                                    handleServiceOrSpeedChange(serviceType, serviceSpeed, 2);
+                                  }
+                                }}
                               />
                             </div>
                           )}
@@ -2849,7 +2858,8 @@ export default function AdminPage() {
                                 const defaultPl = priceLists.find(pl => pl.isDefault);
                                 if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
                               }
-                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${serviceWeight} = ${Math.ceil(pricePerKg * serviceWeight)}฿)`;
+                              const effWeight = Math.max(2, serviceWeight);
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}฿)`;
                             })()}
                           </span>
                           {serviceSpeed !== "standard" && (

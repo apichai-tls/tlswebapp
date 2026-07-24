@@ -5,7 +5,7 @@ import { format, isToday, addDays, isSameDay, addMonths, isSameMonth, startOfDay
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
-import { addJobLogAction } from "@/actions/db";
+import { addJobLogAction, updateJobAction } from "@/actions/db";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, Job, type AdminNoteLog } from "@/lib/store";
 import { Input } from "@/components/ui/input";
@@ -60,7 +60,9 @@ import {
   Receipt,
   Droplets,
   Wind,
-  RefreshCw
+  RefreshCw,
+  Camera,
+  Paperclip
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -115,11 +117,13 @@ export interface RiderTask {
 const RiderJobImages = ({ 
   jobId, 
   imageType, 
-  initialValue 
+  initialValue,
+  allowUpload = false
 }: { 
   jobId: string, 
   imageType: 'bagImageUrl' | 'pickupProofImageUrl' | 'deliveryProofImageUrl', 
-  initialValue?: string 
+  initialValue?: string,
+  allowUpload?: boolean
 }) => {
   const parseUrls = (imgUrl: any): string[] => {
     if (!imgUrl) return [];
@@ -130,7 +134,7 @@ const RiderJobImages = ({
       urls = rawUrls.map((u: string) => {
         if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
           const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
-          return `https://storage.googleapis.com/tls-images-test/${cleanPath}`;
+          return `https://storage.googleapis.com/tls-images-prod/${cleanPath}`;
         }
         return u;
       });
@@ -138,7 +142,7 @@ const RiderJobImages = ({
       const u = imgUrl;
       if (typeof u === 'string' && !u.startsWith('http') && !u.startsWith('/')) {
         const cleanPath = u.replace(/^["'\\]+|["'\\]+$/g, '');
-        urls = [`https://storage.googleapis.com/tls-images-test/${cleanPath}`];
+        urls = [`https://storage.googleapis.com/tls-images-prod/${cleanPath}`];
       } else {
         urls = [u];
       }
@@ -149,6 +153,8 @@ const RiderJobImages = ({
   const [images, setImages] = useState<string[]>(() => parseUrls(initialValue));
   const [loading, setLoading] = useState(() => !initialValue); // only show loading if no initial value exists
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch(`/api/jobs/${jobId}/details`)
@@ -161,7 +167,6 @@ const RiderJobImages = ({
         const remoteUrls = parseUrls(urlData);
         
         // Only update if it actually changed to prevent flickering or losing newly uploaded ones
-        const localUrls = parseUrls(initialValue);
         if (JSON.stringify(remoteUrls) !== JSON.stringify(images)) {
           setImages(remoteUrls);
         }
@@ -170,12 +175,62 @@ const RiderJobImages = ({
       .finally(() => setLoading(false));
   }, [jobId, imageType, initialValue]);
 
+  const handleUploadPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !jobId) return;
+
+    setIsUploading(true);
+    try {
+      const actualContentType = file.type || 'image/jpeg';
+      const subFolder = imageType === 'pickupProofImageUrl' ? 'proofs-pickup' : (imageType === 'deliveryProofImageUrl' ? 'proofs-delivery' : 'bags');
+      const response = await fetch("/api/upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entityType: "job",
+          entityId: jobId,
+          subType: `${subFolder}-${Date.now()}`,
+          contentType: actualContentType,
+        }),
+      });
+
+      if (!response.ok) throw new Error("Failed to get upload authorization");
+      const { uploadUrl, publicUrl } = await response.json();
+
+      const uploadResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": actualContentType },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) throw new Error("Upload failed");
+
+      const updatedImages = [...images, publicUrl];
+      const payload: any = {
+        [imageType]: JSON.stringify(updatedImages)
+      };
+      if (imageType === 'deliveryProofImageUrl' || imageType === 'pickupProofImageUrl') {
+        payload.proofImageUrl = updatedImages[0];
+      }
+
+      await updateJobAction(jobId, payload);
+      setImages(updatedImages);
+      toast.success("Photo uploaded successfully! 📸");
+    } catch (err: any) {
+      console.error(err);
+      toast.error("Failed to upload photo: " + (err.message || "Unknown error"));
+    } finally {
+      setIsUploading(false);
+      if (e.target) e.target.value = "";
+    }
+  };
+
   if (loading && images.length === 0) return <div className="text-xs text-slate-400 mt-2">Loading images...</div>;
-  if (images.length === 0) return null;
+  if (images.length === 0 && !allowUpload) return null;
 
   return (
     <>
-      <div className="mt-1.5 flex gap-2 overflow-x-auto pb-1.5 snap-x">
+      <div className="mt-1.5 flex gap-2 overflow-x-auto pb-1.5 snap-x items-center">
         {images.map((url, idx) => (
           <div 
             key={idx} 
@@ -189,6 +244,33 @@ const RiderJobImages = ({
             <img src={url} alt={`Image ${idx}`} className="w-full h-full object-cover" />
           </div>
         ))}
+
+        {allowUpload && (
+          <>
+            <input 
+              type="file" 
+              accept="image/*" 
+              ref={uploadInputRef} 
+              className="hidden" 
+              onChange={handleUploadPhoto} 
+            />
+            <button
+              type="button"
+              disabled={isUploading}
+              onClick={() => uploadInputRef.current?.click()}
+              className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl border-2 border-dashed border-slate-300 hover:border-indigo-400 bg-white hover:bg-indigo-50/50 flex flex-col items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors shrink-0 snap-center shadow-xs"
+            >
+              {isUploading ? (
+                <Loader2 size={18} className="animate-spin text-indigo-600" />
+              ) : (
+                <>
+                  <Camera size={18} />
+                  <span className="text-[9px] font-bold mt-1">+ Add Photo</span>
+                </>
+              )}
+            </button>
+          </>
+        )}
       </div>
 
       <Dialog open={!!selectedImage} onOpenChange={(open) => !open && setSelectedImage(null)}>
@@ -570,6 +652,73 @@ export default function RiderPage() {
     } catch (err) {
       console.error("Failed to save rider log:", err);
       toast.error("Failed to send message");
+    }
+  };
+
+  const [isUploadingChatImage, setIsUploadingChatImage] = useState(false);
+  const chatFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleUploadChatImage = async (e: React.ChangeEvent<HTMLInputElement>, jobId: string) => {
+    const file = e.target.files?.[0];
+    if (!file || !jobId) return;
+
+    setIsUploadingChatImage(true);
+    try {
+      const actualContentType = file.type || 'image/jpeg';
+      const response = await fetch("/api/upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entityType: "job",
+          entityId: jobId,
+          subType: `chat-${Date.now()}`,
+          contentType: actualContentType,
+        }),
+      });
+
+      if (!response.ok) throw new Error("Failed to get upload authorization");
+      const { uploadUrl, publicUrl } = await response.json();
+
+      const uploadResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": actualContentType },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) throw new Error("Upload failed");
+
+      const newLog: AdminNoteLog = {
+        id: Math.random().toString(36).substring(7),
+        userId: user?.id || activeRider?.id || "rider",
+        userName: activeRider?.name || (user as any)?.name || user?.email || "Rider",
+        text: riderNoteInput.trim() || "Uploaded photo",
+        imageUrls: [publicUrl],
+        timestamp: new Date().toISOString()
+      };
+
+      await addJobLogAction(jobId, newLog);
+
+      // Optimistic update
+      setRiderNoteInput("");
+      if (selectedJob && selectedJob.job.id === jobId) {
+        let updatedLogs = [];
+        try {
+          if (selectedJob.job.adminNotesJson) {
+            updatedLogs = JSON.parse(selectedJob.job.adminNotesJson);
+          }
+        } catch(e) {}
+        updatedLogs.push(newLog);
+        const newJson = JSON.stringify(updatedLogs);
+        setSelectedJob({ ...selectedJob, job: { ...selectedJob.job, adminNotesJson: newJson } });
+      }
+
+      toast.success("Photo sent to chat! 📸");
+    } catch (err: any) {
+      console.error(err);
+      toast.error("Failed to send photo: " + (err.message || "Unknown error"));
+    } finally {
+      setIsUploadingChatImage(false);
+      if (e.target) e.target.value = "";
     }
   };
 
@@ -1610,7 +1759,18 @@ export default function RiderPage() {
                       )}
                     </div>
 
-                    <div className="flex gap-1.5 flex-shrink-0 mt-auto pt-1 border-t border-slate-200">
+                    <div className="flex gap-1.5 flex-shrink-0 mt-auto pt-1 border-t border-slate-200 items-center">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8 rounded-lg shrink-0 border-slate-200 bg-white hover:bg-indigo-50 text-slate-600 hover:text-indigo-600"
+                        onClick={() => chatFileInputRef.current?.click()}
+                        disabled={isUploadingChatImage}
+                        title="Send photo"
+                      >
+                        {isUploadingChatImage ? <Loader2 size={14} className="animate-spin text-indigo-600" /> : <Camera size={14} />}
+                      </Button>
                       <Input
                         placeholder="Type a message..."
                         value={riderNoteInput}
@@ -1622,19 +1782,20 @@ export default function RiderPage() {
                             setRiderNoteInput("");
                           }
                         }}
+                        disabled={isUploadingChatImage}
                         className="h-8 text-xs bg-white flex-1"
                       />
                       <Button 
                         type="button" 
                         size="sm" 
-                        className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white"
+                        className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold"
                         onClick={() => {
                           if (riderNoteInput.trim()) {
                             handleAddRiderLog(selectedJob.job.id, riderNoteInput);
                             setRiderNoteInput("");
                           }
                         }}
-                        disabled={!riderNoteInput.trim()}
+                        disabled={!riderNoteInput.trim() || isUploadingChatImage}
                       >
                         Send
                       </Button>
@@ -1754,34 +1915,55 @@ export default function RiderPage() {
 
           {selectedJob && (
             <div className="p-3 bg-white border-t border-slate-200 shrink-0">
-              <div className="flex gap-2 relative">
-                <Input
-                  placeholder="Type your message..."
-                  value={riderNoteInput}
-                  onChange={(e) => setRiderNoteInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && riderNoteInput.trim() && selectedJob) {
-                      e.preventDefault();
-                      handleAddRiderLog(selectedJob.job.id, riderNoteInput);
-                      setRiderNoteInput("");
-                    }
-                  }}
-                  className="h-10 text-sm bg-slate-50 border-slate-200 pr-12 focus-visible:ring-indigo-500 rounded-full"
-                />
-                <Button 
-                  type="button" 
-                  size="icon" 
-                  className="absolute right-1 top-1 h-8 w-8 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white"
-                  onClick={() => {
-                    if (riderNoteInput.trim() && selectedJob) {
-                      handleAddRiderLog(selectedJob.job.id, riderNoteInput);
-                      setRiderNoteInput("");
-                    }
-                  }}
-                  disabled={!riderNoteInput.trim()}
+              <input 
+                type="file" 
+                accept="image/*" 
+                ref={chatFileInputRef} 
+                className="hidden" 
+                onChange={(e) => handleUploadChatImage(e, selectedJob.job.id)} 
+              />
+              <div className="flex gap-2 items-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-10 w-10 rounded-full shrink-0 border-slate-200 bg-slate-50 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 shadow-xs"
+                  onClick={() => chatFileInputRef.current?.click()}
+                  disabled={isUploadingChatImage}
+                  title="Send photo"
                 >
-                  <Navigation size={14} className="ml-0.5 rotate-45" />
+                  {isUploadingChatImage ? <Loader2 size={16} className="animate-spin text-indigo-600" /> : <Camera size={18} />}
                 </Button>
+                <div className="flex-1 relative flex items-center">
+                  <Input
+                    placeholder="Type your message..."
+                    value={riderNoteInput}
+                    onChange={(e) => setRiderNoteInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && riderNoteInput.trim() && selectedJob) {
+                        e.preventDefault();
+                        handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                        setRiderNoteInput("");
+                      }
+                    }}
+                    disabled={isUploadingChatImage}
+                    className="h-10 text-sm bg-slate-50 border-slate-200 pr-12 focus-visible:ring-indigo-500 rounded-full w-full"
+                  />
+                  <Button 
+                    type="button" 
+                    size="icon" 
+                    className="absolute right-1 h-8 w-8 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white"
+                    onClick={() => {
+                      if (riderNoteInput.trim() && selectedJob) {
+                        handleAddRiderLog(selectedJob.job.id, riderNoteInput);
+                        setRiderNoteInput("");
+                      }
+                    }}
+                    disabled={!riderNoteInput.trim() || isUploadingChatImage}
+                  >
+                    <Navigation size={14} className="ml-0.5 rotate-45" />
+                  </Button>
+                </div>
               </div>
             </div>
           )}

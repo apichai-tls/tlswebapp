@@ -528,7 +528,8 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                                 if (newStatus === 'completed') {
                                   updates.completedAt = new Date().toISOString();
                                 }
-                                jobStore.updateJobDetails(job.id, updates);
+                                const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                                jobStore.updateJobDetails(job.id, updates, actorDetails);
                               }
                             }}
                             className={`w-full text-[10px] font-semibold rounded-md border py-1 px-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer ${statusConfig[job.status]?.className || ''}`}
@@ -631,7 +632,8 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           }
 
                           // Proceed directly for normal status transition
-                          await jobStore.updateJobDetails(jobId, { status });
+                          const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                          await jobStore.updateJobDetails(jobId, { status }, actorDetails);
                           toast.success(`Job updated to ${statusConfig[status].label}`);
                         } catch (err: any) {
                           toast.error(err.message || "Failed to update job status");
@@ -852,10 +854,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               onClick={async () => {
                 if (!cancellingJob) return;
                 try {
+                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
                   await jobStore.updateJobDetails(cancellingJob.id, { 
                     status: "cancel", 
                     remark: `${cancellingJob.remark || ''} | Cancelled Reason: ${cancelReason}`.trim() 
-                  });
+                  }, actorDetails);
                   toast.success(`Job has been cancelled.`);
                   setCancellingJob(null);
                   setCancelReason("");
@@ -920,10 +923,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                   };
                   notes.push(newLog);
 
+                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
                   await jobStore.updateJobDetails(jobId, { 
                     status: targetStatus as JobStatus, 
                     adminNotesJson: JSON.stringify(notes) 
-                  });
+                  }, actorDetails);
                   toast.success(`Job updated to ${statusConfig[targetStatus as JobStatus].label}`);
                   setReopenDialog({ isOpen: false, jobId: "", targetStatus: "", reason: "" });
                 } catch (e: any) {
