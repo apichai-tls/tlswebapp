@@ -126,7 +126,43 @@ export async function updateCustomerAction(id: string, updates: any) {
     data.memberExpiryDate = updates.memberExpiryDate ? new Date(updates.memberExpiryDate) : null;
   }
 
-  return prisma.customer.update({ where: { id }, data });
+  const updatedCustomer = await prisma.customer.update({ where: { id }, data });
+
+  // CRM Remark Sync Logic from main branch
+  if (updates.remark !== undefined) {
+    const activeJobs = await prisma.job.findMany({
+      where: {
+        customerId: id,
+        status: { in: ['pending', 'accepted', 'pickup', 'active', 'delivery', 'picked_up'] }
+      }
+    });
+
+    for (const job of activeJobs) {
+      let notes = [];
+      if (job.adminNotesJson) {
+        try {
+          notes = JSON.parse(job.adminNotesJson);
+          if (!Array.isArray(notes)) notes = [];
+        } catch (e) {
+          notes = [];
+        }
+      }
+      
+      notes.push({
+        userId: 'system',
+        userName: 'System (CRM)',
+        text: `CRM Remark: ${updates.remark ? updates.remark : '(Cleared)'}`,
+        timestamp: new Date().toISOString()
+      });
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: { adminNotesJson: JSON.stringify(notes) }
+      });
+    }
+  }
+
+  return updatedCustomer;
 }
 
 export async function deleteCustomerAction(id: string) {

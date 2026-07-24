@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { hashPassword } from "../../src/lib/crypto";
 
 const prisma = new PrismaClient();
 
@@ -6,7 +7,7 @@ export async function resetAndSeedDatabase() {
   console.log("🧹 Resetting test database...");
   
   // 1. Delete dependent transactional records using raw SQL truncate cascade for FK safety
-  const tables = ["ActivityLog", "RiderTransaction", "Job", "Customer", "Rider", "ShopLocation", "AdminUser", "ServiceItem"];
+  const tables = ["ActivityLog", "RiderTransaction", "Job", "Customer", "Rider", "CashierShift", "ShopLocation", "AdminUser", "ServiceItem"];
   for (const table of tables) {
     try {
       await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE;`);
@@ -31,7 +32,7 @@ export async function resetAndSeedDatabase() {
   });
 
   // 3. Seed Admin Users
-  await prisma.adminUser.create({
+  const adminUser = await prisma.adminUser.create({
     data: {
       email: "admin@tls.com",
       password: "admin1234",
@@ -40,6 +41,19 @@ export async function resetAndSeedDatabase() {
       permissions: JSON.stringify(["jobs", "dispatch", "pos", "customers", "settings", "users", "activity-logs"]),
       area: "BKK",
     },
+  });
+
+  // Open a Cashier Shift so POS tests are not blocked
+  await prisma.cashierShift.create({
+    data: {
+      id: "SHIFT-01",
+      branchId: branch.id,
+      userId: adminUser.id,
+      userName: adminUser.name,
+      startingCash: 1000,
+      expectedCash: 1000,
+      status: "open",
+    }
   });
 
   // 4. Seed Rider

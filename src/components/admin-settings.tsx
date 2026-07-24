@@ -435,6 +435,7 @@ export function AdminSettings() {
               <div className="relative max-w-[200px]">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
                 <Input 
+                  id="rider-commission-input"
                   type="number" 
                   step="0.1"
                   value={commissionRateInput} 
@@ -446,7 +447,7 @@ export function AdminSettings() {
               <p className="text-[10px] text-slate-500">This rate is used to calculate pickup and delivery commissions based on distance. Default is ฿2.0 per km.</p>
             </div>
             
-            <Button onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
+            <Button id="save-commission-btn" onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
               Save Commission Rate
             </Button>
           </div>
