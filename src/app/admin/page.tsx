@@ -316,6 +316,10 @@ export default function AdminPage() {
     window.history.replaceState(null, '', `#${tab}`);
   };
   const [laundryPrice, setLaundryPrice] = useState(0);
+  const [dialogDiscountPercent, setDialogDiscountPercent] = useState<number>(0);
+  const [showDialogDiscount, setShowDialogDiscount] = useState<boolean>(false);
+  const [dialogVatType, setDialogVatType] = useState<"none" | "inclusive" | "exclusive">("none");
+  const [dialogVatRate, setDialogVatRate] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [paymentChannel, setPaymentChannel] = useState("");
   const [cashPlaced, setCashPlaced] = useState(false);
@@ -576,6 +580,11 @@ export default function AdminPage() {
     setServiceSpeed(newSpeed);
     setServiceWeight(newWeight);
 
+    if (!dialogCart || dialogCart.length === 0) {
+      setLaundryPrice(0);
+      return;
+    }
+
     const baseService = services.find(s => s.id === newServiceId);
     let pricePerKg = baseService ? baseService.price : 110;
 
@@ -642,8 +651,7 @@ export default function AdminPage() {
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
   };
 
-  const baseFee = editingFeeLock !== null ? editingFeeLock : calculateTotalFee();
-  const fee = isFreeDelivery ? 0 : baseFee;
+
 
   const pendingCount = jobs.filter((j) => j.status === "pending").length;
   const completedCount = jobs.filter((j) => j.status === "completed").length;
@@ -664,6 +672,10 @@ export default function AdminPage() {
 
   // --- POS/Cashier Shift Enhancements ---
   const [dialogCart, setDialogCart] = useState<any[]>([]);
+  const hasPackage = dialogCart.some(item => item.category === "PACKAGE");
+  const activeIsFreeDelivery = isFreeDelivery || hasPackage;
+  const baseFee = editingFeeLock !== null ? editingFeeLock : calculateTotalFee();
+  const fee = activeIsFreeDelivery ? 0 : baseFee;
   const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [categorySearch, setCategorySearch] = useState<string>("");
   
@@ -673,8 +685,9 @@ export default function AdminPage() {
   
   // Derived lock states
   const isPaidJob = editingJobId ? (jobStore.getSnapshot().find(j => j.id === editingJobId)?.status === 'completed' || jobStore.getSnapshot().find(j => j.id === editingJobId)?.isPaid) : false;
-  const isPricingLocked = isPaidJob || !activeShift;
-  const isCartLocked = isPaidJob || !activeShift;
+  const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
+  const isPricingLocked = isPaidJob || (!activeShift && !isCsoOrAdmin);
+  const isCartLocked = isPaidJob || (!activeShift && !isCsoOrAdmin);
   const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
 
   // Proforma states
@@ -683,6 +696,7 @@ export default function AdminPage() {
   const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
   const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
   const [showReceipt, setShowReceipt] = useState<boolean>(false);
+  const [isPaymentEvent, setIsPaymentEvent] = useState<boolean>(false);
   const [receiptPaperSize, setReceiptPaperSize] = useState<string>("80mm");
 
   const forceMemberPaymentDialog = useMemo(() => {
@@ -695,19 +709,54 @@ export default function AdminPage() {
     );
   }, [selectedProfileCustomer, dialogCart]);
 
+  const currentLaundryPrice = useMemo(() => {
+    if (dialogCart.length > 0) {
+      return dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    }
+    return laundryPrice;
+  }, [dialogCart, laundryPrice]);
+
+  const dialogDiscountAmount = useMemo(() => {
+    return currentLaundryPrice * (dialogDiscountPercent / 100);
+  }, [currentLaundryPrice, dialogDiscountPercent]);
+
+  const dialogVatAmount = useMemo(() => {
+    if (dialogVatType === "none" || dialogVatRate <= 0) return 0;
+    const baseForVat = currentLaundryPrice - dialogDiscountAmount + (serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : (serviceSpeed === 'express_100' ? currentLaundryPrice : 0)) + fee;
+    if (dialogVatType === "inclusive") {
+      return baseForVat * (dialogVatRate / (100 + dialogVatRate));
+    } else {
+      return baseForVat * (dialogVatRate / 100);
+    }
+  }, [dialogVatType, dialogVatRate, currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee]);
+
   const dialogTotal = useMemo(() => {
-    return laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee;
-  }, [laundryPrice, serviceSpeed, fee]);
+    const surcharge = serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : (serviceSpeed === 'express_100' ? currentLaundryPrice : 0);
+    const baseTotal = currentLaundryPrice - dialogDiscountAmount + surcharge + fee;
+    const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
+    return baseTotal + vat;
+  }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate]);
 
   useEffect(() => {
     if (forceMemberPaymentDialog) {
       const hasSufficient = (selectedProfileCustomer?.creditBalance || 0) >= dialogTotal;
       if (!hasSufficient) {
         setPaymentMethod("unpaid");
+      } else {
+        setPaymentMethod("paid");
       }
       setPaymentChannel("Deduct Member");
     }
   }, [forceMemberPaymentDialog, dialogTotal, selectedProfileCustomer?.creditBalance]);
+
+  useEffect(() => {
+    if (systemSettings?.vatType) {
+      setDialogVatType(systemSettings.vatType as any);
+    } else {
+      setDialogVatType("none");
+    }
+    setDialogVatRate(parseFloat(systemSettings?.vatRate || "7") || 7);
+  }, [systemSettings?.vatType, systemSettings?.vatRate]);
 
   const activeShop = useMemo(() => {
     return shopLocations[selectedStoreIndex] || shopLocations[0];
@@ -718,6 +767,13 @@ export default function AdminPage() {
     const activeServices = services.filter(s => s.isActive !== false);
     return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
   }, [services]);
+
+  const visibleCategories = useMemo(() => {
+    if (!activeShift && user?.role === 'cso') {
+      return categories.filter(cat => cat === 'PACKAGE');
+    }
+    return categories;
+  }, [categories, activeShift, user?.role]);
   // Clean up isNew flags when the Edit Job dialog closes without saving
   useEffect(() => {
     if (!dialogOpen && editingJobId && !showReceipt) {
@@ -834,6 +890,8 @@ export default function AdminPage() {
     } else {
       setLaundryPrice(0);
     }
+    setDialogDiscountPercent(0);
+    setShowDialogDiscount(false);
     setEditingFeeLock(null);
     setSelectedVIPLabel("");
     setSelectedMemberLabel("");
@@ -869,6 +927,9 @@ export default function AdminPage() {
 
   const handleEditFullJob = (job: Job) => {
     setEditingJobId(job.id);
+    setDialogDiscountPercent(job.discountPercent || 0);
+    setShowDialogDiscount(!!job.discountPercent && job.discountPercent > 0);
+    
     setShowJobLogs(false);
     setEditingSubStatus(job.subStatus || null);
     setIsStuck(job.isStuck || false);
@@ -1101,7 +1162,7 @@ export default function AdminPage() {
     setPreviewAdminNoteImage(null);
   };
 
-  async function handleCreate() {
+  async function handleCreate(isPayment: boolean = false) {
     if (isPickup && !pickupLoc.trim()) {
       toast.error("Please fill in the pickup location.");
       return;
@@ -1164,7 +1225,10 @@ export default function AdminPage() {
     }
 
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
-    const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
+    const customRemarks = oldRemarks.filter(r => 
+      !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r) &&
+      !r.startsWith("VAT:")
+    );
 
     let finalAdminLogs = Array.isArray(adminLogs) ? [...adminLogs] : [];
     if (adminNoteInput.trim()) {
@@ -1175,6 +1239,16 @@ export default function AdminPage() {
         text: adminNoteInput.trim(),
         timestamp: new Date().toISOString()
       });
+    }
+
+    const currentCartHash = JSON.stringify(dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })));
+    const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
+
+    let effectiveRevision = proformaRevision;
+    if (cartChangedAfterProforma) {
+      effectiveRevision = proformaRevision + 1;
+      setProformaRevision(effectiveRevision);
+      setLastProformaCartHash(currentCartHash);
     }
 
     const itemsPayload = dialogCart.map(item => ({
@@ -1189,18 +1263,26 @@ export default function AdminPage() {
     const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
 
     const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const discountVal = subtotal * (dialogDiscountPercent / 100);
     const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
-    const calculatedTotal = subtotal + surcharge + fee;
+    const baseTotal = subtotal - discountVal + surcharge + fee;
+    const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
+    const calculatedTotal = baseTotal + vatVal;
 
     const newJobData: any = {
       isStuck,
+      discount: discountVal,
+      discountPercent: dialogDiscountPercent,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
       type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
       subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
       source: isWalkIn ? "pos" : "app",
-      // Auto-advance to Delivery or Completed when Process is set to Ready (only if job is not already completed)
-      ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
+      status: (hasPackage && paymentMethod === 'paid') 
+        ? "topup" 
+        : (!isAlreadyCompleted && editingSubStatus === 'ready') 
+          ? ((isWalkIn && !isDelivery) ? 'completed' : 'delivery')
+          : (editingJobId ? undefined : "pending"),
       laundryTypes: derivedLaundryTypes,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
@@ -1223,29 +1305,31 @@ export default function AdminPage() {
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
       shiftId: activeShift?.id || (existingJob ? (existingJob as any).shiftId : null) || null,
-      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
+      pickupCommission: (isPickup && !selectedVIPLabel && !activeIsFreeDelivery) 
         ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
             ? (existingJob.pickupCommission ?? 0) 
             : Math.floor(pickupDist) * getCommissionRate(systemSettings)) 
         : 0,
-      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) 
+      deliveryCommission: (isDelivery && !selectedVIPLabel && !activeIsFreeDelivery) 
         ? ((editingJobId && existingJob && existingJob.status === 'completed') 
             ? (existingJob.deliveryCommission ?? 0) 
             : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
         : 0,
       remark: [
+        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "",
         ...customRemarks,
-        isFreeDelivery ? "Free Delivery" : "",
+        activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
         serviceSpeed === "express_100" ? "Express 100%" : "",
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
+        dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
       proformaReceiptNumber: proformaReceiptNumber || null,
-      proformaRevision: proformaReceiptNumber ? proformaRevision : null,
+      proformaRevision: proformaReceiptNumber ? effectiveRevision : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced,
@@ -1253,6 +1337,60 @@ export default function AdminPage() {
       actorName: user?.name || user?.email,
       actorRole: user?.role
     };
+
+    if (proformaReceiptNumber) {
+      try {
+        const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
+        const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
+        const searchTag = `-rev${effectiveRevision}.png`;
+        const alreadyCaptured = finalBillImageUrls.some(url => url.includes(searchTag));
+
+        if (!alreadyCaptured) {
+          const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
+          const tempReceiptData: any = {
+            id: effectiveProformaId,
+            proformaId: proformaReceiptNumber,
+            proformaRevision: effectiveRevision,
+            createdAt: new Date(),
+            customerName: customerName || "Walk-In",
+            customerPhone: customerPhone || "-",
+            items: dialogCart.map(item => ({ name: item.name, nameEn: item.nameEn || item.name, quantity: item.quantity, price: item.price })),
+            subtotal: dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0),
+            expressSurcharge: serviceSpeed === "express_50" ? Math.ceil(dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0) * 0.5) : (serviceSpeed === "express_100" ? dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0) : 0),
+            serviceSpeed,
+            discount: dialogDiscountAmount,
+            total: calculatedTotal,
+            isPaid: paymentMethod === 'paid',
+            paymentChannel,
+            remark: [activeIsFreeDelivery ? "Free Delivery" : "", serviceSpeed === "express_50" ? "Express 50%" : "", serviceSpeed === "express_100" ? "Express 100%" : "", `Proforma: ${proformaReceiptNumber}`, `Revision: ${effectiveRevision}`].filter(Boolean).join(" | ") || undefined,
+            isDraft: true,
+            vatType: dialogVatType,
+            vatRate: dialogVatRate,
+            vatAmount: 0,
+            deliveryScheduledAt: new Date(deliveryScheduledTime),
+            deliveryFee: fee
+          };
+          const blob = await generateThermalReceiptImage(tempReceiptData, activeShop);
+          if (blob) {
+              const file = new File([blob], filename, { type: "image/png" });
+              const formData = new FormData();
+              formData.append("file", file);
+              formData.append("entityType", "jobs");
+              formData.append("entityId", effectiveProformaId);
+              formData.append("subType", "proofs");
+              const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
+              const uploadJson = await uploadRes.json();
+              if (uploadJson.success && uploadJson.publicUrl) {
+                if (!finalBillImageUrls.includes(uploadJson.publicUrl)) {
+                  finalBillImageUrls.push(uploadJson.publicUrl);
+                }
+              }
+            }
+          }
+        } catch (e) {
+        console.error("Proforma image capture in page.tsx handleCreate failed:", e);
+      }
+    }
 
     // Only set image properties if they were actually modified, to prevent stale overrides
     if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
@@ -1280,10 +1418,61 @@ export default function AdminPage() {
         toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
       }
 
-      setDialogOpen(false);
+      // Handle customer wallet balance adjustments on payment
+      const isPaidNow = paymentMethod === 'paid';
+      const wasPaidBefore = existingJob ? existingJob.isPaid : false;
+      const isNewPaymentTransition = isPaidNow && !wasPaidBefore;
+
+      if (isNewPaymentTransition && selectedProfileCustomer) {
+        let balanceAdjustment = 0;
+        
+        // 1. Deduct wallet if paid via Deduct Member
+        if (paymentChannel === "Deduct Member") {
+          balanceAdjustment -= calculatedTotal;
+        }
+
+        // 2. Add to wallet if it is a topup package
+        const packageItems = dialogCart.filter(item => item.category === "PACKAGE");
+        if (packageItems.length > 0) {
+          const packageTotal = packageItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+          balanceAdjustment += packageTotal;
+        }
+
+        if (balanceAdjustment !== 0) {
+          const newBalance = (selectedProfileCustomer.creditBalance || 0) + balanceAdjustment;
+          const updates: Partial<Customer> = { creditBalance: newBalance };
+
+          if (balanceAdjustment > 0 && !selectedProfileCustomer.isMember) {
+            updates.isMember = true;
+            const priceLists = priceListStore.getSnapshot();
+            const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
+            if (memberList) {
+              updates.priceListId = memberList.id;
+            }
+          }
+
+          await customerStore.updateCustomer(selectedProfileCustomer.id, updates);
+          
+          setSelectedProfileCustomer(prev => prev ? {
+            ...prev,
+            creditBalance: newBalance,
+            isMember: updates.isMember !== undefined ? updates.isMember : prev.isMember,
+            priceListId: updates.priceListId !== undefined ? updates.priceListId : prev.priceListId
+          } : null);
+          
+          toast.success(`Customer wallet updated. New balance: ฿${newBalance.toLocaleString()}`);
+        }
+      }
+
+      if (!isPayment) {
+        setDialogOpen(false);
+      }
       setEditingJobId(savedJobId);
       setIsDraftPreview(false);
-      setShowReceipt(true);
+      if (isPayment) {
+        setIsPaymentEvent(true);
+        setShowReceipt(true);
+      }
     } catch (err: any) {
       console.error("Job Save Error:", err);
       toast.error(`Failed to save job: ${err.message || 'Unknown error'}`);
@@ -1295,18 +1484,22 @@ export default function AdminPage() {
   const dialogReceiptData = useMemo(() => {
     if (showReceipt && isDraftPreview) {
       const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const discountVal = subtotal * (dialogDiscountPercent / 100);
       const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
-      const calculatedTotal = subtotal + surcharge + fee;
+      const baseTotal = subtotal - discountVal + surcharge + fee;
+      const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
+      const calculatedTotal = baseTotal + vatVal;
       
       const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
       const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
       
       const remarkParts = [
-        isFreeDelivery ? "Free Delivery" : "",
+        activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
         serviceSpeed === "express_100" ? "Express 100%" : "",
         proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}` : "",
-        proformaReceiptNumber ? `Revision: ${proformaRevision}` : ""
+        proformaReceiptNumber ? `Revision: ${proformaRevision}` : "",
+        dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : ""
       ].filter(Boolean);
       
       const mockJob: any = {
@@ -1321,6 +1514,8 @@ export default function AdminPage() {
           price: item.price
         })),
         totalAmount: calculatedTotal,
+        discount: discountVal,
+        discountPercent: dialogDiscountPercent,
         fee,
         isPaid: paymentMethod === 'paid',
         paymentChannel: paymentChannel || null,
@@ -1336,10 +1531,12 @@ export default function AdminPage() {
       formatted.proformaRevision = proformaRevision;
       return formatted;
     } else if (activeJob) {
-      return formatJobToReceiptData(activeJob);
+      const formatted = formatJobToReceiptData(activeJob);
+      formatted.autoCapture = isPaymentEvent;
+      return formatted;
     }
     return null;
-  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob]);
+  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent]);
 
   return (
     <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
@@ -2790,7 +2987,7 @@ export default function AdminPage() {
 
                       {/* Laundry Service Type & Speed */}
                       <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex-1 flex flex-col gap-2 min-h-[350px]">
-                        {!activeShift ? (
+                        {!activeShift && !isCsoOrAdmin ? (
                           <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
                             <ShieldAlert size={36} className="text-amber-500 mb-2 animate-bounce" />
                             <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
@@ -2824,7 +3021,7 @@ export default function AdminPage() {
 
                             {dialogSelectedCategory === null ? (
                               <div className="grid grid-cols-2 grid-rows-[repeat(5,1fr)] gap-2.5 pt-2 flex-1">
-                                {categories.map((cat) => (
+                                {visibleCategories.map((cat) => (
                                   <Button
                                     key={cat}
                                     type="button"
@@ -2836,29 +3033,31 @@ export default function AdminPage() {
                                     {cat}
                                   </Button>
                                 ))}
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  disabled={isPricingLocked}
-                                  className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
-                                  onClick={() => {
-                                    handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
-                                    setDialogCart(prev => {
-                                      if (prev.some(x => x.id === "other")) return prev;
-                                      return [...prev, {
-                                        id: "other",
-                                        name: "Other (Custom Price)",
-                                        nameEn: "Other (Custom Price)",
-                                        quantity: 1,
-                                        price: laundryPrice || 0,
-                                        category: "other",
-                                        unit: "piece"
-                                      }];
-                                    });
-                                  }}
-                                >
-                                  Other (Custom Price)
-                                </Button>
+                                {user?.role !== 'cso' && (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={isPricingLocked}
+                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
+                                    onClick={() => {
+                                      handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
+                                      setDialogCart(prev => {
+                                        if (prev.some(x => x.id === "other")) return prev;
+                                        return [...prev, {
+                                          id: "other",
+                                          name: "Other (Custom Price)",
+                                          nameEn: "Other (Custom Price)",
+                                          quantity: 1,
+                                          price: laundryPrice || 0,
+                                          category: "other",
+                                          unit: "piece"
+                                        }];
+                                      });
+                                    }}
+                                  >
+                                    Other (Custom Price)
+                                  </Button>
+                                )}
                               </div>
                             ) : (
                               <div className="flex-1 flex flex-col gap-2 pt-2">
@@ -3056,7 +3255,7 @@ export default function AdminPage() {
                                   </div>
                                 </div>
                               ))
-                            ) : !activeShift ? (
+                            ) : (!activeShift && !isCsoOrAdmin) ? (
                               <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
                                 <PackageOpen size={24} className="text-slate-600 mb-1.5" />
                                 <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
@@ -3081,23 +3280,23 @@ export default function AdminPage() {
                             {serviceSpeed !== "standard" && (
                               <div className="flex justify-between items-center pb-0.5">
                                 <span className="text-[9px] text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                                <span className="text-xs font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
+                                <span className="text-xs font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : currentLaundryPrice).toFixed(0)}</span>
                               </div>
                             )}
 
                             <div className="space-y-0.5">
                               <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
                               <div className="flex items-center gap-3">
-                                <Label className="flex items-center gap-1 cursor-pointer">
-                                  <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
                                   <span className="text-[10px] text-slate-200">Standard</span>
                                 </Label>
-                                <Label className="flex items-center gap-1 cursor-pointer">
-                                  <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
                                   <span className="text-[10px] text-slate-200">Exp 50%</span>
                                 </Label>
-                                <Label className="flex items-center gap-1 cursor-pointer">
-                                  <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
                                   <span className="text-[10px] text-slate-200">Exp 100%</span>
                                 </Label>
                               </div>
@@ -3117,7 +3316,7 @@ export default function AdminPage() {
                               <div className="flex items-center gap-1">
                                 <span className="text-amber-400 font-medium">Rider Comm:</span>
                                 <span className="font-bold text-amber-400">
-                                  ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
+                                  ฿{selectedVIPLabel || activeIsFreeDelivery ? "0" : (
                                     (isPickup ? (
                                       (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
                                         ? (activeJob.pickupCommission ?? 0)
@@ -3138,28 +3337,96 @@ export default function AdminPage() {
                           {(isPickup || isDelivery) && (
                             <div className="flex justify-between items-center text-[10px] border-t border-slate-800 pt-1 pb-1 animate-in fade-in duration-200">
                               <div className="flex flex-col gap-0.5">
-                                 <Label className="flex items-center gap-1 cursor-pointer text-slate-300 select-none">
+                                 <Label className={`flex items-center gap-1 text-slate-300 select-none ${hasPackage || isPaidJob ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'}`}>
                                     <input 
                                       type="checkbox" 
-                                      checked={isFreeDelivery} 
+                                      disabled={hasPackage || isPaidJob}
+                                      checked={activeIsFreeDelivery} 
                                       onChange={(e) => setIsFreeDelivery(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer"
+                                      className="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                     />
                                     <span className="font-bold">Free Delivery</span>
                                   </Label>
                                   <span className="text-[8px] text-slate-500 ml-4.5">Rate: {selectedVIPLabel ? '4' : '10'}฿/km</span>
                               </div>
                               <div className="text-right select-none">
-                                {isFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-1.5">฿{baseFee.toFixed(0)}</span>}
-                                <span className={`text-[11px] font-black ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-200'}`}>Fee: ฿{fee.toFixed(0)}</span>
+                                {activeIsFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-1.5">฿{baseFee.toFixed(0)}</span>}
+                                <span className={`text-[11px] font-black ${activeIsFreeDelivery ? 'text-emerald-400' : 'text-slate-200'}`}>Fee: ฿{fee.toFixed(0)}</span>
                               </div>
+                            </div>
+                          )}
+
+                          {/* Discount % Input */}
+                          {showDialogDiscount && (
+                            <div className="flex justify-between items-center text-xs py-1 border-t border-slate-800">
+                              <span className="font-bold text-slate-300 uppercase">{currentLanguage === "en" ? "Discount (%)" : "ส่วนลด (%)"}</span>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="any"
+                                  placeholder="0"
+                                  disabled={isPaidJob}
+                                  className="h-6 w-14 text-[10px] font-bold bg-slate-800 border border-slate-650 rounded-md outline-none focus:border-indigo-500 text-center text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                                  value={dialogDiscountPercent || ""}
+                                  onChange={(e) => {
+                                    const val = parseFloat(e.target.value);
+                                    if (isNaN(val)) {
+                                      setDialogDiscountPercent(0);
+                                    } else {
+                                      setDialogDiscountPercent(Math.max(0, Math.min(100, val)));
+                                    }
+                                  }}
+                                />
+                                {dialogDiscountAmount > 0 && (
+                                  <span className="font-bold text-rose-450">
+                                    -฿{dialogDiscountAmount.toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* VAT Row */}
+                          {dialogVatType === "exclusive" && dialogVatRate > 0 && (
+                            <div className="flex justify-between text-xs font-semibold text-slate-400 py-1 border-t border-slate-800">
+                              <span>VAT ({dialogVatRate}%)</span>
+                              <span className="font-bold text-white">+฿{dialogVatAmount.toFixed(2)}</span>
+                            </div>
+                          )}
+
+                          {dialogVatType === "inclusive" && dialogVatRate > 0 && (
+                            <div className="flex justify-between text-xs font-bold text-emerald-500 py-1 border-t border-slate-800">
+                              <span>
+                                {currentLanguage === "en" ? `Incl. VAT ${dialogVatRate}%` : `รวม VAT ${dialogVatRate}%`}
+                              </span>
+                              <span>฿{dialogVatAmount.toFixed(2)}</span>
                             </div>
                           )}
 
                           {/* Grand Total */}
                           <div className="flex justify-between items-end border-t border-slate-800 pt-1 pb-1">
-                            <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                            <span className="text-xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
+                            <div className="flex items-center gap-2 select-none">
+                              <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
+                              <label className="flex items-center gap-1 cursor-pointer text-[10px] text-slate-400 hover:text-white font-bold transition-colors">
+                                <input
+                                  type="checkbox"
+                                  disabled={isPaidJob}
+                                  className="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer disabled:opacity-50"
+                                  checked={showDialogDiscount}
+                                  onChange={(e) => {
+                                    const checked = e.target.checked;
+                                    setShowDialogDiscount(checked);
+                                    if (!checked) {
+                                      setDialogDiscountPercent(0);
+                                    }
+                                  }}
+                                />
+                                <span>{currentLanguage === "en" ? "% Discount" : "% ส่วนลด"}</span>
+                              </label>
+                            </div>
+                            <span className="text-xl font-black text-indigo-400">฿{dialogTotal.toFixed(0)}</span>
                           </div>
 
                           {/* Payment Channel / Status */}
@@ -3171,7 +3438,7 @@ export default function AdminPage() {
                               </Label>
                               <select
                                 id="payment-channel"
-                                disabled={forceMemberPaymentDialog}
+                                disabled={forceMemberPaymentDialog || isPaidJob}
                                 className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
                                 value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
                                 onChange={(e) => setPaymentChannel(e.target.value)}
@@ -3192,21 +3459,22 @@ export default function AdminPage() {
                                 Status
                               </Label>
                               <div className="flex items-center gap-2 h-6">
-                                <Label className="flex items-center gap-1 cursor-pointer text-[10px]">
+                                <Label className={`flex items-center gap-1 text-[10px] ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
                                   <input 
                                     type="radio" 
                                     name="payment-status"
+                                    disabled={isPaidJob}
                                     checked={paymentMethod === 'unpaid'} 
                                     onChange={() => setPaymentMethod('unpaid')} 
-                                    className="w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" 
+                                    className="w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" 
                                   />
                                   <span className="font-medium text-slate-200">Unpaid</span>
                                 </Label>
-                                <Label className={`flex items-center gap-1 text-[10px] ${forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
+                                <Label className={`flex items-center gap-1 text-[10px] ${isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
                                   <input 
                                     type="radio" 
                                     name="payment-status"
-                                    disabled={forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal}
+                                    disabled={isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal)}
                                     checked={paymentMethod === 'paid'} 
                                     onChange={() => setPaymentMethod('paid')} 
                                     className="w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" 
@@ -3234,14 +3502,20 @@ export default function AdminPage() {
                               type="button"
                               variant="outline"
                               disabled={dialogCart.length === 0}
-                              onClick={async () => {
+                              onClick={() => {
                                 const cartHash = JSON.stringify(dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })));
-                                if (!proformaReceiptNumber) {
+
+                                let targetProformaNum = proformaReceiptNumber;
+                                let targetRevision = proformaRevision;
+
+                                if (!targetProformaNum) {
                                   const shopId = activeShop?.id || "default";
                                   const proformaKey = `proformaSeq_${shopId}`;
                                   const currentSeq = parseInt(systemSettings?.[proformaKey] || "0", 10);
                                   const nextSeq = currentSeq + 1;
-                                  await settingsStore.updateSetting(proformaKey, String(nextSeq));
+                                  setTimeout(() => {
+                                    settingsStore.updateSetting(proformaKey, String(nextSeq)).catch(() => {});
+                                  }, 1000);
                                   
                                   let branchCode = "";
                                   if (activeShop?.name) {
@@ -3267,15 +3541,19 @@ export default function AdminPage() {
                                     branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase();
                                   }
                                   
-                                  setProformaReceiptNumber(`PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`);
+                                  targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
+                                  targetRevision = 0;
+                                  setProformaReceiptNumber(targetProformaNum);
                                   setProformaRevision(0);
                                   setLastProformaCartHash(cartHash);
                                 } else {
                                   if (cartHash !== lastProformaCartHash) {
-                                    setProformaRevision(prev => prev + 1);
+                                    targetRevision = proformaRevision + 1;
+                                    setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
                                   }
                                 }
+
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
                               }}
@@ -3289,11 +3567,11 @@ export default function AdminPage() {
                             <Button 
                               type="button"
                               disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || paymentMethod !== 'paid' || isPaidJob}
-                              onClick={handleCreate}
+                              onClick={() => handleCreate(true)}
                               className="flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               <Banknote size={12} />
-                              Pay ฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(2)}
+                              Pay ฿{dialogTotal.toFixed(2)}
                             </Button>
                           </div>
                         </div>
@@ -3320,7 +3598,7 @@ export default function AdminPage() {
                     </Button>
                     <Button 
                       className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
-                      onClick={handleCreate}
+                      onClick={() => handleCreate(false)}
                       disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
                     >
                       {isSubmitting ? (
@@ -3588,6 +3866,7 @@ export default function AdminPage() {
         currentLanguage={currentLanguage}
         onCloseComplete={() => {
           setIsDraftPreview(false);
+          setIsPaymentEvent(false);
           if (!dialogOpen) {
             resetDialogStates();
           }

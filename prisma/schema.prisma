@@ -34,6 +34,8 @@ model Customer {
   dob              String?
   taxId            String?
   companyName      String?
+  memberStartDate  DateTime?
+  memberExpiryDate DateTime?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @default(now()) @updatedAt
 
@@ -74,6 +76,7 @@ model Job {
   paymentChannel         String?
   isPaid                 Boolean   @default(false)
   discount               Float?    @default(0)
+  discountPercent        Float?    @default(0)
   pickupDistance         Float?
   deliveryDistance       Float?
   pickupCommission       Float?
@@ -94,6 +97,7 @@ model Job {
   createdBy  String?
   cashPlaced Boolean @default(false)
   isStuck    Boolean @default(false)
+  walletBalanceAfter Float?
 
   customer Customer?     @relation(fields: [customerId], references: [id])
   branch   ShopLocation? @relation(fields: [branchId], references: [id])
@@ -229,6 +233,11 @@ model CashierShift {
   shortageOverage Float?    // Difference: actualCash - expectedCash
   status          String    @default("open") // "open" | "closed"
   notes           String?
+  totalOrders     Int       @default(0)
+  cashOrders      Int       @default(0)
+  transferOrders  Int       @default(0)
+  cardOrders      Int       @default(0)
+  creditOrders    Int       @default(0)
 
   branch          ShopLocation @relation(fields: [branchId], references: [id])
   jobs            Job[]

@@ -133,11 +133,43 @@
 .leaflet-container {
   z-index: 10 !important;
 }@media print { 
-  body > *:not(.print-root) { 
+  /* Hides normal layout only when NOT printing a report */
+  body:not(.printing-report) > *:not(.print-root) { 
     display: none !important; 
   } 
+
+  /* Unflex and expand all parent wrappers for print */
+  body.printing-report,
+  body.printing-report html,
+  body.printing-report main,
+  body.printing-report div.flex.min-h-screen,
+  body.printing-report div.flex-1.p-6.space-y-6 {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    position: relative !important;
+    float: none !important;
+    background-color: #ffffff !important;
+  }
+
+  body.printing-report aside,
+  body.printing-report header,
+  body.printing-report nav,
+  body.printing-report button,
+  body.printing-report select,
+  body.printing-report input,
+  body.printing-report .no-print {
+    display: none !important;
+  }
+
+  body.printing-report .flex-1.p-6.space-y-6 {
+    padding: 20px !important;
+  }
+
   @page {
-    margin: 0 !important;
+    margin: 0.5cm !important;
     size: auto;
   }
   body {

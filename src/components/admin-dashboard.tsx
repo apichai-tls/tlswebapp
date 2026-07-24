@@ -43,6 +43,10 @@ const statusConfig: Record<string, { label: string; className: string }> = {
     label: "Cancelled",
     className: "bg-red-50 text-red-700 border-red-200 hover:bg-red-50",
   },
+  topup: {
+    label: "Topup Member",
+    className: "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-50",
+  },
 };
 
 const statusIcon: Record<string, React.ReactNode> = {
@@ -52,6 +56,7 @@ const statusIcon: Record<string, React.ReactNode> = {
   delivery: <Truck size={13} />,
   completed: <CheckCircle2 size={13} />,
   cancelled: <CheckCircle2 size={13} />,
+  topup: <Banknote size={13} />,
 };
 
 const staggerContainer = {

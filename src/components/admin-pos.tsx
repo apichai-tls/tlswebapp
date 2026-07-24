@@ -2,7 +2,7 @@
 "use client";
 
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Search, 
@@ -36,7 +36,8 @@ import {
   Check,
   History,
   RefreshCw,
-  Store
+  Store,
+  Clock
 } from "lucide-react";
 import { trousers, skirt, dress, socks } from "@lucide/lab";
 import { Button } from "@/components/ui/button";
@@ -436,6 +437,185 @@ function ShiftHistoryDialog({
   );
 }
 
+interface ActiveShiftDetailsDialogProps {
+  shift: CashierShift | null;
+  shopName: string;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSwitchBranch?: () => void;
+  currentLanguage: string;
+  isUserAdmin: boolean;
+  currentUserId?: string;
+  stats?: {
+    cashSales: number;
+    transferSales: number;
+    cardSales: number;
+    creditSales: number;
+    expectedCash: number;
+    totalOrders: number;
+  };
+}
+
+function ActiveShiftDetailsDialog({
+  shift,
+  shopName,
+  isOpen,
+  onOpenChange,
+  onSwitchBranch,
+  currentLanguage,
+  isUserAdmin,
+  currentUserId,
+  stats
+}: ActiveShiftDetailsDialogProps) {
+  if (!shift) return null;
+
+  const isOwnShift = shift.userId === currentUserId;
+  const openTime = shift.openedAt ? format(new Date(shift.openedAt), "dd/MM/yyyy HH:mm น.") : "-";
+  const totalShiftRevenue = (stats?.cashSales || 0) + (stats?.transferSales || 0) + (stats?.cardSales || 0) + (stats?.creditSales || 0);
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md p-5 bg-card border border-border shadow-2xl rounded-2xl">
+        <DialogHeader className="shrink-0 mb-2 border-b border-border pb-3">
+          <DialogTitle className="text-base font-black text-foreground flex items-center gap-2">
+            <Store className="text-primary" size={18} />
+            {currentLanguage === "en" ? `Active Shift Details - ${shopName}` : `รายละเอียดกะที่เปิดอยู่ - ${shopName}`}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-3 my-2">
+          {!isOwnShift && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 rounded-xl text-rose-800 dark:text-rose-200 text-xs font-medium leading-relaxed flex items-start gap-2">
+              <ShieldAlert className="text-rose-500 shrink-0 mt-0.5" size={16} />
+              <div>
+                <span className="font-bold">
+                  {currentLanguage === "en" ? "Active Cashier Session Detected" : "พบค้างกะโดยพนักงานท่านอื่น"}
+                </span>
+                <p className="text-[11px] opacity-90 mt-0.5">
+                  {currentLanguage === "en" 
+                    ? `A cashier shift is currently active by ${shift.userName}. You cannot perform transactions or open a new shift until this shift is closed.`
+                    : `มีรอบกะกำลังเปิดใช้งานทิ้งไว้อยู่โดยพนักงาน "${shift.userName}" คุณไม่สามารถทำรายการหรือเปิดกะใหม่ได้จนกว่าจะปิดกะนี้`}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="bg-muted/40 p-3.5 rounded-xl border border-border/60 space-y-2.5 text-xs font-semibold">
+            <div className="flex justify-between items-center pb-2 border-b border-border/40">
+              <span className="text-muted-foreground">{currentLanguage === "en" ? "Cashier Staff:" : "พนักงานที่เปิดกะ:"}</span>
+              <span className="font-bold text-foreground text-sm flex items-center gap-1.5">
+                <User size={14} className="text-primary" />
+                {shift.userName}
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center">
+              <span className="text-muted-foreground">{currentLanguage === "en" ? "Opened Time:" : "เวลาที่เปิดกะ:"}</span>
+              <span className="font-bold text-foreground flex items-center gap-1">
+                <Clock size={13} className="text-muted-foreground" />
+                {openTime}
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center">
+              <span className="text-muted-foreground">{currentLanguage === "en" ? "Starting Float Cash:" : "เงินทอนเริ่มต้น:"}</span>
+              <span className="font-bold text-foreground">
+                ฿{(shift.startingCash || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            {/* Cash in Drawer Box */}
+            <div className="bg-emerald-50 dark:bg-emerald-950/40 p-3 rounded-xl border border-emerald-250 dark:border-emerald-900/60 flex justify-between items-center my-2 shadow-sm">
+              <div className="flex items-center gap-2">
+                <Banknote size={20} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <div className="flex flex-col">
+                  <span className="text-emerald-950 dark:text-emerald-200 font-extrabold text-xs">
+                    {currentLanguage === "en" ? "Cash in Drawer:" : "เงินสดในลิ้นชักปัจจุบัน:"}
+                  </span>
+                  <span className="text-[9.5px] text-emerald-700/80 dark:text-emerald-400/80 font-medium">
+                    (เงินทอนเริ่มต้น + ยอดขายเงินสด)
+                  </span>
+                </div>
+              </div>
+              <span className="font-black text-emerald-600 dark:text-emerald-400 text-base">
+                ฿{(stats?.expectedCash || shift.startingCash || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            {/* Payment channel breakdown */}
+            {stats && (
+              <div className="pt-2 border-t border-border/40 space-y-2">
+                <div className="flex justify-between items-center text-[10.5px] font-bold text-muted-foreground uppercase tracking-wider mb-1">
+                  <span>{currentLanguage === "en" ? "Sales Breakdown by Channel" : "ยอดขายแยกตามช่องทาง"}</span>
+                  <span className="text-primary text-[10px]">({stats.totalOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"})</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="bg-background/80 p-2 rounded-lg border border-border/50 flex justify-between items-center">
+                    <span className="text-muted-foreground flex items-center gap-1 font-medium text-[11px]">💵 เงินสด</span>
+                    <span className="font-bold text-foreground">฿{stats.cashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="bg-background/80 p-2 rounded-lg border border-border/50 flex justify-between items-center">
+                    <span className="text-muted-foreground flex items-center gap-1 font-medium text-[11px]">📱 เงินโอน</span>
+                    <span className="font-bold text-foreground">฿{stats.transferSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="bg-background/80 p-2 rounded-lg border border-border/50 flex justify-between items-center">
+                    <span className="text-muted-foreground flex items-center gap-1 font-medium text-[11px]">💳 บัตรเครดิต</span>
+                    <span className="font-bold text-foreground">฿{stats.cardSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="bg-background/80 p-2 rounded-lg border border-border/50 flex justify-between items-center">
+                    <span className="text-muted-foreground flex items-center gap-1 font-medium text-[11px]">👤 หักสมาชิก</span>
+                    <span className="font-bold text-foreground">฿{stats.creditSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center pt-2 border-t border-border/40 text-xs font-black">
+                  <span className="text-foreground">{currentLanguage === "en" ? "Total Shift Revenue:" : "รวมยอดขายกะนี้:"}</span>
+                  <span className="text-primary text-sm font-black">
+                    ฿{totalShiftRevenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {shift.notes && (
+              <div className="flex justify-between items-start pt-2 border-t border-border/40">
+                <span className="text-muted-foreground shrink-0">{currentLanguage === "en" ? "Shift Notes:" : "หมายเหตุการเปิดกะ:"}</span>
+                <span className="font-normal text-muted-foreground text-right italic max-w-[200px] truncate">
+                  {shift.notes}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter className="pt-2 border-t border-border gap-2">
+          {onSwitchBranch && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                onOpenChange(false);
+                onSwitchBranch();
+              }}
+              className="border-border text-foreground font-bold text-xs h-9 rounded-xl flex-1 cursor-pointer"
+            >
+              {currentLanguage === "en" ? "Switch Branch" : "สลับไปสาขาอื่น"}
+            </Button>
+          )}
+
+          <Button
+            variant="secondary"
+            onClick={() => onOpenChange(false)}
+            className="font-bold text-xs h-9 rounded-xl flex-1 cursor-pointer"
+          >
+            {currentLanguage === "en" ? "Close" : "ปิด"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 const getCategoryStyles = (category: string) => {
   const cat = category.toUpperCase();
   if (cat.includes("WASH") || cat.includes("FOLD") || cat.includes("KILO")) {
@@ -556,6 +736,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string>("");
   const [proformaRevision, setProformaRevision] = useState<number>(0);
   const [lastProformaCartHash, setLastProformaCartHash] = useState<string>("");
+  const capturedReceiptUrlsRef = useRef<string[]>([]);
+  const [sessionCapturedReceiptUrls, setSessionCapturedReceiptUrls] = useState<string[]>([]);
   const [deliveryScheduledTime, setDeliveryScheduledTime] = useState<string>(() => getTomorrowDateTimeString());
 
   const isPaidJob = loadedJobId ? (jobs.find(j => j.id === loadedJobId)?.isPaid || false) : false;
@@ -603,10 +785,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setServiceSpeed("standard");
     setLoadedJobId(null);
     setManualAdjustment(0);
+    setDiscountPercent(0);
+    setShowDiscount(false);
     setDeliveryScheduledTime(getTomorrowDateTimeString());
     setReceivedCash("");
     setLocalDeliveryPrice("");
     setProformaReceiptNumber("");
+    setSessionCapturedReceiptUrls([]);
   };
 
   const [customerSearch, setCustomerSearch] = useState("");
@@ -654,6 +839,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [topUpInputVal, setTopUpInputVal] = useState("");
   const [vatRate, setVatRate] = useState<number>(7);
   const [vatType, setVatType] = useState<"none" | "inclusive" | "exclusive">("none");
+  const [discountPercent, setDiscountPercent] = useState<number>(0);
+  const [showDiscount, setShowDiscount] = useState<boolean>(false);
 
   // Cashier Shift States
   const { activeShift, branchActiveShift, hasLoaded: hasLoadedShift } = useSyncExternalStore(
@@ -673,12 +860,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
   }, [shops, activeBranchId, hasLoadedShift, activeShift]);
 
-  // Determine if Admin is viewing in Spectator Mode (view-only)
-  const isSpectatorMode = useMemo(() => {
-    if (user?.role !== 'admin') return false;
-    if (!branchActiveShift) return false;
-    return branchActiveShift.userId !== user.id;
-  }, [user, branchActiveShift]);
+  // Spectator Mode is disabled
+  const isSpectatorMode = false;
 
   const [allOpenShifts, setAllOpenShifts] = useState<CashierShift[]>([]);
 
@@ -694,6 +877,91 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   }, [activeBranchId]);
 
   const [isCloseShiftOpen, setIsCloseShiftOpen] = useState(false);
+  const [viewingShiftDetails, setViewingShiftDetails] = useState<{
+    shift: CashierShift;
+    shopName: string;
+  } | null>(null);
+
+  const viewingShiftStats = useMemo(() => {
+    const shift = viewingShiftDetails?.shift;
+    if (!shift) return undefined;
+
+    let cashSales = 0;
+    let transferSales = 0;
+    let cardSales = 0;
+    let creditSales = 0;
+    let totalOrders = 0;
+
+    const shiftOpenTime = new Date(shift.openedAt).getTime();
+
+    for (const job of jobs) {
+      if (job.branchId !== shift.branchId) continue;
+      let hasPaymentLog = false;
+      let usedCash = false;
+      let usedTransfer = false;
+      let usedCard = false;
+      let usedCredit = false;
+
+      if (job.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(job.adminNotesJson);
+          if (parsed && Array.isArray(parsed.payments)) {
+            hasPaymentLog = true;
+            for (const pay of parsed.payments) {
+              const payTime = new Date(pay.timestamp).getTime();
+              if (payTime >= shiftOpenTime) {
+                const method = pay.method?.toLowerCase();
+                const amount = pay.amount || 0;
+                if (method === 'cash') { cashSales += amount; usedCash = true; }
+                else if (method === 'transfer') { transferSales += amount; usedTransfer = true; }
+                else if (method === 'card') { cardSales += amount; usedCard = true; }
+                else if (method === 'credit') { creditSales += amount; usedCredit = true; }
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!hasPaymentLog) {
+        if (!job.createdAt) continue;
+        const jobTime = new Date(job.createdAt).getTime();
+        if (jobTime >= shiftOpenTime && job.createdBy === shift.userName && job.isPaid) {
+          const method = job.paymentMethod?.toLowerCase();
+          const amount = job.totalAmount || 0;
+          if (method === 'cash') { cashSales += amount; usedCash = true; }
+          else if (method === 'transfer') { transferSales += amount; usedTransfer = true; }
+          else if (method === 'card') { cardSales += amount; usedCard = true; }
+          else if (method === 'credit') { creditSales += amount; usedCredit = true; }
+        }
+      }
+
+      if (usedCash || usedTransfer || usedCard || usedCredit) {
+        totalOrders += 1;
+      }
+    }
+
+    const expectedCash = (shift.startingCash || 0) + cashSales;
+    return { cashSales, transferSales, cardSales, creditSales, expectedCash, totalOrders };
+  }, [viewingShiftDetails, jobs]);
+
+  const renderActiveShiftDetailsDialog = () => (
+    <ActiveShiftDetailsDialog
+      shift={viewingShiftDetails?.shift || null}
+      shopName={viewingShiftDetails?.shopName || ""}
+      isOpen={!!viewingShiftDetails}
+      onOpenChange={(open) => {
+        if (!open) setViewingShiftDetails(null);
+      }}
+      onSwitchBranch={() => {
+        setActiveBranchId("");
+        localStorage.removeItem("pos_active_branch_id");
+      }}
+      currentLanguage={currentLanguage}
+      isUserAdmin={user?.role === 'admin'}
+      currentUserId={user?.id}
+      stats={viewingShiftStats}
+    />
+  );
   const [startingCash, setStartingCash] = useState<string>("");
   const [openShiftNotes, setOpenShiftNotes] = useState<string>("");
   const [actualCash, setActualCash] = useState<string>("");
@@ -934,17 +1202,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
   }, [preselectedCustomer, preselectedCategory, onClearPreselected, isStandardPlan]);
 
-  // Initialize VAT settings from global settings when loaded
+  // Initialize VAT settings from global settings
   useEffect(() => {
-    if (!loadedJobId) {
-      if (settings?.vatType) {
-        setVatType(settings.vatType as any);
-      }
-      if (settings?.vatRate) {
-        setVatRate(parseFloat(settings.vatRate) || 0);
-      }
+    if (settings?.vatType) {
+      setVatType(settings.vatType as any);
+    } else {
+      setVatType("none");
     }
-  }, [settings?.vatType, settings?.vatRate, loadedJobId]);
+    setVatRate(parseFloat(settings?.vatRate || "7") || 7);
+  }, [settings?.vatType, settings?.vatRate]);
 
   // Initialize refund method when an order is chosen for cancellation/refund
   useEffect(() => {
@@ -1073,28 +1339,54 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return 0;
   }, [serviceSpeed, rate1Num, rate2Num, rate3Num]);
 
-  const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const hasPosPackage = useMemo(() => {
+    return cart.some(item => item.category === "PACKAGE");
+  }, [cart]);
+
+  const subtotal = useMemo(() => {
+    return cart.reduce((sum, item) => {
+      if (hasPosPackage && (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item")) {
+        return sum;
+      }
+      return sum + (item.price * item.quantity);
+    }, 0);
+  }, [cart, hasPosPackage]);
+
+  const discountBase = useMemo(() => {
+    return cart.reduce((sum, item) => {
+      if (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item") {
+        return sum;
+      }
+      return sum + (item.price * item.quantity);
+    }, 0);
+  }, [cart]);
+
+  const discountAmount = useMemo(() => {
+    return discountBase * (discountPercent / 100);
+  }, [discountBase, discountPercent]);
+
   const expressSurcharge = useMemo(() => {
     if (selectedExpressPercent > 0) {
-      return Math.ceil(subtotal * (selectedExpressPercent / 100));
+      return Math.ceil((subtotal - discountAmount) * (selectedExpressPercent / 100));
     }
     return 0;
-  }, [selectedExpressPercent, subtotal]);
+  }, [selectedExpressPercent, subtotal, discountAmount]);
+
   const vatAmount = useMemo(() => {
     if (vatType === "none" || vatRate <= 0) return 0;
-    const baseForVat = subtotal + expressSurcharge;
+    const baseForVat = subtotal - discountAmount + expressSurcharge;
     if (vatType === "inclusive") {
       return baseForVat * (vatRate / (100 + vatRate));
     } else {
       return baseForVat * (vatRate / 100);
     }
-  }, [vatType, vatRate, subtotal, expressSurcharge]);
+  }, [vatType, vatRate, subtotal, discountAmount, expressSurcharge]);
 
   const total = useMemo(() => {
-    const baseTotal = subtotal + expressSurcharge;
+    const baseTotal = subtotal - discountAmount + expressSurcharge;
     const vat = vatType === "exclusive" ? (baseTotal * (vatRate / 100)) : 0;
     return baseTotal + vat + manualAdjustment;
-  }, [subtotal, expressSurcharge, vatType, vatRate, manualAdjustment]);
+  }, [subtotal, discountAmount, expressSurcharge, vatType, vatRate, manualAdjustment]);
 
   const forceMemberPayment = useMemo(() => {
     if (!selectedCustomer?.isMember) return false;
@@ -1162,6 +1454,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       return {
         id: latestJob.id ? latestJob.id.split('-')[0].toUpperCase() : "",
+        jobId: latestJob.id,
         createdAt: latestJob.createdAt ? new Date(latestJob.createdAt) : new Date(),
         customerName: latestJob.customerName || "Walk-In",
         customerPhone: latestJob.customerPhone || "-",
@@ -1181,7 +1474,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         deliveryScheduledAt: latestJob.deliveryScheduledAt,
         status: latestJob.status,
         adminNotesJson: latestJob.adminNotesJson,
-        deliveryFee: latestJob.fee || 0
+        deliveryFee: latestJob.fee || 0,
+        autoCapture: true
       };
     }
 
@@ -1204,7 +1498,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       subtotal: subtotal,
       expressSurcharge: expressSurcharge,
       serviceSpeed: serviceSpeed,
-      discount: manualAdjustment,
+      discount: manualAdjustment + discountAmount,
+      discountPercent: discountPercent,
       total: total,
       isPaid: isPaid,
       paymentChannel: isPaid ? (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? "Deduct Member" : "Credit Wallet")) : undefined,
@@ -1218,7 +1513,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       adminNotesJson: JSON.stringify({ payments: draftPayments }),
       deliveryFee: 0
     };
-  }, [isDraftPreview, latestJob, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
+  }, [isDraftPreview, latestJob, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, discountAmount, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
 
   const handleCheckout = async () => {
     if (isSpectatorMode) {
@@ -1282,10 +1577,79 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     await new Promise(resolve => setTimeout(resolve, 800));
 
     try {
+      const currentCartHash = JSON.stringify(cart.map(it => ({ id: it.id, q: it.quantity, price: it.price })));
+      const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
+
+      let effectiveRevision = proformaRevision;
+
+      if (cartChangedAfterProforma) {
+        effectiveRevision = proformaRevision + 1;
+        setProformaRevision(effectiveRevision);
+        setLastProformaCartHash(currentCartHash);
+      }
+
+      // If a Proforma quote exists (whether newly issued, unchanged, or revised), ensure its PNG snapshot is captured and uploaded before saving the job
+      if (proformaReceiptNumber) {
+        try {
+          const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
+          const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
+          const searchTag = `-rev${effectiveRevision}.png`;
+          const alreadyCaptured = capturedReceiptUrlsRef.current.some(url => url.includes(searchTag)) || sessionCapturedReceiptUrls.some(url => url.includes(searchTag));
+
+          if (!alreadyCaptured) {
+            const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
+            const tempReceiptData: any = {
+              id: effectiveProformaId,
+              proformaId: proformaReceiptNumber,
+              proformaRevision: effectiveRevision,
+              createdAt: new Date(),
+              customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
+              customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
+              items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
+              subtotal: subtotal,
+              expressSurcharge: expressSurcharge,
+              serviceSpeed: serviceSpeed,
+              discount: manualAdjustment + discountAmount,
+              total: total,
+              isPaid: isPaid,
+              paymentChannel: isPaid ? (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? "Deduct Member" : "Credit Wallet")) : undefined,
+              remark: [remark, selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "", vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : ""].filter(Boolean).join(" | ") || undefined,
+              isDraft: true,
+              vatType,
+              vatRate,
+              vatAmount,
+              deliveryScheduledAt: new Date(deliveryScheduledTime),
+              deliveryFee: 0
+            };
+            const blob = await generateThermalReceiptImage(tempReceiptData, activeShop);
+            if (blob) {
+                const file = new File([blob], filename, { type: "image/png" });
+                const formData = new FormData();
+                formData.append("file", file);
+                formData.append("entityType", "jobs");
+                formData.append("entityId", effectiveProformaId);
+                formData.append("subType", "proofs");
+                const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
+                const uploadJson = await uploadRes.json();
+                if (uploadJson.success && uploadJson.publicUrl) {
+                  if (!sessionCapturedReceiptUrls.includes(uploadJson.publicUrl)) {
+                    sessionCapturedReceiptUrls.push(uploadJson.publicUrl);
+                  }
+                  if (!capturedReceiptUrlsRef.current.includes(uploadJson.publicUrl)) {
+                    capturedReceiptUrlsRef.current.push(uploadJson.publicUrl);
+                  }
+                }
+              }
+            }
+          } catch (e) {
+          console.error("Auto proforma revision capture failed:", e);
+        }
+      }
+
       const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
       const vatText = vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : "";
       const finalRemark = [
-        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}${proformaRevision > 0 ? `-R${proformaRevision}` : ""}` : "",
+        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "",
         remark,
         expressText,
         vatText
@@ -1329,33 +1693,63 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       let finalMethod: any = paymentMethod;
       let finalChannel = undefined;
 
-      if (newPayments.length === 1) {
-        finalMethod = newPayments[0].method;
-        finalChannel = newPayments[0].method.toUpperCase();
+      const getStandardChannelName = (m: string) => {
+        if (m === "cash") return "Cash / COD";
+        if (m === "transfer") return "Transfer";
+        if (m === "card") return "Credit Card";
+        if (m === "credit") return selectedCustomer?.isMember ? "Deduct Member" : "HQ/Credit";
+        return m ? m.toUpperCase() : undefined;
+      };
+
+      if (newPayments.length > 0) {
+        const lastPay = newPayments[newPayments.length - 1];
+        finalMethod = lastPay.method;
+        finalChannel = getStandardChannelName(lastPay.method);
+      } else if (finalPayments.length > 0) {
+        const lastPay = finalPayments[finalPayments.length - 1];
+        finalMethod = lastPay.method;
+        finalChannel = getStandardChannelName(lastPay.method);
+      } else {
+        finalChannel = getStandardChannelName(paymentMethod);
       }
 
       const paymentsJsonStr = JSON.stringify({ payments: finalPayments });
 
       let finalJob = null;
       if (loadedJobId) {
+        const loadedJob = jobs.find(j => j.id === loadedJobId);
+        let existingBills: string[] = [];
+        try {
+          if (loadedJob && loadedJob.billImageUrl) {
+            const parsed = JSON.parse(loadedJob.billImageUrl);
+            if (Array.isArray(parsed)) existingBills = parsed;
+            else if (typeof parsed === 'string') existingBills = [parsed];
+          }
+        } catch {}
+        const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]));
+        const mergedBills = Array.from(new Set([...existingBills, ...allSessionUrls]));
+
         await jobStore.updateJobDetails(loadedJobId, {
           totalAmount: total,
-          discount: manualAdjustment,
+          discount: manualAdjustment + discountAmount,
+          discountPercent: discountPercent,
           items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
           isPaid: isPaidFlag,
           paymentMethod: isPaidFlag ? finalMethod : undefined,
           paymentChannel: isPaidFlag ? finalChannel : undefined,
           remark: finalRemark,
           adminNotesJson: paymentsJsonStr,
-          status: undefined,
+          status: hasPosPackage ? "topup" : undefined,
           completedAt: isPaidFlag && isStandardPlan ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
           shiftId: activeShift?.id || undefined,
+          billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
         });
 
         const allJobs = jobStore.getSnapshot();
         finalJob = allJobs.find(j => j.id === loadedJobId);
       } else {
+        const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]));
         finalJob = await jobStore.addJob({
           source: "pos",
           customerId: selectedCustomer?.id,
@@ -1366,10 +1760,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           pickupCoords: { lat: 13.7417, lng: 100.5526 }, // Shop coords
           dropoffCoords: { lat: 13.7417, lng: 100.5526 },
           totalAmount: total,
-          discount: manualAdjustment,
+          discount: manualAdjustment + discountAmount,
+          discountPercent: discountPercent,
           items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
           serviceType: "wash_fold",
-          status: "billing",
+          status: hasPosPackage ? "topup" : "billing",
           completedAt: isStandardPlan && isPaidFlag ? new Date() : undefined,
           fee: 0, 
           branchId: activeShop?.id || activeBranchId,
@@ -1381,6 +1776,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           adminNotesJson: paymentsJsonStr,
           createdBy: user?.name || user?.email || "POS Counter",
           deliveryScheduledAt: new Date(deliveryScheduledTime),
+          billImageUrl: allSessionUrls.length > 0 ? JSON.stringify(allSessionUrls) : undefined,
         });
       }
 
@@ -1756,6 +2152,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             )}
           </DialogContent>
         </Dialog>
+        {renderActiveShiftDetailsDialog()}
       </>
     );
   }
@@ -1799,9 +2196,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={() => {
-                    setActiveBranchId(shop.id);
-                    localStorage.setItem("pos_active_branch_id", shop.id);
-                    playAudioFeedback("click");
+                    if (activeShopShift && activeShopShift.userId !== user?.id) {
+                      playAudioFeedback("click");
+                      setViewingShiftDetails({ shift: activeShopShift, shopName: shop.name });
+                    } else {
+                      setActiveBranchId(shop.id);
+                      localStorage.setItem("pos_active_branch_id", shop.id);
+                      playAudioFeedback("click");
+                    }
                   }}
                   className="flex flex-col items-start text-left p-4.5 bg-muted/20 hover:bg-muted/40 border border-border hover:border-primary/40 rounded-xl cursor-pointer transition-all shadow-sm w-full relative overflow-hidden"
                 >
@@ -1847,6 +2249,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             })}
           </div>
         </motion.div>
+        {renderActiveShiftDetailsDialog()}
       </div>
     );
   }
@@ -1979,59 +2382,71 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   )}
                 </div>
                 
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full bg-background border-border hover:bg-muted hover:text-foreground text-foreground font-bold h-10 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-sm"
-                  onClick={async () => {
-                    setIsShiftSubmitting(true);
-                    try {
-                      if (user?.id) {
-                        await shiftStore.fetchActiveShift(user.id);
-                        toast.success(
-                          currentLanguage === "en"
-                            ? "Status refreshed successfully."
-                            : "รีเฟรชสถานะสำเร็จแล้ว"
-                        );
-                      }
-                    } catch (e) {
-                      toast.error(
-                        currentLanguage === "en"
-                          ? "Failed to refresh status"
-                          : "ไม่สามารถรีเฟรชสถานะได้"
-                      );
-                    } finally {
-                      setIsShiftSubmitting(false);
-                    }
-                  }}
-                  disabled={isShiftSubmitting}
-                >
-                  {isShiftSubmitting ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {currentLanguage === "en" ? "Refreshing..." : "กำลังรีเฟรช..."}
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw className="h-4 w-4" />
-                      {currentLanguage === "en" ? "Refresh Status" : "รีเฟรชสถานะ"}
-                    </>
-                  )}
-                </Button>
-                {shops.length > 1 && (
+                <div className="flex flex-col gap-2">
                   <Button
                     type="button"
                     variant="outline"
+                    className="w-full bg-background border-border hover:bg-muted text-foreground font-bold h-10 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-sm"
                     onClick={() => {
-                      setActiveBranchId("");
-                      localStorage.removeItem("pos_active_branch_id");
-                      playAudioFeedback("delete");
+                      setViewingShiftDetails({ shift: branchActiveShift, shopName: activeShop?.name || "สาขา" });
                     }}
-                    className="w-full border-border text-foreground font-bold h-10 rounded-xl cursor-pointer"
                   >
-                    {currentLanguage === "en" ? "Change Selected Branch" : "เปลี่ยนสาขาอื่น / ย้อนกลับ"}
+                    <Eye className="h-4 w-4 text-primary" />
+                    {currentLanguage === "en" ? "View Active Shift Details" : "ดูรายละเอียดกะที่เปิดอยู่"}
                   </Button>
-                )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full bg-background border-border hover:bg-muted text-foreground font-bold h-10 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-sm"
+                    onClick={async () => {
+                      setIsShiftSubmitting(true);
+                      try {
+                        if (user?.id) {
+                          await shiftStore.fetchActiveShift(user.id);
+                          toast.success(
+                            currentLanguage === "en"
+                              ? "Status refreshed successfully."
+                              : "รีเฟรชสถานะสำเร็จแล้ว"
+                          );
+                        }
+                      } catch (e) {
+                        toast.error(
+                          currentLanguage === "en"
+                            ? "Failed to refresh status"
+                            : "ไม่สามารถรีเฟรชสถานะได้"
+                        );
+                      } finally {
+                        setIsShiftSubmitting(false);
+                      }
+                    }}
+                    disabled={isShiftSubmitting}
+                  >
+                    {isShiftSubmitting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {currentLanguage === "en" ? "Refreshing..." : "กำลังรีเฟรช..."}
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-4 w-4" />
+                        {currentLanguage === "en" ? "Refresh Status" : "รีเฟรชสถานะ"}
+                      </>
+                    )}
+                  </Button>
+                  {shops.length > 1 && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setActiveBranchId("");
+                        localStorage.removeItem("pos_active_branch_id");
+                      }}
+                      className="w-full text-muted-foreground font-bold h-9 rounded-xl text-xs cursor-pointer"
+                    >
+                      {currentLanguage === "en" ? "Switch Branch" : "สลับไปสาขาอื่น"}
+                    </Button>
+                  )}
+                </div>
               </div>
             ) : (
               <form onSubmit={handleOpenShift} className="space-y-4">
@@ -2139,6 +2554,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           shifts={closedShifts}
           currentLanguage={currentLanguage === "en" ? "en" : "th"}
         />
+        {renderActiveShiftDetailsDialog()}
       </>
     );
   }
@@ -2155,16 +2571,28 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 : `โหมดผู้เฝ้าดู - กำลังตรวจสอบสาขา ${activeShop?.name || "สาขา"} (แคชเชียร์ปัจจุบัน: ${branchActiveShift?.userName})`}
             </span>
           </div>
-          <button
-            onClick={() => {
-              setActiveBranchId("");
-              localStorage.removeItem("pos_active_branch_id");
-              playAudioFeedback("delete");
-            }}
-            className="bg-white/20 hover:bg-white/30 text-white font-bold px-2.5 py-1 rounded-lg text-[9px] uppercase transition-all shrink-0 cursor-pointer"
-          >
-            {currentLanguage === "en" ? "Change Branch" : "เปลี่ยนสาขา"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (branchActiveShift) {
+                  setViewingShiftDetails({ shift: branchActiveShift, shopName: activeShop?.name || "สาขา" });
+                }
+              }}
+              className="bg-white/20 hover:bg-white/30 text-white font-bold px-2.5 py-1 rounded-lg text-[9px] uppercase transition-all shrink-0 cursor-pointer"
+            >
+              {currentLanguage === "en" ? "View Shift Details" : "ดูรายละเอียดกะ"}
+            </button>
+            <button
+              onClick={() => {
+                setActiveBranchId("");
+                localStorage.removeItem("pos_active_branch_id");
+                playAudioFeedback("delete");
+              }}
+              className="bg-white/20 hover:bg-white/30 text-white font-bold px-2.5 py-1 rounded-lg text-[9px] uppercase transition-all shrink-0 cursor-pointer"
+            >
+              {currentLanguage === "en" ? "Change Branch" : "เปลี่ยนสาขา"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -2378,19 +2806,21 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       (cart.some(item => item.category !== "PACKAGE" && item.name !== "PACKAGE") && (product.category === "PACKAGE" || product.name === "PACKAGE"))
                     );
                     const isPkgProduct = product.category === "PACKAGE" || product.name === "PACKAGE";
+                    const pkgPrice = getProductPrice(product);
+                    const isCustomPricePackage = isPkgProduct && (!pkgPrice || pkgPrice <= 0 || product.id === "topup-member-item");
                     return (
                       <motion.div
                         layout
                         key={product.id}
                         initial={{ opacity: 0, scale: 0.95 }}
                         animate={{ opacity: 1, scale: 1 }}
-                        whileHover={isDisabled || isSpectatorMode || isPkgProduct ? {} : { y: -2 }}
-                        whileTap={isDisabled || isSpectatorMode || isPkgProduct ? {} : { scale: 0.96 }}
-                        onClick={isDisabled || isSpectatorMode || isPkgProduct ? undefined : () => addToCart(product)}
+                        whileHover={isDisabled || isSpectatorMode || isCustomPricePackage ? {} : { y: -2 }}
+                        whileTap={isDisabled || isSpectatorMode || isCustomPricePackage ? {} : { scale: 0.96 }}
+                        onClick={isDisabled || isSpectatorMode || isCustomPricePackage ? undefined : () => addToCart(product)}
                         className={`bg-card p-3 rounded-xl border border-border shadow-sm transition-all group flex flex-col justify-between ${
                           (isDisabled || isSpectatorMode) ? "opacity-40 pointer-events-none select-none" : ""
                         } ${
-                          (isPkgProduct || isSpectatorMode) ? "" : "cursor-pointer hover:shadow-md hover:border-primary/25"
+                          (isCustomPricePackage || isSpectatorMode) ? "" : "cursor-pointer hover:shadow-md hover:border-primary/25"
                         }`}
                       >
                         <div className="flex items-start gap-2 mb-2">
@@ -2404,7 +2834,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           </div>
                         </div>
                         
-                        {isPkgProduct ? (
+                        {isCustomPricePackage ? (
                           <div className="space-y-2 mt-1 pt-1 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
                             <div className="relative">
                               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground font-bold">฿</span>
@@ -3353,26 +3783,82 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
 
  
-            <div className="flex items-center justify-between gap-2 pt-2 border-t border-border">
-              <span className="text-xs font-black text-foreground uppercase tracking-wider">Total</span>
-              <div className="text-right">
-                <span className="text-xl font-black text-foreground tracking-tight">฿{total.toFixed(2)}</span>
+              {/* Discount % Input */}
+              {showDiscount && (
+                <div className="flex justify-between items-center text-xs font-semibold text-muted-foreground py-1 border-t border-border/60">
+                  <span>{currentLanguage === "en" ? "Discount (%)" : "ส่วนลด (%)"}</span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="any"
+                      placeholder="0"
+                      className="h-6 w-14 text-[10px] font-bold bg-background border border-input rounded-md outline-none focus:border-primary text-center text-foreground"
+                      value={discountPercent || ""}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (isNaN(val)) {
+                          setDiscountPercent(0);
+                        } else {
+                          setDiscountPercent(Math.max(0, Math.min(100, val)));
+                        }
+                      }}
+                    />
+                    {discountAmount > 0 && (
+                      <span className="font-bold text-rose-500">
+                        -฿{discountAmount.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Total Row */}
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-border">
+                <div className="flex items-center gap-2 select-none">
+                  <span className="text-xs font-black text-foreground uppercase tracking-wider">Total</span>
+                  <label className="flex items-center gap-1 cursor-pointer text-[10px] text-muted-foreground hover:text-foreground font-bold transition-colors">
+                    <input
+                      type="checkbox"
+                      className="rounded border-input bg-background text-primary focus:ring-primary h-3 w-3 cursor-pointer"
+                      checked={showDiscount}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setShowDiscount(checked);
+                        if (!checked) {
+                          setDiscountPercent(0);
+                        }
+                      }}
+                    />
+                    <span>{currentLanguage === "en" ? "% Discount" : "% ส่วนลด"}</span>
+                  </label>
+                </div>
+                <div className="text-right">
+                  <span className="text-xl font-black text-foreground tracking-tight">฿{total.toFixed(2)}</span>
+                </div>
               </div>
-            </div>
  
             <div className="flex gap-2 mt-2">
               <Button 
                 variant="outline"
                 disabled={cart.length === 0 || isProcessing}
-                onClick={async () => {
+                onClick={() => {
                   playAudioFeedback("click");
+
                   const cartHash = JSON.stringify(cart.map(it => ({ id: it.id, q: it.quantity, price: it.price })));
-                  if (!proformaReceiptNumber) {
+
+                  let targetProformaNum = proformaReceiptNumber;
+                  let targetRevision = proformaRevision;
+
+                  if (!targetProformaNum) {
                     const shopId = activeShop?.id || "default";
                     const proformaKey = `proformaSeq_${shopId}`;
                     const currentSeq = parseInt(settings?.[proformaKey] || "0", 10);
                     const nextSeq = currentSeq + 1;
-                    await settingsStore.updateSetting(proformaKey, String(nextSeq));
+                    setTimeout(() => {
+                      settingsStore.updateSetting(proformaKey, String(nextSeq)).catch(() => {});
+                    }, 1000);
                     
                     let branchCode = "";
                     if (activeShop?.name) {
@@ -3398,15 +3884,19 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase();
                     }
                     
-                    setProformaReceiptNumber(`PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`);
+                    targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
+                    targetRevision = 0;
+                    setProformaReceiptNumber(targetProformaNum);
                     setProformaRevision(0);
                     setLastProformaCartHash(cartHash);
                   } else {
                     if (cartHash !== lastProformaCartHash) {
-                      setProformaRevision(prev => prev + 1);
+                      targetRevision = proformaRevision + 1;
+                      setProformaRevision(targetRevision);
                       setLastProformaCartHash(cartHash);
                     }
                   }
+
                   setIsDraftPreview(true);
                   setShowReceipt(true);
                 }}
@@ -3469,6 +3959,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         onCloseComplete={() => {
           setIsDraftPreview(false);
           setLatestJob(null);
+        }}
+        onBillImageUploaded={(newUrl) => {
+          if (!capturedReceiptUrlsRef.current.includes(newUrl)) {
+            capturedReceiptUrlsRef.current.push(newUrl);
+          }
+          setSessionCapturedReceiptUrls(prev => prev.includes(newUrl) ? prev : [...prev, newUrl]);
         }}
       />      {/* Close Cashier Shift Report Dialog */}
       <Dialog open={isCloseShiftOpen} onOpenChange={setIsCloseShiftOpen}>
@@ -3921,6 +4417,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               setSelectedCustomer(customer || null);
 
                               setManualAdjustment(job.discount || 0);
+                              setDiscountPercent(job.discountPercent || 0);
+                              setShowDiscount(!!job.discountPercent && job.discountPercent > 0);
 
                               if (job.remark) {
                                 const expressMatch = job.remark.match(/Express\s*(\d+)%/i);
@@ -3943,13 +4441,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                   setServiceSpeed("standard");
                                 }
 
-                                const vatMatch = job.remark.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
-                                if (vatMatch) {
-                                  setVatType(vatMatch[1].toLowerCase() as any);
-                                  setVatRate(parseFloat(vatMatch[2]));
-                                } else {
-                                  setVatType("none");
-                                }
+                                // VAT settings are loaded globally from system settings, not overridden
 
                                 const cleanRemark = job.remark
                                   .split(" | Express")[0]
@@ -4276,6 +4768,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           </div>
         </DialogContent>
       </Dialog>
+      {renderActiveShiftDetailsDialog()}
     </div>
   );
 }

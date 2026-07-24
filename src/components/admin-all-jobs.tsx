@@ -27,6 +27,7 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   completed: { label: "Completed", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   cancel: { label: "Cancelled", className: "bg-red-50 text-red-700 border-red-200" },
   return: { label: "Return", className: "bg-rose-50 text-rose-700 border-rose-200" },
+  topup: { label: "Topup Member", className: "bg-purple-50 text-purple-700 border-purple-200" },
 };
 
 const statusIcon: Record<JobStatus, React.ReactNode> = {
@@ -38,11 +39,12 @@ const statusIcon: Record<JobStatus, React.ReactNode> = {
   completed: <CheckCircle2 size={13} />,
   cancel: <XCircle size={13} />,
   return: <Navigation size={13} />,
+  topup: <Banknote size={13} />,
 };
 
 type FilterDate = "today" | "yesterday" | "custom";
 
-const KANBAN_COLUMNS: JobStatus[] = ['tba', 'pending', 'pickup', 'billing', 'delivery', 'completed', 'cancel'];
+const KANBAN_COLUMNS: JobStatus[] = ['tba', 'pending', 'pickup', 'billing', 'delivery', 'completed', 'cancel', 'topup'];
 
 export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], onEditJob?: (job: Job) => void, onCreateJob?: () => void }) {
   const riders = useRiders();
@@ -58,6 +60,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(false);
+  const [showTopup, setShowTopup] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [filterArea, setFilterArea] = useState<string>("ALL");
   
@@ -73,6 +76,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       if (user?.role === 'manager' && status === 'tba') return false;
       if (status === 'completed' && !showCompleted) return false;
       if (status === 'cancel' && !showCancelled) return false;
+      if (status === 'topup' && !showTopup) return false;
       return true;
     }
   );
@@ -84,21 +88,24 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     if (dateFilter === "today") {
       start = today;
       end = today;
-      // Today focuses on active work — hide completed/cancelled by default
+      // Today focuses on active work — hide completed/cancelled/topup by default
       setShowCompleted(false);
       setShowCancelled(false);
+      setShowTopup(false);
     } else if (dateFilter === "yesterday") {
       start = yesterday;
       end = yesterday;
       // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
+      setShowTopup(true);
     } else if (dateFilter === "custom") {
       start = new Date(startDate);
       end = new Date(endDate);
       // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
+      setShowTopup(true);
     } else {
       return; 
     }
@@ -122,7 +129,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
 
     const searchLower = searchTerm.toLowerCase().trim();
     const statusLabel = statusConfig[job.status]?.label || "";
-    const customer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
+    const customer = customers.find(c => {
+      if (job.customerId) return c.id === job.customerId;
+      const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+      return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+    });
     const matchesSearch = 
       job.id.toLowerCase().includes(searchLower) ||
       (job.customerName && job.customerName.toLowerCase().includes(searchLower)) ||
@@ -174,6 +185,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     } else {
       if (job.status === 'completed' && !showCompleted && viewMode === "list") matchesStatus = false;
       if (job.status === 'cancel' && !showCancelled && viewMode === "list") matchesStatus = false;
+      if (job.status === 'topup' && !showTopup && viewMode === "list") matchesStatus = false;
     }
 
     // Area Filter
@@ -244,6 +256,10 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <input type="checkbox" checked={showCancelled} onChange={e => setShowCancelled(e.target.checked)} className="rounded border-slate-300" />
               <span className="text-xs font-medium text-slate-700">Show Cancelled</span>
             </Label>
+            <Label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={showTopup} onChange={e => setShowTopup(e.target.checked)} className="rounded border-slate-300" />
+              <span className="text-xs font-medium text-slate-700">Show Topup Member</span>
+            </Label>
             {isLoadingHistory && <span className="text-[10px] text-slate-400 ml-2 animate-pulse">Loading...</span>}
           </div>
 
@@ -286,6 +302,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <option value="completed">Completed</option>
               <option value="cancel">Cancelled</option>
               <option value="return">Returned</option>
+              <option value="topup">Topup Member</option>
             </select>
           </div>
           
@@ -403,7 +420,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                         <div className="font-medium text-[11px] text-slate-900 flex items-center gap-1 flex-wrap">
                           {job.customerName || "Walk-in Guest"}
                           {(() => {
-                            const c = customers.find(c => c.id === job.customerId || (job.customerPhone && c.phone === job.customerPhone));
+                            const c = customers.find(c => {
+                              if (job.customerId) return c.id === job.customerId;
+                              const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+                              return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+                            });
                             if (!c) return null;
                             return (
                               <>
@@ -538,7 +559,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                 key={status} 
                 className="w-72 flex flex-col bg-slate-50/50 rounded-xl border border-slate-200 shrink-0 h-full max-h-[75vh]"
                 onDragOver={(e) => {
-                  if (status === 'completed') return; // Do not allow dragover drop effect on Completed column
+                  if (status === 'completed' || status === 'cancel' || status === 'topup') return; // Do not allow dragover on terminal/financial statuses
                   e.preventDefault();
                   e.currentTarget.classList.add('bg-slate-100');
                 }}
@@ -549,8 +570,8 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                   e.preventDefault();
                   e.currentTarget.classList.remove('bg-slate-100');
                   
-                  if (status === 'completed') {
-                    toast.error("Cannot drag and drop jobs directly to Completed status.");
+                  if (status === 'completed' || status === 'cancel' || status === 'topup') {
+                    toast.error(`Cannot drag and drop jobs directly to ${statusConfig[status].label} status.`);
                     return;
                   }
 
@@ -560,6 +581,13 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       const job = filteredJobs.find(j => j.id === jobId);
                       if (job && job.status !== status) {
                         const isDragFromCompleted = job.status === 'completed';
+                        const isDragFromCancel = job.status === 'cancel';
+                        const isDragFromTopup = job.status === 'topup';
+                         
+                        if (isDragFromCancel || isDragFromTopup) {
+                          toast.error("Cancelled and Topup Member jobs cannot be dragged to other columns.");
+                          return;
+                        }
                         if (isDragFromCompleted) {
                           if (user?.role !== 'admin' && user?.role !== 'cso') {
                             toast.error("Only Admins and CSOs can drag jobs out of Completed status.");
@@ -667,7 +695,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       <div className="font-medium text-sm text-slate-900 mb-1 leading-tight flex items-center gap-1 flex-wrap">
                         {job.customerName || "Walk-in Guest"}
                         {(() => {
-                          const c = customers.find(c => c.id === job.customerId || (job.customerPhone && c.phone === job.customerPhone));
+                          const c = customers.find(c => {
+                            if (job.customerId) return c.id === job.customerId;
+                            const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+                            return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+                          });
                           if (!c) return null;
                           return (
                             <>

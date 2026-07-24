@@ -110,6 +110,31 @@ export function AdminCustomerProfileModal({
     };
   }, [ltv]);
 
+  const memberProgress = useMemo(() => {
+    if (!customer || !customer.isMember || !customer.memberStartDate || !customer.memberExpiryDate) {
+      return null;
+    }
+    const start = new Date(customer.memberStartDate);
+    const expiry = new Date(customer.memberExpiryDate);
+    const today = new Date();
+    
+    const totalDays = Math.max(1, Math.ceil((expiry.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
+    const daysRemaining = Math.max(0, Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
+    
+    const daysElapsed = totalDays - daysRemaining;
+    const percent = Math.min(100, Math.max(0, (daysElapsed / totalDays) * 100));
+    const isExpired = expiry.getTime() < today.getTime();
+    
+    return {
+      start,
+      expiry,
+      totalDays,
+      daysRemaining,
+      percent,
+      isExpired
+    };
+  }, [customer]);
+
   if (!customer) return null;
 
   return (
@@ -196,6 +221,34 @@ export function AdminCustomerProfileModal({
               </span>
             </div>
           </div>
+
+          {/* Member Validity Details */}
+          {customer.isMember && memberProgress && (
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2.5 shadow-sm">
+              <div className="flex justify-between items-center text-xs font-bold">
+                <span className="text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                  <Crown size={12} className="text-indigo-500" /> Member Validity
+                </span>
+                <span className={memberProgress.isExpired ? "text-rose-600 font-extrabold" : "text-emerald-650 font-extrabold"}>
+                  {memberProgress.isExpired ? "Expired" : `${memberProgress.daysRemaining} Days Remaining`}
+                </span>
+              </div>
+              
+              <div className="w-full bg-slate-100 border border-slate-200 h-3 rounded-full overflow-hidden relative">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${100 - memberProgress.percent}%` }}
+                  transition={{ duration: 0.8, ease: "easeOut" }}
+                  className={`h-full ${memberProgress.isExpired ? "bg-rose-500" : "bg-gradient-to-r from-emerald-400 to-indigo-500"}`}
+                />
+              </div>
+              
+              <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                <span>Start: <strong className="text-slate-900">{format(memberProgress.start, "dd MMM yyyy")}</strong></span>
+                <span>Expiry: <strong className={memberProgress.isExpired ? "text-rose-600" : "text-slate-900"}>{format(memberProgress.expiry, "dd MMM yyyy")}</strong></span>
+              </div>
+            </div>
+          )}
 
           {/* LTV Progression Progress Bar */}
           {!isStandardPlan && (

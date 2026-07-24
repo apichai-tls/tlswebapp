@@ -43,6 +43,8 @@ export async function addCustomerAction(data: any) {
       dob: data.dob,
       taxId: data.taxId,
       companyName: data.companyName,
+      memberStartDate: data.memberStartDate ? new Date(data.memberStartDate) : null,
+      memberExpiryDate: data.memberExpiryDate ? new Date(data.memberExpiryDate) : null,
     }
   });
   return c;
@@ -117,6 +119,12 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.dob !== undefined) data.dob = updates.dob;
   if (updates.taxId !== undefined) data.taxId = updates.taxId;
   if (updates.companyName !== undefined) data.companyName = updates.companyName;
+  if (updates.memberStartDate !== undefined) {
+    data.memberStartDate = updates.memberStartDate ? new Date(updates.memberStartDate) : null;
+  }
+  if (updates.memberExpiryDate !== undefined) {
+    data.memberExpiryDate = updates.memberExpiryDate ? new Date(updates.memberExpiryDate) : null;
+  }
 
   return prisma.customer.update({ where: { id }, data });
 }
@@ -178,6 +186,7 @@ export async function addJobAction(data: any) {
       paymentChannel: data.paymentChannel,
       isPaid: data.isPaid || false,
       discount: data.discount || 0,
+      discountPercent: data.discountPercent || 0,
       pickupDistance: data.pickupDistance,
       deliveryDistance: data.deliveryDistance,
       pickupCommission: data.pickupCommission,
@@ -197,6 +206,7 @@ export async function addJobAction(data: any) {
       cashPlaced: data.cashPlaced || false,
       isStuck: data.isStuck || false,
       shiftId: data.shiftId || null,
+      walletBalanceAfter: data.walletBalanceAfter !== undefined ? data.walletBalanceAfter : null,
     }
   });
 
@@ -274,6 +284,8 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.paymentChannel !== undefined) data.paymentChannel = updates.paymentChannel;
   if (updates.isPaid !== undefined) data.isPaid = updates.isPaid;
   if (updates.fee !== undefined) data.fee = updates.fee;
+  if (updates.discount !== undefined) data.discount = updates.discount;
+  if (updates.discountPercent !== undefined) data.discountPercent = updates.discountPercent;
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
   if (updates.laundryTypes !== undefined) {
@@ -297,6 +309,7 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.createdBy !== undefined) data.createdBy = updates.createdBy;
   if (updates.cashPlaced !== undefined) data.cashPlaced = updates.cashPlaced;
   if (updates.isStuck !== undefined) data.isStuck = updates.isStuck;
+  if (updates.walletBalanceAfter !== undefined) data.walletBalanceAfter = updates.walletBalanceAfter;
 
   // Check if a leg was just completed by comparing status
   if (updates.status) {
@@ -938,6 +951,12 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
     let cardSales = 0;
     let creditSales = 0;
 
+    let totalOrders = 0;
+    let cashOrders = 0;
+    let transferOrders = 0;
+    let cardOrders = 0;
+    let creditOrders = 0;
+
     jobs.forEach(job => {
       // Skip cancelled jobs in sales calculation
       if (job.status === 'cancel') return;
@@ -945,17 +964,24 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
       const amount = job.totalAmount || 0;
       const channel = job.paymentChannel || '';
 
+      totalOrders += 1;
+
       if (channel === 'Cash / COD' || channel.toLowerCase() === 'cash') {
         cashSales += amount;
+        cashOrders += 1;
       } else if (channel === 'Transfer' || channel.toLowerCase() === 'transfer') {
         transferSales += amount;
+        transferOrders += 1;
       } else if (channel === 'Credit Card' || channel.toLowerCase() === 'card') {
         cardSales += amount;
+        cardOrders += 1;
       } else if (channel === 'HQ/Credit' || channel.toLowerCase() === 'credit') {
         creditSales += amount;
+        creditOrders += 1;
       } else {
         // Fallback default
         cashSales += amount;
+        cashOrders += 1;
       }
     });
 
@@ -974,7 +1000,12 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
         expectedCash,
         shortageOverage,
         status: 'closed',
-        notes: data.notes || null
+        notes: data.notes || null,
+        totalOrders,
+        cashOrders,
+        transferOrders,
+        cardOrders,
+        creditOrders,
       }
     });
 

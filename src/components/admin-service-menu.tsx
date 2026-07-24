@@ -198,8 +198,15 @@ export function AdminServiceMenu() {
                       {service.category}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right font-black text-slate-900">
-                    ฿{service.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <TableCell className="text-right">
+                    <div className="font-black text-slate-900">
+                      ฿{service.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </div>
+                    {service.category === "PACKAGE" && service.memberPrice > service.price && (
+                      <div className="text-[10px] text-emerald-600 font-bold mt-0.5">
+                        + ฿{(service.memberPrice - service.price).toLocaleString()} Bonus
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="text-center font-medium text-slate-500 text-xs">
                     {service.unit || "-"}
@@ -275,11 +282,42 @@ export function AdminServiceMenu() {
                     required
                     className="rounded-xl border-slate-200 h-11 pl-7 focus:ring-slate-900"
                     value={formData.price}
-                    onChange={e => setFormData({ ...formData, price: parseFloat(e.target.value) })}
+                    onChange={e => {
+                      const newPrice = parseFloat(e.target.value) || 0;
+                      const currentBonus = Math.max(0, formData.memberPrice - formData.price);
+                      setFormData({ 
+                        ...formData, 
+                        price: newPrice,
+                        memberPrice: formData.category === "PACKAGE" ? newPrice + currentBonus : newPrice
+                      });
+                    }}
                   />
                 </div>
                 <p className="text-[10px] text-slate-500">Overrides for custom Price Lists can be configured in System Settings.</p>
               </div>
+
+              {formData.category === "PACKAGE" && (
+                <div className="space-y-2 bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
+                  <Label className="text-xs font-bold text-emerald-700 uppercase tracking-widest">Bonus (แถมเครดิตเพิ่ม)</Label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 font-bold">฿</span>
+                    <Input 
+                      type="number"
+                      step="0.01"
+                      className="rounded-xl border-emerald-200 h-11 pl-7 text-emerald-700 font-bold bg-white focus:ring-emerald-500"
+                      placeholder="เช่น 150"
+                      value={formData.memberPrice > formData.price ? formData.memberPrice - formData.price : ""}
+                      onChange={e => {
+                        const bonusVal = parseFloat(e.target.value) || 0;
+                        setFormData({ ...formData, memberPrice: formData.price + bonusVal });
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-emerald-600 font-medium">
+                    ลูกค้าจะได้รับเครดิตเข้า Wallet ทั้งหมด: <strong>฿{(formData.memberPrice || 0).toLocaleString()}</strong>
+                  </p>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -287,7 +325,14 @@ export function AdminServiceMenu() {
                   <select 
                     className="w-full rounded-xl border border-slate-200 h-11 px-3 text-sm font-medium focus:ring-slate-900 outline-none"
                     value={formData.category}
-                    onChange={e => setFormData({ ...formData, category: e.target.value })}
+                    onChange={e => {
+                      const newCat = e.target.value;
+                      setFormData({ 
+                        ...formData, 
+                        category: newCat,
+                        memberPrice: newCat === "PACKAGE" ? formData.memberPrice || formData.price : formData.memberPrice
+                      });
+                    }}
                   >
                     <option value="DRY CLEAN">DRY CLEAN</option>
                     <option value="IRON">IRON</option>

@@ -53,6 +53,8 @@ export function AdminCustomerDialog({
   const [isCorporate, setIsCorporate] = useState(false);
   const [isMember, setIsMember] = useState(false);
   const [memberId, setMemberId] = useState("");
+  const [memberStartDate, setMemberStartDate] = useState("");
+  const [memberExpiryDate, setMemberExpiryDate] = useState("");
   const [isWhatsapp, setIsWhatsapp] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
 
@@ -86,6 +88,10 @@ export function AdminCustomerDialog({
         setIsCorporate(customer.isCorporate || false);
         setIsMember(customer.isMember || false);
         setMemberId(customer.memberId || "");
+        const startDateStr = customer.memberStartDate ? new Date(customer.memberStartDate).toISOString().split('T')[0] : "";
+        const expiryDateStr = customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split('T')[0] : "";
+        setMemberStartDate(startDateStr);
+        setMemberExpiryDate(expiryDateStr);
         setIsWhatsapp(customer.isWhatsapp || false);
         setSelectedLocation(null);
       } else {
@@ -106,6 +112,8 @@ export function AdminCustomerDialog({
         setIsCorporate(false);
         setIsMember(false);
         setMemberId("");
+        setMemberStartDate("");
+        setMemberExpiryDate("");
         setIsWhatsapp(false);
         setSelectedLocation(null);
       }
@@ -145,6 +153,8 @@ export function AdminCustomerDialog({
       isMember: isMember,
       isWhatsapp: isWhatsapp,
       memberId: isMember ? memberId.trim() || null : null,
+      memberStartDate: isMember && memberStartDate ? memberStartDate : null,
+      memberExpiryDate: isMember && memberExpiryDate ? memberExpiryDate : null,
     };
 
     try {
@@ -303,15 +313,40 @@ export function AdminCustomerDialog({
               </label>
               
               {isMember && (
-                <div className="mt-2 pl-8 space-y-1">
-                  <Label htmlFor="memberId" className="text-[10px] font-semibold text-blue-800">Member No (Optional)</Label>
-                  <Input 
-                    id="memberId" 
-                    placeholder="e.g. MB-001" 
-                    value={memberId} 
-                    onChange={e => setMemberId(e.target.value.toUpperCase())}
-                    className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800"
-                  />
+                <div className="mt-2 pl-8 space-y-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="memberId" className="text-[10px] font-semibold text-blue-800">Member No (Optional)</Label>
+                    <Input 
+                      id="memberId" 
+                      placeholder="e.g. MB-001" 
+                      value={memberId} 
+                      onChange={e => setMemberId(e.target.value.toUpperCase())}
+                      className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label htmlFor="memberStartDate" className="text-[10px] font-semibold text-blue-800">Member Start Date</Label>
+                      <Input 
+                        id="memberStartDate" 
+                        type="date"
+                        value={memberStartDate} 
+                        onChange={e => setMemberStartDate(e.target.value)}
+                        className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="memberExpiryDate" className="text-[10px] font-semibold text-blue-800">Member Expiry Date</Label>
+                      <Input 
+                        id="memberExpiryDate" 
+                        type="date"
+                        value={memberExpiryDate} 
+                        onChange={e => setMemberExpiryDate(e.target.value)}
+                        className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800"
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

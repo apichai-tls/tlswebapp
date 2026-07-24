@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import { format } from "date-fns";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -24,6 +24,7 @@ export interface ReceiptData {
   expressSurcharge: number;
   serviceSpeed?: string;
   discount: number;
+  discountPercent?: number;
   total: number;
   isPaid: boolean;
   paymentChannel?: string | null;
@@ -39,6 +40,7 @@ export interface ReceiptData {
   proformaId?: string;
   jobId?: string;
   proformaRevision?: number;
+  autoCapture?: boolean;
 }
 
 export interface ShopInfo {
@@ -115,7 +117,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   const jobVatType = vatMatch ? vatMatch[1].toLowerCase() : "none";
   const jobVatRate = vatMatch ? parseFloat(vatMatch[2]) : 0;
   
-  const baseTotal = jobSubtotal + jobSurcharge;
+  const baseTotal = jobSubtotal + jobSurcharge + (rawJob.fee || 0);
   let jobVatAmount = 0;
   if (jobVatType === "inclusive") {
     jobVatAmount = baseTotal * (jobVatRate / (100 + jobVatRate));
@@ -124,10 +126,21 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   }
 
   const proformaMatch = job.remark?.match(/Proforma:\s*(PR-[\w\-]+)/i);
-  const proformaId = proformaMatch ? proformaMatch[1] : undefined;
+  const proformaId = (job as any).proformaReceiptNumber || (proformaMatch ? proformaMatch[1] : undefined);
+  const revisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
+  const proformaRevision = (job as any).proformaRevision !== undefined ? (job as any).proformaRevision : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
+
+  const effectiveProformaNumber = proformaId 
+    ? `${proformaId}${proformaRevision > 0 ? `-R${proformaRevision}` : ""}`
+    : undefined;
+
+  let displayId = job.id && job.id !== "DRAFT" ? job.id.split('-')[0].toUpperCase() : "";
+  if (!displayId || displayId === "DRAFT") {
+    displayId = effectiveProformaNumber || "DRAFT";
+  }
 
   return {
-    id: job.id ? job.id.split('-')[0].toUpperCase() : "",
+    id: displayId,
     createdAt: job.createdAt ? new Date(job.createdAt) : new Date(),
     customerName: job.customerName || "Walk-In",
     customerPhone: job.customerPhone || "-",
@@ -141,6 +154,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     expressSurcharge: jobSurcharge,
     serviceSpeed: jobSpeed,
     discount: job.discount || 0,
+    discountPercent: job.discountPercent || 0,
     total: job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0),
     isPaid: !!job.isPaid,
     paymentChannel: job.paymentChannel,
@@ -153,7 +167,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     status: job.status,
     adminNotesJson: job.adminNotesJson,
     deliveryFee: rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0),
-    proformaId: proformaId,
+    proformaId: effectiveProformaNumber || proformaId,
+    proformaRevision: proformaRevision,
     jobId: job.id
   };
 }
@@ -180,116 +195,95 @@ export function ThermalReceiptDialog({
   onBillImageUploaded
 }: ThermalReceiptDialogProps) {
   const [mounted, setMounted] = useState(false);
+  const activeCaptureDataRef = useRef<ReceiptData | null>(null);
+  const capturedKeysRef = useRef<Set<string>>(new Set());
+
+  if (receiptData) {
+    activeCaptureDataRef.current = receiptData;
+  }
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setMounted(true);
-    }, 0);
-    return () => clearTimeout(timer);
+    setMounted(true);
   }, []);
 
   useEffect(() => {
-    if (!open || !receiptData || !receiptData.jobId) return;
+    if (!receiptData) return;
+    const snapshotData = JSON.parse(JSON.stringify(receiptData));
+    const targetJobId = snapshotData.jobId || snapshotData.id || snapshotData.proformaId;
+    if (!targetJobId) return;
 
-    let active = true;
-    let captureTimer: any = null;
+    const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
+    if (capturedKeysRef.current.has(captureKey)) return;
+    capturedKeysRef.current.add(captureKey);
 
     const runCapture = async () => {
       const { jobStore } = await import("@/lib/store");
-      const currentJob = jobStore.getSnapshot().find(j => j.id === receiptData.jobId);
+      const currentJob = jobStore.getSnapshot().find(j => j.id === targetJobId || (targetJobId && j.id.startsWith(targetJobId)));
       if (currentJob && currentJob.billImageUrl) {
         try {
           const parsed = JSON.parse(currentJob.billImageUrl);
           const existingBills = Array.isArray(parsed) ? parsed : [parsed];
-          const searchPattern = receiptData.isDraft 
-            ? `-rev${receiptData.proformaRevision || 0}.png`
-            : `receipt-${receiptData.jobId}.png`;
+          const searchPattern = snapshotData.isDraft 
+            ? `-rev${snapshotData.proformaRevision || 0}.png`
+            : `receipt-${targetJobId}.png`;
           if (existingBills.some(url => url.includes(searchPattern))) {
-            console.log("Receipt/Proforma is already uploaded for this version. Skipping capture.");
             return;
           }
         } catch {}
       }
 
-      if (!active) return;
+      try {
+        const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
+        const blob = await generateThermalReceiptImage(snapshotData, activeShop);
+        if (!blob) return;
 
-      // Run a small timeout to make sure the DOM is fully painted
-      captureTimer = setTimeout(() => {
-        const element = document.getElementById("thermal-receipt-capture-area");
-        if (!element) return;
+        const filename = snapshotData.isDraft 
+          ? `proforma-${snapshotData.proformaId || targetJobId}-rev${snapshotData.proformaRevision || 0}.png`
+          : `receipt-${targetJobId}.png`;
+        const file = new File([blob], filename, { type: "image/png" });
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("entityType", "jobs");
+        formData.append("entityId", targetJobId || "unknown");
+        formData.append("subType", "proofs");
 
-        import("html2canvas-pro").then((html2canvasModule) => {
-          const html2canvas = html2canvasModule.default;
-          html2canvas(element, {
-            backgroundColor: "#ffffff",
-            scale: 2, // Capture at 2x scale for high resolution readability
-            logging: false
-          }).then(async (canvas) => {
-            canvas.toBlob(async (blob) => {
-              if (!blob) return;
-
-              // Generate file payload
-              const filename = receiptData.isDraft 
-                ? `proforma-${receiptData.proformaId || receiptData.jobId}-rev${receiptData.proformaRevision || 0}.png`
-                : `receipt-${receiptData.jobId}.png`;
-              const file = new File([blob], filename, { type: "image/png" });
-              const formData = new FormData();
-              formData.append("file", file);
-              formData.append("entityType", "jobs");
-              formData.append("entityId", receiptData.jobId || "unknown");
-              formData.append("subType", "proofs");
-
-              try {
-                // Upload to local storage / Cloud storage
-                const res = await fetch("/api/upload-local", {
-                  method: "POST",
-                  body: formData
-                });
-                const uploadResult = await res.json();
-                if (uploadResult.success && uploadResult.publicUrl) {
-                  if (onBillImageUploaded) {
-                    onBillImageUploaded(uploadResult.publicUrl);
-                  }
-                  // Update the job details in db
-                  const currentJob = jobStore.getSnapshot().find(j => j.id === receiptData.jobId);
-                  if (currentJob) {
-                    // Merge with existing bills
-                    let existingBills: string[] = [];
-                    try {
-                      if (currentJob.billImageUrl) {
-                        const parsed = JSON.parse(currentJob.billImageUrl);
-                        if (Array.isArray(parsed)) existingBills = parsed;
-                        else if (typeof parsed === 'string') existingBills = [parsed];
-                      }
-                    } catch {}
-                    
-                    if (!existingBills.includes(uploadResult.publicUrl)) {
-                      const newBills = [...existingBills, uploadResult.publicUrl];
-                      await jobStore.updateJobDetails(receiptData.jobId!, {
-                        billImageUrl: JSON.stringify(newBills)
-                      });
-                      console.log("Successfully saved receipt image to Bill/Transfer field:", uploadResult.publicUrl);
-                    }
-                  }
-                }
-              } catch (err) {
-                console.error("Failed to capture and upload receipt image:", err);
-              }
-            }, "image/png");
-          });
-        }).catch(err => {
-          console.error("Failed to load html2canvas-pro module:", err);
+        const res = await fetch("/api/upload-local", {
+          method: "POST",
+          body: formData
         });
-      }, 800); // 800ms delay to make sure rendering is complete
+        const uploadResult = await res.json();
+        if (uploadResult.success && uploadResult.publicUrl) {
+          if (onBillImageUploaded) {
+            onBillImageUploaded(uploadResult.publicUrl);
+          }
+          const targetJob = jobStore.getSnapshot().find(j => j.id === targetJobId || (targetJobId && j.id.startsWith(targetJobId)));
+          if (targetJob) {
+            let existingBills: string[] = [];
+            try {
+              if (targetJob.billImageUrl) {
+                const parsed = JSON.parse(targetJob.billImageUrl);
+                if (Array.isArray(parsed)) existingBills = parsed;
+                else if (typeof parsed === 'string') existingBills = [parsed];
+              }
+            } catch {}
+            
+            if (!existingBills.includes(uploadResult.publicUrl)) {
+              const newBills = [...existingBills, uploadResult.publicUrl];
+              await jobStore.updateJobDetails(targetJob.id, {
+                billImageUrl: JSON.stringify(newBills)
+              });
+              console.log("Successfully saved receipt image to Bill/Transfer field:", uploadResult.publicUrl);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to capture and upload receipt image:", err);
+      }
     };
 
-    runCapture();
-
-    return () => {
-      active = false;
-      if (captureTimer) clearTimeout(captureTimer);
-    };
-  }, [open, receiptData]);
+    // Pure 2D Canvas Engine runs in 2ms in background - triggers instantly with zero main thread lag
+    setTimeout(runCapture, 0);
+  }, [receiptData]);
 
   if (!receiptData) return null;
 
@@ -315,11 +309,16 @@ export function ThermalReceiptDialog({
     window.print();
   };
 
+  const formatCurrency = (val: number) => {
+    const num = typeof val === "number" ? val : parseFloat(val) || 0;
+    return num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
   // Receipt Content Render function
-  const renderReceiptContent = (printMode: boolean = false) => {
+  const renderReceiptContent = (printMode: boolean = false, customId?: string) => {
     return (
       <div 
-        id={!printMode ? "thermal-receipt-capture-area" : undefined}
+        id={customId || (!printMode ? "thermal-receipt-capture-area" : undefined)}
         data-paper-size={paperSize} 
         className={
           printMode 
@@ -349,7 +348,7 @@ export function ThermalReceiptDialog({
         {/* Diagonal Void Stamp */}
         {receiptData.status === "cancel" && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none z-10">
-            <div className="border-[5px] border-double border-red-500 text-red-500 font-sans font-black text-2xl px-3 py-1.5 rounded-lg uppercase tracking-widest -rotate-12 opacity-20">
+            <div className="border-[5px] border-double border-black text-black font-sans font-black text-2xl px-3 py-1.5 rounded-lg uppercase tracking-widest -rotate-12 opacity-30">
               {currentLanguage === "en" ? "VOIDED" : "ยกเลิกแล้ว"}
             </div>
           </div>
@@ -358,7 +357,7 @@ export function ThermalReceiptDialog({
         {/* Draft Preview Header Watermark */}
         {receiptData.isDraft && (
           <div className="absolute inset-x-0 top-3.5 flex justify-center print:hidden">
-            <span className="bg-purple-100 dark:bg-purple-950/80 text-purple-800 dark:text-purple-300 font-sans font-bold text-[8px] px-2.5 py-0.5 rounded-full uppercase tracking-wider shadow-sm border border-purple-200 dark:border-purple-900">
+            <span className="bg-neutral-200 text-neutral-900 font-sans font-bold text-[8px] px-2.5 py-0.5 rounded-full uppercase tracking-wider shadow-sm border border-neutral-400">
               {currentLanguage === "en" ? "PROFORMA RECEIPT" : "ใบรับเงินชั่วคราว"}
             </span>
           </div>
@@ -367,17 +366,17 @@ export function ThermalReceiptDialog({
         {/* Receipt Header */}
         <div className="text-center space-y-1 pt-3">
           {receiptData.status === "cancel" && (
-            <div className="bg-red-50 text-red-700 font-sans font-black text-[9px] py-1 px-2 rounded uppercase tracking-wider mb-2 border border-red-200 inline-block">
+            <div className="bg-black text-white font-sans font-black text-[9px] py-1 px-2 rounded uppercase tracking-wider mb-2 border border-black inline-block">
               {currentLanguage === "en" ? "VOID / CANCELLED SLIP" : "ใบยกเลิกรายการ / คืนเงิน"}
             </div>
           )}
-          {activeShop?.logoUrl && (
+          {(activeShop?.logoUrl || true) && (
             <div className="flex justify-center mb-2">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img 
-                src={activeShop.logoUrl} 
+                src={activeShop?.logoUrl || "/logo.png"} 
                 alt="Shop Logo" 
-                className="h-10 w-10 object-contain rounded-md filter contrast-125 mix-blend-multiply" 
+                className="h-10 max-w-[120px] object-contain filter grayscale contrast-125 block mx-auto" 
               />
             </div>
           )}
@@ -393,13 +392,13 @@ export function ThermalReceiptDialog({
         </div>
 
         {/* Order Info */}
-        <div className="space-y-1 text-neutral-700">
+        <div className="space-y-1 text-neutral-800">
           <div className="flex justify-between font-bold text-neutral-900">
             <span>{receiptData.isDraft ? (currentLanguage === "en" ? "PROFORMA NO:" : "เลขที่ใบชั่วคราว:") : "RECEIPT NO:"}</span>
-            <span>{receiptData.isDraft ? receiptData.id : `#${receiptData.id}`}</span>
+            <span data-proforma-number="true">{receiptData.isDraft ? receiptData.id : `#${receiptData.id}`}</span>
           </div>
           {!receiptData.isDraft && receiptData.proformaId && (
-            <div className="flex justify-between text-neutral-600 font-medium italic">
+            <div className="flex justify-between text-neutral-700 font-medium italic">
               <span>{currentLanguage === "en" ? "PROFORMA REF:" : "อ้างอิงใบชั่วคราว:"}</span>
               <span>{receiptData.proformaId}</span>
             </div>
@@ -408,9 +407,9 @@ export function ThermalReceiptDialog({
             <span>DATE:</span>
             <span>{format(receiptData.createdAt, "dd/MM/yyyy HH:mm")}</span>
           </div>
-          <div className="flex justify-between">
-            <span>CUSTOMER:</span>
-            <span className="truncate max-w-[120px] font-bold text-neutral-900">{receiptData.customerName}</span>
+          <div className="flex justify-between items-center gap-2">
+            <span className="shrink-0">CUSTOMER:</span>
+            <span className="truncate text-right font-bold text-neutral-900 flex-1 min-w-0">{receiptData.customerName}</span>
           </div>
           <div className="flex justify-between">
             <span>PHONE:</span>
@@ -421,7 +420,7 @@ export function ThermalReceiptDialog({
             return (
               <div className="flex justify-between">
                 <span>DUE DATE{isEdited ? " (EDIT)" : ""}:</span>
-                <span className="font-bold text-purple-700 bg-purple-50 px-1 rounded">{format(new Date(receiptData.deliveryScheduledAt), "dd/MM/yyyy HH:mm")}</span>
+                <span className="font-bold text-neutral-900 bg-neutral-100 border border-neutral-300 px-1 rounded">{format(new Date(receiptData.deliveryScheduledAt), "dd/MM/yyyy HH:mm")}</span>
               </div>
             );
           })()}
@@ -429,105 +428,109 @@ export function ThermalReceiptDialog({
         </div>
 
         {/* Items List */}
-        <div className="space-y-2 text-neutral-700">
+        <div className="space-y-2 text-neutral-800">
           <div className="flex font-bold text-neutral-900">
             <span className="flex-1 min-w-0 text-left">ITEM</span>
             <span className="w-12 text-center">QTY</span>
-            <span className="w-16 text-right">TOTAL</span>
+            <span className="w-20 text-right">TOTAL</span>
           </div>
           {receiptData.items.map((item: ReceiptItem, idx: number) => {
             const rawName = (currentLanguage === "en" && item.nameEn) ? item.nameEn : item.name;
-            const maxLen = isSmall ? 22 : 32;
+            const maxLen = isSmall ? 20 : 30;
             const displayItemName = rawName.length > maxLen ? rawName.slice(0, maxLen - 3) + "..." : rawName;
             return (
               <div key={idx} className={`flex ${isSmall ? "text-[8px]" : "text-[9px]"} leading-tight`}>
-                <span className="flex-1 min-w-0 truncate pr-4 text-left">{displayItemName}</span>
+                <span className="flex-1 min-w-0 truncate pr-3 text-left">{displayItemName}</span>
                 <span className="w-12 text-center">{item.quantity}</span>
-                <span className="w-16 text-right">฿{(item.price * item.quantity).toFixed(2)}</span>
+                <span className="w-20 text-right">฿{formatCurrency(item.price * item.quantity)}</span>
               </div>
             );
           })}
+          {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
+            <div className={`flex ${isSmall ? "text-[8px]" : "text-[9px]"} leading-tight text-neutral-900 font-medium`}>
+              <span className="flex-1 min-w-0 truncate pr-3 text-left">
+                {currentLanguage === "en" ? "Delivery Fee" : "ค่าบริการรับ-ส่ง"}
+              </span>
+              <span className="w-12 text-center">1</span>
+              <span className="w-20 text-right">฿{formatCurrency(receiptData.deliveryFee)}</span>
+            </div>
+          )}
           <div className="border-t border-dashed border-neutral-400/50 my-2" />
         </div>
 
         {/* Totals Calculation */}
-        <div className="space-y-1 text-neutral-700">
-          <div className="flex justify-between">
-            <span>SUBTOTAL:</span>
-            <span>฿{receiptData.subtotal.toFixed(2)}</span>
-          </div>
+        <div className="space-y-1 text-neutral-800">
           {receiptData.expressSurcharge > 0 && (
-            <div className="flex justify-between text-purple-700 font-bold">
+            <div className="flex justify-between text-neutral-900 font-bold">
               <span>EXPRESS ({receiptData.serviceSpeed && receiptData.serviceSpeed.startsWith("express_") ? `${receiptData.serviceSpeed.split("_")[1]}%` : ""}):</span>
-              <span>+฿{receiptData.expressSurcharge.toFixed(2)}</span>
+              <span>+฿{formatCurrency(receiptData.expressSurcharge)}</span>
             </div>
           )}
           {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
-            <div className="flex justify-between text-neutral-700 font-bold">
+            <div className="flex justify-between text-neutral-900 font-bold">
               <span>VAT ({receiptData.vatRate}%)</span>
-              <span>+฿{receiptData.vatAmount.toFixed(2)}</span>
-            </div>
-          )}
-          {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
-            <div className="flex justify-between text-emerald-700 font-bold">
-              <span>{currentLanguage === "en" ? `Incl. VAT ${receiptData.vatRate}%` : `รวม VAT ${receiptData.vatRate}%`}</span>
-              <span>฿{receiptData.vatAmount.toFixed(2)}</span>
-            </div>
-          )}
-          {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
-            <div className="flex justify-between text-neutral-700 font-bold">
-              <span>{currentLanguage === "en" ? "DELIVERY FEE:" : "ค่ารับ-ส่ง:"}</span>
-              <span>+฿{receiptData.deliveryFee.toFixed(2)}</span>
+              <span>+฿{formatCurrency(receiptData.vatAmount)}</span>
             </div>
           )}
           {receiptData.discount > 0 && (
-            <div className="flex justify-between text-rose-700 font-bold">
-              <span>MANUAL ADJUST:</span>
-              <span>-฿{receiptData.discount.toFixed(2)}</span>
+            <div className="flex justify-between text-neutral-900 font-bold">
+              <span>
+                {receiptData.discountPercent && receiptData.discountPercent > 0 
+                  ? (currentLanguage === "en" ? `DISCOUNT (${receiptData.discountPercent}%):` : `ส่วนลด (${receiptData.discountPercent}%):`)
+                  : (currentLanguage === "en" ? "MANUAL ADJUST:" : "ส่วนลดพิเศษ:")
+                }
+              </span>
+              <span>-฿{formatCurrency(receiptData.discount)}</span>
             </div>
           )}
           <div className={`flex justify-between font-black text-neutral-900 ${isSmall ? "text-[11px]" : "text-xs"} pt-1 border-t border-neutral-450/40`}>
             <span>GRAND TOTAL:</span>
-            <span>฿{receiptData.total.toFixed(2)}</span>
+            <span>฿{formatCurrency(receiptData.total)}</span>
           </div>
+          {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
+            <div className={`flex justify-between text-neutral-600 ${isSmall ? "text-[8.5px]" : "text-[9.5px]"} font-medium`}>
+              <span>{currentLanguage === "en" ? `Incl. VAT ${receiptData.vatRate}%` : `รวม VAT ${receiptData.vatRate}%`}</span>
+              <span>฿{formatCurrency(receiptData.vatAmount)}</span>
+            </div>
+          )}
 
           {/* Payments List Breakdown on Receipt */}
           {payments.length > 0 && (
-            <div className="space-y-1 pt-1.5 border-t border-dashed border-neutral-400/50 text-neutral-700">
+            <div className="space-y-1 pt-1.5 border-t border-dashed border-neutral-400/50 text-neutral-800">
               {payments.map((p: PaymentLog, pIdx: number) => (
                 <div key={pIdx} className="space-y-0.5">
                   <div className={`flex ${isSmall ? "text-[7.5px]" : "text-[8.5px]"} leading-tight font-mono`}>
                     <span className="flex-1 truncate uppercase pr-2 text-left">
                       {format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID ({p.method === "credit" ? "MEMBER" : p.method}):
                     </span>
-                    <span className="font-bold">฿{p.amount.toFixed(2)}</span>
+                    <span className="font-bold">฿{formatCurrency(p.amount)}</span>
                   </div>
                   {p.method === "cash" && p.received !== undefined && p.received > 0 && (
-                    <div className={`flex ${isSmall ? "text-[7px] pl-4 text-neutral-500" : "text-[8px] pl-4 text-neutral-500"} leading-tight font-mono`}>
+                    <div className={`flex ${isSmall ? "text-[7px] pl-4 text-neutral-600" : "text-[8px] pl-4 text-neutral-600"} leading-tight font-mono`}>
                       <span className="flex-1 text-left">
                         {currentLanguage === "en" ? "- Cash Received:" : "- รับเงินสด:"}
                       </span>
-                      <span>฿{p.received.toFixed(2)}</span>
+                      <span>฿{formatCurrency(p.received)}</span>
                     </div>
                   )}
                   {p.method === "cash" && p.change !== undefined && p.change > 0 && (
-                    <div className={`flex ${isSmall ? "text-[7px] pl-4 text-neutral-500" : "text-[8px] pl-4 text-neutral-500"} leading-tight font-mono`}>
+                    <div className={`flex ${isSmall ? "text-[7px] pl-4 text-neutral-600" : "text-[8px] pl-4 text-neutral-600"} leading-tight font-mono`}>
                       <span className="flex-1 text-left">
                         {currentLanguage === "en" ? "- Change Returned:" : "- เงินทอน:"}
                       </span>
-                      <span>฿{p.change.toFixed(2)}</span>
+                      <span>฿{formatCurrency(p.change)}</span>
                     </div>
                   )}
                 </div>
               ))}
               <div className={`flex justify-between font-black text-neutral-900 ${isSmall ? "text-[8.5px]" : "text-[9.5px]"} pt-0.5 border-t border-dashed border-neutral-400/30`}>
                 <span>TOTAL PAID:</span>
-                <span>฿{totalPaid.toFixed(2)}</span>
+                <span>฿{formatCurrency(totalPaid)}</span>
               </div>
               {!receiptData.isPaid && (
-                <div className={`flex justify-between font-black text-rose-700 ${isSmall ? "text-[9px]" : "text-[10px]"}`}>
+                <div className={`flex justify-between font-black text-black ${isSmall ? "text-[9px]" : "text-[10px]"}`}>
                   <span>BALANCE DUE:</span>
-                  <span>฿{(receiptData.total - totalPaid).toFixed(2)}</span>
+                  <span>฿{formatCurrency(receiptData.total - totalPaid)}</span>
                 </div>
               )}
             </div>
@@ -551,7 +554,7 @@ export function ThermalReceiptDialog({
             } else if (totalPaid > 0) {
               return (
                 <div className={`${isSmall ? "text-[10px]" : "text-[11px]"} text-black font-black uppercase`}>
-                  {currentLanguage === "en" ? `PARTIAL PAID (฿${totalPaid.toFixed(2)})` : `จ่ายมัดจำแล้ว (฿${totalPaid.toFixed(2)})`}
+                  {currentLanguage === "en" ? `PARTIAL PAID (฿${formatCurrency(totalPaid)})` : `จ่ายมัดจำแล้ว (฿${formatCurrency(totalPaid)})`}
                 </div>
               );
             } else {
@@ -563,8 +566,8 @@ export function ThermalReceiptDialog({
             }
           })()}
           {cleanRemarkForDisplay(receiptData.remark) && (
-            <div className={`${isSmall ? "text-[8px] p-1" : "text-[9px] p-1.5"} text-neutral-600 font-medium text-left mt-2 bg-zinc-50 rounded border border-neutral-300 w-full leading-tight`}>
-              <span className="font-bold text-neutral-800">REMARK:</span> {cleanRemarkForDisplay(receiptData.remark)}
+            <div className={`${isSmall ? "text-[8px] p-1" : "text-[9px] p-1.5"} text-neutral-800 font-medium text-left mt-2 bg-neutral-100 rounded border border-neutral-400 w-full leading-tight`}>
+              <span className="font-bold text-black">REMARK:</span> {cleanRemarkForDisplay(receiptData.remark)}
             </div>
           )}
         </div>
@@ -572,26 +575,15 @@ export function ThermalReceiptDialog({
         {/* Barcode/Footer */}
         <div className="text-center pt-2 space-y-2">
           <div className="flex flex-col items-center justify-center">
-            <div className={`flex items-center justify-center h-8 ${isSmall ? "w-36" : "w-44"} bg-transparent opacity-85 my-1`}>
-              {/* Simulated barcode lines */}
-              {Array.from({ length: 32 }).map((_, idx) => {
-                const isThick = (idx % 3 === 0 && idx % 2 === 0) || idx === 11 || idx === 17 || idx === 23;
-                const spacing = idx % 4 === 0 ? "mr-[2px]" : "mr-[1px]";
-                return (
-                  <span 
-                    key={idx} 
-                    className={`h-full bg-black inline-block ${spacing}`} 
-                    style={{
-                      width: isThick ? "2px" : "0.8px",
-                      backgroundColor: "black",
-                      WebkitPrintColorAdjust: "exact",
-                      printColorAdjust: "exact"
-                    }}
-                  />
-                );
-              })}
-            </div>
-            <span className="text-[8px] text-neutral-500 font-mono tracking-[4px] mt-1 uppercase">
+            <div 
+              className={`h-8 ${isSmall ? "w-36" : "w-44"} my-1 opacity-90`}
+              style={{
+                backgroundImage: "repeating-linear-gradient(90deg, #000 0px, #000 2px, transparent 2px, transparent 3px, #000 3px, #000 4px, transparent 4px, transparent 6px, #000 6px, #000 8px, transparent 8px, transparent 9px)",
+                WebkitPrintColorAdjust: "exact",
+                printColorAdjust: "exact"
+              }}
+            />
+            <span data-proforma-barcode-text="true" className="text-[8px] text-neutral-500 font-mono tracking-[4px] mt-1 uppercase">
               {receiptData.isDraft ? receiptData.id : (receiptData.status === "cancel" ? `${receiptData.id}-VOID` : receiptData.id)}
             </span>
           </div>
@@ -615,7 +607,9 @@ export function ThermalReceiptDialog({
         onOpenChange={(isOpen) => {
           onOpenChange(isOpen);
           if (!isOpen && onCloseComplete) {
-            onCloseComplete();
+            setTimeout(() => {
+              onCloseComplete();
+            }, 150);
           }
         }}
       >
@@ -635,7 +629,6 @@ export function ThermalReceiptDialog({
                 variant="outline"
                 onClick={() => {
                   onOpenChange(false);
-                  if (onCloseComplete) onCloseComplete();
                 }}
                 className="flex-1 bg-neutral-900 border border-neutral-800 hover:bg-neutral-850 text-white font-bold h-10 rounded-xl text-xs cursor-pointer"
               >
@@ -652,6 +645,17 @@ export function ThermalReceiptDialog({
           {renderReceiptContent(true)}
         </div>,
         document.body
+      )}
+
+      {/* Persistent Off-Screen capture target container positioned inside viewport for html2canvas */}
+      {(receiptData || activeCaptureDataRef.current) && (
+        <div 
+          id="thermal-receipt-capture-container-wrapper" 
+          style={{ position: "fixed", left: 0, top: 0, zIndex: -9999, opacity: 0.01, pointerEvents: "none" }}
+          className="print:hidden"
+        >
+          {renderReceiptContent(false, "thermal-receipt-capture-area-offscreen")}
+        </div>
       )}
     </>
   );

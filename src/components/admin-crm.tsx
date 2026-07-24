@@ -587,12 +587,26 @@ export function AdminCRM() {
                             </div>
                             
                             {/* Price tier badge */}
-                            <div className="flex items-center gap-1.5">
-                              {customer.isMember && customer.memberId ? (
+                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                              {customer.isMember && customer.memberId && (
                                 <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/50 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5">
                                   ID: {customer.memberId}
                                 </Badge>
-                              ) : null}
+                              )}
+                              
+                              {customer.isMember && customer.memberExpiryDate && (
+                                <Badge className={`border shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5 ${
+                                  new Date(customer.memberExpiryDate).getTime() < Date.now()
+                                    ? "bg-rose-50 text-rose-700 border-rose-200/50"
+                                    : "bg-emerald-50 text-emerald-700 border-emerald-200/50"
+                                }`}>
+                                  <Clock size={8} />
+                                  {new Date(customer.memberExpiryDate).getTime() < Date.now()
+                                    ? `Expired: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
+                                    : `Expires: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
+                                  }
+                                </Badge>
+                              )}
                               
                               {customer.priceListId && customer.priceListId !== "regular" ? (
                                 <Badge className="bg-purple-50 text-purple-700 border border-purple-200/30 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">

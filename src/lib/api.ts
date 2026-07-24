@@ -361,11 +361,11 @@ export const api = {
     // CSO creates as TBA (hidden from Manager), Manager/Admin creates as Pending.
     // If a rider is assigned during creation, initialize as Pending.
     const creatorRole = (jobDetails as any).creatorRole;
-    const initialStatus = isPOS ? "billing" : (
+    const initialStatus = jobDetails.status || (isPOS ? "billing" : (
       (creatorRole === 'manager' || creatorRole === 'admin' || jobDetails.pickupRiderId || jobDetails.deliveryRiderId) 
         ? 'pending' 
         : 'tba'
-    );
+    ));
     const legStatus = (leg: "pickup" | "delivery") => {
       if (isPOS && leg === "pickup") return "completed";
       return "pending";
@@ -400,6 +400,7 @@ export const api = {
       source: jobDetails.source || "app",
       totalAmount: jobDetails.totalAmount || ((jobDetails.fee || 0) * 2.5),
       discount: jobDetails.discount || 0,
+      discountPercent: jobDetails.discountPercent || 0,
       paymentMethod: jobDetails.paymentMethod as any,
       isPaid: jobDetails.isPaid as boolean | false,
       pickupDistance: jobDetails.pickupDistance,
@@ -415,6 +416,7 @@ export const api = {
       createdBy: jobDetails.createdBy as string | null || null,
       cashPlaced: jobDetails.cashPlaced as boolean || false,
       shiftId: jobDetails.shiftId as string | null || null,
+      walletBalanceAfter: jobDetails.walletBalanceAfter as number | null || null,
       legs: {
         pickupOutbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
         pickupInbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },

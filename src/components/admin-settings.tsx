@@ -39,6 +39,20 @@ export function AdminSettings() {
   const [commissionRateInput, setCommissionRateInput] = useState("2");
   const [enablePromptPay, setEnablePromptPay] = useState(false);
   const [ppSettings, setPpSettings] = useState<Record<string, string>>({});
+
+  const [vatTypeInput, setVatTypeInput] = useState("none");
+  const [vatRateInput, setVatRateInput] = useState("7");
+
+  const handleSaveVatSetting = async (key: string, value: string) => {
+    try {
+      await settingsStore.updateSetting(key, value);
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success("VAT setting updated successfully");
+    } catch (err) {
+      toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
   
   useEffect(() => {
     if (systemSettings) {
@@ -48,6 +62,8 @@ export function AdminSettings() {
       setEnablePromptPay(systemSettings.enablePromptPay === "true");
       setReceiptPaperSize(systemSettings.receiptPaperSize || "80mm");
       setCurrentLanguage(systemSettings.language || "th");
+      setVatTypeInput(systemSettings.vatType || "none");
+      setVatRateInput(systemSettings.vatRate || "7");
       
       const pp: Record<string, string> = {};
       pp["global_id"] = systemSettings.promptpayId_global || "";
@@ -479,6 +495,60 @@ export function AdminSettings() {
                   <option value="th">ไทย (TH)</option>
                   <option value="en">English (EN)</option>
                 </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-rose-100 text-rose-600 rounded-xl">
+            <Coins size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">VAT Settings (ตั้งค่าภาษีมูลค่าเพิ่ม)</h3>
+            <p className="text-xs text-slate-500 font-medium">Configure the default VAT type and rate applied to orders.</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="max-w-2xl space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="font-semibold text-slate-700">VAT Type (ประเภทภาษี)</Label>
+                <select
+                  value={vatTypeInput}
+                  onChange={e => {
+                    setVatTypeInput(e.target.value);
+                    handleSaveVatSetting("vatType", e.target.value);
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10 shadow-sm"
+                >
+                  <option value="none">No VAT (ไม่มี VAT)</option>
+                  <option value="inclusive">Inclusive VAT (รวมในราคาสินค้า)</option>
+                  <option value="exclusive">Exclusive VAT (แยกต่างหาก)</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-slate-700">VAT Rate (อัตราภาษี %)</Label>
+                <div className="relative">
+                  <Input 
+                    type="number" 
+                    step="any"
+                    value={vatRateInput} 
+                    onChange={e => {
+                      setVatRateInput(e.target.value);
+                    }} 
+                    onBlur={() => {
+                      handleSaveVatSetting("vatRate", vatRateInput);
+                    }}
+                    placeholder="7" 
+                    className="font-bold pr-8 h-10 border-slate-200 shadow-sm"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">%</span>
+                </div>
               </div>
             </div>
           </div>

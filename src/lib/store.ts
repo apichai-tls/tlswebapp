@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type JobStatus = "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return";
+export type JobStatus = "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return" | "topup";
 export type JobType = "pickup" | "delivery" | "full_service";
 export type ServiceType = "wash_fold" | "wash_iron_fold" | "wash_iron_hanger";
 export type TripStatus = "pending" | "in_transit" | "completed";
@@ -78,6 +78,8 @@ export interface Customer {
   dob?: string | null;
   taxId?: string | null;
   companyName?: string | null;
+  memberStartDate?: Date | string | null;
+  memberExpiryDate?: Date | string | null;
 }
 
 export interface Job {
@@ -115,6 +117,7 @@ export interface Job {
   paymentChannel?: string;
   isPaid?: boolean;
   discount?: number; // Manual adjustment/discount
+  discountPercent?: number; // Manual adjustment/discount percentage (0-100)
   pickupScheduledAt?: Date;
   pickupScheduledEndAt?: Date;
   deliveryScheduledAt?: Date;
@@ -122,6 +125,7 @@ export interface Job {
   pickupRiderId?: string;
   deliveryRiderId?: string;
   items?: { name: string; quantity: number; price: number }[];
+  walletBalanceAfter?: number | null;
   
   pickupDistance?: number;
   deliveryDistance?: number;
@@ -730,6 +734,8 @@ export const shiftStore = {
     return shiftSnapshot;
   },
   async fetchActiveShift(userId: string, branchId?: string) {
+    hasLoadedActiveShift = false;
+    emitShiftChange();
     try {
       const [userRes, branchRes] = await Promise.all([
         api.getActiveCashierShift(userId),

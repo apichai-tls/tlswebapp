@@ -1,0 +1,893 @@
+[
+  {
+    "id": "DRY-JEA-001",
+    "name": "JEANS",
+    "nameEn": "Jeans",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-JUM-002",
+    "name": "JUMPSUIT",
+    "nameEn": "Jumpsuit",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-JAC-001",
+    "name": "JACKET",
+    "nameEn": "Jacket",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-JUM-002",
+    "name": "JUMPSUIT",
+    "nameEn": "Jumpsuit",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-SCA-003",
+    "name": "SCARF",
+    "nameEn": "Scarf",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-SWE-006",
+    "name": "SWEATER",
+    "nameEn": "Sweater",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-SLA-007",
+    "name": "กางเกง SLACK",
+    "nameEn": "Slack",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "KIL-WFO-001",
+    "name": "ซักพับ WASH/FOLD",
+    "nameEn": "Wash/Fold",
+    "price": 110,
+    "memberPrice": 90,
+    "category": "KILO",
+    "unit": "kg"
+  },
+  {
+    "id": "KIL-WIR-002",
+    "name": "ซักรีด WASH/IRON",
+    "nameEn": "Wash/Iron",
+    "price": 159,
+    "memberPrice": 149,
+    "category": "KILO",
+    "unit": "kg"
+  },
+  {
+    "id": "KIL-WIH-003",
+    "name": "ซักรีดใส่ไม้แขวน WASH/IRON/HANGER",
+    "nameEn": "Wash/Iron/Hanger",
+    "price": 172,
+    "memberPrice": 159,
+    "category": "KILO",
+    "unit": "kg"
+  },
+  {
+    "id": "LIN-D30-004",
+    "name": "ปลอกผ้าห่ม DUVET COVER 3.0FT",
+    "nameEn": "Duvet Cover 3.0ft",
+    "price": 120,
+    "memberPrice": 115,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-D50-005",
+    "name": "ปลอกผ้าห่ม DUVET COVER 5.0FT",
+    "nameEn": "Duvet Cover 5.0ft",
+    "price": 180,
+    "memberPrice": 150,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-D60-006",
+    "name": "ปลอกผ้าห่ม DUVET COVER 6.0FT",
+    "nameEn": "Duvet Cover 6.0ft",
+    "price": 290,
+    "memberPrice": 250,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-B35-009",
+    "name": "ผ้าปูที่นอน BEDSHEET 3.5FT",
+    "nameEn": "Bedsheet 3.5ft",
+    "price": 135,
+    "memberPrice": 110,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-B50-010",
+    "name": "ผ้าปูที่นอน BEDSHEET 5.0FT",
+    "nameEn": "Bedsheet 5.0ft",
+    "price": 159,
+    "memberPrice": 140,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-B60-011",
+    "name": "ผ้าปูที่นอน BEDSHEET 6.0FT",
+    "nameEn": "Bedsheet 6.0ft",
+    "price": 195,
+    "memberPrice": 160,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-C30-012",
+    "name": "ผ้ารองกันเปื้อน COMFORTER 3.0FT",
+    "nameEn": "Comforter 3.0ft",
+    "price": 135,
+    "memberPrice": 115,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-C50-013",
+    "name": "ผ้ารองกันเปื้อน COMFORTER 5.0FT",
+    "nameEn": "Comforter 5.0ft",
+    "price": 246,
+    "memberPrice": 200,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-C60-014",
+    "name": "ผ้ารองกันเปื้อน COMFORTER 6.0FT",
+    "nameEn": "Comforter 6.0ft",
+    "price": 354,
+    "memberPrice": 300,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-PIL-007",
+    "name": "ปลอกหมอน PILLOW CASE",
+    "nameEn": "Pillow Case",
+    "price": 62,
+    "memberPrice": 52,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-BOS-008",
+    "name": "ปลอกหมอนข้าง BOSTER CASE",
+    "nameEn": "Boster Case",
+    "price": 62,
+    "memberPrice": 52,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-T35-001",
+    "name": "TOPPER 3.5FT",
+    "nameEn": "Topper 3.5ft",
+    "price": 620,
+    "memberPrice": 470,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-T50-002",
+    "name": "TOPPER 5.0FT",
+    "nameEn": "Topper 5.0ft",
+    "price": 1020,
+    "memberPrice": 870,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-T60-003",
+    "name": "TOPPER 6.0 FT",
+    "nameEn": "Topper 6.0ft",
+    "price": 1320,
+    "memberPrice": 1070,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-SHI-012",
+    "name": "เสื้อเชิ้ต SHIRT",
+    "nameEn": "Shirt",
+    "price": 40,
+    "memberPrice": 32,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-POL-013",
+    "name": "เสื้อโปโล POLO-TEE",
+    "nameEn": "Polo-Tee",
+    "price": 40,
+    "memberPrice": 32,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-DRE-009",
+    "name": "ชุดกระโปรง DRESS",
+    "nameEn": "Dress",
+    "price": 64,
+    "memberPrice": 51,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-TRO-008",
+    "name": "กางเกง TROUSERS/PANTS",
+    "nameEn": "Trousers/Pants",
+    "price": 40,
+    "memberPrice": 32,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-JEA-010",
+    "name": "ยีนส์ JEANS",
+    "nameEn": "Jeans",
+    "price": 64,
+    "memberPrice": 51,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-BLO-011",
+    "name": "เสื้อผู้หญิง BLOUSE",
+    "nameEn": "Blouse",
+    "price": 41,
+    "memberPrice": 37,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-SHO-004",
+    "name": "SHORT - IRON",
+    "nameEn": "Short - Iron",
+    "price": 40,
+    "memberPrice": 32,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "IRO-SKI-005",
+    "name": "SKIRT-IRON",
+    "nameEn": "Skirt-Iron",
+    "price": 40,
+    "memberPrice": 32,
+    "category": "IRON",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SHI-019",
+    "name": "เสื้อเชิ้ต SHIRT",
+    "nameEn": "Shirt",
+    "price": 172,
+    "memberPrice": 154,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-PTS-003",
+    "name": "POLO/T-SHIRT-DRY",
+    "nameEn": "Polo/T-Shirt-Dry",
+    "price": 165,
+    "memberPrice": 134,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-JAC-020",
+    "name": "เสื้อแจ็กเก็ต JACKET",
+    "nameEn": "Jacket",
+    "price": 226,
+    "memberPrice": 170,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-TRO-006",
+    "name": "กางเกง TROUSERS/PANTS",
+    "nameEn": "Trousers/Pants",
+    "price": 214,
+    "memberPrice": 173,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SHO-013",
+    "name": "เสื้อ กางเกงขาสั้น SHORT",
+    "nameEn": "Short",
+    "price": 190,
+    "memberPrice": 154,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-BLO-016",
+    "name": "เสื้อผู้หญิง BLOUSE",
+    "nameEn": "Blouse",
+    "price": 226,
+    "memberPrice": 170,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SKI-004",
+    "name": "กระโปรง SKIRT",
+    "nameEn": "Skirt",
+    "price": 190,
+    "memberPrice": 154,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-DRE-007",
+    "name": "ชุดกระโปรง DRESS",
+    "nameEn": "Dress",
+    "price": 279,
+    "memberPrice": 200,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SLA-005",
+    "name": "กางเกง / SLACK",
+    "nameEn": "Slack",
+    "price": 193,
+    "memberPrice": 140,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SCA-011",
+    "name": "ผ้าพันคอ SCARF",
+    "nameEn": "Scarf",
+    "price": 118,
+    "memberPrice": 100,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SWE-015",
+    "name": "เสื้อกันหนาว SWEATER",
+    "nameEn": "Sweater",
+    "price": 172,
+    "memberPrice": 140,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-NEC-012",
+    "name": "เนคไท NECK TIE",
+    "nameEn": "Neck Tie",
+    "price": 118,
+    "memberPrice": 96,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-VES-014",
+    "name": "เสื้อกั๊ก VEST",
+    "nameEn": "Vest",
+    "price": 150,
+    "memberPrice": 110,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-COA-021",
+    "name": "เสื้อโค้ท COAT",
+    "nameEn": "Coat",
+    "price": 333,
+    "memberPrice": 260,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-OVE-022",
+    "name": "เสื้อโค้ทยาว OVERCOAT",
+    "nameEn": "Overcoat",
+    "price": 387,
+    "memberPrice": 340,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SLI-008",
+    "name": "ชุดกระโปรงผ้าไหม SLIK DRESS",
+    "nameEn": "Slik Dress",
+    "price": 441,
+    "memberPrice": 390,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-ELE-010",
+    "name": "ชุดราตรียาว ELEGANT DRESS",
+    "nameEn": "Elegant Dress",
+    "price": 602,
+    "memberPrice": 510,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SAF-009",
+    "name": "ชุดซาฟารี SAFARI SUIT 2 PCS",
+    "nameEn": "Safari Suit 2 Pcs",
+    "price": 333,
+    "memberPrice": 240,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SU2-018",
+    "name": "เสื้อสูท SUIT 2 PCS",
+    "nameEn": "Suit 2 Pcs",
+    "price": 387,
+    "memberPrice": 310,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "DRY-SU3-017",
+    "name": "เสื้อสูท SUIT 3 PCS",
+    "nameEn": "Suit 3 Pcs",
+    "price": 441,
+    "memberPrice": 360,
+    "category": "DRY CLEAN",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-BAT-001",
+    "name": "BATHMATS",
+    "nameEn": "Bathmats",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-DFE-002",
+    "name": "DELIVERY FEES",
+    "nameEn": "Delivery Fees",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-HAN-003",
+    "name": "HANGERS",
+    "nameEn": "Hangers",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-LBA-004",
+    "name": "LAUNDRY BAG",
+    "nameEn": "Laundry Bag",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-PFE-005",
+    "name": "PICK UP FEES",
+    "nameEn": "Pick Up Fees",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-SOC-006",
+    "name": "SOCKS",
+    "nameEn": "Socks",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-SCL-007",
+    "name": "SOFA CLEANING",
+    "nameEn": "Sofa Cleaning",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-E10-008",
+    "name": "ผ้าด่วน/EXPRESS 100%",
+    "nameEn": "Express 100%",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-E50-009",
+    "name": "ผ้าด่วน/EXPRESS 50%",
+    "nameEn": "Express 50%",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-NCU-010",
+    "name": "ผ้าม่านทึบ NIGHT CURTAINS",
+    "nameEn": "Night Curtains",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-DCU-011",
+    "name": "ผ้าม่านโปร่ง DAY CURTAINS",
+    "nameEn": "Day Curtains",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "OTH-OTH-013",
+    "name": "อื่นๆ OTHERS",
+    "nameEn": "Others",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PAC-PAC-001",
+    "name": "PACKAGE (CUSTOM)",
+    "nameEn": "Package (Custom)",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PACKAGE",
+    "unit": "pack"
+  },
+  {
+    "id": "PAC-001",
+    "name": "แพ็กเกจซักรีด ฿2,000",
+    "nameEn": "Laundry Package ฿2,000",
+    "price": 2000,
+    "memberPrice": 2000,
+    "category": "PACKAGE",
+    "unit": "pack"
+  },
+  {
+    "id": "PAC-002",
+    "name": "แพ็กเกจซักรีด ฿3,000",
+    "nameEn": "Laundry Package ฿3,000",
+    "price": 3000,
+    "memberPrice": 3000,
+    "category": "PACKAGE",
+    "unit": "pack"
+  },
+  {
+    "id": "PAC-003",
+    "name": "แพ็กเกจซักรีด ฿5,000",
+    "nameEn": "Laundry Package ฿5,000",
+    "price": 5000,
+    "memberPrice": 5000,
+    "category": "PACKAGE",
+    "unit": "pack"
+  },
+  {
+    "id": "PAC-004",
+    "name": "แพ็กเกจซักรีด ฿6,000",
+    "nameEn": "Laundry Package ฿6,000",
+    "price": 6000,
+    "memberPrice": 6000,
+    "category": "PACKAGE",
+    "unit": "pack"
+  },
+  {
+    "id": "PAC-005",
+    "name": "แพ็กเกจซักรีด ฿10,000",
+    "nameEn": "Laundry Package ฿10,000",
+    "price": 10000,
+    "memberPrice": 10000,
+    "category": "PACKAGE",
+    "unit": "pack"
+  },
+  {
+    "id": "PCS-BRA-001",
+    "name": "BRA",
+    "nameEn": "Bra",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-HAN-003",
+    "name": "HANKERCHIEF",
+    "nameEn": "Hankerchief",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-JUM-005",
+    "name": "JUMPSUIT",
+    "nameEn": "Jumpsuit",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-SCA-006",
+    "name": "SCARF",
+    "nameEn": "Scarf",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-SWE-010",
+    "name": "SWEATER",
+    "nameEn": "Sweater",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-UND-011",
+    "name": "UNDERPANTS",
+    "nameEn": "Underpants",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-SLA-012",
+    "name": "กางเกง SLACK",
+    "nameEn": "Slack",
+    "price": 0,
+    "memberPrice": 0,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-SHI-018",
+    "name": "เสื้อเชิ้ต SHIRT",
+    "nameEn": "Shirt",
+    "price": 77,
+    "memberPrice": 46,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-POL-019",
+    "name": "เสื้อโปโล POLO-TEE",
+    "nameEn": "Polo-Tee",
+    "price": 77,
+    "memberPrice": 46,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-DRE-014",
+    "name": "ชุดกระโปรง DRESS",
+    "nameEn": "Dress",
+    "price": 120,
+    "memberPrice": 100,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-TRO-013",
+    "name": "กางเกง TROUSERS/PANTS",
+    "nameEn": "Trousers/Pants",
+    "price": 77,
+    "memberPrice": 46,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-JEA-016",
+    "name": "ยีนส์ JEANS",
+    "nameEn": "Jeans",
+    "price": 118,
+    "memberPrice": 95,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-BLO-017",
+    "name": "เสื้อผู้หญิง BLOUSE",
+    "nameEn": "Blouse",
+    "price": 77,
+    "memberPrice": 46,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-SHO-007",
+    "name": "SHORTS-PCS",
+    "nameEn": "Shorts-Pcs",
+    "price": 63,
+    "memberPrice": 36,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-SKI-008",
+    "name": "SKIRT-PCS",
+    "nameEn": "Skirt-Pcs",
+    "price": 77,
+    "memberPrice": 46,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-JAC-004",
+    "name": "JACKET",
+    "nameEn": "Jacket",
+    "price": 154,
+    "memberPrice": 127,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-UNG-015",
+    "name": "ชุดชั้นในหญิง,ชาย UNDER GARMENTS",
+    "nameEn": "Under Garments",
+    "price": 16,
+    "memberPrice": 13,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-SOC-009",
+    "name": "SOCKS",
+    "nameEn": "Socks",
+    "price": 16,
+    "memberPrice": 13,
+    "category": "PCS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-D35-015",
+    "name": "ผ้าห่ม DUVET 3.5FT",
+    "nameEn": "Duvet 3.5ft",
+    "price": 185,
+    "memberPrice": 160,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-D50-016",
+    "name": "ผ้าห่ม DUVET 5.0FT",
+    "nameEn": "Duvet 5.0ft",
+    "price": 285,
+    "memberPrice": 240,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-D60-017",
+    "name": "ผ้าห่ม DUVET 6.0FT",
+    "nameEn": "Duvet 6.0ft",
+    "price": 400,
+    "memberPrice": 350,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-PIL-018",
+    "name": "หมอน PILLOW",
+    "nameEn": "Pillow",
+    "price": 183,
+    "memberPrice": 175,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "LIN-BOS-019",
+    "name": "หมอนข้าง BOSTER",
+    "nameEn": "Boster",
+    "price": 183,
+    "memberPrice": 175,
+    "category": "LINENS",
+    "unit": "pcs"
+  },
+  {
+    "id": "SHO-SAN-001",
+    "name": "SANDALS",
+    "nameEn": "Sandals",
+    "price": 300,
+    "memberPrice": 300,
+    "category": "SHOES",
+    "unit": "pair"
+  },
+  {
+    "id": "SHO-SNE-002",
+    "name": "SNEAKERS",
+    "nameEn": "Sneakers",
+    "price": 400,
+    "memberPrice": 400,
+    "category": "SHOES",
+    "unit": "pair"
+  },
+  {
+    "id": "SHO-SPS-003",
+    "name": "SPORT SHOES",
+    "nameEn": "Sport Shoes",
+    "price": 350,
+    "memberPrice": 350,
+    "category": "SHOES",
+    "unit": "pair"
+  },
+  {
+    "id": "SHO-SUE-004",
+    "name": "SUEDUE",
+    "nameEn": "Suedue",
+    "price": 550,
+    "memberPrice": 550,
+    "category": "SHOES",
+    "unit": "pair"
+  },
+  {
+    "id": "OTH-CAR-012",
+    "name": "พรม CARPET",
+    "nameEn": "Carpet",
+    "price": 444,
+    "memberPrice": 420,
+    "category": "OTHERS",
+    "unit": "pcs"
+  },
+  {
+    "id": "PCS-CAP-002",
+    "name": "CAP/HAT",
+    "nameEn": "Cap/Hat",
+    "price": 200,
+    "memberPrice": 200,
+    "category": "PCS",
+    "unit": "pcs"
+  }
+]
