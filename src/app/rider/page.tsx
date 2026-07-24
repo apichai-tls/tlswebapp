@@ -1218,6 +1218,17 @@ export default function RiderPage() {
 
   return (
     <ProtectedRoute allowedRole="rider">
+      <input 
+        type="file" 
+        accept="image/*" 
+        ref={chatFileInputRef} 
+        className="hidden" 
+        onChange={(e) => {
+          if (selectedJob) {
+            handleUploadChatImage(e, selectedJob.job.id);
+          }
+        }} 
+      />
       <AnimatePresence mode="wait">
         <motion.div
         className="min-h-screen bg-gray-50"
@@ -1810,18 +1821,18 @@ export default function RiderPage() {
                   <div className="space-y-2">
                     <div className="p-2 bg-white border border-slate-100 shadow-sm rounded-xl">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Laundry Bags (จากร้าน)</p>
-                      <RiderJobImages jobId={selectedJob.job.id} imageType="bagImageUrl" initialValue={selectedJob.job.bagImageUrl} />
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="bagImageUrl" initialValue={selectedJob.job.bagImageUrl} allowUpload={true} />
                     </div>
                     <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Pickup Proof (รูปตอนไปรับ)</p>
-                      <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" initialValue={selectedJob.job.pickupProofImageUrl} />
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="pickupProofImageUrl" initialValue={selectedJob.job.pickupProofImageUrl} allowUpload={true} />
                     </div>
                   </div>
 
                   {selectedJob.job.status === 'completed' && (
                     <div className="p-2 bg-emerald-50 border border-emerald-100 shadow-sm rounded-xl">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">Delivery Proof (รูปตอนไปส่ง)</p>
-                      <RiderJobImages jobId={selectedJob.job.id} imageType="deliveryProofImageUrl" initialValue={selectedJob.job.deliveryProofImageUrl} />
+                      <RiderJobImages jobId={selectedJob.job.id} imageType="deliveryProofImageUrl" initialValue={selectedJob.job.deliveryProofImageUrl} allowUpload={true} />
                     </div>
                   )}
                 </div>
@@ -1915,13 +1926,6 @@ export default function RiderPage() {
 
           {selectedJob && (
             <div className="p-3 bg-white border-t border-slate-200 shrink-0">
-              <input 
-                type="file" 
-                accept="image/*" 
-                ref={chatFileInputRef} 
-                className="hidden" 
-                onChange={(e) => handleUploadChatImage(e, selectedJob.job.id)} 
-              />
               <div className="flex gap-2 items-center">
                 <Button
                   type="button"
