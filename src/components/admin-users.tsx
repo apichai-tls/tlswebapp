@@ -88,7 +88,7 @@ export function AdminUsers() {
 
   const handleEdit = (user: AdminUser) => {
     setEmail(user.email);
-    setPassword(user.password || "");
+    setPassword("");
     setName(user.name);
     setRole(user.role);
     setArea(user.area || "BKK");
@@ -356,8 +356,8 @@ export function AdminUsers() {
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <div className="text-xs font-mono bg-slate-100 px-2 py-1 rounded text-slate-600 inline-block">
-                          {user.password || '******'}
+                        <div className="text-xs font-mono bg-slate-100 px-2.5 py-1 rounded-md text-slate-500 inline-block tracking-widest font-bold">
+                          ••••••••
                         </div>
                       </td>
                       <td className="px-6 py-4 text-right">

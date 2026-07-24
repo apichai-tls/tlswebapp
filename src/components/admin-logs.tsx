@@ -192,12 +192,33 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
           deliveryDistance: "Delivery Distance",
           pickupCommission: "Pickup Commission",
           deliveryCommission: "Delivery Commission",
+          adminNotesJson: "Admin Note",
+          serviceSpeed: "Service Speed",
         };
         return labels[key] || key;
       };
 
       const formatValue = (key: string, val: any) => {
         if (key === 'isPaid') return val ? 'Paid' : 'Unpaid';
+        if (key === 'pickupScheduledAt' || key === 'deliveryScheduledAt') {
+          if (!val) return 'None';
+          try {
+            const date = new Date(val);
+            if (!isNaN(date.getTime())) {
+              return new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Asia/Bangkok',
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+                hour12: false
+              }).format(date);
+            }
+          } catch (e) {
+            // fallback
+          }
+        }
         if (typeof val === 'object') return 'Modified';
         return String(val);
       };

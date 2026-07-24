@@ -1,0 +1,87 @@
+import { test, expect } from '@playwright/test';
+import { PrismaClient } from '@prisma/client';
+import { updateCustomerAction } from '../src/actions/db';
+import { resetAndSeedDatabase, disconnectDatabase } from './helpers/db-helper';
+
+const prisma = new PrismaClient();
+
+test.describe('CRM Remark Sync Backend Scenarios', () => {
+  test.beforeEach(async () => {
+    await resetAndSeedDatabase();
+  });
+
+  test.afterAll(async () => {
+    await prisma.$disconnect();
+    await disconnectDatabase();
+  });
+
+  test('Scenario 1: Update customer remark and verify active jobs are updated', async () => {
+    // 1. Fetch our seeded customer "John Doe" (CUSTOMER-01) and their active job (2026001045)
+    const customerId = 'CUSTOMER-01';
+    const jobId = '2026001045';
+
+    // 2. Set an initial remark on the customer and update it
+    const newRemark = 'Juristic Room Delivery Only';
+    await updateCustomerAction(customerId, { remark: newRemark });
+
+    // 3. Verify the customer record in DB is updated
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    expect(customer?.remark).toBe(newRemark);
+
+    // 4. Verify the active job's adminNotesJson has the CRM Remark system note
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    expect(job?.adminNotesJson).not.toBeNull();
+    const notes = JSON.parse(job!.adminNotesJson!);
+    expect(notes.length).toBeGreaterThan(0);
+    
+    const crmNote = notes.find((n: any) => 
+      n.userId === 'system' && 
+      n.userName === 'System (CRM)' && 
+      n.text === `CRM Remark: ${newRemark}`
+    );
+    expect(crmNote).toBeDefined();
+  });
+
+  test('Scenario 2: Clear customer remark and verify active jobs system notes are removed', async () => {
+    const customerId = 'CUSTOMER-01';
+    const jobId = '2026001045';
+
+    // 1. Add remark first
+    await updateCustomerAction(customerId, { remark: 'Some Temporary Instruction' });
+
+    // 2. Clear customer remark (set to empty string)
+    await updateCustomerAction(customerId, { remark: '' });
+
+    // 3. Verify the active job's adminNotesJson has the CRM Remark removed
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    
+    if (job?.adminNotesJson) {
+      const notes = JSON.parse(job.adminNotesJson);
+      const crmNote = notes.find((n: any) => 
+        n.userId === 'system' && 
+        n.userName === 'System (CRM)' && 
+        n.text.startsWith('CRM Remark:')
+      );
+      expect(crmNote).toBeUndefined(); // Should not exist
+    } else {
+      expect(job?.adminNotesJson).toBeNull(); // Removing the only note should set it to null
+    }
+  });
+
+  test('Scenario 3: Update customer remark and verify completed/cancelled jobs are NOT modified', async () => {
+    const customerId = 'CUSTOMER-01';
+    const completedJobId = '2026001099'; // Seeded completed job
+
+    // 1. Verify initial status of completed job notes (null/empty)
+    const initialJob = await prisma.job.findUnique({ where: { id: completedJobId } });
+    expect(initialJob?.status).toBe('completed');
+    const initialNotes = initialJob?.adminNotesJson;
+
+    // 2. Update customer remark
+    await updateCustomerAction(customerId, { remark: 'Deliver to Lobby only' });
+
+    // 3. Verify completed job's notes remain unchanged (still null/empty)
+    const updatedJob = await prisma.job.findUnique({ where: { id: completedJobId } });
+    expect(updatedJob?.adminNotesJson).toBe(initialNotes);
+  });
+});

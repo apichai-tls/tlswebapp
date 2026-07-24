@@ -425,16 +425,27 @@ export const jobStore = {
     emitJobChange();
   },
 
-  async updateJobDetails(id: string, updates: Partial<Job>) {
+  async updateJobDetails(id: string, updates: Partial<Job>, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
 
+    // Auto-hydrate actor details from localStorage on client side if not provided
+    let finalActorDetails = { ...actorDetails };
+    if (!finalActorDetails.actorId && !finalActorDetails.actorName && typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('authUser');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed?.id) finalActorDetails.actorId = parsed.id;
+          if (parsed?.name || parsed?.email) finalActorDetails.actorName = parsed.name || parsed.email;
+          if (parsed?.role) finalActorDetails.actorRole = parsed.role;
+        }
+      } catch (e) {}
+    }
+
     if (job && job.status === "completed") {
-      if (updates.status === "delivery") {
+      if (updates.status) {
         updates.completedAt = null as any;
-      } else {
-        delete updates.status;
-        delete updates.completedAt;
       }
     }
 
@@ -475,7 +486,7 @@ export const jobStore = {
       }
     }
 
-    await api.updateJob(id, updates);
+    await api.updateJob(id, { ...updates, ...finalActorDetails });
     emitJobChange();
   },
 

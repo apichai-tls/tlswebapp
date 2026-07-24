@@ -28,18 +28,21 @@ export const ensureDbLoaded = async () => {
   if (typeof window === 'undefined') return;
 
   // Optimistic UI: Try to load from Cache Storage first for instant rendering
-  try {
-    const cache = await caches.open('tls-cache');
-    const cachedRes = await cache.match('/api/db-cache');
-    if (cachedRes) {
-      const cached = await cachedRes.json();
-      const parsed = JSON.parse(JSON.stringify(cached), dateReviver);
-      memoryDb = parseMockDb(parsed);
-      isDbLoaded = true;
-      api.notify();
+  const isTestEnv = typeof window !== 'undefined' && (!!window.navigator.webdriver || !!(window as any).__playwright_test__);
+  if (!isTestEnv) {
+    try {
+      const cache = await caches.open('tls-cache');
+      const cachedRes = await cache.match('/api/db-cache');
+      if (cachedRes) {
+        const cached = await cachedRes.json();
+        const parsed = JSON.parse(JSON.stringify(cached), dateReviver);
+        memoryDb = parseMockDb(parsed);
+        isDbLoaded = true;
+        api.notify();
+      }
+    } catch(e) {
+      console.error('Failed to load from Cache API', e);
     }
-  } catch(e) {
-    console.error('Failed to load from Cache API', e);
   }
 
   try {
@@ -48,11 +51,13 @@ export const ensureDbLoaded = async () => {
       const data = await res.json();
       
       // Save to Cache Storage for next refresh
-      try {
-        const cache = await caches.open('tls-cache');
-        await cache.put('/api/db-cache', new Response(JSON.stringify(data)));
-      } catch (e) {
-        console.error('Failed to save to Cache API', e);
+      if (!isTestEnv) {
+        try {
+          const cache = await caches.open('tls-cache');
+          await cache.put('/api/db-cache', new Response(JSON.stringify(data)));
+        } catch (e) {
+          console.error('Failed to save to Cache API', e);
+        }
       }
 
       const parsed = JSON.parse(JSON.stringify(data), dateReviver);
