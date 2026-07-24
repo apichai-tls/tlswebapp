@@ -9,44 +9,33 @@ datasource db {
 }
 
 model Customer {
-  id                 String        @id @default(uuid())
-  name               String
-  phone              String?
-  defaultAddress     String?
-  defaultLat         Float         @default(13.736717)
-  defaultLng         Float         @default(100.523186)
-  priceListId        String?
-  creditBalance      Float         @default(0)
-  tier               String?       @default("None")
-  isMember           Boolean       @default(false)
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @default(now()) @updatedAt
-  companyName        String?
-  dob                String?
-  email              String?       @unique
-  language           String?
-  lineId             String?
-  remark             String?
-  secondaryAddress   String?
-  taxId              String?
-  isVIP              Boolean       @default(false)
-  isWhatsapp         Boolean       @default(false)
-  memberId           String?       @unique
-  isCorporate        Boolean       @default(false)
-  attachments        String[]
-  endDate            String?
-  forcePasswordReset Boolean       @default(false)
-  passwordHash       String?
-  provider           String        @default("local")
-  providerId         String?
-  roomNo             String?
-  startDate          String?
-  memberStartDate    DateTime?
-  memberExpiryDate   DateTime?
-  
-  Booking            Booking[]
-  jobs               Job[]
-  Transaction        Transaction[]
+  id               String    @id @default(uuid())
+  name             String
+  phone            String
+  defaultAddress   String
+  defaultLat       Float
+  defaultLng       Float
+  priceListId      String?
+  creditBalance    Float     @default(0)
+  tier             String?
+  isMember         Boolean   @default(false)
+  memberId         String?   @unique
+  isVIP            Boolean   @default(false)
+  isCorporate      Boolean   @default(false)
+  isWhatsapp       Boolean   @default(false)
+  email            String?
+  lineId           String?
+  language         String?
+  remark           String?
+  secondaryAddress String?
+  dob              String?
+  taxId            String?
+  companyName      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+  memberExpiryDate DateTime?
+  memberStartDate  DateTime?
+  jobs             Job[]
 }
 
 model Job {
@@ -64,65 +53,59 @@ model Job {
   distance               Float
   fee                    Float
   status                 String
+  subStatus              String?
   createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @default(now()) @updatedAt
   scheduledAt            DateTime
   completedAt            DateTime?
   proofImageUrl          String?
+  pickupProofImageUrl    String?
+  deliveryProofImageUrl  String?
   riderId                String?
   bagImageUrl            String?
+  billImageUrl           String?
   serviceType            String?
+  laundryTypes           String?
   source                 String?
   totalAmount            Float?
-  
-  paymentMethod          String? // "cash" | "transfer" | "credit" | "card"
+  paymentMethod          String?
   paymentChannel         String?
   isPaid                 Boolean       @default(false)
   discount               Float?        @default(0)
-  discountPercent        Float?        @default(0)
   pickupDistance         Float?
   deliveryDistance       Float?
   pickupCommission       Float?
   deliveryCommission     Float?
-  
   pickupScheduledAt      DateTime?
+  pickupScheduledEndAt   DateTime?
   deliveryScheduledAt    DateTime?
+  deliveryScheduledEndAt DateTime?
   pickupRiderId          String?
   deliveryRiderId        String?
-  
-  itemsJson              String? // Array of { name, quantity, price }
-  legsJson               String? // JobLegs object
+  itemsJson              String?
+  legsJson               String?
   remark                 String?
-  adminNotesJson         String? // Array of AdminNoteLog objects
-  
-  billImageUrl           String?
-  deliveryScheduledEndAt DateTime?
-  pickupScheduledEndAt   DateTime?
-  deliveryProofImageUrl  String?
-  pickupProofImageUrl    String?
-  subStatus              String?
-  laundryTypes           String?
-  
+  adminNotesJson         String?
   branchId               String?
   createdBy              String?
   cashPlaced             Boolean       @default(false)
   isStuck                Boolean       @default(false)
-  walletBalanceAfter     Float?
-  updatedAt              DateTime      @default(now()) @updatedAt
   shiftId                String?
-
-  customer               Customer?     @relation(fields: [customerId], references: [id])
+  walletBalanceAfter     Float?
+  discountPercent        Float?        @default(0)
   branch                 ShopLocation? @relation(fields: [branchId], references: [id])
-  shift                  CashierShift? @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  customer               Customer?     @relation(fields: [customerId], references: [id])
+  shift                  CashierShift? @relation(fields: [shiftId], references: [id])
 }
 
 model ServiceItem {
   id          String  @id @default(uuid())
   name        String
-  nameEn      String?
   price       Float
   memberPrice Float
   category    String
   unit        String?
+  nameEn      String?
 }
 
 model Rider {
@@ -136,10 +119,10 @@ model Rider {
   avatarUrl         String?
   rating            Float              @default(5.0)
   completedJobs     Int                @default(0)
+  commissionBalance Float              @default(0)
   nationalId        String?
   vehicleType       String?
   vehiclePlate      String?
-  commissionBalance Float              @default(0)
   branchId          String?
   color             String?            @default("#3b82f6")
   branch            ShopLocation?      @relation(fields: [branchId], references: [id])
@@ -175,11 +158,10 @@ model ShopLocation {
   logoUrl      String?
   phone        String?
   taxId        String?
-  
-  riders       Rider[]
-  jobs         Job[]
-  shifts       CashierShift[]
   staff        AdminUser[]
+  shifts       CashierShift[]
+  jobs         Job[]
+  riders       Rider[]
 }
 
 model POI {
@@ -211,168 +193,41 @@ model ActivityLog {
 }
 
 model AdminUser {
-  id          String   @id @default(uuid())
-  email       String   @unique
+  id          String        @id @default(uuid())
+  email       String        @unique
   password    String
   name        String
-  role        String   @default("staff") // "admin", "manager", "cso", "staff"
-  permissions String   // JSON string array of allowed menu keys: "["jobs", "crm"]"
-  area        String?  // e.g. "BKK", "PTY"
-  branchId    String?  // Optional branch location ID for staff/managers
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  role        String        @default("staff")
+  permissions String
+  area        String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  branchId    String?
   branch      ShopLocation? @relation(fields: [branchId], references: [id])
 }
 
 model CashierShift {
-  id              String    @id @default(uuid())
-  branchId        String    // The ShopLocation ID the shift belongs to
-  userId          String    // Cashier user ID (AdminUser ID)
-  userName        String    // Cashier name (AdminUser name)
-  openedAt        DateTime  @default(now())
+  id              String       @id @default(uuid())
+  branchId        String
+  userId          String
+  userName        String
+  openedAt        DateTime     @default(now())
   closedAt        DateTime?
-  startingCash    Float     // Cash in drawer at start
-  expectedCash    Float     @default(0) // Calculated: startingCash + cashSales
-  actualCash      Float?    // Declared cash by cashier on close
-  cashSales       Float     @default(0) // Total cash sales in this shift
-  transferSales   Float     @default(0) // Total bank transfer sales in this shift
-  cardSales       Float     @default(0) // Total credit card sales in this shift
-  creditSales     Float     @default(0) // Total store credit sales in this shift
-  shortageOverage Float?    // Difference: actualCash - expectedCash
-  status          String    @default("open") // "open" | "closed"
+  startingCash    Float
+  expectedCash    Float        @default(0)
+  actualCash      Float?
+  cashSales       Float        @default(0)
+  transferSales   Float        @default(0)
+  cardSales       Float        @default(0)
+  creditSales     Float        @default(0)
+  shortageOverage Float?
+  status          String       @default("open")
   notes           String?
-  totalOrders     Int       @default(0)
-  cashOrders      Int       @default(0)
-  transferOrders  Int       @default(0)
-  cardOrders      Int       @default(0)
-  creditOrders    Int       @default(0)
-
+  cardOrders      Int          @default(0)
+  cashOrders      Int          @default(0)
+  creditOrders    Int          @default(0)
+  totalOrders     Int          @default(0)
+  transferOrders  Int          @default(0)
   branch          ShopLocation @relation(fields: [branchId], references: [id])
   jobs            Job[]
-}
-
-model Article {
-  id         String   @id
-  title      String
-  title_th   String?
-  content    String
-  content_th String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime
-}
-
-model Booking {
-  id                  String               @id
-  customerName        String
-  email               String
-  phone               String
-  pickupDate          DateTime
-  service             String
-  status              String               @default("PENDING")
-  assignedToId        String?
-  memberId            String?
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime
-  website_admin_users website_admin_users? @relation(fields: [assignedToId], references: [id])
-  Customer            Customer?            @relation(fields: [memberId], references: [id])
-}
-
-model ContactRequest {
-  id        String   @id
-  name      String
-  email     String
-  message   String
-  status    String   @default("PENDING")
-  createdAt DateTime @default(now())
-  updatedAt DateTime
-}
-
-model KeywordQueue {
-  id        String   @id
-  keyword   String   @unique
-  status    String   @default("PENDING")
-  createdAt DateTime @default(now())
-  updatedAt DateTime
-}
-
-model Location {
-  id                 String   @id
-  slug               String   @unique
-  name               String
-  name_th            String?
-  city               String
-  city_th            String?
-  type               String
-  stars              Int
-  totalRooms         Int
-  averagePrice       String
-  transport          String
-  transport_th       String?
-  image              String?
-  mapLink            String?
-  address            String?
-  address_th         String?
-  website            String?
-  article            String?
-  article_th         String?
-  nearbyAmenities    String[]
-  nearbyAmenities_th String[]
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime
-}
-
-model MembershipRequest {
-  id          String   @id
-  name        String
-  email       String
-  phone       String
-  tier        String
-  term        String
-  notes       String?
-  dob         String?
-  address     String?
-  roomNo      String?
-  status      String   @default("PENDING")
-  startDate   String?
-  endDate     String?
-  attachments String[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime
-}
-
-model Pricing {
-  id        String   @id
-  category  String
-  name      String
-  name_th   String?
-  nonMember Float
-  member    Float?
-  unit      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime
-}
-
-model Transaction {
-  id          String   @id
-  memberId    String
-  amount      Float
-  type        String
-  description String
-  status      String   @default("COMPLETED")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime
-  Customer    Customer @relation(fields: [memberId], references: [id], onDelete: Cascade)
-}
-
-model website_admin_users {
-  id           String    @id
-  name         String
-  email        String    @unique
-  passwordHash String
-  role         String    @default("EDITOR")
-  permissions  String[]
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime
-  Booking      Booking[]
 }
