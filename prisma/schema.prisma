@@ -36,6 +36,17 @@ model Customer {
   memberExpiryDate DateTime?
   memberStartDate  DateTime?
   jobs             Job[]
+
+  attachments        String[]
+  endDate            String?
+  forcePasswordReset Boolean       @default(false)
+  passwordHash       String?
+  provider           String        @default("local")
+  providerId         String?
+  roomNo             String?
+  startDate          String?
+  Booking            Booking[]
+  Transaction        Transaction[]
 }
 
 model Job {
@@ -230,4 +241,129 @@ model CashierShift {
   transferOrders  Int          @default(0)
   branch          ShopLocation @relation(fields: [branchId], references: [id])
   jobs            Job[]
+}
+
+model Article {
+  id         String   @id
+  title      String
+  title_th   String?
+  content    String
+  content_th String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime
+}
+
+model Booking {
+  id                  String               @id
+  customerName        String
+  email               String
+  phone               String
+  pickupDate          DateTime
+  service             String
+  status              String               @default("PENDING")
+  assignedToId        String?
+  memberId            String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime
+  website_admin_users website_admin_users? @relation(fields: [assignedToId], references: [id])
+  Customer            Customer?            @relation(fields: [memberId], references: [id])
+}
+
+model ContactRequest {
+  id        String   @id
+  name      String
+  email     String
+  message   String
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+}
+
+model KeywordQueue {
+  id        String   @id
+  keyword   String   @unique
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+}
+
+model Location {
+  id                 String   @id
+  slug               String   @unique
+  name               String
+  name_th            String?
+  city               String
+  city_th            String?
+  type               String
+  stars              Int
+  totalRooms         Int
+  averagePrice       String
+  transport          String
+  transport_th       String?
+  image              String?
+  mapLink            String?
+  address            String?
+  address_th         String?
+  website            String?
+  article            String?
+  article_th         String?
+  nearbyAmenities    String[]
+  nearbyAmenities_th String[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime
+}
+
+model MembershipRequest {
+  id          String   @id
+  name        String
+  email       String
+  phone       String
+  tier        String
+  term        String
+  notes       String?
+  dob         String?
+  address     String?
+  roomNo      String?
+  status      String   @default("PENDING")
+  startDate   String?
+  endDate     String?
+  attachments String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime
+}
+
+model Pricing {
+  id        String   @id
+  category  String
+  name      String
+  name_th   String?
+  nonMember Float
+  member    Float?
+  unit      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+}
+
+model Transaction {
+  id          String   @id
+  memberId    String
+  amount      Float
+  type        String
+  description String
+  status      String   @default("COMPLETED")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime
+  Customer    Customer @relation(fields: [memberId], references: [id], onDelete: Cascade)
+}
+
+model website_admin_users {
+  id           String    @id
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("EDITOR")
+  permissions  String[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime
+  Booking      Booking[]
 }
