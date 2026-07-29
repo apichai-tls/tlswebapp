@@ -48,24 +48,30 @@ test.describe('Category L: Role-Based Access Control', () => {
 
   test('L2: Manager only sees their branch orders', async ({ page }) => {
     // Create another branch and jobs
-    const branch2 = await prisma.branch.create({
+    const branch2 = await prisma.shopLocation.create({
       data: { id: "BRANCH-02", name: "Branch 2", address: "123", area: "CNX", lat: 0, lng: 0 }
     });
 
     await prisma.job.create({
       data: {
         id: "JOB-BRANCH-02",
-        orderNumber: "ORD-02",
         branchId: "BRANCH-02",
         customerId: "CUST-01",
         customerName: "Test Cust",
         customerPhone: "000",
-        customerAddress: "Addr",
+        pickupLocation: "Addr",
+        dropoffLocation: "Addr",
+        pickupLat: 0,
+        pickupLng: 0,
+        dropoffLat: 0,
+        dropoffLng: 0,
+        distance: 0,
+        fee: 0,
+        type: "in_store",
         itemsJson: "[]",
         status: "pending",
         totalAmount: 100,
-        paymentStatus: "unpaid",
-        legType: "none"
+        scheduledAt: new Date()
       }
     });
 

@@ -684,10 +684,12 @@ export default function AdminPage() {
   const currentLanguage = systemSettings?.language || "th";
   
   // Derived lock states
+  const currentShopConfig = shopLocations[selectedStoreIndex] || shopLocations[0];
+  const isPosEnabled = currentShopConfig?.isPosEnabled ?? false;
   const isPaidJob = editingJobId ? (jobStore.getSnapshot().find(j => j.id === editingJobId)?.status === 'completed' || jobStore.getSnapshot().find(j => j.id === editingJobId)?.isPaid) : false;
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
-  const isPricingLocked = isPaidJob || (!activeShift && !isCsoOrAdmin);
-  const isCartLocked = isPaidJob || (!activeShift && !isCsoOrAdmin);
+  const isPricingLocked = isPaidJob || (isPosEnabled && !activeShift && !isCsoOrAdmin);
+  const isCartLocked = isPaidJob || (isPosEnabled && !activeShift && !isCsoOrAdmin);
   const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
 
   // Proforma states

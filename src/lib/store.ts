@@ -32,6 +32,7 @@ export interface ShopLocation {
   address: string;
   coords: LatLng;
   noCommission?: boolean;
+  isPosEnabled?: boolean;
   area?: string;
   logoUrl?: string | null;
   phone?: string | null;

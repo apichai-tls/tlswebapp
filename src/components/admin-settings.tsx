@@ -26,6 +26,7 @@ export function AdminSettings() {
   const [shopAddress, setShopAddress] = useState("");
   const [shopCoords, setShopCoords] = useState({ lat: 13.736717, lng: 100.523186 });
   const [shopNoCommission, setShopNoCommission] = useState(false);
+  const [shopIsPosEnabled, setShopIsPosEnabled] = useState(false);
   const [shopArea, setShopArea] = useState("BKK");
   const [shopLogoUrl, setShopLogoUrl] = useState("");
   const [shopPhone, setShopPhone] = useState("");
@@ -209,6 +210,7 @@ export function AdminSettings() {
     setShopAddress(shop.address);
     setShopCoords(shop.coords);
     setShopNoCommission(shop.noCommission || false);
+    setShopIsPosEnabled(shop.isPosEnabled || false);
     setShopArea(shop.area || "BKK");
     setShopLogoUrl(shop.logoUrl || "");
     setShopPhone(shop.phone || "");
@@ -222,6 +224,7 @@ export function AdminSettings() {
     setShopAddress("");
     setShopCoords({ lat: 13.736717, lng: 100.523186 });
     setShopNoCommission(false);
+    setShopIsPosEnabled(false);
     setShopArea("BKK");
     setShopLogoUrl("");
     setShopPhone("");
@@ -247,6 +250,7 @@ export function AdminSettings() {
       address: shopAddress,
       coords: shopCoords,
       noCommission: shopNoCommission,
+      isPosEnabled: shopIsPosEnabled,
       area: shopArea,
       logoUrl: shopLogoUrl.trim() || null,
       phone: shopPhone.trim() || null,
@@ -844,6 +848,19 @@ export function AdminSettings() {
                 />
                 <label htmlFor="shopNoCommission" className="text-sm font-semibold text-slate-800 cursor-pointer">
                   ไม่มีค่าคอม (No Commission)
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2 mt-2 bg-indigo-50 border border-indigo-200 rounded-xl p-3">
+                <input 
+                  type="checkbox" 
+                  id="shopIsPosEnabled" 
+                  checked={shopIsPosEnabled} 
+                  onChange={(e) => setShopIsPosEnabled(e.target.checked)}
+                  className="w-4 h-4 text-indigo-600 rounded border-indigo-300 focus:ring-indigo-600 cursor-pointer"
+                />
+                <label htmlFor="shopIsPosEnabled" className="text-sm font-semibold text-indigo-900 cursor-pointer">
+                  เปิดใช้งาน POS และระบบเปิด-ปิดกะสำหรับสาขานี้
                 </label>
               </div>
             </div>

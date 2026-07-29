@@ -12,9 +12,9 @@ model Customer {
   id               String    @id @default(uuid())
   name             String
   phone            String
-  defaultAddress   String
-  defaultLat       Float
-  defaultLng       Float
+  defaultAddress   String?
+  defaultLat       Float?
+  defaultLng       Float?
   priceListId      String?
   creditBalance    Float     @default(0)
   tier             String?
@@ -165,6 +165,7 @@ model ShopLocation {
   lat          Float
   lng          Float
   noCommission Boolean        @default(false)
+  isPosEnabled Boolean        @default(false)
   area         String         @default("BKK")
   logoUrl      String?
   phone        String?
