@@ -2989,7 +2989,7 @@ export default function AdminPage() {
 
                       {/* Laundry Service Type & Speed */}
                       <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex-1 flex flex-col gap-2 min-h-[350px]">
-                        {!activeShift && !isCsoOrAdmin ? (
+                        {isPricingLocked ? (
                           <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
                             <ShieldAlert size={36} className="text-amber-500 mb-2 animate-bounce" />
                             <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
@@ -3257,7 +3257,7 @@ export default function AdminPage() {
                                   </div>
                                 </div>
                               ))
-                            ) : (!activeShift && !isCsoOrAdmin) ? (
+                            ) : isCartLocked ? (
                               <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
                                 <PackageOpen size={24} className="text-slate-600 mb-1.5" />
                                 <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
