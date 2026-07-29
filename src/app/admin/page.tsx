@@ -712,11 +712,11 @@ export default function AdminPage() {
   }, [selectedProfileCustomer, dialogCart]);
 
   const currentLaundryPrice = useMemo(() => {
-    if (dialogCart.length > 0) {
+    if (isPosEnabled && dialogCart.length > 0) {
       return dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     }
     return laundryPrice;
-  }, [dialogCart, laundryPrice]);
+  }, [dialogCart, laundryPrice, isPosEnabled]);
 
   const dialogDiscountAmount = useMemo(() => {
     return currentLaundryPrice * (dialogDiscountPercent / 100);
@@ -3148,8 +3148,17 @@ export default function AdminPage() {
                         <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-hidden">
                           <div className="flex justify-between items-center shrink-0 select-none pb-0.5">
                             <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                              <Package size={14} className="text-slate-500" />
-                              Order Items Cart
+                              {isPosEnabled ? (
+                                <>
+                                  <Package size={14} className="text-slate-500" />
+                                  Order Items Cart
+                                </>
+                              ) : (
+                                <>
+                                  <Banknote size={14} className="text-slate-500" />
+                                  Laundry Price
+                                </>
+                              )}
                             </span>
                             
                             {(user?.role === 'admin' || user?.role === 'cso') && (
@@ -3165,7 +3174,23 @@ export default function AdminPage() {
                             )}
                           </div>
                           <div id="order-items-list" className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar">
-                            {dialogCart.length > 0 ? (
+                            {!isPosEnabled ? (
+                              <div className="flex-1 flex flex-col items-center justify-center p-4 h-full min-h-[200px]">
+                                <div className="w-full max-w-[240px] space-y-4 text-center">
+                                  <div className="relative">
+                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-xl font-bold">฿</span>
+                                    <input 
+                                      type="number"
+                                      className="w-full h-16 pl-12 pr-4 bg-slate-900 border border-slate-700 text-white font-black text-right text-3xl rounded-xl focus:ring-indigo-500 focus:border-indigo-500 transition-all shadow-inner placeholder:text-slate-600"
+                                      placeholder="0"
+                                      value={laundryPrice || ""}
+                                      onChange={e => setLaundryPrice(parseFloat(e.target.value) || 0)}
+                                      disabled={isCartLocked}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            ) : dialogCart.length > 0 ? (
                               dialogCart.map((item, idx) => (
                                 <div key={item.id || idx} className="flex justify-between items-center bg-slate-800/40 hover:bg-slate-800/80 p-1.5 rounded border border-slate-700/30 text-[11px] transition-all">
                                   <div className="flex-1 min-w-0 pr-1.5 flex items-center gap-1">
