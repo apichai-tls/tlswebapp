@@ -209,7 +209,7 @@ const RiderJobImages = ({
       const payload: any = {
         [imageType]: JSON.stringify(updatedImages)
       };
-      if (imageType === 'deliveryProofImageUrl' || imageType === 'pickupProofImageUrl') {
+      if (imageType === 'deliveryProofImageUrl') {
         payload.proofImageUrl = updatedImages[0];
       }
 
