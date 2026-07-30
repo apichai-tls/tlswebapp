@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -71,10 +71,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   });
   
   const [showCompleted, setShowCompleted] = useState(false);
-  const [showCancelled, setShowCancelled] = useState(false);
+  const [showCancelled, setShowCancelled] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null);
   const [filterArea, setFilterArea] = useState<string>("ALL");
-  const [activeKanbanColumn, setActiveKanbanColumn] = useState<JobStatus>("pending");
+  const [activeKanbanColumn, setActiveKanbanColumn] = useState<JobStatus>("pickup");
   
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -232,9 +233,16 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
         matchesPayment = job.paymentChannel === paymentChannelFilter;
       }
     }
-
+    
     return matchesSearch && matchesDate && matchesStatus && matchesArea && matchesPayment;
   });
+
+  const sortedJobs = [...filteredJobs];
+  if (paymentSort === 'asc') {
+    sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? -1 : 1));
+  } else if (paymentSort === 'desc') {
+    sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? 1 : -1));
+  }
 
   const exportToCSV = () => {
     const csvData = filteredJobs.map(job => {
@@ -440,7 +448,16 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <TableHead>Customer</TableHead>
               <TableHead>Route Details</TableHead>
               <TableHead className="text-center w-[120px]">Duration</TableHead>
-              <TableHead className="w-[120px]">Payment</TableHead>
+              <TableHead className="w-[120px]">Payment Channel</TableHead>
+              <TableHead 
+                className="text-center w-[100px] cursor-pointer hover:bg-slate-100 select-none"
+                onClick={() => setPaymentSort(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc')}
+              >
+                <div className="flex items-center justify-center gap-1">
+                  Pay Status
+                  <ArrowUpDown size={12} className={paymentSort ? "text-indigo-600" : "text-slate-400"} />
+                </div>
+              </TableHead>
               <TableHead className="text-right w-[100px]">Fee</TableHead>
               <TableHead className="w-[140px]">Rider</TableHead>
               <TableHead className="text-center w-[120px]">Status</TableHead>
@@ -448,17 +465,17 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
           </TableHeader>
           <TableBody>
             <AnimatePresence>
-              {filteredJobs.length === 0 ? (
+              {sortedJobs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-32 text-center text-slate-500">
-                    <div className="align-middle py-2 text-center text-slate-300">
-                        <MoreHorizontal size={16} className="mx-auto" />
-                    No jobs found for the selected filters.
+                  <TableCell colSpan={9} className="h-48 text-center text-slate-500">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Search size={32} className="text-slate-300" />
+                      <p>No jobs found matching your filters</p>
                     </div>
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredJobs.map((job, i) => {
+                sortedJobs.map((job, i) => {
                   const createdDate = new Date(job.createdAt);
                   
                   // Calculate strictly for completed jobs, OR for active jobs calculate "Time Elapsed" so far.
@@ -568,14 +585,15 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
-                        <div className="flex flex-col gap-1.5">
-                          <div className="text-[11px] font-bold text-slate-700">
-                            {job.paymentChannel || "Unspecified"}
-                          </div>
-                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {job.isPaid ? 'PAID' : 'UNPAID'}
-                          </Badge>
+                        <div className="text-[11px] font-bold text-slate-700">
+                          {job.paymentChannel || "Unspecified"}
                         </div>
+                      </TableCell>
+                      
+                      <TableCell className="align-middle py-2 text-center">
+                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {job.isPaid ? 'PAID' : 'UNPAID'}
+                        </Badge>
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-right">

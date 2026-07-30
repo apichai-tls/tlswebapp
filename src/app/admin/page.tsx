@@ -1188,7 +1188,7 @@ export default function AdminPage() {
                 const oTime = oVal instanceof Date ? oVal.getTime() : (oVal ? new Date(oVal).getTime() : 0);
                 const nTime = nVal instanceof Date ? nVal.getTime() : (nVal ? new Date(nVal).getTime() : 0);
                 isChanged = oTime !== nTime;
-              } else if (Array.isArray(oVal) || Array.isArray(nVal)) {
+              } else if (typeof oVal === 'object' || typeof nVal === 'object') {
                 isChanged = JSON.stringify(oVal) !== JSON.stringify(nVal);
               } else {
                 const normO = oVal === null || oVal === undefined ? '' : String(oVal);
