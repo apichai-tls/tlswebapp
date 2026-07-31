@@ -1,0 +1,65 @@
+[
+  {
+    "id": "p3",
+    "name": "Shirt/Pants",
+    "price": 35,
+    "memberPrice": 30,
+    "category": "Clothing",
+    "unit": "piece",
+    "nameEn": null
+  },
+  {
+    "id": "p5",
+    "name": "Express Service",
+    "price": 50,
+    "memberPrice": 50,
+    "category": "Add-on",
+    "unit": null,
+    "nameEn": null
+  },
+  {
+    "id": "p4",
+    "name": "Duvet/Comforter",
+    "price": 150,
+    "memberPrice": 120,
+    "category": "Bedding",
+    "unit": "piece",
+    "nameEn": null
+  },
+  {
+    "id": "SRV-006",
+    "name": "Wash & Iron & Hanger (kg)",
+    "price": 172,
+    "memberPrice": 0,
+    "category": "Weight",
+    "unit": "kg",
+    "nameEn": null
+  },
+  {
+    "id": "p1",
+    "name": "Wash & Fold (kg)",
+    "price": 110,
+    "memberPrice": 35,
+    "category": "Weight",
+    "unit": "kg",
+    "nameEn": null
+  },
+  {
+    "id": "p2",
+    "name": "Wash & Iron (kg)",
+    "price": 159,
+    "memberPrice": 50,
+    "category": "Weight",
+    "unit": "kg",
+    "nameEn": null
+  },
+  {
+    "id": "SRV-007",
+    "name": "Dry-Clean Shirt ",
+    "price": 172,
+    "memberPrice": 0,
+    "category": "Dry Clean",
+    "unit": "Pieces ",
+    "nameEn": null
+  }
+]

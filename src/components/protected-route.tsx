@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 
-export function ProtectedRoute({ children, allowedRole }: { children: React.ReactNode, allowedRole?: 'admin' | 'rider' | 'manager' | 'cso' | 'staff' | ('admin' | 'rider' | 'manager' | 'cso' | 'staff')[] }) {
+export function ProtectedRoute({ children, allowedRole }: { children: React.ReactNode, allowedRole?: 'admin' | 'superadmin' | 'rider' | 'manager' | 'cso' | 'staff' | ('admin' | 'superadmin' | 'rider' | 'manager' | 'cso' | 'staff')[] }) {
   const { user, isLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "regular",
+    "name": "Regular (Standard Pricing)",
+    "isDefault": true,
+    "servicePrices": "{}"
+  },
+  {
+    "id": "PL-MP56NWKW",
+    "name": "Member (Special Pricing)",
+    "isDefault": false,
+    "servicePrices": "{\"p1\":90,\"p2\":149,\"SRV-006\":159}"
+  }
+]
