@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { format } from "date-fns";
@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer } from "@/lib/store";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
@@ -42,7 +42,6 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
-import { AdminReports } from "@/components/admin-reports";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -76,7 +75,6 @@ import {
   Settings,
   CalendarClock,
   Calculator,
-  BarChart3,
   ShieldAlert,
   Loader2,
   ChevronLeft,
@@ -94,10 +92,7 @@ import {
   Paperclip,
   Maximize2,
   Trash2,
-  Menu,
-  Printer,
-  Banknote,
-  PackageOpen,
+  Menu
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -173,7 +168,6 @@ const rowVariant = {
   animate: { opacity: 1, x: 0, transition: { duration: 0.3, ease: [0, 0, 0.2, 1] as const } },
 };
 
-import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 export default function AdminPage() {
   const { user, logout } = useAuth();
   const jobs = useJobs();
@@ -210,14 +204,14 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "reports"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -311,15 +305,11 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
   const [laundryPrice, setLaundryPrice] = useState(0);
-  const [dialogDiscountPercent, setDialogDiscountPercent] = useState<number>(0);
-  const [showDialogDiscount, setShowDialogDiscount] = useState<boolean>(false);
-  const [dialogVatType, setDialogVatType] = useState<"none" | "inclusive" | "exclusive">("none");
-  const [dialogVatRate, setDialogVatRate] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [paymentChannel, setPaymentChannel] = useState("");
   const [cashPlaced, setCashPlaced] = useState(false);
@@ -467,19 +457,16 @@ export default function AdminPage() {
         let freshNotes: AdminNoteLog[] = [];
         try {
           if (freshJob.adminNotesJson) {
-            const parsed = JSON.parse(freshJob.adminNotesJson);
-            if (Array.isArray(parsed)) {
-              freshNotes = parsed;
-            }
+            freshNotes = JSON.parse(freshJob.adminNotesJson);
           }
         } catch {}
 
         // Check if there is a pending local note that hasn't synced to server yet
-        const hasPendingLocalNote = Array.isArray(adminLogs) && adminLogs.length > 0 &&
+        const hasPendingLocalNote = adminLogs.length > 0 &&
           adminLogs[adminLogs.length - 1].userId === (user?.id || "unknown") &&
           !freshNotes.some(fn => fn.id === adminLogs[adminLogs.length - 1].id);
 
-        if (!hasPendingLocalNote || freshNotes.length > (Array.isArray(adminLogs) ? adminLogs.length : 0)) {
+        if (!hasPendingLocalNote || freshNotes.length > adminLogs.length) {
           if (JSON.stringify(freshNotes) !== JSON.stringify(adminLogs)) {
             setAdminLogs(freshNotes);
           }
@@ -488,6 +475,37 @@ export default function AdminPage() {
     }
   }, [jobs, editingJobId, user?.id, adminLogs]);
 
+  // Clean up isNew flags when the Edit Job dialog closes without saving
+  useEffect(() => {
+    if (!dialogOpen && editingJobId) {
+      const stripNewNotes = async () => {
+        const currentJob = jobs.find(j => j.id === editingJobId);
+        if (currentJob && currentJob.adminNotesJson) {
+          try {
+            const notes = JSON.parse(currentJob.adminNotesJson);
+            if (Array.isArray(notes)) {
+              const cleaned = notes.map((n: any) => {
+                const { isNew, ...rest } = n;
+                return rest;
+              });
+              if (JSON.stringify(notes) !== JSON.stringify(cleaned)) {
+                await jobStore.updateJobDetails(editingJobId, { 
+                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined,
+                  actorId: user?.id,
+                  actorName: user?.name || user?.email,
+                  actorRole: user?.role
+                });
+                import("@/lib/api").then(m => m.refreshDb());
+              }
+            }
+          } catch {}
+        }
+      };
+      stripNewNotes();
+      setEditingJobId(null);
+      setAdminLogs([]);
+    }
+  }, [dialogOpen, editingJobId, jobs]);
 
   const handleAddAdminLog = async (text: string, isSystem = false, imageUrls?: string[]) => {
     if (!text.trim() && (!imageUrls || imageUrls.length === 0)) return;
@@ -580,11 +598,6 @@ export default function AdminPage() {
     setServiceSpeed(newSpeed);
     setServiceWeight(newWeight);
 
-    if (!dialogCart || dialogCart.length === 0) {
-      setLaundryPrice(0);
-      return;
-    }
-
     const baseService = services.find(s => s.id === newServiceId);
     let pricePerKg = baseService ? baseService.price : 110;
 
@@ -607,7 +620,8 @@ export default function AdminPage() {
       }
     }
 
-    setLaundryPrice(Math.ceil(pricePerKg * newWeight));
+    const effectiveWeight = newWeight > 0 ? Math.max(2, newWeight) : 2;
+    setLaundryPrice(Math.ceil(pricePerKg * effectiveWeight));
   };
   const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
@@ -651,7 +665,8 @@ export default function AdminPage() {
     return Math.max(isPickup || isDelivery ? 30 : 0, total);
   };
 
-
+  const baseFee = editingFeeLock !== null ? editingFeeLock : calculateTotalFee();
+  const fee = isFreeDelivery ? 0 : baseFee;
 
   const pendingCount = jobs.filter((j) => j.status === "pending").length;
   const completedCount = jobs.filter((j) => j.status === "completed").length;
@@ -669,189 +684,8 @@ export default function AdminPage() {
       status: j.status,
     }));
 
-
-  // --- POS/Cashier Shift Enhancements ---
-  const [dialogCart, setDialogCart] = useState<any[]>([]);
-  const hasPackage = dialogCart.some(item => item.category === "PACKAGE");
-  const activeIsFreeDelivery = isFreeDelivery || hasPackage;
-  const baseFee = editingFeeLock !== null ? editingFeeLock : calculateTotalFee();
-  const fee = activeIsFreeDelivery ? 0 : baseFee;
-  const [selectedCategory, setSelectedCategory] = useState<string>("");
-  const [categorySearch, setCategorySearch] = useState<string>("");
-  
-  // Cashier shift state
-  const { activeShift } = useSyncExternalStore(shiftStore.subscribe, shiftStore.getSnapshot, shiftStore.getSnapshot);
-  const currentLanguage = systemSettings?.language || "th";
-  
-  // Derived lock states
-  const currentShopConfig = shopLocations[selectedStoreIndex] || shopLocations[0];
-  const isPosEnabled = currentShopConfig?.isPosEnabled ?? false;
-  const isPaidJob = editingJobId ? (jobStore.getSnapshot().find(j => j.id === editingJobId)?.status === 'completed' || jobStore.getSnapshot().find(j => j.id === editingJobId)?.isPaid) : false;
-  const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
-  const isPricingLocked = isPaidJob || (isPosEnabled && !activeShift && !isCsoOrAdmin);
-  const isCartLocked = isPaidJob || (isPosEnabled && !activeShift && !isCsoOrAdmin);
-  const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
-
-  // Proforma states
-  const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string | null>(null);
-  const [proformaRevision, setProformaRevision] = useState<number>(0);
-  const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
-  const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
-  const [showReceipt, setShowReceipt] = useState<boolean>(false);
-  const [isPaymentEvent, setIsPaymentEvent] = useState<boolean>(false);
-  const [receiptPaperSize, setReceiptPaperSize] = useState<string>("80mm");
-
-  const forceMemberPaymentDialog = useMemo(() => {
-    if (!selectedProfileCustomer?.isMember) return false;
-    return dialogCart.some(item => 
-      item.category !== "PACKAGE" && 
-      item.id !== "topup-member-item" && 
-      item.id !== "delivery-pickup-service-item" && 
-      item.id !== "delivery-only-service-item"
-    );
-  }, [selectedProfileCustomer, dialogCart]);
-
-  const currentLaundryPrice = useMemo(() => {
-    if (isPosEnabled && dialogCart.length > 0) {
-      return dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    }
-    return laundryPrice;
-  }, [dialogCart, laundryPrice, isPosEnabled]);
-
-  const dialogDiscountAmount = useMemo(() => {
-    return currentLaundryPrice * (dialogDiscountPercent / 100);
-  }, [currentLaundryPrice, dialogDiscountPercent]);
-
-  const dialogVatAmount = useMemo(() => {
-    if (dialogVatType === "none" || dialogVatRate <= 0) return 0;
-    const baseForVat = currentLaundryPrice - dialogDiscountAmount + (serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : (serviceSpeed === 'express_100' ? currentLaundryPrice : 0)) + fee;
-    if (dialogVatType === "inclusive") {
-      return baseForVat * (dialogVatRate / (100 + dialogVatRate));
-    } else {
-      return baseForVat * (dialogVatRate / 100);
-    }
-  }, [dialogVatType, dialogVatRate, currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee]);
-
-  const dialogTotal = useMemo(() => {
-    const surcharge = serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : (serviceSpeed === 'express_100' ? currentLaundryPrice : 0);
-    const baseTotal = currentLaundryPrice - dialogDiscountAmount + surcharge + fee;
-    const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    return baseTotal + vat;
-  }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate]);
-
-  useEffect(() => {
-    if (forceMemberPaymentDialog) {
-      const hasSufficient = (selectedProfileCustomer?.creditBalance || 0) >= dialogTotal;
-      if (!hasSufficient) {
-        setPaymentMethod("unpaid");
-      } else {
-        setPaymentMethod("paid");
-      }
-      setPaymentChannel("Deduct Member");
-    }
-  }, [forceMemberPaymentDialog, dialogTotal, selectedProfileCustomer?.creditBalance]);
-
-  useEffect(() => {
-    if (systemSettings?.vatType) {
-      setDialogVatType(systemSettings.vatType as any);
-    } else {
-      setDialogVatType("none");
-    }
-    setDialogVatRate(parseFloat(systemSettings?.vatRate || "7") || 7);
-  }, [systemSettings?.vatType, systemSettings?.vatRate]);
-
-  const activeShop = useMemo(() => {
-    return shopLocations[selectedStoreIndex] || shopLocations[0];
-  }, [shopLocations, selectedStoreIndex]);
-
-  // Derived category list
-  const categories = useMemo(() => {
-    const activeServices = services.filter(s => s.isActive !== false);
-    return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
-  }, [services]);
-
-  const visibleCategories = useMemo(() => {
-    if (!activeShift && user?.role === 'cso') {
-      return categories.filter(cat => cat === 'PACKAGE');
-    }
-    return categories;
-  }, [categories, activeShift, user?.role]);
-  // Clean up isNew flags when the Edit Job dialog closes without saving
-  useEffect(() => {
-    if (!dialogOpen && editingJobId && !showReceipt) {
-      const stripNewNotes = async () => {
-        const currentJob = jobs.find(j => j.id === editingJobId);
-        if (currentJob && currentJob.adminNotesJson) {
-          try {
-            const notes = JSON.parse(currentJob.adminNotesJson);
-            if (Array.isArray(notes)) {
-              const cleaned = notes.map((n: any) => {
-                const { isNew, ...rest } = n;
-                return rest;
-              });
-              if (JSON.stringify(notes) !== JSON.stringify(cleaned)) {
-                await jobStore.updateJobDetails(editingJobId, { 
-                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined,
-                  actorId: user?.id,
-                  actorName: user?.name || user?.email,
-                  actorRole: user?.role
-                });
-                import("@/lib/api").then(m => m.refreshDb());
-              }
-            }
-          } catch {}
-        }
-      };
-      stripNewNotes();
-      setEditingJobId(null);
-      setAdminLogs([]);
-    }
-  }, [dialogOpen, editingJobId, jobs, showReceipt]);
-
-
-  const resetDialogStates = () => {
-    setPickupLoc("");
-    setPickupRoom("");
-    setDeliveryLoc("");
-    setDeliveryRoom("");
-    setIsDeliveryDirty(false);
-    setIsFreeDelivery(false);
-    setIsStuck(false);
-    setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
-    setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
-    setPaymentMethod("unpaid");
-    setPickupRiderId("");
-    setDeliveryRiderId("");
-    setBagImageUrls([]);
-    setBillImageUrls([]);
-    setPickupProofImageUrls([]);
-    setDeliveryProofImageUrls([]);
-    setOrigBagImageUrls([]);
-    setOrigBillImageUrls([]);
-    setOrigPickupProofImageUrls([]);
-    setOrigDeliveryProofImageUrls([]);
-    setServiceType("wash_fold");
-    setLaundryTypes([]);
-    setServiceSpeed("standard");
-    setSelectedVIPLabel("");
-    setAdminNote("");
-    setAdminNoteInput("");
-    setShowAdminNote(false);
-    setEditingJobId(null);
-    setNoteLogsModalOpen(false);
-    setPreviewAdminNoteImage(null);
-    setShowJobLogs(false);
-  };
-
   const handleCreateNewJob = () => {
     setEditingJobId(null);
-    setDialogSelectedCategory(null);
-    setDialogCart([]);
-    setProformaReceiptNumber(null);
-    setProformaRevision(0);
-    setLastProformaCartHash(null);
-    setIsDraftPreview(false);
-    setShowReceipt(false);
     setShowJobLogs(false);
     setIsDetailLoading(false);
     setEditingSubStatus(null);
@@ -892,8 +726,6 @@ export default function AdminPage() {
     } else {
       setLaundryPrice(0);
     }
-    setDialogDiscountPercent(0);
-    setShowDialogDiscount(false);
     setEditingFeeLock(null);
     setSelectedVIPLabel("");
     setSelectedMemberLabel("");
@@ -928,33 +760,11 @@ export default function AdminPage() {
   };
 
   const handleEditFullJob = (job: Job) => {
+    originalJobRef.current = job;
     setEditingJobId(job.id);
-    setDialogDiscountPercent(job.discountPercent || 0);
-    setShowDialogDiscount(!!job.discountPercent && job.discountPercent > 0);
-    
     setShowJobLogs(false);
     setEditingSubStatus(job.subStatus || null);
     setIsStuck(job.isStuck || false);
-    setDialogSelectedCategory(null);
-    const itemsList = Array.isArray(job.items) ? job.items : [];
-    const mappedCart = itemsList.map((item: any) => {
-      const matched = services.find(s => s.name === item.name || s.nameEn === item.nameEn || s.id === item.serviceId);
-      return {
-        id: matched?.id || item.serviceId || Math.random().toString(),
-        name: item.name,
-        nameEn: item.nameEn || item.name,
-        quantity: item.quantity || 1,
-        price: item.price || 0,
-        category: matched?.category || "",
-        unit: matched?.unit || "piece"
-      };
-    });
-    setDialogCart(mappedCart);
-    setProformaReceiptNumber((job as any).proformaReceiptNumber || null);
-    setProformaRevision((job as any).proformaRevision || 0);
-    setLastProformaCartHash((job as any).proformaReceiptNumber ? JSON.stringify(mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price }))) : null);
-    setIsDraftPreview(false);
-    setShowReceipt(false);
     const rawLaundry = job.laundryTypes as any;
     setLaundryTypes(
       Array.isArray(rawLaundry) 
@@ -966,7 +776,11 @@ export default function AdminPage() {
     setCustomerName(job.customerName || "");
     setCustomerPhone(job.customerPhone || "");
     
-    const foundCustomer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
+    const foundCustomer = customers.find(c => {
+      if (job.customerId) return c.id === job.customerId;
+      const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+      return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+    });
     setSelectedProfileCustomer(foundCustomer || null);
     const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation);
     const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation);
@@ -1013,11 +827,12 @@ export default function AdminPage() {
     setServiceType(job.serviceType || "wash_fold");
     setEditingFeeLock(job.fee);
     
-    const matchedCustomer = customers.find(c => 
-      (job.customerId && c.id === job.customerId) || 
-      (job.customerName && c.name === job.customerName) || 
-      (job.customerPhone && c.phone === job.customerPhone)
-    );
+    const matchedCustomer = customers.find(c => {
+      if (job.customerId) return c.id === job.customerId;
+      const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+      const matchesPhone = cleanPhone.length >= 5 && c.phone === job.customerPhone;
+      return matchesPhone || (job.customerName && c.name === job.customerName);
+    });
     setSelectedVIPLabel(matchedCustomer?.isVIP ? "VIP" : "");
     setSelectedMemberLabel(matchedCustomer?.isMember ? "Member" : "");
     setSelectedMemberId(matchedCustomer?.memberId || "");
@@ -1090,7 +905,7 @@ export default function AdminPage() {
       return flattenAndResolve(imgUrl).filter(Boolean);
     };
 
-    // 🚀 Load images INSTANTLY from the local in-memory job object
+    // ๐€ Load images INSTANTLY from the local in-memory job object
     const localBagUrls = parseUrls(job.bagImageUrl);
     const localBillUrls = parseUrls(job.billImageUrl);
     const localPickupUrls = parseUrls(job.pickupProofImageUrl);
@@ -1164,13 +979,21 @@ export default function AdminPage() {
     setPreviewAdminNoteImage(null);
   };
 
-  async function handleCreate(isPayment: boolean = false) {
+  async function handleCreate() {
     if (isPickup && !pickupLoc.trim()) {
       toast.error("Please fill in the pickup location.");
       return;
     }
+    if (isPickup && pickupLoc.trim() && !pickupCoords) {
+      toast.error("เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธฃเธฑเธเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเธเธญเธ Google Maps");
+      return;
+    }
     if (isDelivery && !deliveryLoc.trim()) {
       toast.error("Please fill in the delivery location.");
+      return;
+    }
+    if (isDelivery && deliveryLoc.trim() && !deliveryCoords) {
+      toast.error("เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธชเนเธเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเธเธญเธ Google Maps");
       return;
     }
     if (!isWalkIn && !isPickup && !isDelivery) {
@@ -1227,12 +1050,9 @@ export default function AdminPage() {
     }
 
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
-    const customRemarks = oldRemarks.filter(r => 
-      !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r) &&
-      !r.startsWith("VAT:")
-    );
+    const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
 
-    let finalAdminLogs = Array.isArray(adminLogs) ? [...adminLogs] : [];
+    let finalAdminLogs = [...adminLogs];
     if (adminNoteInput.trim()) {
       finalAdminLogs.push({
         id: Math.random().toString(36).substring(7),
@@ -1243,49 +1063,39 @@ export default function AdminPage() {
       });
     }
 
-    const currentCartHash = JSON.stringify(dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })));
-    const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
+    const itemsPayload: { name: string; quantity: number; price: number }[] = [];
+    const labelsMap: Record<string, string> = {
+      polo: "Polo Shirt",
+      tshirt: "T-Shirt",
+      pants: "Pants",
+      dress: "Dress",
+      bedsheet: "Bedsheet"
+    };
 
-    let effectiveRevision = proformaRevision;
-    if (cartChangedAfterProforma) {
-      effectiveRevision = proformaRevision + 1;
-      setProformaRevision(effectiveRevision);
-      setLastProformaCartHash(currentCartHash);
-    }
-
-    const itemsPayload = dialogCart.map(item => ({
-      name: item.name,
-      nameEn: item.nameEn || item.name,
-      quantity: item.quantity,
-      price: item.price,
-      serviceId: item.id
-    }));
-
-    const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
-    const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
-
-    const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const discountVal = subtotal * (dialogDiscountPercent / 100);
-    const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
-    const baseTotal = subtotal - discountVal + surcharge + fee;
-    const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    const calculatedTotal = baseTotal + vatVal;
+    Object.entries(clothingItems).forEach(([key, val]) => {
+      if (val.selected) {
+        let name = labelsMap[key];
+        if (key === 'other') {
+          name = otherClothingName.trim() || "Other";
+        }
+        itemsPayload.push({
+          name: name || key,
+          quantity: val.quantity,
+          price: 0
+        });
+      }
+    });
 
     const newJobData: any = {
       isStuck,
-      discount: discountVal,
-      discountPercent: dialogDiscountPercent,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
       type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
       subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
       source: isWalkIn ? "pos" : "app",
-      status: (hasPackage && paymentMethod === 'paid') 
-        ? "topup" 
-        : (!isAlreadyCompleted && editingSubStatus === 'ready') 
-          ? ((isWalkIn && !isDelivery) ? 'completed' : 'delivery')
-          : (editingJobId ? undefined : "pending"),
-      laundryTypes: derivedLaundryTypes,
+      // Auto-advance to Delivery or Completed when Process is set to Ready (only if job is not already completed)
+      ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
+      laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       pickupLocation: isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shop.address,
@@ -1299,100 +1109,41 @@ export default function AdminPage() {
       deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
-      paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
+      paymentMethod: null, // paymentMethod field is legacy โ€” use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
       fee,
-      totalAmount: calculatedTotal,
-      serviceType: dialogCart[0]?.id || "wash_fold",
+      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
+      serviceType,
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
-      shiftId: activeShift?.id || (existingJob ? (existingJob as any).shiftId : null) || null,
-      pickupCommission: (isPickup && !selectedVIPLabel && !activeIsFreeDelivery) 
+      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
         ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
             ? (existingJob.pickupCommission ?? 0) 
             : Math.floor(pickupDist) * getCommissionRate(systemSettings)) 
         : 0,
-      deliveryCommission: (isDelivery && !selectedVIPLabel && !activeIsFreeDelivery) 
+      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) 
         ? ((editingJobId && existingJob && existingJob.status === 'completed') 
             ? (existingJob.deliveryCommission ?? 0) 
             : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
         : 0,
       remark: [
-        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "",
         ...customRemarks,
-        activeIsFreeDelivery ? "Free Delivery" : "",
+        isFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
         serviceSpeed === "express_100" ? "Express 100%" : "",
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
-        dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
-      proformaReceiptNumber: proformaReceiptNumber || null,
-      proformaRevision: proformaReceiptNumber ? effectiveRevision : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
-      cashPlaced,
+      cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
       actorId: user?.id,
       actorName: user?.name || user?.email,
       actorRole: user?.role
     };
-
-    if (proformaReceiptNumber) {
-      try {
-        const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
-        const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
-        const searchTag = `-rev${effectiveRevision}.png`;
-        const alreadyCaptured = finalBillImageUrls.some(url => url.includes(searchTag));
-
-        if (!alreadyCaptured) {
-          const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
-          const tempReceiptData: any = {
-            id: effectiveProformaId,
-            proformaId: proformaReceiptNumber,
-            proformaRevision: effectiveRevision,
-            createdAt: new Date(),
-            customerName: customerName || "Walk-In",
-            customerPhone: customerPhone || "-",
-            items: dialogCart.map(item => ({ name: item.name, nameEn: item.nameEn || item.name, quantity: item.quantity, price: item.price })),
-            subtotal: dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0),
-            expressSurcharge: serviceSpeed === "express_50" ? Math.ceil(dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0) * 0.5) : (serviceSpeed === "express_100" ? dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0) : 0),
-            serviceSpeed,
-            discount: dialogDiscountAmount,
-            total: calculatedTotal,
-            isPaid: paymentMethod === 'paid',
-            paymentChannel,
-            remark: [activeIsFreeDelivery ? "Free Delivery" : "", serviceSpeed === "express_50" ? "Express 50%" : "", serviceSpeed === "express_100" ? "Express 100%" : "", `Proforma: ${proformaReceiptNumber}`, `Revision: ${effectiveRevision}`].filter(Boolean).join(" | ") || undefined,
-            isDraft: true,
-            vatType: dialogVatType,
-            vatRate: dialogVatRate,
-            vatAmount: 0,
-            deliveryScheduledAt: new Date(deliveryScheduledTime),
-            deliveryFee: fee
-          };
-          const blob = await generateThermalReceiptImage(tempReceiptData, activeShop);
-          if (blob) {
-              const file = new File([blob], filename, { type: "image/png" });
-              const formData = new FormData();
-              formData.append("file", file);
-              formData.append("entityType", "jobs");
-              formData.append("entityId", effectiveProformaId);
-              formData.append("subType", "proofs");
-              const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
-              const uploadJson = await uploadRes.json();
-              if (uploadJson.success && uploadJson.publicUrl) {
-                if (!finalBillImageUrls.includes(uploadJson.publicUrl)) {
-                  finalBillImageUrls.push(uploadJson.publicUrl);
-                }
-              }
-            }
-          }
-        } catch (e) {
-        console.error("Proforma image capture in page.tsx handleCreate failed:", e);
-      }
-    }
 
     // Only set image properties if they were actually modified, to prevent stale overrides
     if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
@@ -1410,7 +1161,6 @@ export default function AdminPage() {
     }
 
     try {
-      let savedJobId = editingJobId;
       if (editingJobId) {
         const payload: Partial<Job> = {};
         if (originalJobRef.current) {
@@ -1438,7 +1188,7 @@ export default function AdminPage() {
                 const oTime = oVal instanceof Date ? oVal.getTime() : (oVal ? new Date(oVal).getTime() : 0);
                 const nTime = nVal instanceof Date ? nVal.getTime() : (nVal ? new Date(nVal).getTime() : 0);
                 isChanged = oTime !== nTime;
-              } else if (typeof oVal === 'object' || typeof nVal === 'object') {
+              } else if (Array.isArray(oVal) || Array.isArray(nVal)) {
                 isChanged = JSON.stringify(oVal) !== JSON.stringify(nVal);
               } else {
                 const normO = oVal === null || oVal === undefined ? '' : String(oVal);
@@ -1467,65 +1217,41 @@ export default function AdminPage() {
         toast.success(`Job updated successfully!`);
       } else {
         const job = await jobStore.addJob(newJobData as any);
-        savedJobId = job.id;
-        toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+        toast.success(`Job ${job.id} created โ€” Fee เธฟ${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
       }
 
-      // Handle customer wallet balance adjustments on payment
-      const isPaidNow = paymentMethod === 'paid';
-      const wasPaidBefore = existingJob ? existingJob.isPaid : false;
-      const isNewPaymentTransition = isPaidNow && !wasPaidBefore;
-
-      if (isNewPaymentTransition && selectedProfileCustomer) {
-        let balanceAdjustment = 0;
-        
-        // 1. Deduct wallet if paid via Deduct Member
-        if (paymentChannel === "Deduct Member") {
-          balanceAdjustment -= calculatedTotal;
-        }
-
-        // 2. Add to wallet if it is a topup package
-        const packageItems = dialogCart.filter(item => item.category === "PACKAGE");
-        if (packageItems.length > 0) {
-          const packageTotal = packageItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-          balanceAdjustment += packageTotal;
-        }
-
-        if (balanceAdjustment !== 0) {
-          const newBalance = (selectedProfileCustomer.creditBalance || 0) + balanceAdjustment;
-          const updates: Partial<Customer> = { creditBalance: newBalance };
-
-          if (balanceAdjustment > 0 && !selectedProfileCustomer.isMember) {
-            updates.isMember = true;
-            const priceLists = priceListStore.getSnapshot();
-            const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
-            if (memberList) {
-              updates.priceListId = memberList.id;
-            }
-          }
-
-          await customerStore.updateCustomer(selectedProfileCustomer.id, updates);
-          
-          setSelectedProfileCustomer(prev => prev ? {
-            ...prev,
-            creditBalance: newBalance,
-            isMember: updates.isMember !== undefined ? updates.isMember : prev.isMember,
-            priceListId: updates.priceListId !== undefined ? updates.priceListId : prev.priceListId
-          } : null);
-          
-          toast.success(`Customer wallet updated. New balance: ฿${newBalance.toLocaleString()}`);
-        }
-      }
-
-      if (!isPayment) {
-        setDialogOpen(false);
-      }
-      setEditingJobId(savedJobId);
-      setIsDraftPreview(false);
-      if (isPayment) {
-        setIsPaymentEvent(true);
-        setShowReceipt(true);
-      }
+      setPickupLoc("");
+      setPickupRoom("");
+      setDeliveryLoc("");
+      setDeliveryRoom("");
+      setIsDeliveryDirty(false);
+      setIsFreeDelivery(false);
+      setIsStuck(false);
+      setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
+      setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+      setPaymentMethod("unpaid");
+      setPickupRiderId("");
+      setDeliveryRiderId("");
+      setBagImageUrls([]);
+      setBillImageUrls([]);
+      setPickupProofImageUrls([]);
+      setDeliveryProofImageUrls([]);
+      setOrigBagImageUrls([]);
+      setOrigBillImageUrls([]);
+      setOrigPickupProofImageUrls([]);
+      setOrigDeliveryProofImageUrls([]);
+      setServiceType("wash_fold");
+      setLaundryTypes([]);
+      setServiceSpeed("standard");
+      setSelectedVIPLabel("");
+      setAdminNote("");
+      setAdminNoteInput("");
+      setShowAdminNote(false);
+      setEditingJobId(null);
+      setNoteLogsModalOpen(false);
+      setPreviewAdminNoteImage(null);
+      setShowJobLogs(false);
+      setDialogOpen(false);
     } catch (err: any) {
       console.error("Job Save Error:", err);
       toast.error(`Failed to save job: ${err.message || 'Unknown error'}`);
@@ -1533,63 +1259,6 @@ export default function AdminPage() {
       setIsSubmitting(false);
     }
   }
-
-  const dialogReceiptData = useMemo(() => {
-    if (showReceipt && isDraftPreview) {
-      const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-      const discountVal = subtotal * (dialogDiscountPercent / 100);
-      const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
-      const baseTotal = subtotal - discountVal + surcharge + fee;
-      const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-      const calculatedTotal = baseTotal + vatVal;
-      
-      const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
-      const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
-      
-      const remarkParts = [
-        activeIsFreeDelivery ? "Free Delivery" : "",
-        serviceSpeed === "express_50" ? "Express 50%" : "",
-        serviceSpeed === "express_100" ? "Express 100%" : "",
-        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}` : "",
-        proformaReceiptNumber ? `Revision: ${proformaRevision}` : "",
-        dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : ""
-      ].filter(Boolean);
-      
-      const mockJob: any = {
-        id: editingJobId || "DRAFT",
-        createdAt: new Date(),
-        customerName: customerName || "Walk-In",
-        customerPhone: customerPhone || "-",
-        items: dialogCart.map(item => ({
-          name: item.name,
-          nameEn: item.nameEn || item.name,
-          quantity: item.quantity,
-          price: item.price
-        })),
-        totalAmount: calculatedTotal,
-        discount: discountVal,
-        discountPercent: dialogDiscountPercent,
-        fee,
-        isPaid: paymentMethod === 'paid',
-        paymentChannel: paymentChannel || null,
-        remark: remarkParts.join(" | ") || null,
-        status: editingSubStatus || "billing",
-        laundryTypes: derivedLaundryTypes,
-        proformaReceiptNumber,
-        proformaRevision
-      };
-      
-      const formatted = formatJobToReceiptData(mockJob);
-      formatted.isDraft = true; // Mark as draft preview
-      formatted.proformaRevision = proformaRevision;
-      return formatted;
-    } else if (activeJob) {
-      const formatted = formatJobToReceiptData(activeJob);
-      formatted.autoCapture = isPaymentEvent;
-      return formatted;
-    }
-    return null;
-  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent]);
 
   return (
     <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
@@ -1778,19 +1447,6 @@ export default function AdminPage() {
               >
                 <ClipboardList size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
                 {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
-              </motion.a>
-            )}
-
-            {hasAccess("reports") && (
-              <motion.a
-                href="#reports"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("reports"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "reports" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Reports & Analytics"
-              >
-                <BarChart3 size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
               </motion.a>
             )}
             
@@ -2057,23 +1713,6 @@ export default function AdminPage() {
                     </a>
                   )}
 
-                  {hasAccess("reports") && (
-                    <a
-                      href="#reports"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("reports");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "reports" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <BarChart3 size={18} />
-                      <span>Reports & Analytics</span>
-                    </a>
-                  )}
-
                   {hasAccess("users") && (
                     <a
                       href="#users"
@@ -2121,7 +1760,7 @@ export default function AdminPage() {
         {/* Main Content */}
         <main className="flex-1 flex flex-col">
           {/* Top bar */}
-          <header className={`flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm ${activeTab === 'pos' ? 'lg:hidden' : ''}`}>
+          <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm">
             <div className="flex items-center gap-3 lg:hidden px-2 py-2">
               <Button
                 variant="ghost"
@@ -2359,7 +1998,7 @@ export default function AdminPage() {
                           <span className="hidden sm:inline text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
                           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
 
-                            {/* Billing — auto-indicator, not clickable */}
+                            {/* Billing โ€” auto-indicator, not clickable */}
                           <div
                             className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 cursor-default ${
                               billImageUrls.length > 0
@@ -2589,7 +2228,7 @@ export default function AdminPage() {
                           {isPickup && (
                             <div className="space-y-1">
                               <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เปิดตำแหน่งใน Google Maps">
+                                <span title="เน€เธเธดเธ”เธ•เธณเนเธซเธเนเธเนเธ Google Maps">
                                   <MapPin 
                                     size={14} 
                                     className="text-emerald-600 cursor-pointer hover:text-emerald-800 transition-colors" 
@@ -2615,6 +2254,7 @@ export default function AdminPage() {
                                     localData={localDataForSearch}
                                     onChange={(v) => {
                                       setPickupLoc(v);
+                                      setPickupCoords(null);
                                     }}
                                     onSelectLocation={(loc) => {
                                       const newCoords = { lat: loc.lat, lng: loc.lng };
@@ -2637,13 +2277,18 @@ export default function AdminPage() {
                                   />
                                 </div>
                               </div>
+                              {isPickup && pickupLoc.trim() !== "" && !pickupCoords && (
+                                <span className="text-[10px] text-red-500 font-semibold block mt-1">
+                                  โ ๏ธ เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเน€เธเธทเนเธญเธฃเธฐเธเธธเธเธดเธเธฑเธ”
+                                </span>
+                              )}
                             </div>
                           )}
 
                           {isDelivery && (
                             <div className="space-y-1">
                               <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เปิดตำแหน่งใน Google Maps">
+                                <span title="เน€เธเธดเธ”เธ•เธณเนเธซเธเนเธเนเธ Google Maps">
                                   <Navigation 
                                     size={14} 
                                     className="text-red-600 cursor-pointer hover:text-red-800 transition-colors" 
@@ -2670,6 +2315,7 @@ export default function AdminPage() {
                                     onChange={(v) => {
                                       setDeliveryLoc(v);
                                       setIsDeliveryDirty(true);
+                                      setDeliveryCoords(null);
                                     }}
                                     onSelectLocation={(loc) => {
                                       const newCoords = { lat: loc.lat, lng: loc.lng };
@@ -2691,6 +2337,11 @@ export default function AdminPage() {
                                   />
                                 </div>
                               </div>
+                              {isDelivery && deliveryLoc.trim() !== "" && !deliveryCoords && (
+                                <span className="text-[10px] text-red-500 font-semibold block mt-1">
+                                  โ ๏ธ เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเน€เธเธทเนเธญเธฃเธฐเธเธธเธเธดเธเธฑเธ”
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2772,7 +2423,7 @@ export default function AdminPage() {
                                   onChange={(e) => setPickupRiderId(e.target.value)}
                                 >
                                   <option value="">-- Assign Rider --</option>
-                                  {riders.map(r => (
+                                  {riders.filter(r => r.branchId || r.id === pickupRiderId).map(r => (
                                     <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
                                   ))}
                                 </select>
@@ -2828,7 +2479,7 @@ export default function AdminPage() {
                                     onChange={(e) => setDeliveryRiderId(e.target.value)}
                                   >
                                     <option value="">-- Assign Rider --</option>
-                                    {riders.map(r => (
+                                    {riders.filter(r => r.branchId || r.id === deliveryRiderId).map(r => (
                                       <option key={`d-${r.id}`} value={r.id}>{r.name}</option>
                                     ))}
                                   </select>
@@ -2967,700 +2618,6 @@ export default function AdminPage() {
 
                     </motion.div>
 
-{isPosEnabled ? (
-  <>
-                    {/* COL 2: Logistics & Map (span 4) */}
-                    <motion.div
-                      className="lg:col-span-4 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.15, duration: 0.3 }}
-                    >
-                      {/* Job Photos Unified Section */}
-                      <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm space-y-3">
-                        <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2">
-                          <Camera size={14} className="text-indigo-600" />
-                          <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">Job Photos</span>
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-x-3 gap-y-4">
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Laundry Bags</Label>
-                            <MultiImageUploader
-                              ref={uploaderRef}
-                              entityType="job"
-                              entityId={editingJobId || Date.now().toString()}
-                              subType="bags"
-                              value={bagImageUrls}
-                              onValueChange={setBagImageUrls}
-                              maxFiles={5}
-                            />
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Bill / Transfer</Label>
-                            <MultiImageUploader
-                              ref={billUploaderRef}
-                              entityType="job"
-                              entityId={editingJobId || Date.now().toString()}
-                              subType="bills"
-                              value={billImageUrls}
-                              onValueChange={setBillImageUrls}
-                              maxFiles={4}
-                            />
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
-                            <MultiImageUploader
-                              ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
-                              entityType="job"
-                              entityId={editingJobId || Date.now().toString()}
-                              subType="proofs"
-                              value={pickupProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
-                            />
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
-                            <MultiImageUploader
-                              ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
-                              entityType="job"
-                              entityId={editingJobId || Date.now().toString()}
-                              subType="proofs"
-                              value={deliveryProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Laundry Service Type & Speed */}
-                      <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex-1 flex flex-col gap-2 min-h-[350px]">
-                        {isPricingLocked ? (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
-                            <ShieldAlert size={36} className="text-amber-500 mb-2 animate-bounce" />
-                            <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
-                              {currentLanguage === "en" ? "Cashier Shift Required" : "จำเป็นต้องเปิดกะแคชเชียร์ก่อน"}
-                            </h3>
-                            <p className="text-[10px] text-slate-500 font-medium max-w-[280px] leading-relaxed">
-                              {currentLanguage === "en" 
-                                ? "Please open a cashier shift at the POS counter to manage products, pricing, and checkout."
-                                : "กรุณาเปิดกะพนักงานขายที่หน้าลิ้นชัก POS เพื่อเริ่มต้นจัดการรายการสินค้า ราคา และการคิดเงิน"}
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="flex-1 flex flex-col gap-1">
-                            <span className="flex items-center justify-between pb-1.5 border-b border-slate-100 shrink-0 select-none">
-                              <Label className="flex items-center gap-1.5 text-xs font-bold text-slate-500 border-none pb-0">
-                                <ArrowDownUp size={14} className="text-purple-600" />
-                                Laundry Service Type
-                              </Label>
-                              {dialogSelectedCategory !== null && (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="h-6 px-2 text-[10px] font-bold uppercase text-slate-500 hover:bg-slate-50 border-slate-200 rounded-md shadow-sm flex items-center gap-1 cursor-pointer"
-                                  onClick={() => setDialogSelectedCategory(null)}
-                                >
-                                  <ArrowLeft size={9} />
-                                  Back to Categories
-                                </Button>
-                              )}
-                            </span>
-
-                            {dialogSelectedCategory === null ? (
-                              <div className="grid grid-cols-2 grid-rows-[repeat(5,1fr)] gap-2.5 pt-2 flex-1">
-                                {visibleCategories.map((cat) => (
-                                  <Button
-                                    key={cat}
-                                    type="button"
-                                    variant="outline"
-                                    disabled={isPricingLocked}
-                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-indigo-50 hover:text-indigo-600 border-slate-200 rounded-lg shadow-sm"
-                                    onClick={() => setDialogSelectedCategory(cat)}
-                                  >
-                                    {cat}
-                                  </Button>
-                                ))}
-                                {user?.role !== 'cso' && (
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    disabled={isPricingLocked}
-                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
-                                    onClick={() => {
-                                      handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
-                                      setDialogCart(prev => {
-                                        if (prev.some(x => x.id === "other")) return prev;
-                                        return [...prev, {
-                                          id: "other",
-                                          name: "Other (Custom Price)",
-                                          nameEn: "Other (Custom Price)",
-                                          quantity: 1,
-                                          price: laundryPrice || 0,
-                                          category: "other",
-                                          unit: "piece"
-                                        }];
-                                      });
-                                    }}
-                                  >
-                                    Other (Custom Price)
-                                  </Button>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="flex-1 flex flex-col gap-2 pt-2">
-                                <div className="grid grid-cols-3 auto-rows-max gap-2 overflow-y-auto flex-1 pr-0.5 animate-in fade-in duration-200">
-                                  {services
-                                    .filter((s) => s.category === dialogSelectedCategory)
-                                    .filter((s) => {
-                                      const name = (s.name || "").toLowerCase();
-                                      const en = (s.nameEn || "").toLowerCase();
-                                      return !name.includes("delivery") && !en.includes("delivery") &&
-                                             !name.includes("pickup") && !en.includes("pickup") &&
-                                             !name.includes("pick up") && !en.includes("pick up") &&
-                                             !name.includes("express") && !en.includes("express") &&
-                                             !name.includes("ผ้าด่วน");
-                                    })
-                                    .map((s) => {
-                                      const cartItem = dialogCart.find(item => item.id === s.id);
-                                      const quantity = cartItem ? cartItem.quantity : 0;
-                                      return (
-                                        <Button
-                                          key={s.id}
-                                          type="button"
-                                          variant={quantity > 0 ? "default" : "outline"}
-                                          disabled={isPricingLocked}
-                                          className={`relative h-10 text-xs font-semibold justify-center rounded-lg shadow-sm transition-all ${
-                                            quantity > 0 
-                                              ? 'bg-indigo-600 text-white hover:bg-indigo-700 font-bold border-none' 
-                                              : 'hover:bg-indigo-50 hover:text-indigo-600 border-slate-200'
-                                          }`}
-                                          onClick={() => {
-                                            handleServiceOrSpeedChange(s.id, serviceSpeed, serviceWeight);
-                                            setDialogCart(prev => {
-                                              const existing = prev.find(item => item.id === s.id);
-                                              let updated;
-                                              if (existing) {
-                                                updated = prev.map(item => 
-                                                  item.id === s.id 
-                                                    ? { ...item, quantity: item.quantity + 1 }
-                                                    : item
-                                                );
-                                              } else {
-                                                updated = [...prev, {
-                                                  id: s.id,
-                                                  name: s.name,
-                                                  nameEn: s.nameEn || s.name,
-                                                  quantity: 1,
-                                                  price: s.price,
-                                                  category: s.category || "",
-                                                  unit: s.unit || "piece"
-                                                }];
-                                              }
-                                              const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
-                                              setLaundryPrice(totalSum);
-                                              return updated;
-                                            });
-                                          }}
-                                        >
-                                          <span className="truncate pr-3">{s.name}</span>
-                                          {quantity > 0 && (
-                                            <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[9px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center border border-white shadow-sm animate-in zoom-in duration-200">
-                                              {quantity}
-                                            </span>
-                                          )}
-                                        </Button>
-                                      );
-                                    })}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      </motion.div>
-
-                    {/* COL 3: Fulfillment & Summary (span 4) */}
-                    <motion.div
-                      className="lg:col-span-4 flex flex-col pl-1 pb-4 lg:pb-0 h-full"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.2, duration: 0.3 }}
-                    >
-                      {/* One Unified Consolidated Dark Card */}
-                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md flex-1 flex flex-col gap-3 min-h-[500px] h-full justify-between overflow-hidden">
-                        
-                        {/* Cart / Order Items List */}
-                        <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-hidden">
-                          <div className="flex justify-between items-center shrink-0 select-none pb-0.5">
-                            <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                              {isPosEnabled ? (
-                                <>
-                                  <Package size={14} className="text-slate-500" />
-                                  Order Items Cart
-                                </>
-                              ) : (
-                                <>
-                                  <Banknote size={14} className="text-slate-500" />
-                                  Laundry Price
-                                </>
-                              )}
-                            </span>
-                            
-                            {(user?.role === 'admin' || user?.role === 'cso') && (
-                              <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
-                                <input 
-                                  type="checkbox" 
-                                  checked={isStuck} 
-                                  onChange={(e) => setIsStuck(e.target.checked)} 
-                                  className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3 w-3 cursor-pointer"
-                                />
-                                <span className="text-[10px] font-bold uppercase tracking-wider">Stuck</span>
-                              </Label>
-                            )}
-                          </div>
-                          <div id="order-items-list" className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar">
-                            {!isPosEnabled ? (
-                              <div className="flex-1 flex flex-col items-center justify-center p-4 h-full min-h-[200px]">
-                                <div className="w-full max-w-[240px] space-y-4 text-center">
-                                  <div className="relative">
-                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-xl font-bold">฿</span>
-                                    <input 
-                                      type="number"
-                                      className="w-full h-16 pl-12 pr-4 bg-slate-900 border border-slate-700 text-white font-black text-right text-3xl rounded-xl focus:ring-indigo-500 focus:border-indigo-500 transition-all shadow-inner placeholder:text-slate-600"
-                                      placeholder="0"
-                                      value={laundryPrice || ""}
-                                      onChange={e => setLaundryPrice(parseFloat(e.target.value) || 0)}
-                                      disabled={isCartLocked}
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-                            ) : dialogCart.length > 0 ? (
-                              dialogCart.map((item, idx) => (
-                                <div key={item.id || idx} className="flex justify-between items-center bg-slate-800/40 hover:bg-slate-800/80 p-1.5 rounded border border-slate-700/30 text-[11px] transition-all">
-                                  <div className="flex-1 min-w-0 pr-1.5 flex items-center gap-1">
-                                    <span className="font-bold text-white truncate">{item.name}</span>
-                                    <span className="text-[9px] text-slate-400 font-bold uppercase shrink-0">({item.category})</span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5 shrink-0">
-                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 p-0.5">
-                                      <button
-                                        type="button"
-                                        disabled={isCartLocked}
-                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-rose-400'}`}
-                                        onClick={() => {
-                                          setDialogCart(prev => {
-                                            const updated = prev.map(it => 
-                                              it.id === item.id 
-                                                ? { ...it, quantity: Math.max(0, it.quantity - 1) }
-                                                : it
-                                            ).filter(it => it.quantity > 0);
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
-                                            setLaundryPrice(totalSum);
-                                            return updated;
-                                          });
-                                        }}
-                                      >
-                                        -
-                                      </button>
-                                      <span className="w-5 text-center text-[10px] font-black text-slate-300">
-                                        {item.quantity}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        disabled={isCartLocked}
-                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400'}`}
-                                        onClick={() => {
-                                          setDialogCart(prev => {
-                                            const updated = prev.map(it => 
-                                              it.id === item.id 
-                                                ? { ...it, quantity: it.quantity + 1 }
-                                                : it
-                                            );
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
-                                            setLaundryPrice(totalSum);
-                                            return updated;
-                                          });
-                                        }}
-                                      >
-                                        +
-                                      </button>
-                                    </div>
-                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1 py-0.5 w-18">
-                                      <span className="text-[10px] text-slate-500 font-bold mr-0.5">฿</span>
-                                      <input 
-                                        type="number"
-                                        disabled={isCartLocked}
-                                        value={item.price}
-                                        className="w-full text-right text-[10px] font-black text-slate-200 bg-transparent border-none p-0 focus:ring-0 focus:outline-none"
-                                        onChange={e => {
-                                          const val = parseFloat(e.target.value) || 0;
-                                          setDialogCart(prev => {
-                                            const updated = prev.map(it => 
-                                              it.id === item.id 
-                                                ? { ...it, price: val }
-                                                : it
-                                            );
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
-                                            setLaundryPrice(totalSum);
-                                            return updated;
-                                          });
-                                        }}
-                                      />
-                                    </div>
-                                    {!isCartLocked && (
-                                      <button
-                                        type="button"
-                                        className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-red-400 transition-colors cursor-pointer shrink-0 animate-in fade-in"
-                                        onClick={() => {
-                                          setDialogCart(prev => {
-                                            const updated = prev.filter(it => it.id !== item.id);
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
-                                            setLaundryPrice(totalSum);
-                                            return updated;
-                                          });
-                                        }}
-                                      >
-                                        <Trash2 size={11} />
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              ))
-                            ) : isCartLocked ? (
-                              <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
-                                <PackageOpen size={24} className="text-slate-600 mb-1.5" />
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                                  {currentLanguage === "en" ? "No Active Shift" : "ไม่มีรอบกะที่รันอยู่"}
-                                </span>
-                              </div>
-                            ) : (
-                              <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/20 rounded border border-dashed border-slate-700/30 text-center text-slate-500">
-                                <PackageOpen size={20} className="mb-1" />
-                                <span className="text-[10px] italic">
-                                  {currentLanguage === "en" ? "No items selected" : "ไม่มีสินค้าในตะกร้า"}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Summary and Controls (Bottom Section) */}
-                        <div className="border-t border-slate-800/80 pt-1 flex flex-col gap-1 shrink-0">
-                          {/* Service Speed */}
-                          <div className="flex flex-col pb-0.5">
-                            {serviceSpeed !== "standard" && (
-                              <div className="flex justify-between items-center pb-0.5">
-                                <span className="text-[9px] text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                                <span className="text-xs font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : currentLaundryPrice).toFixed(0)}</span>
-                              </div>
-                            )}
-
-                            <div className="space-y-0.5">
-                              <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
-                              <div className="flex items-center gap-3">
-                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
-                                  <span className="text-[10px] text-slate-200">Standard</span>
-                                </Label>
-                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
-                                  <span className="text-[10px] text-slate-200">Exp 50%</span>
-                                </Label>
-                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
-                                  <span className="text-[10px] text-slate-200">Exp 100%</span>
-                                </Label>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Consolidated Delivery & Rider Details Section */}
-                          {(isPickup || isDelivery) && (
-                            <div className="flex justify-between items-center text-[9px] text-slate-300 pb-1 border-t border-slate-800/60 pt-1 mt-0.5 animate-in fade-in duration-200">
-                              <div className="flex items-center gap-1">
-                                <Truck size={11} className="text-slate-500 mr-0.5" />
-                                <span className="text-slate-400 font-bold">Logistics:</span>
-                                {isPickup && <span>P: {pickupDist} km (×2)</span>}
-                                {isPickup && isDelivery && <span className="text-slate-600 px-0.5">/</span>}
-                                {isDelivery && <span>D: {deliveryDist} km</span>}
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <span className="text-amber-400 font-medium">Rider Comm:</span>
-                                <span className="font-bold text-amber-400">
-                                  ฿{selectedVIPLabel || activeIsFreeDelivery ? "0" : (
-                                    (isPickup ? (
-                                      (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
-                                        ? (activeJob.pickupCommission ?? 0)
-                                        : Math.floor(pickupDist) * getCommissionRate(systemSettings)
-                                    ) : 0) +
-                                    (isDelivery ? (
-                                      (editingJobId && activeJob && activeJob.status === 'completed')
-                                        ? (activeJob.deliveryCommission ?? 0)
-                                        : Math.floor(deliveryDist) * getCommissionRate(systemSettings)
-                                    ) : 0)
-                                  ).toFixed(0)}
-                                </span>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Free Delivery checkbox (placed before Grand Total) */}
-                          {(isPickup || isDelivery) && (
-                            <div className="flex justify-between items-center text-[10px] border-t border-slate-800 pt-1 pb-1 animate-in fade-in duration-200">
-                              <div className="flex flex-col gap-0.5">
-                                 <Label className={`flex items-center gap-1 text-slate-300 select-none ${hasPackage || isPaidJob ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                    <input 
-                                      type="checkbox" 
-                                      disabled={hasPackage || isPaidJob}
-                                      checked={activeIsFreeDelivery} 
-                                      onChange={(e) => setIsFreeDelivery(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                                    />
-                                    <span className="font-bold">Free Delivery</span>
-                                  </Label>
-                                  <span className="text-[8px] text-slate-500 ml-4.5">Rate: {selectedVIPLabel ? '4' : '10'}฿/km</span>
-                              </div>
-                              <div className="text-right select-none">
-                                {activeIsFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-1.5">฿{baseFee.toFixed(0)}</span>}
-                                <span className={`text-[11px] font-black ${activeIsFreeDelivery ? 'text-emerald-400' : 'text-slate-200'}`}>Fee: ฿{fee.toFixed(0)}</span>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Discount % Input */}
-                          {showDialogDiscount && (
-                            <div className="flex justify-between items-center text-xs py-1 border-t border-slate-800">
-                              <span className="font-bold text-slate-300 uppercase">{currentLanguage === "en" ? "Discount (%)" : "ส่วนลด (%)"}</span>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="100"
-                                  step="any"
-                                  placeholder="0"
-                                  disabled={isPaidJob}
-                                  className="h-6 w-14 text-[10px] font-bold bg-slate-800 border border-slate-650 rounded-md outline-none focus:border-indigo-500 text-center text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                                  value={dialogDiscountPercent || ""}
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value);
-                                    if (isNaN(val)) {
-                                      setDialogDiscountPercent(0);
-                                    } else {
-                                      setDialogDiscountPercent(Math.max(0, Math.min(100, val)));
-                                    }
-                                  }}
-                                />
-                                {dialogDiscountAmount > 0 && (
-                                  <span className="font-bold text-rose-450">
-                                    -฿{dialogDiscountAmount.toFixed(2)}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* VAT Row */}
-                          {dialogVatType === "exclusive" && dialogVatRate > 0 && (
-                            <div className="flex justify-between text-xs font-semibold text-slate-400 py-1 border-t border-slate-800">
-                              <span>VAT ({dialogVatRate}%)</span>
-                              <span className="font-bold text-white">+฿{dialogVatAmount.toFixed(2)}</span>
-                            </div>
-                          )}
-
-                          {dialogVatType === "inclusive" && dialogVatRate > 0 && (
-                            <div className="flex justify-between text-xs font-bold text-emerald-500 py-1 border-t border-slate-800">
-                              <span>
-                                {currentLanguage === "en" ? `Incl. VAT ${dialogVatRate}%` : `รวม VAT ${dialogVatRate}%`}
-                              </span>
-                              <span>฿{dialogVatAmount.toFixed(2)}</span>
-                            </div>
-                          )}
-
-                          {/* Grand Total */}
-                          <div className="flex justify-between items-end border-t border-slate-800 pt-1 pb-1">
-                            <div className="flex items-center gap-2 select-none">
-                              <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                              <label className="flex items-center gap-1 cursor-pointer text-[10px] text-slate-400 hover:text-white font-bold transition-colors">
-                                <input
-                                  type="checkbox"
-                                  disabled={isPaidJob}
-                                  className="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer disabled:opacity-50"
-                                  checked={showDialogDiscount}
-                                  onChange={(e) => {
-                                    const checked = e.target.checked;
-                                    setShowDialogDiscount(checked);
-                                    if (!checked) {
-                                      setDialogDiscountPercent(0);
-                                    }
-                                  }}
-                                />
-                                <span>{currentLanguage === "en" ? "% Discount" : "% ส่วนลด"}</span>
-                              </label>
-                            </div>
-                            <span className="text-xl font-black text-indigo-400">฿{dialogTotal.toFixed(0)}</span>
-                          </div>
-
-                          {/* Payment Channel / Status */}
-                          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 pb-1">
-                            <div className="space-y-0.5">
-                              <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                <CreditCard size={11} className="text-slate-500" />
-                                Payment Channel
-                              </Label>
-                              <select
-                                id="payment-channel"
-                                disabled={forceMemberPaymentDialog || isPaidJob}
-                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
-                                value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
-                                onChange={(e) => setPaymentChannel(e.target.value)}
-                              >
-                                <option value="">Select Channel</option>
-                                <option value="Cash / COD">Cash / COD</option>
-                                <option value="Transfer">Transfer</option>
-                                <option value="Credit Card">Credit Card</option>
-                                <option value="Gateway">Gateway</option>
-                                <option value="PromptPay">PromptPay</option>
-                                <option value="Deduct Member">Deduct Member</option>
-                                <option value="HQ/Credit">HQ/Credit</option>
-                              </select>
-                            </div>
-
-                            <div className="space-y-0.5">
-                              <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                Status
-                              </Label>
-                              <div className="flex items-center gap-2 h-6">
-                                <Label className={`flex items-center gap-1 text-[10px] ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input 
-                                    type="radio" 
-                                    name="payment-status"
-                                    disabled={isPaidJob}
-                                    checked={paymentMethod === 'unpaid'} 
-                                    onChange={() => setPaymentMethod('unpaid')} 
-                                    className="w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" 
-                                  />
-                                  <span className="font-medium text-slate-200">Unpaid</span>
-                                </Label>
-                                <Label className={`flex items-center gap-1 text-[10px] ${isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
-                                  <input 
-                                    type="radio" 
-                                    name="payment-status"
-                                    disabled={isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal)}
-                                    checked={paymentMethod === 'paid'} 
-                                    onChange={() => setPaymentMethod('paid')} 
-                                    className="w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" 
-                                  />
-                                  <span className="font-medium text-emerald-400">Paid</span>
-                                </Label>
-                                {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                  <Label className="flex items-center gap-1 cursor-pointer text-[10px] ml-0.5 animate-in fade-in duration-200">
-                                    <input 
-                                      type="checkbox" 
-                                      checked={cashPlaced} 
-                                      onChange={(e) => setCashPlaced(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-2.5 w-2.5"
-                                    />
-                                    <span className="font-medium text-amber-400">วางเงิน</span>
-                                  </Label>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Consolidated Checkout Buttons under summary card */}
-                          <div className="flex gap-2 mt-1 pt-1 border-t border-slate-800 select-none">
-                            <Button 
-                              type="button"
-                              variant="outline"
-                              disabled={dialogCart.length === 0}
-                              onClick={() => {
-                                const cartHash = JSON.stringify(dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })));
-
-                                let targetProformaNum = proformaReceiptNumber;
-                                let targetRevision = proformaRevision;
-
-                                if (!targetProformaNum) {
-                                  const shopId = activeShop?.id || "default";
-                                  const proformaKey = `proformaSeq_${shopId}`;
-                                  const currentSeq = parseInt(systemSettings?.[proformaKey] || "0", 10);
-                                  const nextSeq = currentSeq + 1;
-                                  setTimeout(() => {
-                                    settingsStore.updateSetting(proformaKey, String(nextSeq)).catch(() => {});
-                                  }, 1000);
-                                  
-                                  let branchCode = "";
-                                  if (activeShop?.name) {
-                                    const getInitials = (name: string) => {
-                                      const words = name.trim().split(/\s+/);
-                                      if (words.length > 1) {
-                                        return words.map(w => w.charAt(0)).join("").toUpperCase();
-                                      }
-                                      return name.substring(0, 3).toUpperCase();
-                                    };
-                                    
-                                    const myInitials = getInitials(activeShop.name);
-                                    const isDuplicate = shopLocations.some(s => s.id !== activeShop.id && getInitials(s.name) === myInitials);
-                                    
-                                    if (isDuplicate) {
-                                      const suffix = (activeShop.id || "").slice(-3).toUpperCase();
-                                      branchCode = `${myInitials}${suffix}`;
-                                    } else {
-                                      branchCode = myInitials;
-                                    }
-                                  }
-                                  if (!branchCode || branchCode.length < 2) {
-                                    branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase();
-                                  }
-                                  
-                                  targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
-                                  targetRevision = 0;
-                                  setProformaReceiptNumber(targetProformaNum);
-                                  setProformaRevision(0);
-                                  setLastProformaCartHash(cartHash);
-                                } else {
-                                  if (cartHash !== lastProformaCartHash) {
-                                    targetRevision = proformaRevision + 1;
-                                    setProformaRevision(targetRevision);
-                                    setLastProformaCartHash(cartHash);
-                                  }
-                                }
-
-                                setIsDraftPreview(true);
-                                setShowReceipt(true);
-                              }}
-                              className="flex-1 h-8 rounded-lg text-[10px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                              title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
-                            >
-                              <Eye size={11} />
-                              {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
-                            </Button>
-
-                            <Button 
-                              type="button"
-                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || paymentMethod !== 'paid' || isPaidJob}
-                              onClick={() => handleCreate(true)}
-                              className="flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <Banknote size={12} />
-                              Pay ฿{dialogTotal.toFixed(2)}
-                            </Button>
-                          </div>
-                        </div>
-
-                      </div>
-                    </motion.div>
-  </>
-) : (
-  <>
                     {/* COL 2: Logistics & Map (span 4) */}
                     <motion.div
                       className="lg:col-span-4 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
@@ -4043,8 +3000,6 @@ export default function AdminPage() {
 
 
                     </motion.div>
-  </>
-)}
                   </div>
                   ) : (
                     <div className="h-full w-full bg-white rounded-xl border border-slate-200 overflow-hidden">
@@ -4065,7 +3020,7 @@ export default function AdminPage() {
                     </Button>
                     <Button 
                       className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
-                      onClick={() => handleCreate(false)}
+                      onClick={handleCreate}
                       disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
                     >
                       {isSubmitting ? (
@@ -4244,7 +3199,6 @@ export default function AdminPage() {
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
-          {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
 
 
           {/* Fallback for no access to current tab */}
@@ -4323,31 +3277,6 @@ export default function AdminPage() {
         onOpenChange={setProfileOpen}
         customer={selectedProfileCustomer}
       />
-
-      <ThermalReceiptDialog
-        open={showReceipt}
-        onOpenChange={setShowReceipt}
-        receiptData={dialogReceiptData}
-        activeShop={activeShop}
-        receiptPaperSize={receiptPaperSize}
-        currentLanguage={currentLanguage}
-        onCloseComplete={() => {
-          setIsDraftPreview(false);
-          setIsPaymentEvent(false);
-          if (!dialogOpen) {
-            resetDialogStates();
-          }
-        }}
-        onBillImageUploaded={(newUrl) => {
-          setBillImageUrls(prev => {
-            if (!prev.includes(newUrl)) {
-              return [...prev, newUrl];
-            }
-            return prev;
-          });
-        }}
-      />
-
     </ProtectedRoute>
   );
 }

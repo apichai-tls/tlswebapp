@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown } from "lucide-react";
+import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
@@ -52,6 +53,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
+  const [paymentChannelFilter, setPaymentChannelFilter] = useState<string>("ALL");
   const [startDate, setStartDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
   const [endDate, setEndDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
   
@@ -59,10 +61,12 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const [cancelReason, setCancelReason] = useState("");
   
   const [showCompleted, setShowCompleted] = useState(false);
-  const [showCancelled, setShowCancelled] = useState(false);
+  const [showCancelled, setShowCancelled] = useState(true);
   const [showTopup, setShowTopup] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null);
   const [filterArea, setFilterArea] = useState<string>("ALL");
+  const [activeKanbanColumn, setActiveKanbanColumn] = useState<JobStatus>("pickup");
   
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -119,6 +123,16 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       setFilterArea(user.area);
     }
   }, [user]);
+
+  const availablePaymentChannels = [
+    "Cash / COD",
+    "Transfer",
+    "Credit Card",
+    "Gateway",
+    "PromptPay",
+    "Deduct Member",
+    "HQ/Credit"
+  ];
 
   // Filter Logic
   const filteredJobs = jobs.filter((job) => {
@@ -195,8 +209,68 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       matchesArea = branch?.area === filterArea;
     }
 
-    return matchesSearch && matchesDate && matchesStatus && matchesArea;
+    // Payment Channel Filter
+    let matchesPayment = true;
+    if (paymentChannelFilter !== "ALL") {
+      const pc = job.paymentChannel?.toUpperCase() || "";
+      if (paymentChannelFilter === "Cash / COD") {
+        matchesPayment = pc === "CASH / COD" || pc === "CASH";
+      } else if (paymentChannelFilter === "Transfer") {
+        matchesPayment = pc === "TRANSFER" || pc === "BANK TRANSFER";
+      } else if (paymentChannelFilter === "Credit Card") {
+        matchesPayment = pc === "CREDIT CARD" || pc === "CREDIT";
+      } else {
+        matchesPayment = job.paymentChannel === paymentChannelFilter;
+      }
+    }
+    
+    return matchesSearch && matchesDate && matchesStatus && matchesArea && matchesPayment;
   });
+
+  const sortedJobs = [...filteredJobs];
+  if (paymentSort === 'asc') {
+    sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? -1 : 1));
+  } else if (paymentSort === 'desc') {
+    sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? 1 : -1));
+  }
+
+  const exportToCSV = () => {
+    const csvData = filteredJobs.map(job => {
+      const customer = customers.find(c => c.id === job.customerId);
+      const branch = shopLocations.find(s => s.id === job.branchId);
+      return {
+        "Job ID": job.id.split('-')[0].toUpperCase(),
+        "Date": format(new Date(job.createdAt), "dd MMM yyyy, HH:mm"),
+        "Branch": branch?.name || "-",
+        "Customer Name": job.customerName || "Walk-in Guest",
+        "Customer Phone": job.customerPhone || "-",
+        "Pickup Location": job.pickupLocation || "-",
+        "Dropoff Location": job.dropoffLocation || "-",
+        "Total Amount (THB)": job.totalAmount || 0,
+        "Delivery Fee (THB)": job.fee || 0,
+        "Pickup Rider": job.pickupRiderId ? (riders.find(r => r.id === job.pickupRiderId)?.name || job.pickupRiderId) : "-",
+        "Delivery Rider": job.deliveryRiderId ? (riders.find(r => r.id === job.deliveryRiderId)?.name || job.deliveryRiderId) : "-",
+        "Assigned Rider": (!job.pickupRiderId && !job.deliveryRiderId && job.riderId) ? (riders.find(r => r.id === job.riderId)?.name || job.riderId) : "-",
+        "Payment Channel": job.paymentChannel || "-",
+        "Payment Status": job.isPaid ? "PAID" : "UNPAID",
+        "Status": statusConfig[job.status]?.label || job.status
+      };
+    });
+    const csv = Papa.unparse(csvData);
+    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `jobs_report_${format(new Date(), "yyyyMMdd_HHmm")}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast.success("Exported to CSV successfully");
+  };
+
+  const printToPDF = () => {
+    window.print();
+  };
 
   return (
     <div className="flex-1 overflow-auto p-6 lg:p-8 space-y-6">
@@ -207,24 +281,46 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <p className="text-sm text-slate-500 mt-1">Review all past and active jobs, track durations and distances.</p>
             </div>
           </div>
-          <div className="flex rounded-md shadow-sm border border-slate-200 bg-slate-50 p-1 shrink-0">
-            <button
-              onClick={() => setViewMode("list")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-sm transition-colors ${viewMode === "list" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-            >
-              <LayoutList size={16} />
-              List
-            </button>
-            <button
-              onClick={() => setViewMode("kanban")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-sm transition-colors ${viewMode === "kanban" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-            >
-              <LayoutGrid size={16} />
-              Kanban
-            </button>
+          <div className="flex items-center gap-4">
+            {viewMode === "list" && (
+              <div className="flex gap-2 shrink-0 print:hidden">
+                <button
+                  onClick={exportToCSV}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors shadow-sm"
+                  title="Export as CSV"
+                >
+                  <Download size={16} />
+                  <span className="hidden sm:inline">Excel</span>
+                </button>
+                <button
+                  onClick={printToPDF}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 transition-colors shadow-sm"
+                  title="Print to PDF"
+                >
+                  <Printer size={16} />
+                  <span className="hidden sm:inline">PDF</span>
+                </button>
+              </div>
+            )}
+            <div className="flex rounded-md shadow-sm border border-slate-200 bg-slate-50 p-1 shrink-0">
+              <button
+                onClick={() => setViewMode("list")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-sm transition-colors ${viewMode === "list" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+              >
+                <LayoutList size={16} />
+                List
+              </button>
+              <button
+                onClick={() => setViewMode("kanban")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-sm transition-colors ${viewMode === "kanban" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+              >
+                <LayoutGrid size={16} />
+                Kanban
+              </button>
+            </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 print:hidden">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <Input 
@@ -244,6 +340,19 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <option value="ALL">All Areas</option>
               <option value="BKK">BKK</option>
               <option value="PTY">PTY</option>
+            </select>
+          </div>
+
+          <div className="relative">
+            <select
+              value={paymentChannelFilter}
+              onChange={(e) => setPaymentChannelFilter(e.target.value)}
+              className="h-10 text-xs border border-slate-200 rounded-md px-3 bg-white font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 shadow-sm"
+            >
+              <option value="ALL">All Payments</option>
+              {availablePaymentChannels.map(channel => (
+                <option key={channel} value={channel}>{channel}</option>
+              ))}
             </select>
           </div>
           
@@ -334,6 +443,16 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <TableHead>Customer</TableHead>
               <TableHead>Route Details</TableHead>
               <TableHead className="text-center w-[120px]">Duration</TableHead>
+              <TableHead className="w-[120px]">Payment Channel</TableHead>
+              <TableHead 
+                className="text-center w-[100px] cursor-pointer hover:bg-slate-100 select-none"
+                onClick={() => setPaymentSort(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc')}
+              >
+                <div className="flex items-center justify-center gap-1">
+                  Pay Status
+                  <ArrowUpDown size={12} className={paymentSort ? "text-indigo-600" : "text-slate-400"} />
+                </div>
+              </TableHead>
               <TableHead className="text-right w-[100px]">Fee</TableHead>
               <TableHead className="w-[140px]">Rider</TableHead>
               <TableHead className="text-center w-[120px]">Status</TableHead>
@@ -341,17 +460,17 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
           </TableHeader>
           <TableBody>
             <AnimatePresence>
-              {filteredJobs.length === 0 ? (
+              {sortedJobs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center text-slate-500">
-                    <div className="align-middle py-2 text-center text-slate-300">
-                        <MoreHorizontal size={16} className="mx-auto" />
-                    No jobs found for the selected filters.
+                  <TableCell colSpan={9} className="h-48 text-center text-slate-500">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Search size={32} className="text-slate-300" />
+                      <p>No jobs found matching your filters</p>
                     </div>
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredJobs.map((job, i) => {
+                sortedJobs.map((job, i) => {
                   const createdDate = new Date(job.createdAt);
                   
                   // Calculate strictly for completed jobs, OR for active jobs calculate "Time Elapsed" so far.
@@ -458,6 +577,18 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                         ) : (
                           <span className="text-[10px] text-amber-600 font-medium">In Progress...</span>
                         )}
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2">
+                        <div className="text-[11px] font-bold text-slate-700">
+                          {job.paymentChannel || "Unspecified"}
+                        </div>
+                      </TableCell>
+                      
+                      <TableCell className="align-middle py-2 text-center">
+                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {job.isPaid ? 'PAID' : 'UNPAID'}
+                        </Badge>
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-right">
