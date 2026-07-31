@@ -101,6 +101,7 @@ export interface Job {
   pickupProofImageUrl?: string;
   deliveryProofImageUrl?: string;
   billImageUrl?: string;
+  billNo?: string | null;
   riderId?: string; // Legacy assigned rider
   bagImageUrl?: string;
   serviceType?: ServiceType;
@@ -110,6 +111,9 @@ export interface Job {
   paymentMethod?: "cash" | "transfer" | "credit" | "card";
   paymentChannel?: string;
   isPaid?: boolean;
+  csoPaidAt?: Date | string | null;
+  isShopPaid?: boolean;
+  shopPaidAt?: Date | string | null;
   discount?: number; // Manual adjustment/discount
   pickupScheduledAt?: Date;
   pickupScheduledEndAt?: Date;

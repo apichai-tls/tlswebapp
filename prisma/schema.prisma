@@ -80,6 +80,7 @@ model Job {
   legsJson               String?
   remark                 String?
   billImageUrl           String?
+  billNo                 String?
   deliveryCommission     Float?
   deliveryDistance       Float?
   pickupCommission       Float?
@@ -89,6 +90,9 @@ model Job {
   pickupScheduledEndAt   DateTime?
   branchId               String?
   isPaid                 Boolean       @default(false)
+  csoPaidAt              DateTime?
+  isShopPaid             Boolean       @default(false)
+  shopPaidAt             DateTime?
   deliveryProofImageUrl  String?
   pickupProofImageUrl    String?
   paymentChannel         String?

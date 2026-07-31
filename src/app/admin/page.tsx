@@ -311,7 +311,9 @@ export default function AdminPage() {
   };
   const [laundryPrice, setLaundryPrice] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
+  const [shopPaymentMethod, setShopPaymentMethod] = useState("unpaid");
   const [paymentChannel, setPaymentChannel] = useState("");
+  const [billNo, setBillNo] = useState("");
   const [cashPlaced, setCashPlaced] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
@@ -708,7 +710,9 @@ export default function AdminPage() {
     setServiceSpeed("standard");
     setDeliveryScheduledTime("");
     setPaymentMethod("unpaid");
+    setShopPaymentMethod("unpaid");
     setPaymentChannel("");
+    setBillNo("");
     setCashPlaced(false);
     setServiceType("wash_fold");
     setServiceWeight(2);
@@ -815,6 +819,8 @@ export default function AdminPage() {
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
+    setShopPaymentMethod(job.isShopPaid ? 'paid' : 'unpaid');
+    setBillNo(job.billNo || "");
     setCashPlaced(job.cashPlaced || false);
     let fallbackChannel = job.paymentChannel || "";
     if (!fallbackChannel && job.paymentMethod) {
@@ -1111,6 +1117,8 @@ export default function AdminPage() {
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
+      isShopPaid: shopPaymentMethod === 'paid',
+      billNo,
       fee,
       totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
       serviceType,
@@ -1175,7 +1183,7 @@ export default function AdminPage() {
             'pickupDistance', 'deliveryDistance', 'pickupCommission', 'deliveryCommission',
             'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
-            'laundryTypes', 'items', 'paymentChannel'
+            'laundryTypes', 'items', 'paymentChannel', 'billNo', 'isShopPaid'
           ];
           
           fieldsToCompare.forEach(f => {
@@ -2887,66 +2895,126 @@ export default function AdminPage() {
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-2 pt-2 mt-2 border-t border-slate-700">
-                            <div className="space-y-0.5">
-                              <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                <CreditCard size={12} className="text-slate-500" />
-                                Payment Channel
-                              </Label>
-                              <select
-                                id="payment-channel"
-                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                                value={paymentChannel}
-                                onChange={(e) => setPaymentChannel(e.target.value)}
-                              >
-                                <option value="">Select Channel</option>
-                                <option value="Cash / COD">Cash / COD</option>
-                                <option value="Transfer">Transfer</option>
-                                <option value="Credit Card">Credit Card</option>
-                                <option value="Gateway">Gateway</option>
-                                <option value="PromptPay">PromptPay</option>
-                                <option value="Deduct Member">Deduct Member</option>
-                                <option value="HQ/Credit">HQ/Credit</option>
-                              </select>
+                          <div className="flex flex-col gap-2 pt-2 mt-2 border-t border-slate-700">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-0.5">
+                                <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <CreditCard size={12} className="text-slate-500" />
+                                  Payment Channel
+                                </Label>
+                                <select
+                                  id="payment-channel"
+                                  className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                                  value={paymentChannel}
+                                  onChange={(e) => setPaymentChannel(e.target.value)}
+                                >
+                                  <option value="">Select Channel</option>
+                                  <option value="Cash / COD">Cash / COD</option>
+                                  <option value="Transfer">Transfer</option>
+                                  <option value="Credit Card">Credit Card</option>
+                                  <option value="Gateway">Gateway</option>
+                                  <option value="PromptPay">PromptPay</option>
+                                  <option value="Deduct Member">Deduct Member</option>
+                                  <option value="HQ/Credit">HQ/Credit</option>
+                                </select>
+                              </div>
+                              <div className="space-y-0.5">
+                                <Label htmlFor="bill-no" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <CreditCard size={12} className="text-slate-500" />
+                                  BILL NO.
+                                </Label>
+                                <Input
+                                  id="bill-no"
+                                  value={billNo}
+                                  onChange={(e) => setBillNo(e.target.value)}
+                                  placeholder="Enter Bill No."
+                                  className="h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500"
+                                />
+                              </div>
                             </div>
 
-                            <div className="space-y-0.5">
-                              <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                <CreditCard size={12} className="text-slate-500" />
-                                Status
-                              </Label>
-                              <div className="flex items-center gap-2 h-6">
-                                <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
-                                  <input 
-                                    type="radio" 
-                                    name="payment-status"
-                                    checked={paymentMethod === 'unpaid'} 
-                                    onChange={() => setPaymentMethod('unpaid')} 
-                                    className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" 
-                                  />
-                                  <span className="font-medium text-slate-200">Unpaid</span>
+                            <div className="grid grid-cols-2 gap-2 mt-1">
+                              <div className="space-y-0.5 flex flex-col">
+                                <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <CreditCard size={12} className="text-slate-500" />
+                                  CSO
                                 </Label>
-                                <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
-                                  <input 
-                                    type="radio" 
-                                    name="payment-status"
-                                    checked={paymentMethod === 'paid'} 
-                                    onChange={() => setPaymentMethod('paid')} 
-                                    className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600" 
-                                  />
-                                  <span className="font-medium text-emerald-400">Paid</span>
-                                </Label>
-                                {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                  <Label className="flex items-center gap-1.5 cursor-pointer text-[11px] ml-2 animate-in fade-in duration-200">
+                                <div className="flex items-center gap-2 h-6">
+                                  <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                                     <input 
-                                      type="checkbox" 
-                                      checked={cashPlaced} 
-                                      onChange={(e) => setCashPlaced(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3"
+                                      type="radio" 
+                                      name="payment-status"
+                                      checked={paymentMethod === 'unpaid'} 
+                                      onChange={() => {
+                                        if (user?.role === 'admin' || user?.role === 'cso') setPaymentMethod('unpaid');
+                                      }} 
+                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
+                                      className={`w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`} 
                                     />
-                                    <span className="font-medium text-amber-400">วางเงินแล้ว</span>
+                                    <span className="font-medium text-slate-200">Unpaid</span>
                                   </Label>
-                                )}
+                                  <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                    <input 
+                                      type="radio" 
+                                      name="payment-status"
+                                      checked={paymentMethod === 'paid'} 
+                                      onChange={() => {
+                                        if (user?.role === 'admin' || user?.role === 'cso') setPaymentMethod('paid');
+                                      }}
+                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
+                                      className={`w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`} 
+                                    />
+                                    <span className="font-medium text-emerald-400">Paid</span>
+                                  </Label>
+                                  {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                                    <Label className={`flex items-center gap-1.5 text-[11px] animate-in fade-in duration-200 ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                      <input 
+                                        type="checkbox" 
+                                        checked={cashPlaced} 
+                                        onChange={(e) => {
+                                          if (user?.role === 'admin' || user?.role === 'cso') setCashPlaced(e.target.checked);
+                                        }} 
+                                        onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
+                                        className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`}
+                                      />
+                                      <span className="font-medium text-amber-400 whitespace-nowrap">วางเงินแล้ว</span>
+                                    </Label>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="space-y-0.5">
+                                <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <Store size={12} className="text-slate-500" />
+                                  SHOP
+                                </Label>
+                                <div className="flex items-center gap-2 h-6">
+                                  <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'manager' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                    <input 
+                                      type="radio" 
+                                      name="shop-payment-status"
+                                      checked={shopPaymentMethod === 'unpaid'} 
+                                      onChange={() => {
+                                        if (user?.role === 'admin' || user?.role === 'manager') setShopPaymentMethod('unpaid');
+                                      }} 
+                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager')) e.preventDefault(); }}
+                                      className={`w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'manager') ? 'cursor-not-allowed' : ''}`} 
+                                    />
+                                    <span className="font-medium text-slate-200">Unpaid</span>
+                                  </Label>
+                                  <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'manager' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                    <input 
+                                      type="radio" 
+                                      name="shop-payment-status"
+                                      checked={shopPaymentMethod === 'paid'} 
+                                      onChange={() => {
+                                        if (user?.role === 'admin' || user?.role === 'manager') setShopPaymentMethod('paid');
+                                      }} 
+                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager')) e.preventDefault(); }}
+                                      className={`w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'manager') ? 'cursor-not-allowed' : ''}`} 
+                                    />
+                                    <span className="font-medium text-emerald-400">Paid</span>
+                                  </Label>
+                                </div>
                               </div>
                             </div>
                           </div>

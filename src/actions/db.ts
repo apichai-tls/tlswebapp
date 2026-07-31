@@ -301,6 +301,7 @@ export async function getJobsByIdsAction(ids: string[]) {
 }
 
 export async function updateJobAction(id: string, updates: any) {
+  console.log(`[updateJobAction] id: ${id}`, updates);
   const existingJob = await prisma.job.findUnique({ where: { id } });
   const data: any = {};
   if (updates.type !== undefined) data.type = updates.type;
@@ -322,6 +323,15 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.deliveryScheduledAt !== undefined) data.deliveryScheduledAt = updates.deliveryScheduledAt;
   if (updates.customerId !== undefined) data.customerId = updates.customerId;
   if (updates.distance !== undefined) data.distance = updates.distance;
+  if (updates.isShopPaid !== undefined) {
+    data.isShopPaid = updates.isShopPaid;
+    if (updates.isShopPaid === true && existingJob?.isShopPaid !== true) {
+      data.shopPaidAt = new Date();
+    } else if (updates.isShopPaid === false) {
+      data.shopPaidAt = null;
+    }
+  }
+  if (updates.billNo !== undefined) data.billNo = updates.billNo;
   if (updates.items !== undefined) data.itemsJson = updates.items ? JSON.stringify(updates.items) : null;
 
   // Additional fields for full job edits
@@ -341,7 +351,14 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.billImageUrl !== undefined) data.billImageUrl = updates.billImageUrl;
   if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
   if (updates.paymentChannel !== undefined) data.paymentChannel = updates.paymentChannel;
-  if (updates.isPaid !== undefined) data.isPaid = updates.isPaid;
+  if (updates.isPaid !== undefined) {
+    data.isPaid = updates.isPaid;
+    if (updates.isPaid === true && existingJob?.isPaid !== true) {
+      data.csoPaidAt = new Date();
+    } else if (updates.isPaid === false) {
+      data.csoPaidAt = null;
+    }
+  }
   if (updates.fee !== undefined) data.fee = updates.fee;
   if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
@@ -448,7 +465,9 @@ export async function updateJobAction(id: string, updates: any) {
       'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 
       'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck', 'cashPlaced',
       'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
-      'adminNotesJson'
+      'adminNotesJson', 'billNo', 'isShopPaid', 'customerName', 'customerPhone',
+      'pickupLocation', 'dropoffLocation', 'serviceType', 'type', 'pickupScheduledEndAt',
+      'deliveryScheduledEndAt', 'pickupCommission', 'deliveryCommission', 'laundryTypes', 'itemsJson'
     ];
     logFields.forEach(field => {
       const oldVal = (existingJob as any)[field];

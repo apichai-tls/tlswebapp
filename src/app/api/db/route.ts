@@ -85,6 +85,10 @@ export async function GET() {
           createdBy: true,
           cashPlaced: true,
           isStuck: true,
+          billNo: true,
+          isShopPaid: true,
+          csoPaidAt: true,
+          shopPaidAt: true,
         }
       }),
       prisma.rider.findMany(),

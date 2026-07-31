@@ -244,6 +244,19 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? 1 : -1));
   }
 
+  const getTotalDuration = (start: Date, end: Date) => {
+    const diffMs = end.getTime() - start.getTime();
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (diffHours >= 24) {
+      const days = Math.floor(diffHours / 24);
+      const hours = diffHours % 24;
+      return `${days} วัน ${hours} ชั่วโมง`;
+    }
+    return `${diffHours} ชั่วโมง ${diffMinutes} นาที`;
+  };
+
   const exportToCSV = () => {
     const csvData = filteredJobs.map(job => {
       const customer = customers.find(c => c.id === job.customerId);
@@ -251,6 +264,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       return {
         "Job ID": job.id.split('-')[0].toUpperCase(),
         "Date": format(new Date(job.createdAt), "dd MMM yyyy, HH:mm"),
+        "Month": format(new Date(job.createdAt), "MM"),
         "Branch": branch?.name || "-",
         "Customer Name": job.customerName || "Walk-in Guest",
         "Customer Phone": job.customerPhone || "-",
@@ -262,7 +276,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
         "Delivery Rider": job.deliveryRiderId ? (riders.find(r => r.id === job.deliveryRiderId)?.name || job.deliveryRiderId) : "-",
         "Assigned Rider": (!job.pickupRiderId && !job.deliveryRiderId && job.riderId) ? (riders.find(r => r.id === job.riderId)?.name || job.riderId) : "-",
         "Payment Channel": job.paymentChannel || "-",
-        "Payment Status": job.isPaid ? "PAID" : "UNPAID",
+        "CSO Pay Status": job.isPaid ? "PAID" : "UNPAID",
+        "CSO Paid At": job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-",
+        "SHOP Pay Status": job.isShopPaid ? "PAID" : "UNPAID",
+        "SHOP Paid At": job.shopPaidAt ? format(new Date(job.shopPaidAt), "dd/MM/yyyy HH:mm") : "-",
+        "Total Duration": job.completedAt ? getTotalDuration(new Date(job.createdAt), new Date(job.completedAt)) : "-",
         "Status": statusConfig[job.status]?.label || job.status
       };
     });
@@ -454,10 +472,14 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                 onClick={() => setPaymentSort(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc')}
               >
                 <div className="flex items-center justify-center gap-1">
-                  Pay Status
+                  CSO Pay Status
                   <ArrowUpDown size={12} className={paymentSort ? "text-indigo-600" : "text-slate-400"} />
                 </div>
               </TableHead>
+              <TableHead className="w-[120px]">CSO Paid At</TableHead>
+              <TableHead className="text-center w-[100px]">SHOP Pay Status</TableHead>
+              <TableHead className="w-[120px]">Shop Paid At</TableHead>
+              <TableHead className="w-[100px]">Bill No.</TableHead>
               <TableHead className="text-right w-[100px]">Fee</TableHead>
               <TableHead className="w-[140px]">Rider</TableHead>
               <TableHead className="text-center w-[120px]">Status</TableHead>
@@ -467,7 +489,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
             <AnimatePresence>
               {sortedJobs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-48 text-center text-slate-500">
+                  <TableCell colSpan={13} className="h-48 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Search size={32} className="text-slate-300" />
                       <p>No jobs found matching your filters</p>
@@ -594,6 +616,30 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                         <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
                           {job.isPaid ? 'PAID' : 'UNPAID'}
                         </Badge>
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2">
+                        <div className="text-[11px] font-medium text-slate-600">
+                          {job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-"}
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2 text-center">
+                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                        </Badge>
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2">
+                        <div className="text-[11px] font-medium text-slate-600">
+                          {job.shopPaidAt ? format(new Date(job.shopPaidAt), "dd/MM/yyyy HH:mm") : "-"}
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2">
+                        <div className="text-[11px] font-bold text-slate-700">
+                          {job.billNo || "-"}
+                        </div>
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-right">
@@ -786,11 +832,35 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
 
                     {/* Cards Container */}
                     <div className="p-3 flex-1 overflow-y-auto flex flex-col gap-3 min-h-[150px]">
-                      {filteredJobs.filter(j => j.status === status).map(job => {
+                      {filteredJobs
+                        .filter(j => j.status === status)
+                        .sort((a, b) => {
+                          if (status === 'completed') {
+                            const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+                            const isPinnedA = (isAdmin && (!a.isPaid || !a.isShopPaid)) || (user?.role === 'cso' && !a.isPaid) || (user?.role === 'manager' && !a.isShopPaid);
+                            const isPinnedB = (isAdmin && (!b.isPaid || !b.isShopPaid)) || (user?.role === 'cso' && !b.isPaid) || (user?.role === 'manager' && !b.isShopPaid);
+                            if (isPinnedA && !isPinnedB) return -1;
+                            if (!isPinnedA && isPinnedB) return 1;
+                          }
+                          return 0;
+                        })
+                        .map(job => {
                         let durationMin = null;
                         if (job.completedAt) {
                           durationMin = differenceInMinutes(new Date(job.completedAt), new Date(job.createdAt));
                         }
+                        
+                        const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+                        const isPinned = job.status === 'completed' && (
+                          (isAdmin && (!job.isPaid || !job.isShopPaid)) || 
+                          (user?.role === 'cso' && !job.isPaid) || 
+                          (user?.role === 'manager' && !job.isShopPaid)
+                        );
+                        
+                        let cardBgClass = 'bg-white border-slate-200';
+                        if (job.isStuck) cardBgClass = 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70';
+                        else if (isPinned) cardBgClass = 'bg-orange-50 border-orange-300 text-orange-950 hover:bg-orange-100/70';
+
                         return (
                           <div 
                             key={job.id}
@@ -805,7 +875,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                               e.dataTransfer.effectAllowed = 'move';
                             }}
                             onClick={() => onEditJob && onEditJob(job)}
-                            className={`${job.isStuck ? 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70' : 'bg-white border-slate-200'} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.role === 'cso' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
+                            className={`${cardBgClass} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.role === 'cso' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
                           >
                             <div className="flex items-start justify-between mb-2">
                               <div className="flex flex-col gap-1 w-full">
