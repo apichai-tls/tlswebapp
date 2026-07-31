@@ -2916,6 +2916,8 @@ export default function AdminPage() {
 
                     </motion.div>
 
+{isPosEnabled ? (
+  <>
                     {/* COL 2: Logistics & Map (span 4) */}
                     <motion.div
                       className="lg:col-span-4 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
@@ -3605,6 +3607,393 @@ export default function AdminPage() {
 
                       </div>
                     </motion.div>
+  </>
+) : (
+  <>
+                    {/* COL 2: Logistics & Map (span 4) */}
+                    <motion.div
+                      className="lg:col-span-4 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.15, duration: 0.3 }}
+                    >
+                      {/* Job Photos Unified Section */}
+                      <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm space-y-3">
+                        <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                          <Camera size={14} className="text-indigo-600" />
+                          <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">Job Photos</span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Laundry Bags</Label>
+                            <MultiImageUploader
+                              ref={uploaderRef}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="bags"
+                              value={bagImageUrls}
+                              onValueChange={setBagImageUrls}
+                              maxFiles={5}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Bill / Transfer</Label>
+                            <MultiImageUploader
+                              ref={billUploaderRef}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="bills"
+                              value={billImageUrls}
+                              onValueChange={setBillImageUrls}
+                              maxFiles={4}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
+                            <MultiImageUploader
+                              ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="proofs"
+                              value={pickupProofImageUrls}
+                              onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
+                              maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
+                              readOnly={user?.role !== 'admin'}
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
+                            <MultiImageUploader
+                              ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
+                              entityType="job"
+                              entityId={editingJobId || Date.now().toString()}
+                              subType="proofs"
+                              value={deliveryProofImageUrls}
+                              onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
+                              maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
+                              readOnly={user?.role !== 'admin'}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Laundry Service Type & Speed */}
+                      <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm space-y-1.5">
+                        <div className={`grid gap-2 ${serviceType === "other" ? "grid-cols-1" : "grid-cols-[1fr_80px]"}`}>
+                          <div className="space-y-1">
+                            <Label htmlFor="service-select" className="flex items-center gap-1.5 text-xs font-medium">
+                              <ArrowDownUp size={14} className="text-purple-600" />
+                              Laundry Service Type
+                            </Label>
+                            <select 
+                              id="service-select"
+                              className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                              value={serviceType}
+                              onChange={(e) => handleServiceOrSpeedChange(e.target.value, serviceSpeed, serviceWeight)}
+                            >
+                              <option value="" disabled>Select a service</option>
+                              {washServices.map(s => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                              <option value="other">Other (Custom Price)</option>
+                            </select>
+                          </div>
+                          {serviceType !== "other" && (
+                            <div className="space-y-1">
+                              <Label htmlFor="service-weight" className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                                Weight (kg)
+                              </Label>
+                              <Input 
+                                id="service-weight"
+                                type="number" 
+                                min="2"
+                                step="0.01"
+                                className="h-8 text-xs text-center px-2"
+                                value={serviceWeight || ""}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  handleServiceOrSpeedChange(serviceType, serviceSpeed, isNaN(val) ? 0 : val);
+                                }}
+                                onBlur={() => {
+                                  if (serviceWeight < 2) {
+                                    handleServiceOrSpeedChange(serviceType, serviceSpeed, 2);
+                                  }
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="space-y-1 pt-1 border-t border-slate-100">
+                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Clothing Types</Label>
+                          <div className="grid grid-cols-2 gap-1">
+                            {[
+                              { id: 'other', label: 'Other (Specify)' },
+                              { id: 'polo', label: 'Polo Shirt' },
+                              { id: 'tshirt', label: 'T-Shirt' },
+                              { id: 'pants', label: 'Pants' },
+                              { id: 'dress', label: 'Dress' },
+                              { id: 'bedsheet', label: 'Bedsheet' },
+                            ].map(item => (
+                              <div key={item.id} className="flex flex-col gap-1 col-span-1">
+                                <div className="flex items-center gap-2">
+                                  <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-3.5 w-3.5 shrink-0"
+                                      checked={clothingItems[item.id].selected}
+                                      onChange={(e) => setClothingItems(prev => ({
+                                        ...prev,
+                                        [item.id]: { ...prev[item.id], selected: e.target.checked }
+                                      }))}
+                                    />
+                                    <span className="truncate">{item.label}</span>
+                                  </Label>
+                                  {clothingItems[item.id].selected && (
+                                    <Input 
+                                      type="number" 
+                                      min="1"
+                                      className="w-12 h-6 text-xs text-center p-1 shrink-0"
+                                      value={clothingItems[item.id].quantity}
+                                      onChange={(e) => setClothingItems(prev => ({
+                                        ...prev,
+                                        [item.id]: { ...prev[item.id], quantity: Math.max(1, parseInt(e.target.value) || 1) }
+                                      }))}
+                                    />
+                                  )}
+                                </div>
+                                {item.id === 'other' && clothingItems[item.id].selected && (
+                                  <Input
+                                    type="text"
+                                    placeholder="Specify item..."
+                                    className="h-6 text-xs px-2 w-full mt-0.5"
+                                    value={otherClothingName}
+                                    onChange={(e) => setOtherClothingName(e.target.value)}
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+
+
+
+                      </div>
+                      </motion.div>
+
+                    {/* COL 3: Fulfillment & Summary (span 4) */}
+                    <motion.div
+                      className="lg:col-span-4 flex flex-col gap-2 lg:overflow-y-auto pl-1 pb-4 lg:pb-0"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.2, duration: 0.3 }}
+                    >
+                      {/* Summary Card */}
+                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md shrink-0">
+                        {(user?.role === 'admin' || user?.role === 'cso') && (
+                          <div className="flex justify-between items-center pb-2 mb-2 border-b border-slate-700/50">
+                            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Job Flag</span>
+                            <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
+                              <input 
+                                type="checkbox" 
+                                checked={isStuck} 
+                                onChange={(e) => setIsStuck(e.target.checked)} 
+                                className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3.5 w-3.5"
+                              />
+                              <span className="text-xs font-bold">Stuck</span>
+                            </Label>
+                          </div>
+                        )}
+                        <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-700">
+                          {isPickup && (
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-400">Pickup Dist.</span>
+                              <span className="font-medium">{pickupDist} km (ร—2)</span>
+                            </div>
+                          )}
+                          {isDelivery && (
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-400">Delivery Dist.</span>
+                              <span className="font-medium">{deliveryDist} km</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col mb-3">
+                          <div className="flex justify-between items-center mb-1">
+                            <Label className="text-xs font-medium text-slate-300">Laundry Price</Label>
+                            <div className="relative w-24">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">เธฟ</span>
+                              <Input 
+                                type="number"
+                                className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
+                                value={laundryPrice || ""}
+                                onChange={e => setLaundryPrice(parseFloat(e.target.value) || 0)}
+                              />
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-indigo-300 font-medium">
+                            {(() => {
+                              if (serviceType === "other") return "Custom service: Enter price manually";
+                              const baseService = services.find(s => s.id === serviceType);
+                              if (!baseService) return "Please select a service";
+                              let pricePerKg = baseService.price;
+                              if (customerPriceListId) {
+                                const customPl = priceLists.find(pl => pl.id === customerPriceListId);
+                                if (customPl && customPl.servicePrices[serviceType] !== undefined) pricePerKg = customPl.servicePrices[serviceType];
+                              } else {
+                                const defaultPl = priceLists.find(pl => pl.isDefault);
+                                if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
+                              }
+                              const effWeight = Math.max(2, serviceWeight);
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}เธฟ)`;
+                            })()}
+                          </span>
+                          {serviceSpeed !== "standard" && (
+                            <div className="flex justify-between items-center mt-2">
+                              <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
+                              <span className="text-sm font-bold text-orange-300">เธฟ{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
+                            </div>
+                          )}
+
+                          <div className="space-y-0.5 pt-2 mt-2 border-t border-slate-700">
+                            <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
+                            <div className="flex items-center gap-2">
+                              <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="radio" checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <span className="text-[11px] text-slate-200">Standard</span>
+                              </Label>
+                              <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="radio" checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <span className="text-[11px] text-slate-200">Exp 50%</span>
+                              </Label>
+                              <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="radio" checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" />
+                                <span className="text-[11px] text-slate-200">Exp 100%</span>
+                              </Label>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 pt-2 mt-2 border-t border-slate-700">
+                            <div className="space-y-0.5">
+                              <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                <CreditCard size={12} className="text-slate-500" />
+                                Payment Channel
+                              </Label>
+                              <select
+                                id="payment-channel"
+                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                                value={paymentChannel}
+                                onChange={(e) => setPaymentChannel(e.target.value)}
+                              >
+                                <option value="">Select Channel</option>
+                                <option value="Cash / COD">Cash / COD</option>
+                                <option value="Transfer">Transfer</option>
+                                <option value="Credit Card">Credit Card</option>
+                                <option value="Gateway">Gateway</option>
+                                <option value="PromptPay">PromptPay</option>
+                                <option value="Deduct Member">Deduct Member</option>
+                                <option value="HQ/Credit">HQ/Credit</option>
+                              </select>
+                            </div>
+
+                            <div className="space-y-0.5">
+                              <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                <CreditCard size={12} className="text-slate-500" />
+                                Status
+                              </Label>
+                              <div className="flex items-center gap-2 h-6">
+                                <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
+                                  <input 
+                                    type="radio" 
+                                    name="payment-status"
+                                    checked={paymentMethod === 'unpaid'} 
+                                    onChange={() => setPaymentMethod('unpaid')} 
+                                    className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600" 
+                                  />
+                                  <span className="font-medium text-slate-200">Unpaid</span>
+                                </Label>
+                                <Label className="flex items-center gap-1 cursor-pointer text-[11px]">
+                                  <input 
+                                    type="radio" 
+                                    name="payment-status"
+                                    checked={paymentMethod === 'paid'} 
+                                    onChange={() => setPaymentMethod('paid')} 
+                                    className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600" 
+                                  />
+                                  <span className="font-medium text-emerald-400">Paid</span>
+                                </Label>
+                                {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                                  <Label className="flex items-center gap-1.5 cursor-pointer text-[11px] ml-2 animate-in fade-in duration-200">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={cashPlaced} 
+                                      onChange={(e) => setCashPlaced(e.target.checked)} 
+                                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3"
+                                    />
+                                    <span className="font-medium text-amber-400">เธงเธฒเธเน€เธเธดเธเนเธฅเนเธง</span>
+                                  </Label>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex justify-between items-end mb-2">
+                          <div className="flex flex-col gap-0.5">
+                             <Label className="flex items-center gap-1 cursor-pointer">
+                                <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
+                                <span className="text-xs text-slate-300">Free Delivery</span>
+                              </Label>
+                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}เธฟ/km</span>
+                          </div>
+                          <div className="text-right">
+                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">เธฟ{baseFee.toFixed(0)}</span>}
+                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>เธฟ{fee.toFixed(0)}</span>
+                          </div>
+                        </div>
+                        
+                        <div className="flex justify-between items-end border-t border-slate-700 pt-2">
+                          <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
+                          <span className="text-2xl font-black text-indigo-400">เธฟ{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
+                        </div>
+
+                        {(isPickup || isDelivery) && (
+                          <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
+                            <div className="flex flex-col">
+                              <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
+                              <span className="text-[10px] text-slate-500">Distance ร— {systemSettings?.riderCommissionPerKm || "2"}เธฟ</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-lg font-bold text-amber-400">
+                                เธฟ{selectedVIPLabel || isFreeDelivery ? "0" : (
+                                  (isPickup ? (
+                                    (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
+                                      ? (activeJob.pickupCommission ?? 0)
+                                      : Math.floor(pickupDist) * getCommissionRate(systemSettings)
+                                  ) : 0) +
+                                  (isDelivery ? (
+                                    (editingJobId && activeJob && activeJob.status === 'completed')
+                                      ? (activeJob.deliveryCommission ?? 0)
+                                      : Math.floor(deliveryDist) * getCommissionRate(systemSettings)
+                                  ) : 0)
+                                ).toFixed(0)}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+
+
+                    </motion.div>
+  </>
+)}
                   </div>
                   ) : (
                     <div className="h-full w-full bg-white rounded-xl border border-slate-200 overflow-hidden">
