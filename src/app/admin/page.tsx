@@ -2934,7 +2934,7 @@ export default function AdminPage() {
                             </div>
 
                             <div className="grid grid-cols-2 gap-2 mt-1">
-                              {!(customerName === "Walk-in Guest" || !customerName) ? (
+                              {!isWalkIn ? (
                                 <div className="space-y-0.5 flex flex-col">
                                   <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
                                     <CreditCard size={12} className="text-slate-500" />

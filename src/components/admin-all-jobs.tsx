@@ -87,17 +87,20 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const checkIsPinned = (j: Job, u: any) => {
     if (j.status !== 'completed') return false;
     const isAdmin = u?.role === 'admin' || u?.role === 'superadmin';
-    const walkIn = !j.customerId;
+    const walkIn = j.source === 'pos' || (j.type as string) === 'in_store';
     const missingBill = !j.billNo || j.billNo.trim() === '';
     
     if (isAdmin) {
-      return (!walkIn && !j.isPaid) || !j.isShopPaid || missingBill;
+      if (walkIn) return !j.isShopPaid || missingBill;
+      else return !j.isPaid || !j.isShopPaid || missingBill;
     }
     if (u?.role === 'cso') {
-      return (!walkIn && !j.isPaid) || missingBill;
+      if (walkIn) return false;
+      else return !j.isPaid || missingBill;
     }
     if (u?.role === 'manager') {
-      return !j.isShopPaid || (walkIn && missingBill);
+      if (walkIn) return !j.isShopPaid || missingBill;
+      else return !j.isShopPaid;
     }
     return false;
   };
@@ -631,14 +634,24 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       </TableCell>
                       
                       <TableCell className="align-middle py-2 text-center">
-                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                          {job.isPaid ? 'PAID' : 'UNPAID'}
-                        </Badge>
+                        {job.source === 'pos' || (job.type as string) === 'in_store' ? (
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                            SHOP {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                            {job.isPaid ? 'PAID' : 'UNPAID'}
+                          </Badge>
+                        )}
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
                         <div className="text-[11px] font-medium text-slate-600">
-                          {job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-"}
+                          {job.source === 'pos' || (job.type as string) === 'in_store' ? (
+                            <span className="text-slate-400 font-bold">-</span>
+                          ) : (
+                            job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-"
+                          )}
                         </div>
                       </TableCell>
 
@@ -1004,7 +1017,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                               <div className="flex items-center gap-1.5 text-[10px]">
                                 <Banknote size={12} className="text-slate-400" />
                                 <span className="font-bold">฿{job.totalAmount || 0}</span>
-                                {job.customerId && (
+                                {job.source === 'pos' || (job.type as string) === 'in_store' ? (
+                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                    SHOP {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                                  </span>
+                                ) : (
                                   <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
                                     {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid ? 'PAID' : 'UNPAID'}
                                   </span>
