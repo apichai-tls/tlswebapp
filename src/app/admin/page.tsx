@@ -595,7 +595,16 @@ export default function AdminPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const currentSelectedItems = useMemo(() => {
-    const list: { name: string; quantity: number; price?: number }[] = [];
+    const list: { name: string; quantity?: number; price?: number }[] = [];
+
+    if (serviceType === 'other') {
+      list.push({
+        name: "Other (Custom Service)",
+        price: laundryPrice || 0
+      });
+      return list;
+    }
+
     const labelsMap: Record<string, string> = {
       polo: "Polo Shirt",
       tshirt: "T-Shirt",
@@ -616,14 +625,6 @@ export default function AdminPage() {
         });
       }
     });
-
-    if (serviceType === 'other') {
-      list.push({
-        name: otherClothingName.trim() ? `Custom Service (${otherClothingName.trim()})` : "Other (Custom Service)",
-        quantity: 1,
-        price: laundryPrice || 0
-      });
-    }
 
     return list;
   }, [clothingItems, otherClothingName, serviceType, laundryPrice]);
@@ -1104,33 +1105,34 @@ export default function AdminPage() {
     }
 
     const itemsPayload: { name: string; quantity: number; price: number }[] = [];
-    const labelsMap: Record<string, string> = {
-      polo: "Polo Shirt",
-      tshirt: "T-Shirt",
-      pants: "Pants",
-      dress: "Dress",
-      bedsheet: "Bedsheet"
-    };
-
-    Object.entries(clothingItems).forEach(([key, val]) => {
-      if (val.selected) {
-        let name = labelsMap[key];
-        if (key === 'other') {
-          name = otherClothingName.trim() || "Other Item";
-        }
-        itemsPayload.push({
-          name: name || key,
-          quantity: val.quantity,
-          price: 0
-        });
-      }
-    });
 
     if (serviceType === 'other') {
       itemsPayload.push({
-        name: otherClothingName.trim() ? `Custom Service (${otherClothingName.trim()})` : "Other (Custom Service)",
+        name: "Other (Custom Service)",
         quantity: 1,
         price: laundryPrice || 0
+      });
+    } else {
+      const labelsMap: Record<string, string> = {
+        polo: "Polo Shirt",
+        tshirt: "T-Shirt",
+        pants: "Pants",
+        dress: "Dress",
+        bedsheet: "Bedsheet"
+      };
+
+      Object.entries(clothingItems).forEach(([key, val]) => {
+        if (val.selected) {
+          let name = labelsMap[key];
+          if (key === 'other') {
+            name = otherClothingName.trim() || "Other Item";
+          }
+          itemsPayload.push({
+            name: name || key,
+            quantity: val.quantity,
+            price: 0
+          });
+        }
       });
     }
 
@@ -2794,57 +2796,59 @@ export default function AdminPage() {
                           )}
                         </div>
 
-                        <div className="space-y-1 pt-1 border-t border-slate-100">
-                          <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Clothing Types</Label>
-                          <div className="grid grid-cols-2 gap-1">
-                            {[
-                              { id: 'other', label: 'Other (Specify)' },
-                              { id: 'polo', label: 'Polo Shirt' },
-                              { id: 'tshirt', label: 'T-Shirt' },
-                              { id: 'pants', label: 'Pants' },
-                              { id: 'dress', label: 'Dress' },
-                              { id: 'bedsheet', label: 'Bedsheet' },
-                            ].map(item => (
-                              <div key={item.id} className="flex flex-col gap-1 col-span-1">
-                                <div className="flex items-center gap-2">
-                                  <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-3.5 w-3.5 shrink-0"
-                                      checked={clothingItems[item.id].selected}
-                                      onChange={(e) => setClothingItems(prev => ({
-                                        ...prev,
-                                        [item.id]: { ...prev[item.id], selected: e.target.checked }
-                                      }))}
-                                    />
-                                    <span className="truncate">{item.label}</span>
-                                  </Label>
-                                  {clothingItems[item.id].selected && (
-                                    <Input 
-                                      type="number" 
-                                      min="1"
-                                      className="w-12 h-6 text-xs text-center p-1 shrink-0"
-                                      value={clothingItems[item.id].quantity}
-                                      onChange={(e) => setClothingItems(prev => ({
-                                        ...prev,
-                                        [item.id]: { ...prev[item.id], quantity: Math.max(1, parseInt(e.target.value) || 1) }
-                                      }))}
+                        {serviceType !== "other" && (
+                          <div className="space-y-1 pt-1 border-t border-slate-100">
+                            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">Clothing Types</Label>
+                            <div className="grid grid-cols-2 gap-1">
+                              {[
+                                { id: 'other', label: 'Other (Specify)' },
+                                { id: 'polo', label: 'Polo Shirt' },
+                                { id: 'tshirt', label: 'T-Shirt' },
+                                { id: 'pants', label: 'Pants' },
+                                { id: 'dress', label: 'Dress' },
+                                { id: 'bedsheet', label: 'Bedsheet' },
+                              ].map(item => (
+                                <div key={item.id} className="flex flex-col gap-1 col-span-1">
+                                  <div className="flex items-center gap-2">
+                                    <Label className="flex items-center gap-2 cursor-pointer w-full text-xs text-slate-700">
+                                      <input 
+                                        type="checkbox" 
+                                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-3.5 w-3.5 shrink-0"
+                                        checked={clothingItems[item.id].selected}
+                                        onChange={(e) => setClothingItems(prev => ({
+                                          ...prev,
+                                          [item.id]: { ...prev[item.id], selected: e.target.checked }
+                                        }))}
+                                      />
+                                      <span className="truncate">{item.label}</span>
+                                    </Label>
+                                    {clothingItems[item.id].selected && (
+                                      <Input 
+                                        type="number" 
+                                        min="1"
+                                        className="w-12 h-6 text-xs text-center p-1 shrink-0"
+                                        value={clothingItems[item.id].quantity}
+                                        onChange={(e) => setClothingItems(prev => ({
+                                          ...prev,
+                                          [item.id]: { ...prev[item.id], quantity: Math.max(1, parseInt(e.target.value) || 1) }
+                                        }))}
+                                      />
+                                    )}
+                                  </div>
+                                  {item.id === 'other' && clothingItems[item.id].selected && (
+                                    <Input
+                                      type="text"
+                                      placeholder="Specify item..."
+                                      className="h-6 text-xs px-2 w-full mt-0.5"
+                                      value={otherClothingName}
+                                      onChange={(e) => setOtherClothingName(e.target.value)}
                                     />
                                   )}
                                 </div>
-                                {item.id === 'other' && clothingItems[item.id].selected && (
-                                  <Input
-                                    type="text"
-                                    placeholder="Specify item..."
-                                    className="h-6 text-xs px-2 w-full mt-0.5"
-                                    value={otherClothingName}
-                                    onChange={(e) => setOtherClothingName(e.target.value)}
-                                  />
-                                )}
-                              </div>
-                            ))}
+                              ))}
+                            </div>
                           </div>
-                        </div>
+                        )}
 
 
 
@@ -3085,7 +3089,9 @@ export default function AdminPage() {
                                     {item.name}
                                   </span>
                                   <div className="flex items-center gap-1.5 shrink-0">
-                                    <span className="text-indigo-300 font-semibold text-[11px]">x{item.quantity}</span>
+                                    {item.quantity !== undefined && (
+                                      <span className="text-indigo-300 font-semibold text-[11px]">x{item.quantity}</span>
+                                    )}
                                     {item.price !== undefined && item.price > 0 && (
                                       <span className="text-emerald-400 font-bold text-[11px]">฿{item.price}</span>
                                     )}
