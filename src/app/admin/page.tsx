@@ -815,7 +815,7 @@ export default function AdminPage() {
     const totalMinusFee = job.totalAmount ? job.totalAmount - (job.fee || 0) : 0;
     let basePrice = totalMinusFee;
     if (isExp100) basePrice = Math.ceil(totalMinusFee / 2);
-    else if (isExp50) basePrice = Math.ceil(totalMinusFee / 1.5);
+    else if (isExp50) basePrice = Math.floor(totalMinusFee / 1.5);
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
@@ -1091,6 +1091,17 @@ export default function AdminPage() {
         });
       }
     });
+
+    if (serviceType === 'other') {
+      const hasOther = itemsPayload.some(i => i.name.toLowerCase().includes('other'));
+      if (!hasOther) {
+        itemsPayload.push({
+          name: "Other (Custom Service)",
+          quantity: 1,
+          price: laundryPrice || 0
+        });
+      }
+    }
 
     const newJobData: any = {
       isStuck,
@@ -1903,13 +1914,17 @@ export default function AdminPage() {
                                   setCustomerPhone(c.phone);
                                   setSelectedProfileCustomer(c);
                                   
-                                  setPickupLoc(c.defaultAddress);
-                                  setPickupRoom(c.secondaryAddress || "");
-                                  setPickupCoords(c.defaultCoords);
+                                  if (!pickupLoc) {
+                                    setPickupLoc(c.defaultAddress);
+                                    setPickupRoom(c.secondaryAddress || "");
+                                    setPickupCoords(c.defaultCoords);
+                                  }
                                   
-                                  setDeliveryLoc(c.defaultAddress);
-                                  setDeliveryRoom(c.secondaryAddress || "");
-                                  setDeliveryCoords(c.defaultCoords);
+                                  if (!deliveryLoc) {
+                                    setDeliveryLoc(c.defaultAddress);
+                                    setDeliveryRoom(c.secondaryAddress || "");
+                                    setDeliveryCoords(c.defaultCoords);
+                                  }
                                   
                                   setIsDeliveryDirty(false);
                                   setIsFreeDelivery(false);
@@ -2431,7 +2446,7 @@ export default function AdminPage() {
                                   onChange={(e) => setPickupRiderId(e.target.value)}
                                 >
                                   <option value="">-- Assign Rider --</option>
-                                  {riders.filter(r => r.branchId || r.id === pickupRiderId).map(r => (
+                                  {riders.filter(r => (r.isActive !== false && r.branchId) || r.id === pickupRiderId).map(r => (
                                     <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
                                   ))}
                                 </select>
@@ -2487,7 +2502,7 @@ export default function AdminPage() {
                                     onChange={(e) => setDeliveryRiderId(e.target.value)}
                                   >
                                     <option value="">-- Assign Rider --</option>
-                                    {riders.filter(r => r.branchId || r.id === deliveryRiderId).map(r => (
+                                    {riders.filter(r => (r.isActive !== false && r.branchId) || r.id === deliveryRiderId).map(r => (
                                       <option key={`d-${r.id}`} value={r.id}>{r.name}</option>
                                     ))}
                                   </select>
@@ -2651,6 +2666,7 @@ export default function AdminPage() {
                               value={bagImageUrls}
                               onValueChange={setBagImageUrls}
                               maxFiles={5}
+                              disableDelete={user?.role === 'cso'}
                             />
                           </div>
 
@@ -2664,34 +2680,37 @@ export default function AdminPage() {
                               value={billImageUrls}
                               onValueChange={setBillImageUrls}
                               maxFiles={4}
+                              disableDelete={user?.role === 'cso'}
                             />
                           </div>
 
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
                             <MultiImageUploader
-                              ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
+                              ref={(user?.role === 'admin' || user?.role === 'cso') ? pickupUploaderRef : undefined}
                               entityType="job"
                               entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={pickupProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
+                              onValueChange={(user?.role === 'admin' || user?.role === 'cso') ? setPickupProofImageUrls : undefined}
+                              maxFiles={(user?.role === 'admin' || user?.role === 'cso') ? 5 : pickupProofImageUrls.length}
+                              readOnly={user?.role !== 'admin' && user?.role !== 'cso'}
+                              disableDelete={user?.role === 'cso'}
                             />
                           </div>
 
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
                             <MultiImageUploader
-                              ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
+                              ref={(user?.role === 'admin' || user?.role === 'cso') ? deliveryUploaderRef : undefined}
                               entityType="job"
                               entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={deliveryProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
+                              onValueChange={(user?.role === 'admin' || user?.role === 'cso') ? setDeliveryProofImageUrls : undefined}
+                              maxFiles={(user?.role === 'admin' || user?.role === 'cso') ? 5 : deliveryProofImageUrls.length}
+                              readOnly={user?.role !== 'admin' && user?.role !== 'cso'}
+                              disableDelete={user?.role === 'cso'}
                             />
                           </div>
                         </div>
@@ -3025,7 +3044,10 @@ export default function AdminPage() {
                         <div className="flex justify-between items-end mb-2">
                           <div className="flex flex-col gap-0.5">
                              <Label className="flex items-center gap-1 cursor-pointer">
-                                <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
+                                <input type="checkbox" checked={isFreeDelivery} onChange={(e) => {
+                                  setIsFreeDelivery(e.target.checked);
+                                  if (!e.target.checked) setEditingFeeLock(null);
+                                }} />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
                               <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
@@ -3303,13 +3325,17 @@ export default function AdminPage() {
             setCustomerPhone(c.phone);
             setSelectedProfileCustomer(c);
             
-            setPickupLoc(c.defaultAddress);
-            setPickupRoom(c.secondaryAddress || "");
-            setPickupCoords(c.defaultCoords);
+            if (!pickupLoc) {
+              setPickupLoc(c.defaultAddress);
+              setPickupRoom(c.secondaryAddress || "");
+              setPickupCoords(c.defaultCoords);
+            }
             
-            setDeliveryLoc(c.defaultAddress);
-            setDeliveryRoom(c.secondaryAddress || "");
-            setDeliveryCoords(c.defaultCoords);
+            if (!deliveryLoc) {
+              setDeliveryLoc(c.defaultAddress);
+              setDeliveryRoom(c.secondaryAddress || "");
+              setDeliveryCoords(c.defaultCoords);
+            }
             
             setIsDeliveryDirty(false);
             setIsFreeDelivery(false);

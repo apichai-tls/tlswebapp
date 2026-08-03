@@ -276,12 +276,7 @@ export async function addJobAction(data: any) {
         entityId: createdJob.id,
         entityType: 'job',
         action: 'create',
-        details: JSON.stringify({
-          status: createdJob.status,
-          subStatus: createdJob.subStatus,
-          customerName: createdJob.customerName,
-          totalAmount: createdJob.totalAmount,
-        }),
+        details: JSON.stringify(createdJob),
         userId: data.actorId || null,
         userName: data.actorName || null,
       }
@@ -579,7 +574,18 @@ export async function updateRiderAction(id: string, updates: any) {
     data.currentLng = updates.currentLocation.lng;
     delete data.currentLocation;
   }
-  return prisma.rider.update({ where: { id }, data });
+  const updatedRider = await prisma.rider.update({ where: { id }, data });
+  if (data.isActive !== undefined) {
+    try {
+      await prisma.adminUser.update({
+        where: { id },
+        data: { isActive: data.isActive }
+      });
+    } catch (e) {
+      // Ignore if no linked AdminUser
+    }
+  }
+  return updatedRider;
 }
 
 export async function deleteRiderAction(id: string) {

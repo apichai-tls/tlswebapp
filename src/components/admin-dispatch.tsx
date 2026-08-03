@@ -93,7 +93,7 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
 
   // Filter riders by selected area (only active riders with branch assigned)
   const filteredRiders = useMemo(() => {
-    const activeRiders = allRiders.filter(r => r.branchId);
+    const activeRiders = allRiders.filter(r => r.branchId && r.isActive !== false);
     if (filterArea === "ALL") return activeRiders;
     return activeRiders.filter(r => {
       const branch = shopLocations.find(s => s.id === r.branchId);

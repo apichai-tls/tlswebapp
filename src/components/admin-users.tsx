@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { User, ShieldCheck, Plus, Trash2, Edit, Save, X } from "lucide-react";
+import { User, ShieldCheck, Plus, Trash2, Edit, Save, X, UserX, UserCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
@@ -16,6 +16,7 @@ interface AdminUser {
   password?: string;
   permissions: string;
   area?: string | null;
+  isActive?: boolean;
 }
 
 const MENU_PERMISSIONS = [
@@ -38,6 +39,12 @@ export function AdminUsers() {
   const { user } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [viewMode, setViewMode] = useState<"active" | "resigned">("active");
+
+  const activeUsers = users.filter(u => u.isActive !== false);
+  const resignedUsers = users.filter(u => u.isActive === false);
+  const displayedUsers = viewMode === "active" ? activeUsers : resignedUsers;
+
   
   // Form State
   const [isEditing, setIsEditing] = useState(false);
@@ -156,6 +163,26 @@ export function AdminUsers() {
     }
   };
 
+  const handleToggleResign = async (u: AdminUser) => {
+    const isResigning = u.isActive !== false;
+    if (!confirm(`Are you sure you want to ${isResigning ? 'resign' : 'reactivate'} ${u.name}?`)) return;
+    try {
+      const res = await updateUser(u.id, {
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        area: u.area || null,
+        permissions: JSON.parse(u.permissions),
+        isActive: !isResigning
+      });
+      if (!res?.success) throw new Error(res?.error || "Failed to update user");
+      toast.success(`User ${isResigning ? 'resigned' : 'reactivated'}`);
+      fetchUsers();
+    } catch (error: any) {
+      toast.error(error.message || "Operation failed");
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-50 p-6 overflow-auto">
       <div className="flex items-center justify-between mb-8">
@@ -270,6 +297,20 @@ export function AdminUsers() {
       )}
 
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex-1">
+        <div className="flex border-b border-slate-200 bg-slate-50 px-6 pt-4 gap-6">
+          <button
+            className={`pb-3 font-semibold text-sm transition-colors ${viewMode === 'active' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            onClick={() => setViewMode('active')}
+          >
+            Active Users ({activeUsers.length})
+          </button>
+          <button
+            className={`pb-3 font-semibold text-sm transition-colors ${viewMode === 'resigned' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            onClick={() => setViewMode('resigned')}
+          >
+            Resigned ({resignedUsers.length})
+          </button>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase text-[10px] font-black tracking-wider">
@@ -288,14 +329,14 @@ export function AdminUsers() {
                     Loading users...
                   </td>
                 </tr>
-              ) : users.length === 0 ? (
+              ) : displayedUsers.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-6 py-8 text-center text-slate-500 font-medium">
                     No users found
                   </td>
                 </tr>
               ) : (
-                users.map(user => {
+                displayedUsers.map(user => {
                   let perms: string[] = [];
                   try { perms = JSON.parse(user.permissions); } catch(e){}
                   
@@ -351,6 +392,13 @@ export function AdminUsers() {
                             className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                           >
                             <Edit size={16} />
+                          </button>
+                          <button 
+                            onClick={() => handleToggleResign(user)}
+                            title={user.isActive !== false ? "Resign User" : "Reactivate User"}
+                            className="p-2 text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
+                          >
+                            {user.isActive !== false ? <UserX size={16} /> : <UserCheck size={16} />}
                           </button>
                           <button 
                             onClick={() => handleDelete(user.id)}

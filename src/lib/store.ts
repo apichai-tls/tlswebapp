@@ -172,6 +172,7 @@ export interface Rider {
   vehiclePlate?: string;
   commissionBalance?: number;
   branchId?: string;
+  isActive?: boolean;
 }
 
 export interface RiderTransaction {

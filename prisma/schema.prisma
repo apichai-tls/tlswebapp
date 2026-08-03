@@ -135,6 +135,7 @@ model Rider {
   commissionBalance Float              @default(0)
   branchId          String?
   color             String?            @default("#3b82f6")
+  isActive          Boolean            @default(true)
   branch            ShopLocation?      @relation(fields: [branchId], references: [id])
   transactions      RiderTransaction[]
 }
@@ -213,6 +214,7 @@ model AdminUser {
   updatedAt    DateTime      @updatedAt
   area         String?
   branchId     String?
+  isActive     Boolean       @default(true)
   ShopLocation ShopLocation? @relation(fields: [branchId], references: [id])
 }
 

@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Edit2, Trash2, Phone, Star, Activity, Circle, CheckCircle2, BarChart3, ChevronRight, ChevronDown, Calendar, ArrowRight, Banknote, Image as ImageIcon, Download } from "lucide-react";
+import { Plus, Edit2, Trash2, Phone, Star, Activity, Circle, CheckCircle2, BarChart3, ChevronRight, ChevronDown, Calendar, ArrowRight, Banknote, Image as ImageIcon, Download, UserX, UserCheck } from "lucide-react";
 
 const RIDER_COLORS = [
   { name: 'Berry', hex: '#B81D5E' },
@@ -75,6 +75,11 @@ export function AdminRiders() {
   const [reportRiderId, setReportRiderId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [tempId, setTempId] = useState<string>("");
+  const [viewMode, setViewMode] = useState<"active" | "resigned">("active");
+
+  const activeRiders = riders.filter(r => r.isActive !== false);
+  const resignedRiders = riders.filter(r => r.isActive === false);
+  const displayedRiders = viewMode === "active" ? activeRiders : resignedRiders;
 
   const riderStats = useMemo(() => {
     const stats: Record<string, { monthEarnings: number, totalEarnings: number, completedJobsCount: number }> = {};
@@ -174,6 +179,14 @@ export function AdminRiders() {
     if (confirm(`Are you sure you want to remove ${riderName}?`)) {
       riderStore.deleteRider(id);
       toast.success("Rider removed.");
+    }
+  }
+
+  async function handleToggleResign(rider: Rider) {
+    const isResigning = rider.isActive !== false;
+    if (confirm(`Are you sure you want to ${isResigning ? 'resign' : 'reactivate'} ${rider.name}?`)) {
+      await riderStore.updateRider(rider.id, { isActive: !isResigning });
+      toast.success(`Rider ${isResigning ? 'resigned' : 'reactivated'}.`);
     }
   }
 
@@ -320,9 +333,24 @@ export function AdminRiders() {
         </Dialog>
       </div>
 
+      <div className="flex border-b border-slate-200 gap-6">
+        <button
+          className={`pb-3 font-semibold text-sm transition-colors ${viewMode === 'active' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          onClick={() => setViewMode('active')}
+        >
+          Active Riders ({activeRiders.length})
+        </button>
+        <button
+          className={`pb-3 font-semibold text-sm transition-colors ${viewMode === 'resigned' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          onClick={() => setViewMode('resigned')}
+        >
+          Resigned ({resignedRiders.length})
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         <AnimatePresence>
-          {riders.map((rider, i) => (
+          {displayedRiders.map((rider, i) => (
             <motion.div
               key={rider.id}
               initial={{ opacity: 0, scale: 0.95 }}
@@ -407,6 +435,15 @@ export function AdminRiders() {
                     onClick={() => openEdit(rider)}
                   >
                     <Edit2 size={14} />
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    className="h-8 w-8 bg-white/80 backdrop-blur border-slate-200 text-slate-600 hover:text-orange-600 shadow-sm cursor-pointer"
+                    onClick={() => handleToggleResign(rider)}
+                    title={rider.isActive !== false ? "Resign Rider" : "Reactivate Rider"}
+                  >
+                    {rider.isActive !== false ? <UserX size={14} /> : <UserCheck size={14} />}
                   </Button>
                   <Button 
                     variant="outline" 
