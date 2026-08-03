@@ -593,6 +593,40 @@ export default function AdminPage() {
   });
   const [otherClothingName, setOtherClothingName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const currentSelectedItems = useMemo(() => {
+    const list: { name: string; quantity: number; price?: number }[] = [];
+    const labelsMap: Record<string, string> = {
+      polo: "Polo Shirt",
+      tshirt: "T-Shirt",
+      pants: "Pants",
+      dress: "Dress",
+      bedsheet: "Bedsheet"
+    };
+
+    Object.entries(clothingItems).forEach(([key, val]) => {
+      if (val.selected) {
+        let name = labelsMap[key];
+        if (key === 'other') {
+          name = otherClothingName.trim() || "Other Item";
+        }
+        list.push({
+          name: name || key,
+          quantity: val.quantity
+        });
+      }
+    });
+
+    if (serviceType === 'other') {
+      list.push({
+        name: otherClothingName.trim() ? `Custom Service (${otherClothingName.trim()})` : "Other (Custom Service)",
+        quantity: 1,
+        price: laundryPrice || 0
+      });
+    }
+
+    return list;
+  }, [clothingItems, otherClothingName, serviceType, laundryPrice]);
   const [serviceWeight, setServiceWeight] = useState(2);
   
   const handleServiceOrSpeedChange = (newServiceId: string, newSpeed: "standard" | "express_50" | "express_100", newWeight: number, priceListId: string | null = customerPriceListId) => {
@@ -1082,7 +1116,7 @@ export default function AdminPage() {
       if (val.selected) {
         let name = labelsMap[key];
         if (key === 'other') {
-          name = otherClothingName.trim() || "Other";
+          name = otherClothingName.trim() || "Other Item";
         }
         itemsPayload.push({
           name: name || key,
@@ -1093,14 +1127,11 @@ export default function AdminPage() {
     });
 
     if (serviceType === 'other') {
-      const hasOther = itemsPayload.some(i => i.name.toLowerCase().includes('other'));
-      if (!hasOther) {
-        itemsPayload.push({
-          name: "Other (Custom Service)",
-          quantity: 1,
-          price: laundryPrice || 0
-        });
-      }
+      itemsPayload.push({
+        name: otherClothingName.trim() ? `Custom Service (${otherClothingName.trim()})` : "Other (Custom Service)",
+        quantity: 1,
+        price: laundryPrice || 0
+      });
     }
 
     const newJobData: any = {
@@ -3040,6 +3071,30 @@ export default function AdminPage() {
                             </div>
                           </div>
                         </div>
+
+                        {/* Selected Items Breakdown Preview */}
+                        {currentSelectedItems.length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-slate-700/80 space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                              Order Items ({currentSelectedItems.length})
+                            </span>
+                            <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                              {currentSelectedItems.map((item, idx) => (
+                                <div key={idx} className="flex justify-between items-center text-xs bg-slate-800/80 px-2 py-1 rounded border border-slate-700/60">
+                                  <span className="text-slate-200 font-medium truncate max-w-[150px]">
+                                    {item.name}
+                                  </span>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <span className="text-indigo-300 font-semibold text-[11px]">x{item.quantity}</span>
+                                    {item.price !== undefined && item.price > 0 && (
+                                      <span className="text-emerald-400 font-bold text-[11px]">฿{item.price}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         
                         <div className="flex justify-between items-end mb-2">
                           <div className="flex flex-col gap-0.5">
