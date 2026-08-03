@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffect } from "react";
-import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight } from "lucide-react";
+import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
