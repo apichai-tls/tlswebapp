@@ -2934,54 +2934,56 @@ export default function AdminPage() {
                             </div>
 
                             <div className="grid grid-cols-2 gap-2 mt-1">
-                              <div className="space-y-0.5 flex flex-col">
-                                <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <CreditCard size={12} className="text-slate-500" />
-                                  CSO
-                                </Label>
-                                <div className="flex items-center gap-2 h-6">
-                                  <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                                    <input 
-                                      type="radio" 
-                                      name="payment-status"
-                                      checked={paymentMethod === 'unpaid'} 
-                                      onChange={() => {
-                                        if (user?.role === 'admin' || user?.role === 'cso') setPaymentMethod('unpaid');
-                                      }} 
-                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
-                                      className={`w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`} 
-                                    />
-                                    <span className="font-medium text-slate-200">Unpaid</span>
+                              {!(customerName === "Walk-in Guest" || !customerName) ? (
+                                <div className="space-y-0.5 flex flex-col">
+                                  <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                    <CreditCard size={12} className="text-slate-500" />
+                                    CSO
                                   </Label>
-                                  <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                                    <input 
-                                      type="radio" 
-                                      name="payment-status"
-                                      checked={paymentMethod === 'paid'} 
-                                      onChange={() => {
-                                        if (user?.role === 'admin' || user?.role === 'cso') setPaymentMethod('paid');
-                                      }}
-                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
-                                      className={`w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`} 
-                                    />
-                                    <span className="font-medium text-emerald-400">Paid</span>
-                                  </Label>
-                                  {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                    <Label className={`flex items-center gap-1.5 text-[11px] animate-in fade-in duration-200 ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                  <div className="flex items-center gap-2 h-6">
+                                    <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                                       <input 
-                                        type="checkbox" 
-                                        checked={cashPlaced} 
-                                        onChange={(e) => {
-                                          if (user?.role === 'admin' || user?.role === 'cso') setCashPlaced(e.target.checked);
+                                        type="radio" 
+                                        name="payment-status"
+                                        checked={paymentMethod === 'unpaid'} 
+                                        onChange={() => {
+                                          if (user?.role === 'admin' || user?.role === 'cso') setPaymentMethod('unpaid');
                                         }} 
                                         onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
-                                        className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`}
+                                        className={`w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`} 
                                       />
-                                      <span className="font-medium text-amber-400 whitespace-nowrap">วางเงินแล้ว</span>
+                                      <span className="font-medium text-slate-200">Unpaid</span>
                                     </Label>
-                                  )}
+                                    <Label className={`flex items-center gap-1 text-[11px] ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                      <input 
+                                        type="radio" 
+                                        name="payment-status"
+                                        checked={paymentMethod === 'paid'} 
+                                        onChange={() => {
+                                          if (user?.role === 'admin' || user?.role === 'cso') setPaymentMethod('paid');
+                                        }}
+                                        onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
+                                        className={`w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`} 
+                                      />
+                                      <span className="font-medium text-emerald-400">Paid</span>
+                                    </Label>
+                                    {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                                      <Label className={`flex items-center gap-1.5 text-[11px] animate-in fade-in duration-200 ${user?.role === 'admin' || user?.role === 'cso' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                        <input 
+                                          type="checkbox" 
+                                          checked={cashPlaced} 
+                                          onChange={(e) => {
+                                            if (user?.role === 'admin' || user?.role === 'cso') setCashPlaced(e.target.checked);
+                                          }} 
+                                          onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
+                                          className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`}
+                                        />
+                                        <span className="font-medium text-amber-400 whitespace-nowrap">วางเงินแล้ว</span>
+                                      </Label>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
+                              ) : <div />}
                               <div className="space-y-0.5">
                                 <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
                                   <Store size={12} className="text-slate-500" />

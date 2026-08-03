@@ -84,6 +84,24 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const today = new Date();
   const yesterday = subDays(today, 1);
 
+  const checkIsPinned = (j: Job, u: any) => {
+    if (j.status !== 'completed') return false;
+    const isAdmin = u?.role === 'admin' || u?.role === 'superadmin';
+    const walkIn = !j.customerId;
+    const missingBill = !j.billNo || j.billNo.trim() === '';
+    
+    if (isAdmin) {
+      return (!walkIn && !j.isPaid) || !j.isShopPaid || missingBill;
+    }
+    if (u?.role === 'cso') {
+      return (!walkIn && !j.isPaid) || missingBill;
+    }
+    if (u?.role === 'manager') {
+      return !j.isShopPaid || (walkIn && missingBill);
+    }
+    return false;
+  };
+
   const visibleKanbanColumns = KANBAN_COLUMNS.filter(
     status => {
       if (user?.role === 'manager' && status === 'tba') return false;
@@ -836,9 +854,8 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                         .filter(j => j.status === status)
                         .sort((a, b) => {
                           if (status === 'completed') {
-                            const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
-                            const isPinnedA = (isAdmin && (!a.isPaid || !a.isShopPaid)) || (user?.role === 'cso' && !a.isPaid) || (user?.role === 'manager' && !a.isShopPaid);
-                            const isPinnedB = (isAdmin && (!b.isPaid || !b.isShopPaid)) || (user?.role === 'cso' && !b.isPaid) || (user?.role === 'manager' && !b.isShopPaid);
+                            const isPinnedA = checkIsPinned(a, user);
+                            const isPinnedB = checkIsPinned(b, user);
                             if (isPinnedA && !isPinnedB) return -1;
                             if (!isPinnedA && isPinnedB) return 1;
                           }
@@ -850,12 +867,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                           durationMin = differenceInMinutes(new Date(job.completedAt), new Date(job.createdAt));
                         }
                         
-                        const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
-                        const isPinned = job.status === 'completed' && (
-                          (isAdmin && (!job.isPaid || !job.isShopPaid)) || 
-                          (user?.role === 'cso' && !job.isPaid) || 
-                          (user?.role === 'manager' && !job.isShopPaid)
-                        );
+                        const isPinned = checkIsPinned(job, user);
                         
                         let cardBgClass = 'bg-white border-slate-200';
                         if (job.isStuck) cardBgClass = 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70';
@@ -992,9 +1004,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                               <div className="flex items-center gap-1.5 text-[10px]">
                                 <Banknote size={12} className="text-slate-400" />
                                 <span className="font-bold">฿{job.totalAmount || 0}</span>
-                                <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                                  {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid ? 'PAID' : 'UNPAID'}
-                                </span>
+                                {job.customerId && (
+                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                    {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid ? 'PAID' : 'UNPAID'}
+                                  </span>
+                                )}
                               </div>
                             </div>
 
