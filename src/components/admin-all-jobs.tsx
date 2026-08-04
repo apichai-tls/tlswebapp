@@ -28,7 +28,6 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   completed: { label: "Completed", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   cancel: { label: "Cancelled", className: "bg-red-50 text-red-700 border-red-200" },
   return: { label: "Return", className: "bg-rose-50 text-rose-700 border-rose-200" },
-  topup: { label: "Topup Member", className: "bg-purple-50 text-purple-700 border-purple-200" },
 };
 
 const statusIcon: Record<JobStatus, React.ReactNode> = {
@@ -40,12 +39,11 @@ const statusIcon: Record<JobStatus, React.ReactNode> = {
   completed: <CheckCircle2 size={13} />,
   cancel: <XCircle size={13} />,
   return: <Navigation size={13} />,
-  topup: <Banknote size={13} />,
 };
 
 type FilterDate = "today" | "yesterday" | "custom";
 
-const KANBAN_COLUMNS: JobStatus[] = ['tba', 'pending', 'pickup', 'billing', 'delivery', 'completed', 'cancel', 'topup'];
+const KANBAN_COLUMNS: JobStatus[] = ['tba', 'pending', 'pickup', 'billing', 'delivery', 'completed', 'cancel'];
 
 export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], onEditJob?: (job: Job) => void, onCreateJob?: () => void }) {
   const riders = useRiders();
@@ -60,9 +58,20 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   
+  const [reopenDialog, setReopenDialog] = useState<{
+    isOpen: boolean;
+    jobId: string;
+    targetStatus: string;
+    reason: string;
+  }>({
+    isOpen: false,
+    jobId: "",
+    targetStatus: "",
+    reason: "",
+  });
+  
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(true);
-  const [showTopup, setShowTopup] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null);
   const [filterArea, setFilterArea] = useState<string>("ALL");
@@ -75,15 +84,41 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
   const today = new Date();
   const yesterday = subDays(today, 1);
 
+  const checkIsPinned = (j: Job, u: any) => {
+    if (j.status !== 'completed') return false;
+    const isAdmin = u?.role === 'admin' || u?.role === 'superadmin';
+    const walkIn = j.source === 'pos' || (j.type as string) === 'in_store';
+    const missingBill = !j.billNo || j.billNo.trim() === '';
+    
+    if (isAdmin) {
+      if (walkIn) return !j.isShopPaid || missingBill;
+      else return !j.isPaid || !j.isShopPaid || missingBill;
+    }
+    if (u?.role === 'cso') {
+      if (walkIn) return false;
+      else return !j.isPaid || missingBill;
+    }
+    if (u?.role === 'manager') {
+      if (walkIn) return !j.isShopPaid || missingBill;
+      else return !j.isShopPaid;
+    }
+    return false;
+  };
+
   const visibleKanbanColumns = KANBAN_COLUMNS.filter(
     status => {
       if (user?.role === 'manager' && status === 'tba') return false;
       if (status === 'completed' && !showCompleted) return false;
       if (status === 'cancel' && !showCancelled) return false;
-      if (status === 'topup' && !showTopup) return false;
       return true;
     }
   );
+
+  useEffect(() => {
+    if (visibleKanbanColumns.length > 0 && !visibleKanbanColumns.includes(activeKanbanColumn)) {
+      setActiveKanbanColumn(visibleKanbanColumns[0]);
+    }
+  }, [visibleKanbanColumns, activeKanbanColumn]);
 
   useEffect(() => {
     let start: Date;
@@ -92,24 +127,21 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     if (dateFilter === "today") {
       start = today;
       end = today;
-      // Today focuses on active work — hide completed/cancelled/topup by default
+      // Today focuses on active work — hide completed/cancelled by default
       setShowCompleted(false);
       setShowCancelled(false);
-      setShowTopup(false);
     } else if (dateFilter === "yesterday") {
       start = yesterday;
       end = yesterday;
       // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
-      setShowTopup(true);
     } else if (dateFilter === "custom") {
       start = new Date(startDate);
       end = new Date(endDate);
       // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
-      setShowTopup(true);
     } else {
       return; 
     }
@@ -199,7 +231,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     } else {
       if (job.status === 'completed' && !showCompleted && viewMode === "list") matchesStatus = false;
       if (job.status === 'cancel' && !showCancelled && viewMode === "list") matchesStatus = false;
-      if (job.status === 'topup' && !showTopup && viewMode === "list") matchesStatus = false;
     }
 
     // Area Filter
@@ -234,6 +265,19 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
     sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? 1 : -1));
   }
 
+  const getTotalDuration = (start: Date, end: Date) => {
+    const diffMs = end.getTime() - start.getTime();
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (diffHours >= 24) {
+      const days = Math.floor(diffHours / 24);
+      const hours = diffHours % 24;
+      return `${days} วัน ${hours} ชั่วโมง`;
+    }
+    return `${diffHours} ชั่วโมง ${diffMinutes} นาที`;
+  };
+
   const exportToCSV = () => {
     const csvData = filteredJobs.map(job => {
       const customer = customers.find(c => c.id === job.customerId);
@@ -241,6 +285,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       return {
         "Job ID": job.id.split('-')[0].toUpperCase(),
         "Date": format(new Date(job.createdAt), "dd MMM yyyy, HH:mm"),
+        "Month": format(new Date(job.createdAt), "MM"),
         "Branch": branch?.name || "-",
         "Customer Name": job.customerName || "Walk-in Guest",
         "Customer Phone": job.customerPhone || "-",
@@ -252,7 +297,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
         "Delivery Rider": job.deliveryRiderId ? (riders.find(r => r.id === job.deliveryRiderId)?.name || job.deliveryRiderId) : "-",
         "Assigned Rider": (!job.pickupRiderId && !job.deliveryRiderId && job.riderId) ? (riders.find(r => r.id === job.riderId)?.name || job.riderId) : "-",
         "Payment Channel": job.paymentChannel || "-",
-        "Payment Status": job.isPaid ? "PAID" : "UNPAID",
+        "CSO Pay Status": job.isPaid ? "PAID" : "UNPAID",
+        "CSO Paid At": job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-",
+        "SHOP Pay Status": job.isShopPaid ? "PAID" : "UNPAID",
+        "SHOP Paid At": job.shopPaidAt ? format(new Date(job.shopPaidAt), "dd/MM/yyyy HH:mm") : "-",
+        "Total Duration": job.completedAt ? getTotalDuration(new Date(job.createdAt), new Date(job.completedAt)) : "-",
         "Status": statusConfig[job.status]?.label || job.status
       };
     });
@@ -327,7 +376,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               placeholder="Search jobs, customers, address..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 w-[260px] bg-white border-slate-200" 
+              className="pl-9 w-full sm:w-[260px] bg-white border-slate-200" 
             />
           </div>
 
@@ -364,10 +413,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
             <Label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={showCancelled} onChange={e => setShowCancelled(e.target.checked)} className="rounded border-slate-300" />
               <span className="text-xs font-medium text-slate-700">Show Cancelled</span>
-            </Label>
-            <Label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={showTopup} onChange={e => setShowTopup(e.target.checked)} className="rounded border-slate-300" />
-              <span className="text-xs font-medium text-slate-700">Show Topup Member</span>
             </Label>
             {isLoadingHistory && <span className="text-[10px] text-slate-400 ml-2 animate-pulse">Loading...</span>}
           </div>
@@ -411,7 +456,6 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               <option value="completed">Completed</option>
               <option value="cancel">Cancelled</option>
               <option value="return">Returned</option>
-              <option value="topup">Topup Member</option>
             </select>
           </div>
           
@@ -435,7 +479,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
         </div>
 
       {viewMode === "list" ? (
-      <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow className="bg-slate-50 hover:bg-slate-50">
@@ -449,10 +493,14 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                 onClick={() => setPaymentSort(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc')}
               >
                 <div className="flex items-center justify-center gap-1">
-                  Pay Status
+                  CSO Pay Status
                   <ArrowUpDown size={12} className={paymentSort ? "text-indigo-600" : "text-slate-400"} />
                 </div>
               </TableHead>
+              <TableHead className="w-[120px]">CSO Paid At</TableHead>
+              <TableHead className="text-center w-[100px]">SHOP Pay Status</TableHead>
+              <TableHead className="w-[120px]">Shop Paid At</TableHead>
+              <TableHead className="w-[100px]">Bill No.</TableHead>
               <TableHead className="text-right w-[100px]">Fee</TableHead>
               <TableHead className="w-[140px]">Rider</TableHead>
               <TableHead className="text-center w-[120px]">Status</TableHead>
@@ -462,7 +510,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
             <AnimatePresence>
               {sortedJobs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-48 text-center text-slate-500">
+                  <TableCell colSpan={13} className="h-48 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Search size={32} className="text-slate-300" />
                       <p>No jobs found matching your filters</p>
@@ -586,9 +634,43 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                       </TableCell>
                       
                       <TableCell className="align-middle py-2 text-center">
-                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                          {job.isPaid ? 'PAID' : 'UNPAID'}
+                        {job.source === 'pos' || (job.type as string) === 'in_store' ? (
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                            SHOP {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                            {job.isPaid ? 'PAID' : 'UNPAID'}
+                          </Badge>
+                        )}
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2">
+                        <div className="text-[11px] font-medium text-slate-600">
+                          {job.source === 'pos' || (job.type as string) === 'in_store' ? (
+                            <span className="text-slate-400 font-bold">-</span>
+                          ) : (
+                            job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-"
+                          )}
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2 text-center">
+                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {job.isShopPaid ? 'PAID' : 'UNPAID'}
                         </Badge>
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2">
+                        <div className="text-[11px] font-medium text-slate-600">
+                          {job.shopPaidAt ? format(new Date(job.shopPaidAt), "dd/MM/yyyy HH:mm") : "-"}
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="align-middle py-2">
+                        <div className="text-[11px] font-bold text-slate-700">
+                          {job.billNo || "-"}
+                        </div>
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-right">
@@ -653,7 +735,8 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
                                 if (newStatus === 'completed') {
                                   updates.completedAt = new Date().toISOString();
                                 }
-                                jobStore.updateJobDetails(job.id, updates);
+                                const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                                jobStore.updateJobDetails(job.id, updates, actorDetails);
                               }
                             }}
                             className={`w-full text-[10px] font-semibold rounded-md border py-1 px-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer ${statusConfig[job.status]?.className || ''}`}
@@ -683,254 +766,298 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
         </Table>
       </div>
       ) : (
-        <div className="flex-1 overflow-x-auto pb-4 custom-scrollbar">
-          <div className="flex gap-4 min-w-max h-full min-h-[600px]">
-            {visibleKanbanColumns.map(status => (
-              <div 
-                key={status} 
-                className="w-72 flex flex-col bg-slate-50/50 rounded-xl border border-slate-200 shrink-0 h-full max-h-[75vh]"
-                onDragOver={(e) => {
-                  if (status === 'completed' || status === 'cancel' || status === 'topup') return; // Do not allow dragover on terminal/financial statuses
-                  e.preventDefault();
-                  e.currentTarget.classList.add('bg-slate-100');
-                }}
-                onDragLeave={(e) => {
-                  e.currentTarget.classList.remove('bg-slate-100');
-                }}
-                onDrop={async (e) => {
-                  e.preventDefault();
-                  e.currentTarget.classList.remove('bg-slate-100');
-                  
-                  if (status === 'completed' || status === 'cancel' || status === 'topup') {
-                    toast.error(`Cannot drag and drop jobs directly to ${statusConfig[status].label} status.`);
-                    return;
-                  }
-
-                  const jobId = e.dataTransfer.getData('jobId');
-                  if (jobId) {
-                    try {
-                      const job = filteredJobs.find(j => j.id === jobId);
-                      if (job && job.status !== status) {
-                        const isDragFromCompleted = job.status === 'completed';
-                        const isDragFromCancel = job.status === 'cancel';
-                        const isDragFromTopup = job.status === 'topup';
-                         
-                        if (isDragFromCancel || isDragFromTopup) {
-                          toast.error("Cancelled and Topup Member jobs cannot be dragged to other columns.");
-                          return;
-                        }
-                        if (isDragFromCompleted) {
-                          if (user?.role !== 'admin' && user?.role !== 'cso') {
-                            toast.error("Only Admins and CSOs can drag jobs out of Completed status.");
-                            return;
-                          }
-                          if (status !== 'delivery') {
-                            toast.error("Completed jobs can only be dragged back to Delivery status.");
-                            return;
-                          }
-                        }
-
-                        const hasAccess = 
-                          user?.role === 'admin' || 
-                          user?.role === 'cso' || 
-                          user?.permissions?.includes('jobs') || 
-                          user?.permissions?.includes('dashboard');
-
-                        if (hasAccess) {
-                          const updates: any = { 
-                            status,
-                            actorId: user?.id,
-                            actorName: user?.name || user?.email,
-                            actorRole: user?.role
-                          };
-                          await jobStore.updateJobDetails(jobId, updates);
-                          toast.success(`Job updated to ${statusConfig[status].label}`);
-                        } else {
-                          toast.error("You don't have permission to change status.");
-                        }
-                      }
-                    } catch(err: any) {
-                      toast.error(`Error updating job: ${err.message}`);
-                    }
-                  }
-                }}
-              >
-                <div className="p-3 border-b border-slate-200 flex items-center justify-between bg-white rounded-t-xl sticky top-0 z-10 shadow-sm">
-                  <div className="flex items-center gap-2">
-                    <span className={statusConfig[status].className + " w-6 h-6 flex items-center justify-center rounded-full"}>
-                       {statusIcon[status]}
-                    </span>
-                    <span className="font-semibold text-sm text-slate-800">{statusConfig[status].label}</span>
-                  </div>
-                  <Badge variant="secondary" className="text-xs bg-slate-100">
-                    {filteredJobs.filter(j => j.status === status).length}
+        <div className="flex-1 flex flex-col gap-4">
+          {/* Kanban Column Selector for Mobile & Tablet */}
+          <div className="flex lg:hidden overflow-x-auto gap-2 pb-2 scrollbar-hide border-b border-slate-100 shrink-0">
+            {visibleKanbanColumns.map(status => {
+              const jobsInCol = filteredJobs.filter(j => j.status === status);
+              const isActive = activeKanbanColumn === status;
+              return (
+                <button
+                  key={status}
+                  onClick={() => setActiveKanbanColumn(status)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border cursor-pointer ${
+                    isActive 
+                      ? "bg-slate-900 text-white border-slate-900 shadow-md" 
+                      : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"
+                  }`}
+                >
+                  <span className="capitalize">{statusConfig[status]?.label || status}</span>
+                  <Badge className={`h-4 min-w-4 px-1 flex items-center justify-center text-[10px] rounded-full font-black ${
+                    isActive ? "bg-white text-slate-950" : "bg-slate-100 text-slate-600"
+                  }`}>
+                    {jobsInCol.length}
                   </Badge>
-                </div>
-                <div className="p-3 flex-1 overflow-y-auto flex flex-col gap-3 min-h-[150px]">
-                  {filteredJobs.filter(j => j.status === status).map(job => {
-                    let durationMin = null;
-                    if (job.completedAt) {
-                      durationMin = differenceInMinutes(new Date(job.completedAt), new Date(job.createdAt));
-                    }
-                    return (
-                    <div 
-                      key={job.id}
-                      draggable={
-                        user?.role === 'admin' || 
-                        user?.role === 'cso' || 
-                        user?.permissions?.includes('jobs') || 
-                        user?.permissions?.includes('dashboard')
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex-1 overflow-x-auto pb-4 custom-scrollbar">
+            <div className="flex gap-4 min-w-full lg:min-w-max h-full min-h-[600px]">
+              {visibleKanbanColumns.map(status => {
+                const isTabActive = activeKanbanColumn === status;
+                return (
+                  <div 
+                    key={status} 
+                    data-status={status}
+                    className={`w-full lg:w-72 flex flex-col bg-slate-50/50 rounded-xl border border-slate-200 shrink-0 h-full max-h-[75vh] ${
+                      isTabActive ? "flex" : "hidden lg:flex"
+                    }`}
+                    onDragOver={(e) => {
+                      if (status === 'completed') return; // Do not allow dragover drop effect on Completed column
+                      e.preventDefault();
+                      e.currentTarget.classList.add('bg-slate-100');
+                    }}
+                    onDragLeave={(e) => {
+                      e.currentTarget.classList.remove('bg-slate-100');
+                    }}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      e.currentTarget.classList.remove('bg-slate-100');
+                      
+                      if (status === 'completed') {
+                        toast.error("Cannot drag and drop jobs directly to Completed status.");
+                        return;
                       }
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData('jobId', job.id);
-                        e.dataTransfer.effectAllowed = 'move';
-                      }}
-                      onClick={() => onEditJob && onEditJob(job)}
-                      className={`${job.isStuck ? 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70' : 'bg-white border-slate-200'} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.role === 'cso' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
-                    >
-                      <div className="flex items-start justify-between mb-2">
-                        <div className="flex flex-col gap-1 w-full">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-mono text-xs font-bold text-slate-900">#{job.id.split('-')[0].toUpperCase()}</span>
-                            {job.branchId && (
-                              <span className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded truncate max-w-[100px]">
-                                {shopLocations.find(s => s.id === job.branchId)?.name}
-                              </span>
-                            )}
-                            {job.laundryTypes && job.laundryTypes.length > 0 && (
-                              <span className="text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded tracking-wide">
-                                {job.laundryTypes.join(', ')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex gap-1 items-center">
-                          {job.isStuck && (
-                            <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-red-100 text-red-700 border-red-200 shrink-0">Stuck</Badge>
-                          )}
-                          {job.source === 'pos' && (
-                            <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
-                          )}
-                          {job.cashPlaced && (
-                            <span title="วางเงินแล้ว" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200 animate-in fade-in duration-200">
-                              <Banknote size={10} />
-                            </span>
-                          )}
-                          {job.billImageUrl && job.billImageUrl !== '[]' && <span title="Bill uploaded" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
-                          {job.subStatus === 'wash'    && <span title="Washing" className="w-4 h-4 rounded flex items-center justify-center bg-blue-100 text-blue-700 border border-blue-200"><Droplets size={10} /></span>}
-                          {job.subStatus === 'dry'     && <span title="Drying" className="w-4 h-4 rounded flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={10} /></span>}
-                          {job.subStatus === 'iron'    && <span title="Ironing" className="w-4 h-4 rounded flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={10} /></span>}
-                          {job.subStatus === 'ready'   && <span title="Ready" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200"><CheckCircle2 size={10} /></span>}
-                        </div>
-                      </div>
-                      <div className="font-medium text-sm text-slate-900 mb-1 leading-tight flex items-center gap-1 flex-wrap">
-                        {job.customerName || "Walk-in Guest"}
-                        {(() => {
-                          const c = customers.find(c => {
-                            if (job.customerId) return c.id === job.customerId;
-                            const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
-                            return cleanPhone.length >= 5 && c.phone === job.customerPhone;
-                          });
-                          if (!c) return null;
-                          return (
-                            <>
-                              {c.isVIP && <Badge className="text-[8px] px-1 py-0 h-3 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-bold">VIP</Badge>}
-                              {c.isMember && <Badge className="text-[8px] px-1 py-0 h-3 bg-blue-100 text-blue-700 border-none font-bold">MEMBER</Badge>}
-                            </>
-                          );
-                        })()}
-                      </div>
-                      <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
-                        <CalendarDays size={11} className="shrink-0 text-slate-400" />
-                        <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">P Date:</span>
-                        <span className="font-medium text-slate-600 flex items-center gap-1">
-                          {job.scheduledAt
-                            ? isSameDay(new Date(job.scheduledAt), new Date())
-                              ? format(new Date(job.scheduledAt), "HH:mm")
-                              : format(new Date(job.scheduledAt), "dd MMM, HH:mm")
-                            : "-"}
-                          {job.remark?.includes("Express 50%") && (
-                            <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-orange-50 text-orange-600 border-orange-200">
-                              EXP 50%
-                            </Badge>
-                          )}
-                          {job.remark?.includes("Express 100%") && (
-                            <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-red-50 text-red-600 border-red-200">
-                              EXP 100%
-                            </Badge>
-                          )}
+
+                      const jobId = e.dataTransfer.getData('jobId');
+                      if (jobId) {
+                        try {
+                          const job = filteredJobs.find(j => j.id === jobId);
+                          if (!job) return;
+                          
+                          // Check if moving out of completed status
+                          if (job.status === 'completed') {
+                            setReopenDialog({
+                              isOpen: true,
+                              jobId,
+                              targetStatus: status,
+                              reason: ""
+                            });
+                            return;
+                          }
+
+                          // Proceed directly for normal status transition
+                          const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                          await jobStore.updateJobDetails(jobId, { status }, actorDetails);
+                          toast.success(`Job updated to ${statusConfig[status].label}`);
+                        } catch (err: any) {
+                          toast.error(err.message || "Failed to update job status");
+                        }
+                      }
+                    }}
+                  >
+                    {/* Header */}
+                    <div className="p-4 border-b border-slate-200 bg-white rounded-t-xl flex justify-between items-center shrink-0">
+                      <div className="flex items-center gap-2">
+                        <span className={statusConfig[status].className + " w-6 h-6 flex items-center justify-center rounded-full"}>
+                          {statusIcon[status]}
                         </span>
+                        <span className="font-semibold text-sm text-slate-800">{statusConfig[status].label}</span>
                       </div>
-                      {job.deliveryScheduledAt && (
-                        <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
-                          <CalendarDays size={11} className="shrink-0 text-slate-400" />
-                          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">D Date:</span>
-                          <span className="font-medium text-slate-600 flex items-center gap-1.5 flex-wrap">
-                            {isSameDay(new Date(job.deliveryScheduledAt), new Date())
-                              ? format(new Date(job.deliveryScheduledAt), "HH:mm")
-                              : format(new Date(job.deliveryScheduledAt), "dd MMM, HH:mm")}
-                            {job.pickupLocation && job.dropoffLocation && 
-                             job.pickupLocation.trim().toLowerCase() !== job.dropoffLocation.trim().toLowerCase() && (
-                              <Badge className="text-[8px] font-extrabold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border border-rose-200 flex items-center gap-0.5 shadow-sm uppercase shrink-0 animate-pulse">
-                                <MapPin size={9} className="text-rose-600 shrink-0" />
-                                รับ-ส่งคนละที่
-                              </Badge>
-                            )}
-                          </span>
-                        </div>
-                      )}
-                      {['billing', 'delivery', 'completed'].includes(job.status) ? (
-                        <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Delivery Address">
-                          <Navigation size={12} className="shrink-0 mt-0.5 text-rose-500" />
-                          <span className="line-clamp-2 font-medium text-slate-700">
-                            <span className="text-[9px] font-bold text-rose-600 uppercase mr-1 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">ส่ง</span>
-                            {job.dropoffLocation || "-"}
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Pickup Address">
-                          <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
-                          <span className="line-clamp-2">
-                            <span className="text-[9px] font-bold text-emerald-600 uppercase mr-1 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">รับ</span>
-                            {job.pickupLocation || "-"}
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex flex-col gap-1.5 mb-2">
-                        <div className="flex items-center gap-1.5 text-[10px]">
-                          <Banknote size={12} className="text-slate-400" />
-                          <span className="font-bold">฿{job.totalAmount || 0}</span>
-                          <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid ? 'PAID' : 'UNPAID'}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                        <div className="flex gap-1.5 flex-wrap items-center">
-                          {job.createdBy && (
-                            <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded border border-indigo-200 flex items-center gap-1 shrink-0" title={`Created by ${job.createdBy}`}>
-                              <User size={10} className="text-indigo-500" /> {job.createdBy}
-                            </span>
-                          )}
-                          {job.pickupRiderId && <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1 rounded border border-amber-300 flex items-center gap-1" title="Pickup Rider Assigned"><Package size={10} /> {(() => { const r = riders.find(r => r.id === job.pickupRiderId); return r?.nickname || r?.name || job.pickupRiderId; })()}</span>}
-                          {job.deliveryRiderId && <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 rounded border border-emerald-300 flex items-center gap-1" title="Delivery Rider Assigned"><Truck size={10} /> {(() => { const r = riders.find(r => r.id === job.deliveryRiderId); return r?.nickname || r?.name || job.deliveryRiderId; })()}</span>}
-                          {!job.pickupRiderId && !job.deliveryRiderId && job.riderId && (
-                            <span className="text-[9px] font-bold text-slate-700 bg-slate-100 px-1 rounded border border-slate-300 flex items-center gap-1" title="Rider Assigned"><Truck size={10} /> {(() => { const r = riders.find(r => r.id === job.riderId); return r?.nickname || r?.name || job.riderId; })()}</span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                           {durationMin !== null ? (
-                             <span className="text-[10px] font-semibold text-slate-700">{durationMin}m</span>
-                           ) : (
-                             <span className="text-[10px] text-slate-400 font-medium">{format(new Date(job.createdAt), "HH:mm")}</span>
-                           )}
-                        </div>
-                      </div>
+                      <Badge variant="secondary" className="font-bold text-xs bg-slate-100 text-slate-600 border-none">
+                        {filteredJobs.filter(j => j.status === status).length}
+                      </Badge>
                     </div>
-                  )})}
-                </div>
-              </div>
-            ))}
+
+                    {/* Cards Container */}
+                    <div className="p-3 flex-1 overflow-y-auto flex flex-col gap-3 min-h-[150px]">
+                      {filteredJobs
+                        .filter(j => j.status === status)
+                        .sort((a, b) => {
+                          if (status === 'completed') {
+                            const isPinnedA = checkIsPinned(a, user);
+                            const isPinnedB = checkIsPinned(b, user);
+                            if (isPinnedA && !isPinnedB) return -1;
+                            if (!isPinnedA && isPinnedB) return 1;
+                          }
+                          return 0;
+                        })
+                        .map(job => {
+                        let durationMin = null;
+                        if (job.completedAt) {
+                          durationMin = differenceInMinutes(new Date(job.completedAt), new Date(job.createdAt));
+                        }
+                        
+                        const isPinned = checkIsPinned(job, user);
+                        
+                        let cardBgClass = 'bg-white border-slate-200';
+                        if (job.isStuck) cardBgClass = 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70';
+                        else if (isPinned) cardBgClass = 'bg-orange-50 border-orange-300 text-orange-950 hover:bg-orange-100/70';
+
+                        return (
+                          <div 
+                            key={job.id}
+                            draggable={
+                              user?.role === 'admin' || 
+                              user?.role === 'cso' || 
+                              user?.permissions?.includes('jobs') || 
+                              user?.permissions?.includes('dashboard')
+                            }
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('jobId', job.id);
+                              e.dataTransfer.effectAllowed = 'move';
+                            }}
+                            onClick={() => onEditJob && onEditJob(job)}
+                            className={`${cardBgClass} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.role === 'cso' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
+                          >
+                            <div className="flex items-start justify-between mb-2">
+                              <div className="flex flex-col gap-1 w-full">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-mono text-xs font-bold text-slate-900">#{job.id.split('-')[0].toUpperCase()}</span>
+                                  {job.branchId && (
+                                    <span className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded truncate max-w-[100px]">
+                                      {shopLocations.find(s => s.id === job.branchId)?.name}
+                                    </span>
+                                  )}
+                                  {job.laundryTypes && job.laundryTypes.length > 0 && (
+                                    <span className="text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded tracking-wide">
+                                      {job.laundryTypes.join(', ')}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex gap-1 items-center">
+                                {job.isStuck && (
+                                  <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-red-100 text-red-700 border-red-200 shrink-0">Stuck</Badge>
+                                )}
+                                {job.source === 'pos' && (
+                                  <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
+                                )}
+                                {job.cashPlaced && (
+                                  <span title="วางเงินแล้ว" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200 animate-in fade-in duration-200">
+                                    <Banknote size={10} />
+                                  </span>
+                                )}
+                                {job.billImageUrl && job.billImageUrl !== '[]' && <span title="Bill uploaded" className="w-4 h-4 rounded flex items-center justify-center bg-violet-100 text-violet-700 border border-violet-200"><Receipt size={10} /></span>}
+                                {job.subStatus === 'wash'    && <span title="Washing" className="w-4 h-4 rounded flex items-center justify-center bg-blue-100 text-blue-700 border border-blue-200"><Droplets size={10} /></span>}
+                                {job.subStatus === 'dry'     && <span title="Drying" className="w-4 h-4 rounded flex items-center justify-center bg-orange-100 text-orange-700 border border-orange-200"><Wind size={10} /></span>}
+                                {job.subStatus === 'iron'    && <span title="Ironing" className="w-4 h-4 rounded flex items-center justify-center bg-indigo-100 text-indigo-700 border border-indigo-200"><Shirt size={10} /></span>}
+                                {job.subStatus === 'ready'   && <span title="Ready" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200"><CheckCircle2 size={10} /></span>}
+                              </div>
+                            </div>
+
+                            <div className="text-xs font-bold text-slate-800 mb-1 flex items-center gap-1.5">
+                              {job.customerName || "Walk-in Guest"}
+                              {(() => {
+                                const c = customers.find(c => {
+                                  if (job.customerId) return c.id === job.customerId;
+                                  const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
+                                  return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+                                });
+                                if (!c) return null;
+                                return (
+                                  <>
+                                    {c.isVIP && <Badge className="text-[8px] px-1 py-0 h-3 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-bold">VIP</Badge>}
+                                    {c.isMember && <Badge className="text-[8px] px-1 py-0 h-3 bg-blue-100 text-blue-700 border-none font-bold">MEMBER</Badge>}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                            <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+                              <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">P Date:</span>
+                              <span className="font-medium text-slate-600 flex items-center gap-1">
+                                {job.scheduledAt
+                                  ? isSameDay(new Date(job.scheduledAt), new Date())
+                                    ? format(new Date(job.scheduledAt), "HH:mm")
+                                    : format(new Date(job.scheduledAt), "dd MMM, HH:mm")
+                                  : "-"}
+                                {job.remark?.includes("Express 50%") && (
+                                  <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-orange-50 text-orange-600 border-orange-200">
+                                    EXP 50%
+                                  </Badge>
+                                )}
+                                {job.remark?.includes("Express 100%") && (
+                                  <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-red-50 text-red-600 border-red-200">
+                                    EXP 100%
+                                  </Badge>
+                                )}
+                              </span>
+                            </div>
+                            {job.deliveryScheduledAt && (
+                              <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+                                <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">D Date:</span>
+                                <span className="font-medium text-slate-600 flex items-center gap-1.5 flex-wrap">
+                                  {isSameDay(new Date(job.deliveryScheduledAt), new Date())
+                                    ? format(new Date(job.deliveryScheduledAt), "HH:mm")
+                                    : format(new Date(job.deliveryScheduledAt), "dd MMM, HH:mm")}
+                                  {job.type === 'full_service' && job.pickupLocation && job.dropoffLocation && 
+                                   job.pickupLocation.trim().toLowerCase() !== job.dropoffLocation.trim().toLowerCase() && (
+                                    <Badge className="text-[8px] font-extrabold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border border-rose-200 flex items-center gap-0.5 shadow-sm uppercase shrink-0 animate-pulse">
+                                      <MapPin size={9} className="text-rose-600 shrink-0" />
+                                      รับ-ส่งคนละที่
+                                    </Badge>
+                                  )}
+                                </span>
+                              </div>
+                            )}
+
+                            {['billing', 'delivery', 'completed'].includes(job.status) ? (
+                              <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Delivery Address">
+                                <Navigation size={12} className="shrink-0 mt-0.5 text-rose-500" />
+                                <span className="line-clamp-2 font-medium text-slate-700">
+                                  <span className="text-[9px] font-bold text-rose-600 uppercase mr-1 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">ส่ง</span>
+                                  {job.dropoffLocation || "-"}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Pickup Address">
+                                <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
+                                <span className="line-clamp-2">
+                                  <span className="text-[9px] font-bold text-emerald-600 uppercase mr-1 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">รับ</span>
+                                  {job.pickupLocation || "-"}
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="flex flex-col gap-1.5 mb-2">
+                              <div className="flex items-center gap-1.5 text-[10px]">
+                                <Banknote size={12} className="text-slate-400" />
+                                <span className="font-bold">฿{job.totalAmount || 0}</span>
+                                {job.source === 'pos' || (job.type as string) === 'in_store' ? (
+                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                    SHOP {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                                  </span>
+                                ) : (
+                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                    {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid ? 'PAID' : 'UNPAID'}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                              <div className="flex gap-1.5 flex-wrap items-center">
+                                {job.createdBy && (
+                                  <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded border border-indigo-200 flex items-center gap-1 shrink-0" title={`Created by ${job.createdBy}`}>
+                                    <User size={10} className="text-indigo-500" /> {job.createdBy}
+                                  </span>
+                                )}
+                                {job.pickupRiderId && <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1 rounded border border-amber-300 flex items-center gap-1" title="Pickup Rider Assigned"><Package size={10} /> {(() => { const r = riders.find(r => r.id === job.pickupRiderId); return r?.nickname || r?.name || job.pickupRiderId; })()}</span>}
+                                {job.deliveryRiderId && <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 rounded border border-emerald-300 flex items-center gap-1" title="Delivery Rider Assigned"><Truck size={10} /> {(() => { const r = riders.find(r => r.id === job.deliveryRiderId); return r?.nickname || r?.name || job.deliveryRiderId; })()}</span>}
+                                {!job.pickupRiderId && !job.deliveryRiderId && job.riderId && (
+                                  <span className="text-[9px] font-bold text-slate-700 bg-slate-100 px-1 rounded border border-slate-300 flex items-center gap-1" title="Rider Assigned"><Truck size={10} /> {(() => { const r = riders.find(r => r.id === job.riderId); return r?.nickname || r?.name || job.riderId; })()}</span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                 {durationMin !== null ? (
+                                   <span className="text-[10px] font-semibold text-slate-700">{durationMin}m</span>
+                                 ) : (
+                                   <span className="text-[10px] text-slate-400 font-medium">{format(new Date(job.createdAt), "HH:mm")}</span>
+                                 )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -958,10 +1085,11 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               onClick={async () => {
                 if (!cancellingJob) return;
                 try {
+                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
                   await jobStore.updateJobDetails(cancellingJob.id, { 
                     status: "cancel", 
                     remark: `${cancellingJob.remark || ''} | Cancelled Reason: ${cancelReason}`.trim() 
-                  });
+                  }, actorDetails);
                   toast.success(`Job has been cancelled.`);
                   setCancellingJob(null);
                   setCancelReason("");
@@ -972,6 +1100,74 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
               className="bg-red-600 text-white hover:bg-red-700"
             >
               Confirm Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reopenDialog.isOpen} onOpenChange={(open) => !open && setReopenDialog(prev => ({ ...prev, isOpen: false }))}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reopen Job</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Reason for moving job out of completed <span className="text-red-500">*</span></Label>
+              <Input 
+                id="reopen-reason-input"
+                value={reopenDialog.reason} 
+                onChange={e => setReopenDialog(prev => ({ ...prev, reason: e.target.value }))} 
+                placeholder="e.g. Laundry needs rewashing, Customer changed request..."
+                autoFocus
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReopenDialog(prev => ({ ...prev, isOpen: false }))}>Cancel</Button>
+            <Button 
+              id="confirm-reopen-btn"
+              disabled={!reopenDialog.reason.trim()}
+              onClick={async () => {
+                const { jobId, targetStatus, reason } = reopenDialog;
+                if (!jobId || !targetStatus) return;
+                try {
+                  const job = filteredJobs.find(j => j.id === jobId);
+                  if (!job) return;
+
+                  let notes = [];
+                  if (job.adminNotesJson) {
+                    try {
+                      notes = JSON.parse(job.adminNotesJson);
+                      if (!Array.isArray(notes)) notes = [];
+                    } catch (e) {
+                      notes = [];
+                    }
+                  }
+
+                  const newLog = {
+                    id: Math.random().toString(36).substring(7),
+                    userId: user?.id || "unknown",
+                    userName: (user as any)?.name || user?.email || "Admin",
+                    text: `Reopened Job: Status changed from Completed to ${statusConfig[targetStatus as JobStatus]?.label || targetStatus}. Reason: ${reason.trim()}`,
+                    imageUrls: [],
+                    timestamp: new Date().toISOString(),
+                  };
+                  notes.push(newLog);
+
+                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                  await jobStore.updateJobDetails(jobId, { 
+                    status: targetStatus as JobStatus, 
+                    adminNotesJson: JSON.stringify(notes) 
+                  }, actorDetails);
+                  toast.success(`Job updated to ${statusConfig[targetStatus as JobStatus].label}`);
+                  setReopenDialog({ isOpen: false, jobId: "", targetStatus: "", reason: "" });
+                } catch (e: any) {
+                  toast.error(`Error: ${e.message}`);
+                }
+              }} 
+              className="bg-indigo-600 text-white hover:bg-indigo-700"
+            >
+              Confirm Reopen
             </Button>
           </DialogFooter>
         </DialogContent>

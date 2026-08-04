@@ -1,0 +1,38 @@
+[
+  {
+    "id": "SHOP-MOLCJ2X8",
+    "name": "TLSPTY",
+    "address": "That Laundry Shop (Pattaya)",
+    "lat": 12.9191194,
+    "lng": 100.8840937,
+    "noCommission": false,
+    "area": "PTY",
+    "logoUrl": null,
+    "phone": null,
+    "taxId": null
+  },
+  {
+    "id": "SHOP-MOGWZ0X0",
+    "name": "TLS Pattanakarn",
+    "address": "That Laundry Shop (Phattanakarn)",
+    "lat": 13.7393328,
+    "lng": 100.6259579,
+    "noCommission": false,
+    "area": "BKK",
+    "logoUrl": null,
+    "phone": null,
+    "taxId": null
+  },
+  {
+    "id": "shop-head",
+    "name": "TLSSR",
+    "address": "⭐ That Laundry Shop (15 Sukhumvit Residences)",
+    "lat": 13.7418765,
+    "lng": 100.5580877,
+    "noCommission": false,
+    "area": "BKK",
+    "logoUrl": null,
+    "phone": null,
+    "taxId": null
+  }
+]

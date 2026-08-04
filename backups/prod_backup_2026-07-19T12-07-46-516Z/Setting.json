@@ -1,0 +1,17 @@
+[
+  {
+    "id": "11ba9487-4b5f-4a7c-a003-87cfa041ad58",
+    "key": "googleMapsApiKey",
+    "value": "AIzaSyBL7i2gSxqGRXsN07ARJ96KK__NWW3pmh0"
+  },
+  {
+    "id": "2a16d8ed-5314-4db8-a3f8-bd5599e5ec32",
+    "key": "enableGoogleApi",
+    "value": "true"
+  },
+  {
+    "id": "d0124c68-ed4a-484b-986c-0d153bbba7f9",
+    "key": "riderCommissionPerKm",
+    "value": "3"
+  }
+]

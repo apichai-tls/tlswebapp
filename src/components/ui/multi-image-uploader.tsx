@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffect } from "react";
-import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight } from "lucide-react";
+import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -71,6 +71,7 @@ interface MultiImageUploaderProps {
   maxFiles?: number;
   className?: string;
   readOnly?: boolean;
+  disableDelete?: boolean;
 }
 
 interface PendingFile {
@@ -84,7 +85,7 @@ interface PendingFile {
 }
 
 export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUploaderProps>(
-  ({ entityType, entityId, subType, value = [], onValueChange, maxFiles = 5, className = "", readOnly = false }, ref) => {
+  ({ entityType, entityId, subType, value = [], onValueChange, maxFiles = 5, className = "", readOnly = false, disableDelete = false }, ref) => {
     const [isDragging, setIsDragging] = useState(false);
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
     const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -362,7 +363,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
                 onClick={() => setPreviewIndex(index)}
               >
                 <img src={url} alt={`Upload ${index}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                {!readOnly && (
+                {(!readOnly && !disableDelete) && (
                   <button
                     type="button"
                     onClick={(e) => {
@@ -398,13 +399,13 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
                 {pf.status === "error" && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/10 pointer-events-none">
                     <div className="text-center p-2 bg-white/90 rounded-lg m-2">
-                      <p className="text-[10px] text-red-600 font-semibold leading-tight">Failed</p>
+                      <XCircle className="text-red-500 mx-auto mb-1" size={16} />
+                      <p className="text-[9px] font-medium text-red-600 leading-tight">Failed</p>
                     </div>
                   </div>
                 )}
 
-                {/* Remove Button for pending/error files */}
-                {(pf.status === "pending" || pf.status === "error") && (
+                {(!readOnly && !disableDelete && pf.status !== "uploading") && (
                   <button
                     type="button"
                     onClick={(e) => {

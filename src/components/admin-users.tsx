@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ShieldCheck, Plus, Trash2, Edit, Save, X } from "lucide-react";
+import { User, ShieldCheck, Plus, Trash2, Edit, Save, X, UserX, UserCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
@@ -16,7 +16,7 @@ interface AdminUser {
   password?: string;
   permissions: string;
   area?: string | null;
-  branchId?: string | null;
+  isActive?: boolean;
 }
 
 const MENU_PERMISSIONS = [
@@ -30,7 +30,6 @@ const MENU_PERMISSIONS = [
   { id: "riders", label: "Riders" },
   { id: "map", label: "Live Map" },
   { id: "calculator", label: "Distance Calculator" },
-  { id: "reports", label: "Reports" },
   { id: "activity-logs", label: "Activity Logs" },
   { id: "settings", label: "Settings" },
   { id: "users", label: "Manage Users" }
@@ -40,6 +39,12 @@ export function AdminUsers() {
   const { user } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [viewMode, setViewMode] = useState<"active" | "resigned">("active");
+
+  const activeUsers = users.filter(u => u.isActive !== false);
+  const resignedUsers = users.filter(u => u.isActive === false);
+  const displayedUsers = viewMode === "active" ? activeUsers : resignedUsers;
+
   
   // Form State
   const [isEditing, setIsEditing] = useState(false);
@@ -50,7 +55,6 @@ export function AdminUsers() {
   const [name, setName] = useState("");
   const [role, setRole] = useState("staff");
   const [area, setArea] = useState("BKK");
-  const [branchId, setBranchId] = useState("");
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
 
   const fetchUsers = async () => {
@@ -62,9 +66,8 @@ export function AdminUsers() {
       } else {
         toast.error(res?.error || "Failed to load users");
       }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      toast.error("Network error: " + msg);
+    } catch (error: any) {
+      toast.error("Network error: " + error.message);
     } finally {
       setIsLoading(false);
     }
@@ -80,7 +83,6 @@ export function AdminUsers() {
     setName("");
     setRole("staff");
     setArea("BKK");
-    setBranchId("");
     setSelectedPerms([]);
     setEditingId(null);
     setIsEditing(false);
@@ -92,10 +94,9 @@ export function AdminUsers() {
     setName(user.name);
     setRole(user.role);
     setArea(user.area || "BKK");
-    setBranchId(user.branchId || "");
     try {
       setSelectedPerms(JSON.parse(user.permissions));
-    } catch {
+    } catch (e) {
       setSelectedPerms([]);
     }
     setEditingId(user.id);
@@ -123,37 +124,29 @@ export function AdminUsers() {
     if (!email || !name) return toast.error("Email and Name are required");
 
     try {
+      const data = {
+        email,
+        password: password || undefined,
+        name,
+        role,
+        area: area || null,
+        permissions: JSON.stringify(selectedPerms)
+      };
+
       if (editingId) {
-        const res = await updateUser(editingId, { 
-          name, 
-          email, 
-          password: password || undefined, 
-          role, 
-          area: area || null, 
-          branchId: branchId || null, 
-          permissions: selectedPerms 
-        });
+        const res = await updateUser(editingId, { name, email, password: password || undefined, role, area: area || null, permissions: selectedPerms });
         if (!res?.success) throw new Error(res?.error || "Failed to update user");
         toast.success("User updated successfully");
       } else {
         if (!password) return toast.error("Password is required for new users");
-        const res = await createUser({ 
-          name, 
-          email, 
-          password, 
-          role, 
-          area: area || null, 
-          branchId: branchId || null, 
-          permissions: selectedPerms 
-        });
+        const res = await createUser({ name, email, password, role, area: area || null, permissions: selectedPerms });
         if (!res?.success) throw new Error(res?.error || "Failed to create user");
         toast.success("User created successfully");
       }
       resetForm();
       fetchUsers();
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      toast.error(msg || "Operation failed");
+    } catch (error: any) {
+      toast.error(error.message || "Operation failed");
     }
   };
 
@@ -165,9 +158,28 @@ export function AdminUsers() {
       
       toast.success("User deleted successfully");
       fetchUsers();
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      toast.error(msg || "Failed to delete user");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to delete user");
+    }
+  };
+
+  const handleToggleResign = async (u: AdminUser) => {
+    const isResigning = u.isActive !== false;
+    if (!confirm(`Are you sure you want to ${isResigning ? 'resign' : 'reactivate'} ${u.name}?`)) return;
+    try {
+      const res = await updateUser(u.id, {
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        area: u.area || null,
+        permissions: JSON.parse(u.permissions),
+        isActive: !isResigning
+      });
+      if (!res?.success) throw new Error(res?.error || "Failed to update user");
+      toast.success(`User ${isResigning ? 'resigned' : 'reactivated'}`);
+      fetchUsers();
+    } catch (error: any) {
+      toast.error(error.message || "Operation failed");
     }
   };
 
@@ -232,18 +244,17 @@ export function AdminUsers() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Area / Region</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Area / Branch</label>
                 <select 
-                  value={area || "BKK"} 
+                  value={area} 
                   onChange={e => setArea(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
                 >
-                  <option value="ALL">ALL (All Regions)</option>
-                  <option value="BKK">BKK (Bangkok Region)</option>
-                  <option value="PTY">PTY (Pattaya Region)</option>
+                  <option value="ALL">ALL (All Branches)</option>
+                  <option value="BKK">BKK (Bangkok)</option>
+                  <option value="PTY">PTY (Pattaya)</option>
                 </select>
               </div>
-
             </div>
 
             <div>
@@ -286,6 +297,20 @@ export function AdminUsers() {
       )}
 
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex-1">
+        <div className="flex border-b border-slate-200 bg-slate-50 px-6 pt-4 gap-6">
+          <button
+            className={`pb-3 font-semibold text-sm transition-colors ${viewMode === 'active' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            onClick={() => setViewMode('active')}
+          >
+            Active Users ({activeUsers.length})
+          </button>
+          <button
+            className={`pb-3 font-semibold text-sm transition-colors ${viewMode === 'resigned' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            onClick={() => setViewMode('resigned')}
+          >
+            Resigned ({resignedUsers.length})
+          </button>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase text-[10px] font-black tracking-wider">
@@ -304,16 +329,16 @@ export function AdminUsers() {
                     Loading users...
                   </td>
                 </tr>
-              ) : users.length === 0 ? (
+              ) : displayedUsers.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-6 py-8 text-center text-slate-500 font-medium">
                     No users found
                   </td>
                 </tr>
               ) : (
-                users.map(user => {
+                displayedUsers.map(user => {
                   let perms: string[] = [];
-                  try { perms = JSON.parse(user.permissions); } catch {}
+                  try { perms = JSON.parse(user.permissions); } catch(e){}
                   
                   return (
                     <tr key={user.id} className="hover:bg-slate-50 transition-colors">
@@ -367,6 +392,13 @@ export function AdminUsers() {
                             className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                           >
                             <Edit size={16} />
+                          </button>
+                          <button 
+                            onClick={() => handleToggleResign(user)}
+                            title={user.isActive !== false ? "Resign User" : "Reactivate User"}
+                            className="p-2 text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
+                          >
+                            {user.isActive !== false ? <UserX size={16} /> : <UserCheck size={16} />}
                           </button>
                           <button 
                             onClick={() => handleDelete(user.id)}

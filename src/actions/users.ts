@@ -67,7 +67,7 @@ export async function createUser(data: { name: string; email: string; password?:
   }
 }
 
-export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null; branchId?: string | null }) {
+export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null; branchId?: string | null; isActive?: boolean }) {
   try {
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
@@ -83,7 +83,8 @@ export async function updateUser(id: string, data: { name: string; email: string
       role: data.role,
       permissions: JSON.stringify(data.permissions),
       area: data.area,
-      branchId: data.branchId
+      branchId: data.branchId,
+      ...(data.isActive !== undefined && { isActive: data.isActive })
     };
 
     if (data.password) {
@@ -111,7 +112,10 @@ export async function updateUser(id: string, data: { name: string; email: string
       } else {
         await prisma.rider.update({
           where: { id },
-          data: { name: data.name }
+          data: { 
+            name: data.name,
+            ...(data.isActive !== undefined && { isActive: data.isActive })
+          }
         });
       }
     }

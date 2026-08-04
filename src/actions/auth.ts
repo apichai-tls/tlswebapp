@@ -15,6 +15,10 @@ export async function loginUser(email: string, password?: string) {
       return { success: false, error: "Invalid email or password" };
     }
 
+    if (user.isActive === false) {
+      return { success: false, error: "This account has been deactivated (Resigned)" };
+    }
+
     if (!password) {
       return { success: false, error: "Invalid email or password" };
     }

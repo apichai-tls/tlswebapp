@@ -253,12 +253,7 @@ export async function addJobAction(data: any) {
         entityId: createdJob.id,
         entityType: 'job',
         action: 'create',
-        details: JSON.stringify({
-          status: createdJob.status,
-          subStatus: createdJob.subStatus,
-          customerName: createdJob.customerName,
-          totalAmount: createdJob.totalAmount,
-        }),
+        details: JSON.stringify(createdJob),
         userId: data.actorId || null,
         userName: data.actorName || null,
       }
@@ -278,6 +273,7 @@ export async function getJobsByIdsAction(ids: string[]) {
 }
 
 export async function updateJobAction(id: string, updates: any) {
+  console.log(`[updateJobAction] id: ${id}`, updates);
   const existingJob = await prisma.job.findUnique({ where: { id } });
   const data: any = {};
   if (updates.type !== undefined) data.type = updates.type;
@@ -299,6 +295,15 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.deliveryScheduledAt !== undefined) data.deliveryScheduledAt = updates.deliveryScheduledAt;
   if (updates.customerId !== undefined) data.customerId = updates.customerId;
   if (updates.distance !== undefined) data.distance = updates.distance;
+  if (updates.isShopPaid !== undefined) {
+    data.isShopPaid = updates.isShopPaid;
+    if (updates.isShopPaid === true && existingJob?.isShopPaid !== true) {
+      data.shopPaidAt = new Date();
+    } else if (updates.isShopPaid === false) {
+      data.shopPaidAt = null;
+    }
+  }
+  if (updates.billNo !== undefined) data.billNo = updates.billNo;
   if (updates.items !== undefined) data.itemsJson = updates.items ? JSON.stringify(updates.items) : null;
 
   // Additional fields for full job edits
@@ -318,7 +323,14 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.billImageUrl !== undefined) data.billImageUrl = updates.billImageUrl;
   if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
   if (updates.paymentChannel !== undefined) data.paymentChannel = updates.paymentChannel;
-  if (updates.isPaid !== undefined) data.isPaid = updates.isPaid;
+  if (updates.isPaid !== undefined) {
+    data.isPaid = updates.isPaid;
+    if (updates.isPaid === true && existingJob?.isPaid !== true) {
+      data.csoPaidAt = new Date();
+    } else if (updates.isPaid === false) {
+      data.csoPaidAt = null;
+    }
+  }
   if (updates.fee !== undefined) data.fee = updates.fee;
   if (updates.discount !== undefined) data.discount = updates.discount;
   if (updates.discountPercent !== undefined) data.discountPercent = updates.discountPercent;
@@ -427,8 +439,11 @@ export async function updateJobAction(id: string, updates: any) {
     const logFields = [
       'status', 'subStatus', 'isPaid', 'paymentChannel', 'riderId', 
       'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 
-      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck',
-      'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl'
+      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck', 'cashPlaced',
+      'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
+      'adminNotesJson', 'billNo', 'isShopPaid', 'customerName', 'customerPhone',
+      'pickupLocation', 'dropoffLocation', 'serviceType', 'type', 'pickupCommission', 
+      'deliveryCommission', 'laundryTypes', 'itemsJson'
     ];
     logFields.forEach(field => {
       const oldVal = (existingJob as any)[field];
@@ -501,7 +516,18 @@ export async function updateRiderAction(id: string, updates: any) {
     data.currentLng = updates.currentLocation.lng;
     delete data.currentLocation;
   }
-  return prisma.rider.update({ where: { id }, data });
+  const updatedRider = await prisma.rider.update({ where: { id }, data });
+  if (data.isActive !== undefined) {
+    try {
+      await prisma.adminUser.update({
+        where: { id },
+        data: { isActive: data.isActive }
+      });
+    } catch (e) {
+      // Ignore if no linked AdminUser
+    }
+  }
+  return updatedRider;
 }
 
 export async function deleteRiderAction(id: string) {
