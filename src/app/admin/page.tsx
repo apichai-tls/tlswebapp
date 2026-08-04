@@ -2867,24 +2867,6 @@ export default function AdminPage() {
                             </div>
                           </div>
 
-                          {clothingItems.other.selected && (
-                            <div className="flex justify-between items-center mb-1 mt-1 animate-in fade-in duration-200">
-                              <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
-                                Other Price ({otherClothingName.trim() || 'Specify'})
-                              </Label>
-                              <div className="relative w-24">
-                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
-                                <Input 
-                                  type="number"
-                                  className="h-8 pl-6 pr-2 bg-slate-800 border-amber-500/50 text-amber-300 font-bold text-right text-sm focus:border-amber-400"
-                                  value={otherClothingPrice || ""}
-                                  onChange={e => setOtherClothingPrice(parseFloat(e.target.value) || 0)}
-                                  placeholder="0"
-                                />
-                              </div>
-                            </div>
-                          )}
-
                           <span className="text-[10px] text-indigo-300 font-medium">
                             {(() => {
                               if (serviceType === "other") return "Custom service: Enter price manually";
@@ -2906,7 +2888,7 @@ export default function AdminPage() {
                             <div className="flex justify-between items-center mt-2">
                               <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
                               <span className="text-sm font-bold text-orange-300">
-                                ฿{(serviceSpeed === 'express_50' ? Math.ceil((laundryPrice + (clothingItems.other.selected ? (otherClothingPrice || 0) : 0)) * 0.5) : (laundryPrice + (clothingItems.other.selected ? (otherClothingPrice || 0) : 0))).toFixed(0)}
+                                ฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}
                               </span>
                             </div>
                           )}
@@ -2928,6 +2910,24 @@ export default function AdminPage() {
                               </Label>
                             </div>
                           </div>
+
+                          {clothingItems.other.selected && (
+                            <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-700/80 animate-in fade-in duration-200">
+                              <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
+                                Other Price ({otherClothingName.trim() || 'Specify'})
+                              </Label>
+                              <div className="relative w-24">
+                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                                <Input 
+                                  type="number"
+                                  className="h-8 pl-6 pr-2 bg-slate-800 border-amber-500/50 text-amber-300 font-bold text-right text-sm focus:border-amber-400"
+                                  value={otherClothingPrice || ""}
+                                  onChange={e => setOtherClothingPrice(parseFloat(e.target.value) || 0)}
+                                  placeholder="0"
+                                />
+                              </div>
+                            </div>
+                          )}
 
                           <div className="flex flex-col gap-2 pt-2 mt-2 border-t border-slate-700">
                             <div className="grid grid-cols-2 gap-2">
@@ -3076,7 +3076,7 @@ export default function AdminPage() {
                         <div className="flex justify-between items-end border-t border-slate-700 pt-2">
                           <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
                           <span className="text-2xl font-black text-indigo-400">
-                            ฿{((laundryPrice + (clothingItems.other.selected ? (otherClothingPrice || 0) : 0)) + (serviceSpeed === 'express_50' ? Math.ceil((laundryPrice + (clothingItems.other.selected ? (otherClothingPrice || 0) : 0)) * 0.5) : (serviceSpeed === 'express_100' ? (laundryPrice + (clothingItems.other.selected ? (otherClothingPrice || 0) : 0)) : 0)) + fee).toFixed(0)}
+                            ฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + (clothingItems.other.selected ? (otherClothingPrice || 0) : 0) + fee).toFixed(0)}
                           </span>
                         </div>
 
