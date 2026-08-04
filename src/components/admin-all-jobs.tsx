@@ -26,8 +26,9 @@ const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   billing: { label: "Process", className: "bg-blue-50 text-blue-700 border-blue-200" },
   delivery: { label: "Delivery", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   completed: { label: "Completed", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  cancel: { label: "Cancelled", className: "bg-red-50 text-red-700 border-red-200" },
-  return: { label: "Return", className: "bg-rose-50 text-rose-700 border-rose-200" },
+  cancel: { label: "Cancel", className: "bg-slate-100 text-slate-500 border-slate-300" },
+  return: { label: "Return", className: "bg-red-50 text-red-700 border-red-200" },
+  topup: { label: "Top-up", className: "bg-blue-50 text-blue-700 border-blue-200" },
 };
 
 const statusIcon: Record<JobStatus, React.ReactNode> = {
@@ -37,8 +38,9 @@ const statusIcon: Record<JobStatus, React.ReactNode> = {
   billing: <Clock size={13} />,
   delivery: <Truck size={13} />,
   completed: <CheckCircle2 size={13} />,
-  cancel: <XCircle size={13} />,
-  return: <Navigation size={13} />,
+  cancel: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>,
+  return: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>,
+  topup: <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>,
 };
 
 type FilterDate = "today" | "yesterday" | "custom";

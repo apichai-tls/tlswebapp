@@ -572,6 +572,7 @@ export default function AdminPage() {
     other: { selected: false, quantity: 1 },
   });
   const [otherClothingName, setOtherClothingName] = useState("");
+  const [otherClothingPrice, setOtherClothingPrice] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [serviceWeight, setServiceWeight] = useState(2);
   
@@ -879,6 +880,7 @@ export default function AdminPage() {
     setServiceType("wash_fold");
     setServiceWeight(2);
     setOtherClothingName("");
+    setOtherClothingPrice(0);
     setClothingItems({
       polo: { selected: false, quantity: 1 },
       tshirt: { selected: false, quantity: 1 },
@@ -1050,6 +1052,7 @@ export default function AdminPage() {
         } else {
           initialClothingItems.other = { selected: true, quantity: item.quantity };
           otherName = item.name;
+          if (item.price) setOtherClothingPrice(item.price);
         }
       });
     }
@@ -2244,6 +2247,7 @@ export default function AdminPage() {
                                 onClick={() => {
                                   setServiceWeight(2);
                                   setOtherClothingName("");
+    setOtherClothingPrice(0);
                                   setClothingItems({
                                     polo: { selected: false, quantity: 1 },
                                     tshirt: { selected: false, quantity: 1 },
@@ -3364,6 +3368,24 @@ export default function AdminPage() {
                               </div>
                             )}
 
+                          {clothingItems.other.selected && (
+                            <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-700/80 animate-in fade-in duration-200">
+                              <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
+                                Other Price ({otherClothingName.trim() || 'Specify'})
+                              </Label>
+                              <div className="relative w-24">
+                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                                <Input 
+                                  type="number"
+                                  className="h-8 pl-6 pr-2 bg-slate-800 border-amber-500/50 text-amber-300 font-bold text-right text-sm focus:border-amber-400"
+                                  value={otherClothingPrice || ""}
+                                  onChange={e => setOtherClothingPrice(parseFloat(e.target.value) || 0)}
+                                  placeholder="0"
+                                />
+                              </div>
+                            </div>
+                          )}
+
                             <div className="space-y-0.5">
                               <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
                               <div className="flex items-center gap-3">
@@ -3912,6 +3934,24 @@ export default function AdminPage() {
                             </div>
                           )}
 
+                          {clothingItems.other.selected && (
+                            <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-700/80 animate-in fade-in duration-200">
+                              <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
+                                Other Price ({otherClothingName.trim() || 'Specify'})
+                              </Label>
+                              <div className="relative w-24">
+                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                                <Input 
+                                  type="number"
+                                  className="h-8 pl-6 pr-2 bg-slate-800 border-amber-500/50 text-amber-300 font-bold text-right text-sm focus:border-amber-400"
+                                  value={otherClothingPrice || ""}
+                                  onChange={e => setOtherClothingPrice(parseFloat(e.target.value) || 0)}
+                                  placeholder="0"
+                                />
+                              </div>
+                            </div>
+                          )}
+
                           <div className="space-y-0.5 pt-2 mt-2 border-t border-slate-700">
                             <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
                             <div className="flex items-center gap-2">
@@ -3998,7 +4038,7 @@ export default function AdminPage() {
                         <div className="flex justify-between items-end mb-2">
                           <div className="flex flex-col gap-0.5">
                              <Label className="flex items-center gap-1 cursor-pointer">
-                                <input type="checkbox" checked={isFreeDelivery} onChange={(e) => setIsFreeDelivery(e.target.checked)} />
+                                <input type="checkbox" checked={isFreeDelivery} onChange={(e) => { setIsFreeDelivery(e.target.checked); if (!e.target.checked) setEditingFeeLock(null); }} />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
                               <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}เธฟ/km</span>
@@ -4267,6 +4307,7 @@ export default function AdminPage() {
           onSaved={(c) => {
             setServiceWeight(2);
             setOtherClothingName("");
+    setOtherClothingPrice(0);
             setClothingItems({
               polo: { selected: false, quantity: 1 },
               tshirt: { selected: false, quantity: 1 },
