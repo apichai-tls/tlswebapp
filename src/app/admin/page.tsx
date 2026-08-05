@@ -2960,9 +2960,14 @@ export default function AdminPage() {
                                 <Input
                                   id="bill-no"
                                   value={billNo}
-                                  onChange={(e) => setBillNo(e.target.value)}
+                                  onChange={(e) => {
+                                    if (user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') {
+                                      setBillNo(e.target.value);
+                                    }
+                                  }}
+                                  disabled={!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso')}
                                   placeholder="Enter Bill No."
-                                  className="h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500"
+                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') ? 'cursor-not-allowed opacity-60' : ''}`}
                                 />
                               </div>
                             </div>
