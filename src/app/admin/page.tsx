@@ -605,7 +605,10 @@ export default function AdminPage() {
   });
   const [otherClothingName, setOtherClothingName] = useState("");
   const [otherClothingPrice, setOtherClothingPrice] = useState<number>(0);
+  const [billNo, setBillNo] = useState("");
+  const isOtherClothingSelected = Boolean(clothingItems?.other?.selected);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [serviceWeight, setServiceWeight] = useState(2);
   
   const handleServiceOrSpeedChange = (newServiceId: string, newSpeed: "standard" | "express_50" | "express_100", newWeight: number, priceListId: string | null = customerPriceListId) => {
@@ -4272,28 +4275,69 @@ export default function AdminPage() {
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-2 pt-2 mt-2 border-t border-slate-700">
-                            <div className="space-y-0.5">
-                              <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                <CreditCard size={12} className="text-slate-500" />
-                                Payment Channel
+                          {isOtherClothingSelected && (
+                            <div className="space-y-1 pt-2 border-t border-slate-700">
+                              <Label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">
+                                {currentLanguage === "en" ? "Other Price (฿)" : "ราคาอื่นๆ (บาท)"}
                               </Label>
-                              <select
-                                id="payment-channel"
-                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                                value={paymentChannel}
-                                onChange={(e) => setPaymentChannel(e.target.value)}
-                              >
-                                <option value="">Select Channel</option>
-                                <option value="Cash / COD">Cash / COD</option>
-                                <option value="Transfer">Transfer</option>
-                                <option value="Credit Card">Credit Card</option>
-                                <option value="Gateway">Gateway</option>
-                                <option value="PromptPay">PromptPay</option>
-                                <option value="Deduct Member">Deduct Member</option>
-                                <option value="HQ/Credit">HQ/Credit</option>
-                              </select>
+                              <div className="relative w-24">
+                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                                <Input 
+                                  type="number"
+                                  className="h-8 pl-6 pr-2 bg-slate-800 border-amber-500/50 text-amber-300 font-bold text-right text-sm focus:border-amber-400"
+                                  value={otherClothingPrice || ""}
+                                  onChange={e => setOtherClothingPrice(parseFloat(e.target.value) || 0)}
+                                  placeholder="0"
+                                />
+                              </div>
                             </div>
+                          )}
+
+                          <div className="flex flex-col gap-2 pt-2 mt-2 border-t border-slate-700">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-0.5">
+                                <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <CreditCard size={12} className="text-slate-500" />
+                                  Payment Channel
+                                </Label>
+                                <select
+                                  id="payment-channel"
+                                  className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                                  value={paymentChannel}
+                                  onChange={(e) => setPaymentChannel(e.target.value)}
+                                >
+                                  <option value="">Select Channel</option>
+                                  <option value="Cash / COD">Cash / COD</option>
+                                  <option value="Transfer">Transfer</option>
+                                  <option value="Credit Card">Credit Card</option>
+                                  <option value="Gateway">Gateway</option>
+                                  <option value="PromptPay">PromptPay</option>
+                                  <option value="Deduct Member">Deduct Member</option>
+                                  <option value="HQ/Credit">HQ/Credit</option>
+                                </select>
+                              </div>
+
+                              <div className="space-y-0.5">
+                                <Label htmlFor="bill-no" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <CreditCard size={12} className="text-slate-500" />
+                                  BILL NO.
+                                </Label>
+                                <Input
+                                  id="bill-no"
+                                  value={billNo}
+                                  onChange={(e) => {
+                                    if (user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') {
+                                      setBillNo(e.target.value);
+                                    }
+                                  }}
+                                  placeholder="Enter Bill No."
+                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') ? 'cursor-not-allowed opacity-60' : ''}`}
+                                />
+                              </div>
+                            </div>
+
+
+
 
                             <div className="space-y-0.5">
                               <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">

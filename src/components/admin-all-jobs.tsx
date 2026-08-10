@@ -97,7 +97,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       else return !j.isPaid || !j.isShopPaid || missingBill;
     }
     if (u?.role === 'cso') {
-      if (walkIn) return false;
+      if (walkIn) return !j.isShopPaid || missingBill;
       else return !j.isPaid || missingBill;
     }
     if (u?.role === 'manager') {
@@ -182,15 +182,44 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
       return cleanPhone.length >= 5 && c.phone === job.customerPhone;
     });
+
+    const pickupRiderObj = riders.find(r => r.id === job.pickupRiderId);
+    const deliveryRiderObj = riders.find(r => r.id === job.deliveryRiderId);
+    const shopObj = shopLocations.find(s => s.id === job.branchId);
+
+    const itemsMatch = Array.isArray(job.items) && job.items.some((item: any) => 
+      item && item.name && typeof item.name === 'string' && item.name.toLowerCase().includes(searchLower)
+    );
+
+    const adminLogsMatch = Array.isArray(job.adminLogs) && job.adminLogs.some((log: any) => 
+      (log && log.text && typeof log.text === 'string' && log.text.toLowerCase().includes(searchLower)) ||
+      (log && log.userName && typeof log.userName === 'string' && log.userName.toLowerCase().includes(searchLower))
+    );
+
     const matchesSearch = 
+      !searchLower ||
       job.id.toLowerCase().includes(searchLower) ||
+      (job.billNo && job.billNo.toLowerCase().includes(searchLower)) ||
       (job.customerName && job.customerName.toLowerCase().includes(searchLower)) ||
       (job.customerPhone && job.customerPhone.includes(searchLower)) ||
       (job.pickupLocation && job.pickupLocation.toLowerCase().includes(searchLower)) ||
+      (job.pickupRoom && job.pickupRoom.toLowerCase().includes(searchLower)) ||
       (job.dropoffLocation && job.dropoffLocation.toLowerCase().includes(searchLower)) ||
+      (job.dropoffRoom && job.dropoffRoom.toLowerCase().includes(searchLower)) ||
       (job.remark && job.remark.toLowerCase().includes(searchLower)) ||
+      (job.adminNote && job.adminNote.toLowerCase().includes(searchLower)) ||
+      (job.adminNotesJson && job.adminNotesJson.toLowerCase().includes(searchLower)) ||
+      adminLogsMatch ||
+      itemsMatch ||
+      (pickupRiderObj && pickupRiderObj.name && pickupRiderObj.name.toLowerCase().includes(searchLower)) ||
+      (deliveryRiderObj && deliveryRiderObj.name && deliveryRiderObj.name.toLowerCase().includes(searchLower)) ||
       statusLabel.toLowerCase().includes(searchLower) ||
       job.status.toLowerCase().includes(searchLower) ||
+      (job.serviceType && job.serviceType.toLowerCase().includes(searchLower)) ||
+      (job.serviceSpeed && job.serviceSpeed.toLowerCase().includes(searchLower)) ||
+      (job.paymentChannel && job.paymentChannel.toLowerCase().includes(searchLower)) ||
+      (job.paymentMethod && job.paymentMethod.toLowerCase().includes(searchLower)) ||
+      (shopObj && shopObj.name && shopObj.name.toLowerCase().includes(searchLower)) ||
       (customer && (
         (customer.name && customer.name.toLowerCase().includes(searchLower)) ||
         (customer.phone && customer.phone.includes(searchLower)) ||

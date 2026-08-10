@@ -246,6 +246,8 @@ export async function addJobAction(data: any) {
     }
   });
 
+  await syncRiderCommissionsForJob(createdJob.id);
+
   // Write activity log
   try {
     await prisma.activityLog.create({
@@ -303,14 +305,44 @@ export async function updateJobAction(id: string, updates: any) {
       data.shopPaidAt = null;
     }
   }
-  if (updates.billNo !== undefined) data.billNo = updates.billNo;
+  if (updates.billNo !== undefined) {
+    if (shouldPreserveExisting(updates.billNo, existingJob?.billNo)) {
+      console.log(`[Prevent Overwrite] Preserved existing billNo '${existingJob?.billNo}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.billNo = updates.billNo;
+    }
+  }
   if (updates.items !== undefined) data.itemsJson = updates.items ? JSON.stringify(updates.items) : null;
 
   // Additional fields for full job edits
-  if (updates.customerName !== undefined) data.customerName = updates.customerName;
-  if (updates.customerPhone !== undefined) data.customerPhone = updates.customerPhone;
-  if (updates.pickupLocation !== undefined) data.pickupLocation = updates.pickupLocation;
-  if (updates.dropoffLocation !== undefined) data.dropoffLocation = updates.dropoffLocation;
+  if (updates.customerName !== undefined) {
+    if (shouldPreserveExisting(updates.customerName, existingJob?.customerName)) {
+      console.log(`[Prevent Overwrite] Preserved existing customerName '${existingJob?.customerName}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.customerName = updates.customerName;
+    }
+  }
+  if (updates.customerPhone !== undefined) {
+    if (shouldPreserveExisting(updates.customerPhone, existingJob?.customerPhone)) {
+      console.log(`[Prevent Overwrite] Preserved existing customerPhone '${existingJob?.customerPhone}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.customerPhone = updates.customerPhone;
+    }
+  }
+  if (updates.pickupLocation !== undefined) {
+    if (shouldPreserveExisting(updates.pickupLocation, existingJob?.pickupLocation)) {
+      console.log(`[Prevent Overwrite] Preserved existing pickupLocation '${existingJob?.pickupLocation}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.pickupLocation = updates.pickupLocation;
+    }
+  }
+  if (updates.dropoffLocation !== undefined) {
+    if (shouldPreserveExisting(updates.dropoffLocation, existingJob?.dropoffLocation)) {
+      console.log(`[Prevent Overwrite] Preserved existing dropoffLocation '${existingJob?.dropoffLocation}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.dropoffLocation = updates.dropoffLocation;
+    }
+  }
   if (updates.pickupCoords) {
     data.pickupLat = updates.pickupCoords.lat;
     data.pickupLng = updates.pickupCoords.lng;
@@ -341,7 +373,13 @@ export async function updateJobAction(id: string, updates: any) {
       ? updates.laundryTypes.join(',')
       : (updates.laundryTypes || null);
   }
-  if (updates.remark !== undefined) data.remark = updates.remark;
+  if (updates.remark !== undefined) {
+    if (shouldPreserveExisting(updates.remark, existingJob?.remark)) {
+      console.log(`[Prevent Overwrite] Preserved existing remark '${existingJob?.remark}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.remark = updates.remark;
+    }
+  }
   if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
   if (updates.shiftId !== undefined) data.shiftId = updates.shiftId;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
@@ -358,80 +396,6 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.cashPlaced !== undefined) data.cashPlaced = updates.cashPlaced;
   if (updates.isStuck !== undefined) data.isStuck = updates.isStuck;
   if (updates.walletBalanceAfter !== undefined) data.walletBalanceAfter = updates.walletBalanceAfter;
-
-  // Check if a leg was just completed by comparing status
-  if (updates.status) {
-    if (existingJob) {
-      // Pickup completed
-      const finalPickupRiderId = updates.pickupRiderId !== undefined ? updates.pickupRiderId : existingJob.pickupRiderId;
-      const finalPickupCommission = updates.pickupCommission !== undefined ? updates.pickupCommission : existingJob.pickupCommission;
-      if (existingJob.status !== 'billing' && existingJob.status !== 'completed' && updates.status === 'billing' && finalPickupCommission != null && finalPickupRiderId) {
-        // Check if transaction already exists to avoid duplicates
-        const existingTx = await prisma.riderTransaction.findFirst({
-          where: { jobId: id, type: 'commission_pickup' }
-        });
-        if (!existingTx) {
-          await prisma.riderTransaction.create({
-            data: {
-              riderId: finalPickupRiderId,
-              jobId: id,
-              amount: finalPickupCommission,
-              type: 'commission_pickup',
-              detail: `Job ${id} - Pickup`
-            }
-          });
-          await prisma.rider.update({
-            where: { id: finalPickupRiderId },
-            data: { commissionBalance: { increment: finalPickupCommission } }
-          });
-        }
-      }
-      
-      // Delivery completed
-      const finalDeliveryRiderId = updates.deliveryRiderId !== undefined ? updates.deliveryRiderId : existingJob.deliveryRiderId;
-      const finalDeliveryCommission = updates.deliveryCommission !== undefined ? updates.deliveryCommission : existingJob.deliveryCommission;
-      if (existingJob.status !== 'completed' && updates.status === 'completed' && finalDeliveryCommission != null && finalDeliveryRiderId) {
-        // Check if transaction already exists to avoid duplicates
-        const existingTx = await prisma.riderTransaction.findFirst({
-          where: { jobId: id, type: 'commission_delivery' }
-        });
-        if (!existingTx) {
-          await prisma.riderTransaction.create({
-            data: {
-              riderId: finalDeliveryRiderId,
-              jobId: id,
-              amount: finalDeliveryCommission,
-              type: 'commission_delivery',
-              detail: `Job ${id} - Delivery`
-            }
-          });
-          await prisma.rider.update({
-            where: { id: finalDeliveryRiderId },
-            data: { commissionBalance: { increment: finalDeliveryCommission } }
-          });
-        }
-      }
-
-      // Drag back from completed to other status (revert delivery commission)
-      if (existingJob.status === 'completed' && updates.status !== 'completed') {
-        const existingTx = await prisma.riderTransaction.findFirst({
-          where: { jobId: id, type: 'commission_delivery' }
-        });
-        if (existingTx) {
-          // Decrement rider's commission balance
-          await prisma.rider.update({
-            where: { id: existingTx.riderId },
-            data: { commissionBalance: { decrement: existingTx.amount } }
-          });
-          // Delete the transaction record
-          await prisma.riderTransaction.delete({
-            where: { id: existingTx.id }
-          });
-          console.log(`[Commission Revert] Reverted delivery commission of ฿${existingTx.amount} for Rider ${existingTx.riderId} on Job ${id}`);
-        }
-      }
-    }
-  }
 
   // Compare changes for logging
   const changes: any = {};
@@ -463,6 +427,9 @@ export async function updateJobAction(id: string, updates: any) {
   }
 
   const updatedJob = await prisma.job.update({ where: { id }, data });
+
+  // Sync commissions based on payment eligibility (CSO Paid & SHOP Paid)
+  await syncRiderCommissionsForJob(id);
 
   if (Object.keys(changes).length > 0) {
     try {
@@ -808,27 +775,8 @@ export async function resolveJobDiscrepancyAction(
       data: updateData,
     });
 
-    // Award commission if applicable
-    if (riderId && commission > 0) {
-      const existingTx = await prisma.riderTransaction.findFirst({
-        where: { jobId, type }
-      });
-      if (!existingTx) {
-        await prisma.riderTransaction.create({
-          data: {
-            riderId,
-            jobId,
-            amount: commission,
-            type,
-            detail: `Job ${jobId} - ${legType === 'pickup' ? 'Pickup' : 'Delivery'} (Diagnostic Sync)`
-          }
-        });
-        await prisma.rider.update({
-          where: { id: riderId },
-          data: { commissionBalance: { increment: commission } }
-        });
-      }
-    }
+    // Sync commissions based on payment eligibility (CSO Paid & SHOP Paid)
+    await syncRiderCommissionsForJob(jobId);
 
     // Write Activity Log
     await prisma.activityLog.create({
@@ -1092,5 +1040,146 @@ export async function getOpenShiftsAction() {
     console.error("Error in getOpenShiftsAction:", e);
     return [];
   }
+}
+
+
+
+
+export async function checkIsPaymentEligible(job: { source?: string | null; type?: string | null; isPaid?: boolean | null; isShopPaid?: boolean | null }) {
+  const isWalkIn = job.source === 'pos' || job.type === 'in_store';
+  if (isWalkIn) {
+    return job.isShopPaid === true;
+  }
+  return job.isPaid === true && job.isShopPaid === true;
+}
+
+export async function syncRiderCommissionsForJob(jobId: string) {
+  try {
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) return;
+
+    const isEligible = await checkIsPaymentEligible(job);
+
+    // 1. Pickup Commission Check
+    const pickupRiderId = job.pickupRiderId;
+    const pickupCommission = job.pickupCommission || 0;
+    const isPickupDone = job.status !== 'tba' && job.status !== 'pending' && job.status !== 'pickup' && job.status !== 'cancel' && job.status !== 'return';
+
+    const existingPickupTx = await prisma.riderTransaction.findFirst({
+      where: { jobId, type: 'commission_pickup' }
+    });
+
+    if (isEligible && isPickupDone && pickupRiderId && pickupCommission > 0) {
+      if (!existingPickupTx) {
+        await prisma.riderTransaction.create({
+          data: {
+            riderId: pickupRiderId,
+            jobId,
+            amount: pickupCommission,
+            type: 'commission_pickup',
+            detail: `Job ${jobId} - Pickup`
+          }
+        });
+        await prisma.rider.update({
+          where: { id: pickupRiderId },
+          data: { commissionBalance: { increment: pickupCommission } }
+        });
+        console.log(`[Commission Award] Awarded pickup commission of ฿${pickupCommission} for Rider ${pickupRiderId} on Job ${jobId}`);
+      } else if (existingPickupTx.riderId !== pickupRiderId || existingPickupTx.amount !== pickupCommission) {
+        await prisma.rider.update({
+          where: { id: existingPickupTx.riderId },
+          data: { commissionBalance: { decrement: existingPickupTx.amount } }
+        });
+        await prisma.riderTransaction.update({
+          where: { id: existingPickupTx.id },
+          data: {
+            riderId: pickupRiderId,
+            amount: pickupCommission,
+            detail: `Job ${jobId} - Pickup`
+          }
+        });
+        await prisma.rider.update({
+          where: { id: pickupRiderId },
+          data: { commissionBalance: { increment: pickupCommission } }
+        });
+      }
+    } else if ((!isEligible || !isPickupDone) && existingPickupTx) {
+      await prisma.rider.update({
+        where: { id: existingPickupTx.riderId },
+        data: { commissionBalance: { decrement: existingPickupTx.amount } }
+      });
+      await prisma.riderTransaction.delete({
+        where: { id: existingPickupTx.id }
+      });
+      console.log(`[Commission Revert] Reverted pickup commission of ฿${existingPickupTx.amount} for Rider ${existingPickupTx.riderId} on Job ${jobId}`);
+    }
+
+    // 2. Delivery Commission Check
+    const deliveryRiderId = job.deliveryRiderId;
+    const deliveryCommission = job.deliveryCommission || 0;
+    const isDeliveryDone = job.status === 'completed';
+
+    const existingDeliveryTx = await prisma.riderTransaction.findFirst({
+      where: { jobId, type: 'commission_delivery' }
+    });
+
+    if (isEligible && isDeliveryDone && deliveryRiderId && deliveryCommission > 0) {
+      if (!existingDeliveryTx) {
+        await prisma.riderTransaction.create({
+          data: {
+            riderId: deliveryRiderId,
+            jobId,
+            amount: deliveryCommission,
+            type: 'commission_delivery',
+            detail: `Job ${jobId} - Delivery`
+          }
+        });
+        await prisma.rider.update({
+          where: { id: deliveryRiderId },
+          data: { commissionBalance: { increment: deliveryCommission } }
+        });
+        console.log(`[Commission Award] Awarded delivery commission of ฿${deliveryCommission} for Rider ${deliveryRiderId} on Job ${jobId}`);
+      } else if (existingDeliveryTx.riderId !== deliveryRiderId || existingDeliveryTx.amount !== deliveryCommission) {
+        await prisma.rider.update({
+          where: { id: existingDeliveryTx.riderId },
+          data: { commissionBalance: { decrement: existingDeliveryTx.amount } }
+        });
+        await prisma.riderTransaction.update({
+          where: { id: existingDeliveryTx.id },
+          data: {
+            riderId: deliveryRiderId,
+            amount: deliveryCommission,
+            detail: `Job ${jobId} - Delivery`
+          }
+        });
+        await prisma.rider.update({
+          where: { id: deliveryRiderId },
+          data: { commissionBalance: { increment: deliveryCommission } }
+        });
+      }
+    } else if ((!isEligible || !isDeliveryDone) && existingDeliveryTx) {
+      await prisma.rider.update({
+        where: { id: existingDeliveryTx.riderId },
+        data: { commissionBalance: { decrement: existingDeliveryTx.amount } }
+      });
+      await prisma.riderTransaction.delete({
+        where: { id: existingDeliveryTx.id }
+      });
+      console.log(`[Commission Revert] Reverted delivery commission of ฿${existingDeliveryTx.amount} for Rider ${existingDeliveryTx.riderId} on Job ${jobId}`);
+    }
+  } catch (err: any) {
+    console.error(`[syncRiderCommissionsForJob Error] Job ${jobId}:`, err.message);
+  }
+}
+
+function shouldPreserveExisting(newValue: any, existingValue: any): boolean {
+  if (existingValue !== null && existingValue !== undefined) {
+    const oldStr = typeof existingValue === 'string' ? existingValue.trim() : String(existingValue).trim();
+    const newStr = typeof newValue === 'string' ? newValue.trim() : (newValue === null || newValue === undefined ? '' : String(newValue).trim());
+    if (oldStr !== '' && newStr === '') {
+      return true;
+    }
+  }
+  return false;
 }
 

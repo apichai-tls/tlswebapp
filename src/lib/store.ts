@@ -90,7 +90,9 @@ export interface Job {
   customerName?: string;
   customerPhone?: string;
   pickupLocation: string; // Customer location
+  pickupRoom?: string;
   dropoffLocation: string; // Shop location
+  dropoffRoom?: string;
   pickupCoords: LatLng;
   dropoffCoords: LatLng;
   distance: number; // 1-way km
@@ -112,6 +114,7 @@ export interface Job {
   riderId?: string; // Legacy assigned rider
   bagImageUrl?: string;
   serviceType?: ServiceType;
+  serviceSpeed?: string;
   laundryTypes?: string[];
   source?: "app" | "pos";
   totalAmount?: number; // Customer price
@@ -140,6 +143,8 @@ export interface Job {
   legs?: JobLegs;
   remark?: string;
   adminNotesJson?: string;
+  adminNote?: string;
+  adminLogs?: any[];
   branchId?: string;
   createdBy?: string | null;
   cashPlaced?: boolean;
