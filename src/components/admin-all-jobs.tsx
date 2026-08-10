@@ -95,7 +95,7 @@ export function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], on
       else return !j.isPaid || !j.isShopPaid || missingBill;
     }
     if (u?.role === 'cso') {
-      if (walkIn) return false;
+      if (walkIn) return !j.isShopPaid || missingBill;
       else return !j.isPaid || missingBill;
     }
     if (u?.role === 'manager') {

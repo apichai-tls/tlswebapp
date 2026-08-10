@@ -328,14 +328,44 @@ export async function updateJobAction(id: string, updates: any) {
       data.shopPaidAt = null;
     }
   }
-  if (updates.billNo !== undefined) data.billNo = updates.billNo;
+  if (updates.billNo !== undefined) {
+    if (shouldPreserveExisting(updates.billNo, existingJob?.billNo)) {
+      console.log(`[Prevent Overwrite] Preserved existing billNo '${existingJob?.billNo}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.billNo = updates.billNo;
+    }
+  }
   if (updates.items !== undefined) data.itemsJson = updates.items ? JSON.stringify(updates.items) : null;
 
   // Additional fields for full job edits
-  if (updates.customerName !== undefined) data.customerName = updates.customerName;
-  if (updates.customerPhone !== undefined) data.customerPhone = updates.customerPhone;
-  if (updates.pickupLocation !== undefined) data.pickupLocation = updates.pickupLocation;
-  if (updates.dropoffLocation !== undefined) data.dropoffLocation = updates.dropoffLocation;
+  if (updates.customerName !== undefined) {
+    if (shouldPreserveExisting(updates.customerName, existingJob?.customerName)) {
+      console.log(`[Prevent Overwrite] Preserved existing customerName '${existingJob?.customerName}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.customerName = updates.customerName;
+    }
+  }
+  if (updates.customerPhone !== undefined) {
+    if (shouldPreserveExisting(updates.customerPhone, existingJob?.customerPhone)) {
+      console.log(`[Prevent Overwrite] Preserved existing customerPhone '${existingJob?.customerPhone}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.customerPhone = updates.customerPhone;
+    }
+  }
+  if (updates.pickupLocation !== undefined) {
+    if (shouldPreserveExisting(updates.pickupLocation, existingJob?.pickupLocation)) {
+      console.log(`[Prevent Overwrite] Preserved existing pickupLocation '${existingJob?.pickupLocation}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.pickupLocation = updates.pickupLocation;
+    }
+  }
+  if (updates.dropoffLocation !== undefined) {
+    if (shouldPreserveExisting(updates.dropoffLocation, existingJob?.dropoffLocation)) {
+      console.log(`[Prevent Overwrite] Preserved existing dropoffLocation '${existingJob?.dropoffLocation}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.dropoffLocation = updates.dropoffLocation;
+    }
+  }
   if (updates.pickupCoords) {
     data.pickupLat = updates.pickupCoords.lat;
     data.pickupLng = updates.pickupCoords.lng;
@@ -364,7 +394,13 @@ export async function updateJobAction(id: string, updates: any) {
       ? updates.laundryTypes.join(',')
       : (updates.laundryTypes || null);
   }
-  if (updates.remark !== undefined) data.remark = updates.remark;
+  if (updates.remark !== undefined) {
+    if (shouldPreserveExisting(updates.remark, existingJob?.remark)) {
+      console.log(`[Prevent Overwrite] Preserved existing remark '${existingJob?.remark}' on Job ${id} from being erased by empty string.`);
+    } else {
+      data.remark = updates.remark;
+    }
+  }
   if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
   if (updates.branchId !== undefined) data.branchId = updates.branchId;
@@ -944,4 +980,15 @@ export async function syncRiderCommissionsForJob(jobId: string) {
   } catch (err: any) {
     console.error(`[syncRiderCommissionsForJob Error] Job ${jobId}:`, err.message);
   }
+}
+
+function shouldPreserveExisting(newValue: any, existingValue: any): boolean {
+  if (existingValue !== null && existingValue !== undefined) {
+    const oldStr = typeof existingValue === 'string' ? existingValue.trim() : String(existingValue).trim();
+    const newStr = typeof newValue === 'string' ? newValue.trim() : (newValue === null || newValue === undefined ? '' : String(newValue).trim());
+    if (oldStr !== '' && newStr === '') {
+      return true;
+    }
+  }
+  return false;
 }
