@@ -30,8 +30,10 @@ import {
   User,
   Clock,
   Lock,
-  FileText
+  FileText,
+  Printer
 } from "lucide-react";
+import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 
 interface AdminReportsProps {
@@ -1572,22 +1574,40 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                         const urls = JSON.parse(selectedJobForView.billImageUrl);
                         const urlList = Array.isArray(urls) ? urls : [urls];
                         return urlList.map((url: string, index: number) => (
-                          <div key={index} className="border border-slate-205 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
+                          <div key={index} className="relative group border border-slate-205 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
                             <img
                               src={url}
                               alt={`Receipt ${index + 1}`}
                               className="max-h-50 object-contain rounded-lg"
                             />
+                            <button
+                              type="button"
+                              onClick={() => printImageUrl(url)}
+                              className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
+                              title="พิมพ์รูปภาพนี้"
+                            >
+                              <Printer size={14} />
+                              <span>พิมพ์</span>
+                            </button>
                           </div>
                         ));
                       } catch {
                         return (
-                          <div className="border border-slate-205 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
+                          <div className="relative group border border-slate-205 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
                             <img
                               src={selectedJobForView.billImageUrl}
                               alt="Receipt"
                               className="max-h-50 object-contain rounded-lg"
                             />
+                            <button
+                              type="button"
+                              onClick={() => printImageUrl(selectedJobForView.billImageUrl)}
+                              className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
+                              title="พิมพ์รูปภาพนี้"
+                            >
+                              <Printer size={14} />
+                              <span>พิมพ์</span>
+                            </button>
                           </div>
                         );
                       }

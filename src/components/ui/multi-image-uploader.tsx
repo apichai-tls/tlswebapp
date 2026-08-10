@@ -1,9 +1,67 @@
 "use client";
 
 import { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffect } from "react";
-import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight, XCircle } from "lucide-react";
+import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight, XCircle, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+
+export const printImageUrl = (url: string) => {
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Print Image</title>
+            <style>
+              @page { margin: 0; size: auto; }
+              body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
+              img { max-width: 100%; max-height: 100vh; object-fit: contain; }
+            </style>
+          </head>
+          <body>
+            <img src="${url}" onload="window.print();" />
+          </body>
+        </html>
+      `);
+      doc.close();
+      setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 60000);
+    }
+    return;
+  }
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Print Image</title>
+        <style>
+          @page { margin: 0; size: auto; }
+          body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
+          img { max-width: 100%; max-height: 100vh; object-fit: contain; }
+        </style>
+      </head>
+      <body>
+        <img src="${url}" onload="window.focus(); window.print(); window.close();" />
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+};
 
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
   return new Promise((resolve, reject) => {
@@ -438,12 +496,29 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
             className="fixed inset-0 z-[9999] bg-slate-900/95 flex flex-col items-center justify-center p-4 backdrop-blur-sm cursor-pointer"
             onClick={() => setPreviewIndex(null)}
           >
-            <button 
-              className="absolute top-4 right-4 sm:top-6 sm:right-6 text-white hover:text-red-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10"
-              onClick={() => setPreviewIndex(null)}
-            >
-              <X size={24} />
-            </button>
+            <div className="absolute top-4 right-4 sm:top-6 sm:right-6 flex items-center gap-2 z-10">
+              <button 
+                type="button"
+                className="text-white hover:text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3.5 py-2 transition-colors flex items-center gap-1.5 text-xs font-bold shadow-lg cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (allImages[previewIndex]) {
+                    printImageUrl(allImages[previewIndex]);
+                  }
+                }}
+                title="พิมพ์รูปภาพนี้"
+              >
+                <Printer size={16} />
+                <span>พิมพ์</span>
+              </button>
+              <button 
+                type="button"
+                className="text-white hover:text-red-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors cursor-pointer"
+                onClick={() => setPreviewIndex(null)}
+              >
+                <X size={24} />
+              </button>
+            </div>
             
             {previewIndex > 0 && (
               <button 

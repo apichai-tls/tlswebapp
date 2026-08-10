@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateGcsPath, generateUploadUrl } from '@/lib/gcs';
+import { generateGcsPath, generateUploadUrl, bucketName } from '@/lib/gcs';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { entityType, entityId, subType, contentType } = body;
+    const { entityType, entityId, subType, contentType, filename } = body;
 
     // Validate request
     if (!entityType || !entityId) {
@@ -16,19 +16,28 @@ export async function POST(request: NextRequest) {
     }
 
     const type = contentType || 'image/jpeg';
-    
-    // Generate the path in GCS
-    const filePath = generateGcsPath(entityType as 'job' | 'rider' | 'system', entityId, subType);
 
-    // Generate the signed URL for upload
-    // The URL will expire in 5 minutes
+    // Generate the path in GCS — use custom filename if provided
+    let filePath: string;
+    if (filename) {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const typeFolder = subType || 'proofs';
+      const sanitized = (filename as string).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+      filePath = `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/${sanitized}`;
+    } else {
+      filePath = generateGcsPath(entityType as 'job' | 'rider' | 'system', entityId, subType);
+    }
+
+    // Generate the signed URL for upload (expires in 5 minutes)
     const uploadUrl = await generateUploadUrl(filePath, type, 5);
 
     return NextResponse.json({
       uploadUrl,
       filePath,
-      // Provide publicUrl so the frontend can preview/save it easily
-      publicUrl: `https://storage.googleapis.com/${process.env.GCS_BUCKET_NAME || 'tls-images-test'}/${filePath}`
+      publicUrl: `https://storage.googleapis.com/${bucketName}/${filePath}`
     });
   } catch (error) {
     console.error('Error generating signed URL:', error);

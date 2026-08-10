@@ -31,14 +31,67 @@ export async function resetAndSeedDatabase() {
     },
   });
 
-  // 3. Seed Admin Users
+  // 3. Seed Multiple Branches
+  const branch2 = await prisma.shopLocation.create({
+    data: {
+      id: "BRANCH-02",
+      name: "TLS BKK Branch 2 (Phrom Phong)",
+      address: "456 Sukhumvit 39, Bangkok",
+      lat: 13.73,
+      lng: 100.56,
+      area: "BKK",
+      isPosEnabled: true,
+    },
+  });
+
+  // 4. Seed Admin & Staff Users (Multi-branch & Spectator)
   const adminUser = await prisma.adminUser.create({
     data: {
+      id: "USER-ADMIN-01",
       email: "admin@tls.com",
       password: "admin1234",
-      name: "Test Admin User",
+      name: "Super Admin User",
       role: "admin",
       permissions: JSON.stringify(["jobs", "dispatch", "pos", "customers", "settings", "users", "activity-logs"]),
+      area: "BKK",
+    },
+  });
+
+  const staffBranch1 = await prisma.adminUser.create({
+    data: {
+      id: "USER-STAFF-01",
+      email: "staff1@tls.com",
+      password: "staff1234",
+      name: "Staff User Branch 1",
+      role: "staff",
+      permissions: JSON.stringify(["pos", "jobs"]),
+      branchId: branch.id,
+      area: "BKK",
+    },
+  });
+
+  const staffBranch2 = await prisma.adminUser.create({
+    data: {
+      id: "USER-STAFF-02",
+      email: "staff2@tls.com",
+      password: "staff1234",
+      name: "Staff User Branch 2",
+      role: "staff",
+      permissions: JSON.stringify(["pos", "jobs"]),
+      branchId: branch2.id,
+      area: "BKK",
+    },
+  });
+
+  const spectatorUser = await prisma.adminUser.create({
+    data: {
+      id: "USER-SPECTATOR-01",
+      email: "spectator@tls.com",
+      password: "spectator1234",
+      name: "Spectator View Only User",
+      role: "spectator",
+      permissions: JSON.stringify(["pos", "jobs"]),
+      branchId: branch.id,
       area: "BKK",
     },
   });

@@ -21,8 +21,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
+import { cleanProformaNumber, formatProformaNumber } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhoneInput } from "@/components/ui/phone-input";
@@ -174,6 +174,7 @@ const rowVariant = {
 };
 
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
+import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 export default function AdminPage() {
   const { user, logout } = useAuth();
   const jobs = useJobs();
@@ -368,7 +369,19 @@ export default function AdminPage() {
   const [pickupDist, setPickupDist] = useState(0);
   const [deliveryDist, setDeliveryDist] = useState(0);
 
-  const [selectedStoreIndex, setSelectedStoreIndex] = useState(0);
+  const initialUserBranchIdx = user?.branchId ? shopLocations.findIndex(s => s.id === user.branchId) : -1;
+  const [selectedStoreIndex, setSelectedStoreIndex] = useState(initialUserBranchIdx >= 0 ? initialUserBranchIdx : 0);
+
+  const hasInitializedBranchRef = useRef(false);
+  useEffect(() => {
+    if (user && !hasInitializedBranchRef.current && shopLocations.length > 0) {
+      const idx = user.branchId ? shopLocations.findIndex(s => s.id === user.branchId) : -1;
+      if (idx >= 0) {
+        setSelectedStoreIndex(idx);
+      }
+      hasInitializedBranchRef.current = true;
+    }
+  }, [user, shopLocations]);
 
   const updateClosestStoreAsync = async (coords: LatLng, address?: string) => {
     try {
@@ -523,8 +536,26 @@ export default function AdminPage() {
 
     if (editingJobId) {
       try {
+        const existingJob = jobs.find(j => j.id === editingJobId);
+        let existingPayments: any[] = [];
+        if (existingJob?.adminNotesJson) {
+          try {
+            const parsed = JSON.parse(existingJob.adminNotesJson);
+            if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments)) {
+              existingPayments = parsed.payments;
+            }
+          } catch {}
+        }
+
+        let updatedJson: string | undefined = undefined;
+        if (existingPayments.length > 0) {
+          updatedJson = JSON.stringify({ payments: existingPayments, notes: filteredLogs });
+        } else if (filteredLogs.length > 0) {
+          updatedJson = JSON.stringify(filteredLogs);
+        }
+
         await jobStore.updateJobDetails(editingJobId, {
-          adminNotesJson: filteredLogs.length > 0 ? JSON.stringify(filteredLogs) : undefined,
+          adminNotesJson: updatedJson,
           actorId: user?.id,
           actorName: user?.name || user?.email,
           actorRole: user?.role
@@ -536,6 +567,7 @@ export default function AdminPage() {
       }
     }
   };
+
 
   const handleSendAdminLog = async () => {
     const hasPendingImages = noteUploaderRef.current && noteUploaderRef.current.getPendingFilesCount() > 0;
@@ -686,11 +718,30 @@ export default function AdminPage() {
   
   // Derived lock states
   const currentShopConfig = shopLocations[selectedStoreIndex] || shopLocations[0];
-  const isPosEnabled = currentShopConfig?.isPosEnabled ?? false;
+  const activeShopConfig = activeJob ? shopLocations.find(s => s.id === activeJob.branchId) : currentShopConfig;
+  const isPosEnabled = activeShopConfig?.isPosEnabled ?? false;
+  
+  useEffect(() => {
+    if (user && isPosEnabled) {
+      shiftStore.fetchActiveShift(user.id, activeShopConfig?.id);
+    }
+  }, [user, isPosEnabled, activeShopConfig?.id]);
+  const isShiftFromPreviousDay = useMemo(() => {
+    if (!activeShift?.openedAt) return false;
+    const openedDate = new Date(activeShift.openedAt);
+    const today = new Date();
+    return (
+      openedDate.getFullYear() !== today.getFullYear() ||
+      openedDate.getMonth() !== today.getMonth() ||
+      openedDate.getDate() !== today.getDate()
+    );
+  }, [activeShift]);
+
+  const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
   const isPaidJob = editingJobId ? (jobStore.getSnapshot().find(j => j.id === editingJobId)?.status === 'completed' || jobStore.getSnapshot().find(j => j.id === editingJobId)?.isPaid) : false;
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
-  const isPricingLocked = isPaidJob || (isPosEnabled && !activeShift && !isCsoOrAdmin);
-  const isCartLocked = isPaidJob || (isPosEnabled && !activeShift && !isCsoOrAdmin);
+  const isPricingLocked = isPaidJob || (isPosEnabled && (!hasValidActiveShift || isShiftFromPreviousDay) && (!isCsoOrAdmin || isShiftFromPreviousDay));
+  const isCartLocked = isPaidJob || (isPosEnabled && (!hasValidActiveShift || isShiftFromPreviousDay) && (!isCsoOrAdmin || isShiftFromPreviousDay));
   const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
 
   // Proforma states
@@ -698,9 +749,10 @@ export default function AdminPage() {
   const [proformaRevision, setProformaRevision] = useState<number>(0);
   const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
   const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
+  const [draftCreatedAt, setDraftCreatedAt] = useState<Date>(new Date());
   const [showReceipt, setShowReceipt] = useState<boolean>(false);
   const [isPaymentEvent, setIsPaymentEvent] = useState<boolean>(false);
-  const [receiptPaperSize, setReceiptPaperSize] = useState<string>("80mm");
+  const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
 
   const forceMemberPaymentDialog = useMemo(() => {
     if (!selectedProfileCustomer?.isMember) return false;
@@ -720,12 +772,18 @@ export default function AdminPage() {
   }, [dialogCart, laundryPrice, isPosEnabled]);
 
   const dialogDiscountAmount = useMemo(() => {
-    return currentLaundryPrice * (dialogDiscountPercent / 100);
-  }, [currentLaundryPrice, dialogDiscountPercent]);
+    // Discount applies after express surcharge is added
+    const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
+    const surcharge = expressRate > 0 ? Math.ceil(currentLaundryPrice * expressRate) : 0;
+    return (currentLaundryPrice + surcharge) * (dialogDiscountPercent / 100);
+  }, [currentLaundryPrice, dialogDiscountPercent, serviceSpeed]);
 
   const dialogVatAmount = useMemo(() => {
     if (dialogVatType === "none" || dialogVatRate <= 0) return 0;
-    const baseForVat = currentLaundryPrice - dialogDiscountAmount + (serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : (serviceSpeed === 'express_100' ? currentLaundryPrice : 0)) + fee;
+    const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
+    const surcharge = expressRate > 0 ? Math.ceil(currentLaundryPrice * expressRate) : 0;
+    // VAT base = (subtotal + surcharge) - discount
+    const baseForVat = currentLaundryPrice + surcharge - dialogDiscountAmount + fee;
     if (dialogVatType === "inclusive") {
       return baseForVat * (dialogVatRate / (100 + dialogVatRate));
     } else {
@@ -734,8 +792,10 @@ export default function AdminPage() {
   }, [dialogVatType, dialogVatRate, currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee]);
 
   const dialogTotal = useMemo(() => {
-    const surcharge = serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : (serviceSpeed === 'express_100' ? currentLaundryPrice : 0);
-    const baseTotal = currentLaundryPrice - dialogDiscountAmount + surcharge + fee;
+    const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
+    const surcharge = expressRate > 0 ? Math.ceil(currentLaundryPrice * expressRate) : 0;
+    // Formula: (subtotal + surcharge) - discount + fee + VAT
+    const baseTotal = currentLaundryPrice + surcharge - dialogDiscountAmount + fee;
     const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
     return baseTotal + vat;
   }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate]);
@@ -753,13 +813,16 @@ export default function AdminPage() {
   }, [forceMemberPaymentDialog, dialogTotal, selectedProfileCustomer?.creditBalance]);
 
   useEffect(() => {
+    // Only apply global VAT settings when NOT editing an existing job.
+    // When editing a job, VAT is already restored from job.remark in handleEditFullJob.
+    if (editingJobId) return;
     if (systemSettings?.vatType) {
       setDialogVatType(systemSettings.vatType as any);
     } else {
       setDialogVatType("none");
     }
     setDialogVatRate(parseFloat(systemSettings?.vatRate || "7") || 7);
-  }, [systemSettings?.vatType, systemSettings?.vatRate]);
+  }, [systemSettings?.vatType, systemSettings?.vatRate, editingJobId]);
 
   const activeShop = useMemo(() => {
     return shopLocations[selectedStoreIndex] || shopLocations[0];
@@ -784,25 +847,42 @@ export default function AdminPage() {
         const currentJob = jobs.find(j => j.id === editingJobId);
         if (currentJob && currentJob.adminNotesJson) {
           try {
-            const notes = JSON.parse(currentJob.adminNotesJson);
-            if (Array.isArray(notes)) {
-              const cleaned = notes.map((n: any) => {
-                const { isNew, ...rest } = n;
-                return rest;
+            const parsed = JSON.parse(currentJob.adminNotesJson);
+            let existingPayments: any[] = [];
+            let notesArr: any[] = [];
+
+            if (Array.isArray(parsed)) {
+              notesArr = parsed;
+            } else if (parsed && typeof parsed === "object") {
+              if (Array.isArray(parsed.payments)) existingPayments = parsed.payments;
+              if (Array.isArray(parsed.notes)) notesArr = parsed.notes;
+            }
+
+            const cleaned = notesArr.map((n: any) => {
+              const { isNew, ...rest } = n;
+              return rest;
+            });
+
+            let updatedJson: string | undefined = undefined;
+            if (existingPayments.length > 0) {
+              updatedJson = JSON.stringify({ payments: existingPayments, notes: cleaned });
+            } else if (cleaned.length > 0) {
+              updatedJson = JSON.stringify(cleaned);
+            }
+
+            if (currentJob.adminNotesJson !== updatedJson) {
+              await jobStore.updateJobDetails(editingJobId, { 
+                adminNotesJson: updatedJson,
+                actorId: user?.id,
+                actorName: user?.name || user?.email,
+                actorRole: user?.role
               });
-              if (JSON.stringify(notes) !== JSON.stringify(cleaned)) {
-                await jobStore.updateJobDetails(editingJobId, { 
-                  adminNotesJson: cleaned.length > 0 ? JSON.stringify(cleaned) : undefined,
-                  actorId: user?.id,
-                  actorName: user?.name || user?.email,
-                  actorRole: user?.role
-                });
-                import("@/lib/api").then(m => m.refreshDb());
-              }
+              import("@/lib/api").then(m => m.refreshDb());
             }
           } catch {}
         }
       };
+
       stripNewNotes();
       setEditingJobId(null);
       setAdminLogs([]);
@@ -852,6 +932,7 @@ export default function AdminPage() {
     setProformaRevision(0);
     setLastProformaCartHash(null);
     setIsDraftPreview(false);
+    setDraftCreatedAt(new Date());
     setShowReceipt(false);
     setShowJobLogs(false);
     setIsDetailLoading(false);
@@ -870,7 +951,8 @@ export default function AdminPage() {
     setIsPickup(true);
     setIsDelivery(true);
     setIsWalkIn(false);
-    setSelectedStoreIndex(0);
+    const userBranchIdx = user?.branchId ? shopLocations.findIndex(s => s.id === user.branchId) : 0;
+    setSelectedStoreIndex(userBranchIdx >= 0 ? userBranchIdx : 0);
     const firstWash = washServices.length > 0 ? washServices[0].id : "";
     setServiceSpeed("standard");
     setDeliveryScheduledTime("");
@@ -896,6 +978,8 @@ export default function AdminPage() {
     }
     setDialogDiscountPercent(0);
     setShowDialogDiscount(false);
+    setDialogVatType("none");
+    setDialogVatRate(0);
     setEditingFeeLock(null);
     setSelectedVIPLabel("");
     setSelectedMemberLabel("");
@@ -934,6 +1018,15 @@ export default function AdminPage() {
     setDialogDiscountPercent(job.discountPercent || 0);
     setShowDialogDiscount(!!job.discountPercent && job.discountPercent > 0);
     
+    const vatMatch = job.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
+    if (vatMatch) {
+      setDialogVatType(vatMatch[1].toLowerCase() as any);
+      setDialogVatRate(parseFloat(vatMatch[2]));
+    } else {
+      setDialogVatType("none");
+      setDialogVatRate(0);
+    }
+    
     setShowJobLogs(false);
     setEditingSubStatus(job.subStatus || null);
     setIsStuck(job.isStuck || false);
@@ -951,10 +1044,60 @@ export default function AdminPage() {
         unit: matched?.unit || "piece"
       };
     });
+    // Populate dummy cart item for legacy jobs that lack cart items
+    if (mappedCart.length === 0 && job.serviceType) {
+      if ((job.serviceType as any) === "other") {
+        mappedCart.push({
+          id: "other",
+          name: "Other (Custom Price)",
+          nameEn: "Other (Custom Price)",
+          quantity: 1,
+          price: job.fee || 0,
+          category: "other",
+          unit: "piece"
+        });
+      } else {
+        const matched = services.find(s => s.id === job.serviceType);
+        if (matched) {
+          mappedCart.push({
+            id: matched.id,
+            name: matched.name,
+            nameEn: matched.nameEn || matched.name,
+            quantity: 1,
+            price: job.fee || 0,
+            category: matched.category,
+            unit: matched.unit || "piece"
+          });
+        }
+      }
+    }
+
     setDialogCart(mappedCart);
-    setProformaReceiptNumber((job as any).proformaReceiptNumber || null);
-    setProformaRevision((job as any).proformaRevision || 0);
-    setLastProformaCartHash((job as any).proformaReceiptNumber ? JSON.stringify(mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price }))) : null);
+    const existingProformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
+    const existingRevisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
+    let loadedProformaNum = (job as any).proformaReceiptNumber || (existingProformaMatch ? existingProformaMatch[1] : null);
+    let loadedRevision = (job as any).proformaRevision !== undefined ? (job as any).proformaRevision : (existingRevisionMatch ? parseInt(existingRevisionMatch[1], 10) : 0);
+
+    // Fallback: if no proforma number found in remark, try to recover from billImageUrl filenames
+    if (!loadedProformaNum && job.billImageUrl) {
+      try {
+        const billUrls: string[] = JSON.parse(job.billImageUrl);
+        for (const url of billUrls) {
+          const filename = url.split('/').pop() || '';
+          // Match: proforma-<PR-NUMBER>-rev<N>.png  where PR-NUMBER can contain any chars except -rev
+          const proformaFileMatch = filename.match(/^proforma-(PR-.+)-rev(\d+)\.png$/i);
+          if (proformaFileMatch) {
+            loadedProformaNum = cleanProformaNumber(proformaFileMatch[1]);
+            loadedRevision = parseInt(proformaFileMatch[2], 10);
+            break;
+          }
+        }
+      } catch {}
+    }
+
+    setProformaReceiptNumber(loadedProformaNum);
+    setProformaRevision(loadedRevision);
+    setLastProformaCartHash(loadedProformaNum ? JSON.stringify(mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price }))) : null);
     setIsDraftPreview(false);
     setShowReceipt(false);
     const rawLaundry = job.laundryTypes as any;
@@ -970,8 +1113,8 @@ export default function AdminPage() {
     
     const foundCustomer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
     setSelectedProfileCustomer(foundCustomer || null);
-    const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation);
-    const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation);
+    const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation || s.name === job.pickupLocation || (job.pickupLocation && job.pickupLocation.includes("POS Counter")));
+    const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation || s.name === job.dropoffLocation);
 
     const parseRoom = (loc: string) => {
       const match = loc.match(/(.*?)\s*\(Room\s*(.*?)\)$/i);
@@ -998,8 +1141,15 @@ export default function AdminPage() {
     
     const totalMinusFee = job.totalAmount ? job.totalAmount - (job.fee || 0) : 0;
     let basePrice = totalMinusFee;
-    if (isExp100) basePrice = Math.ceil(totalMinusFee / 2);
-    else if (isExp50) basePrice = Math.ceil(totalMinusFee / 1.5);
+    const discPct = job.discountPercent || 0;
+    const expressRate = isExp100 ? 1 : (isExp50 ? 0.5 : 0);
+    const multiplier = (1 + expressRate) * (1 - discPct / 100);
+    if (multiplier > 0) {
+      basePrice = Math.round(totalMinusFee / multiplier);
+    }
+    if (mappedCart.length > 0) {
+      basePrice = mappedCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    }
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
@@ -1121,10 +1271,10 @@ export default function AdminPage() {
         const remoteDeliveryUrls = parseUrls(data.deliveryProofImageUrl || data.proofImageUrl);
 
         // Only update states if they actually changed on the server to prevent flashing or overriding local changes
-        if (JSON.stringify(remoteBagUrls) !== JSON.stringify(localBagUrls)) setBagImageUrls(remoteBagUrls);
-        if (JSON.stringify(remoteBillUrls) !== JSON.stringify(localBillUrls)) setBillImageUrls(remoteBillUrls);
-        if (JSON.stringify(remotePickupUrls) !== JSON.stringify(localPickupUrls)) setPickupProofImageUrls(remotePickupUrls);
-        if (JSON.stringify(remoteDeliveryUrls) !== JSON.stringify(localDeliveryUrls)) setDeliveryProofImageUrls(remoteDeliveryUrls);
+        if (JSON.stringify(remoteBagUrls) !== JSON.stringify(localBagUrls)) { setBagImageUrls(remoteBagUrls); setOrigBagImageUrls(remoteBagUrls); }
+        if (JSON.stringify(remoteBillUrls) !== JSON.stringify(localBillUrls)) { setBillImageUrls(remoteBillUrls); setOrigBillImageUrls(remoteBillUrls); }
+        if (JSON.stringify(remotePickupUrls) !== JSON.stringify(localPickupUrls)) { setPickupProofImageUrls(remotePickupUrls); setOrigPickupProofImageUrls(remotePickupUrls); }
+        if (JSON.stringify(remoteDeliveryUrls) !== JSON.stringify(localDeliveryUrls)) { setDeliveryProofImageUrls(remoteDeliveryUrls); setOrigDeliveryProofImageUrls(remoteDeliveryUrls); }
       })
       .catch(e => console.error("Failed to fetch job details images in background", e));
     
@@ -1134,6 +1284,8 @@ export default function AdminPage() {
         const parsed = JSON.parse(job.adminNotesJson);
         if (Array.isArray(parsed)) {
           setAdminLogs(parsed.map((log: any) => ({ ...log, isNew: false })));
+        } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.notes)) {
+          setAdminLogs(parsed.notes.map((log: any) => ({ ...log, isNew: false })));
         } else {
           setAdminLogs([]);
         }
@@ -1180,13 +1332,28 @@ export default function AdminPage() {
       toast.error("Please select at least one service (Pickup, Delivery, or Walk-In).");
       return;
     }
+    if (isPosEnabled && isShiftFromPreviousDay) {
+      toast.error(currentLanguage === "en" 
+        ? "Unclosed shift from a previous day detected. Please close the shift at the POS counter first." 
+        : "พบกะเปิดค้างข้ามวัน กรุณาไปปิดกะที่หน้า POS ก่อนเริ่มทำรายการใหม่");
+      return;
+    }
+
+    if (paymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim())) {
+      toast.error(currentLanguage === "en" ? "Please select a payment channel." : "กรุณาเลือกช่องทางการชำระเงิน (Payment Channel)");
+      return;
+    }
 
     const existingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
     const isAlreadyCompleted = existingJob?.status === "completed";
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
+    const targetShift = (activeShift && activeShift.branchId === shop.id) ? activeShift : null;
+
+    const targetShiftId = targetShift?.id || (existingJob ? (existingJob as any).shiftId : null) || null;
 
     const getValidDateOrNull = (timeStr: string): Date | null => {
+
       if (!timeStr) return null;
       try {
         const d = parseTime(timeStr);
@@ -1232,7 +1399,9 @@ export default function AdminPage() {
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
     const customRemarks = oldRemarks.filter(r => 
       !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r) &&
-      !r.startsWith("VAT:")
+      !r.startsWith("VAT:") &&
+      !r.startsWith("Proforma:") &&
+      !r.startsWith("Revision:")
     );
 
     let finalAdminLogs = Array.isArray(adminLogs) ? [...adminLogs] : [];
@@ -1268,14 +1437,26 @@ export default function AdminPage() {
     const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
 
     const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const discountVal = subtotal * (dialogDiscountPercent / 100);
-    const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
-    const baseTotal = subtotal - discountVal + surcharge + fee;
+    const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
+    const surcharge = expressRate > 0 ? Math.ceil(subtotal * expressRate) : 0;
+    // Discount on (subtotal + surcharge), then add fee and VAT
+    const discountVal = (subtotal + surcharge) * (dialogDiscountPercent / 100);
+    const baseTotal = subtotal + surcharge - discountVal + fee;
     const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
     const calculatedTotal = baseTotal + vatVal;
 
+    const now = new Date();
+    const effectiveCreatedAt = editingJobId 
+      ? (existingJob?.createdAt ? new Date(existingJob.createdAt) : now) 
+      : (proformaReceiptNumber ? draftCreatedAt : now);
+      
+    if (!editingJobId && !proformaReceiptNumber) {
+      setDraftCreatedAt(now);
+    }
+
     const newJobData: any = {
       isStuck,
+      createdAt: effectiveCreatedAt,
       discount: discountVal,
       discountPercent: dialogDiscountPercent,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
@@ -1309,7 +1490,7 @@ export default function AdminPage() {
       serviceType: dialogCart[0]?.id || "wash_fold",
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
-      shiftId: activeShift?.id || (existingJob ? (existingJob as any).shiftId : null) || null,
+      shiftId: targetShiftId,
       pickupCommission: (isPickup && !selectedVIPLabel && !activeIsFreeDelivery) 
         ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
             ? (existingJob.pickupCommission ?? 0) 
@@ -1330,7 +1511,50 @@ export default function AdminPage() {
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
       ].filter(Boolean).join(" | ") || null,
-      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
+      adminNotesJson: (() => {
+        let existingPayments: any[] = [];
+        if (existingJob && existingJob.adminNotesJson) {
+          try {
+            const parsed = JSON.parse(existingJob.adminNotesJson);
+            if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments)) {
+              existingPayments = parsed.payments;
+            }
+          } catch (e) {}
+        }
+
+        const isPaidNow = paymentMethod === 'paid';
+        const alreadyPaidTotal = existingPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+        const remainingToPay = calculatedTotal - alreadyPaidTotal;
+
+        const finalPayments = [...existingPayments];
+
+        if (isPaidNow && remainingToPay > 0) {
+          const mapChannelToMethod = (ch?: string) => {
+            if (!ch) return "cash";
+            if (ch === "Cash / COD") return "cash";
+            if (ch === "Transfer" || ch === "PromptPay") return "transfer";
+            if (ch === "Credit Card" || ch === "Gateway") return "card";
+            if (ch === "Deduct Member" || ch === "HQ/Credit") return "credit";
+            return "cash";
+          };
+
+          const pMethod = mapChannelToMethod(paymentChannel);
+          finalPayments.push({
+            amount: remainingToPay,
+            method: pMethod,
+            timestamp: new Date().toISOString(),
+            shiftId: targetShiftId
+          });
+        }
+
+
+        const cleanLogs = finalAdminLogs.map(({ isNew, ...rest }) => rest);
+        if (finalPayments.length > 0) {
+          return JSON.stringify({ payments: finalPayments, notes: cleanLogs });
+        }
+        return cleanLogs.length > 0 ? JSON.stringify(cleanLogs) : null;
+      })(),
+
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
       proformaReceiptNumber: proformaReceiptNumber || null,
@@ -1347,16 +1571,16 @@ export default function AdminPage() {
       try {
         const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
         const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
-        const searchTag = `-rev${effectiveRevision}.png`;
-        const alreadyCaptured = finalBillImageUrls.some(url => url.includes(searchTag));
+        const alreadyCaptured = finalBillImageUrls.some(url => url.includes(filename));
 
         if (!alreadyCaptured) {
           const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
+          const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
           const tempReceiptData: any = {
             id: effectiveProformaId,
             proformaId: proformaReceiptNumber,
             proformaRevision: effectiveRevision,
-            createdAt: new Date(),
+            createdAt: effectiveCreatedAt,
             customerName: customerName || "Walk-In",
             customerPhone: customerPhone || "-",
             items: dialogCart.map(item => ({ name: item.name, nameEn: item.nameEn || item.name, quantity: item.quantity, price: item.price })),
@@ -1375,16 +1599,45 @@ export default function AdminPage() {
             deliveryScheduledAt: new Date(deliveryScheduledTime),
             deliveryFee: fee
           };
-          const blob = await generateThermalReceiptImage(tempReceiptData, activeShop);
+          const blob = receiptPaperSize === "A5" 
+            ? await generateA5ReceiptImage(tempReceiptData, activeShop)
+            : await generateThermalReceiptImage(tempReceiptData, activeShop);
           if (blob) {
-              const file = new File([blob], filename, { type: "image/png" });
-              const formData = new FormData();
-              formData.append("file", file);
-              formData.append("entityType", "jobs");
-              formData.append("entityId", effectiveProformaId);
-              formData.append("subType", "proofs");
-              const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
-              const uploadJson = await uploadRes.json();
+              let uploadJson: { success: boolean; publicUrl?: string } = { success: false };
+              try {
+                const signRes = await fetch("/api/upload-url", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    entityType: "job",
+                    entityId: effectiveProformaId,
+                    subType: "proofs",
+                    contentType: "image/png",
+                    filename
+                  })
+                });
+                const signData = await signRes.json();
+                if (signData.uploadUrl && signData.publicUrl) {
+                  const putRes = await fetch(signData.uploadUrl, {
+                    method: "PUT",
+                    headers: { "Content-Type": "image/png" },
+                    body: blob
+                  });
+                  if (putRes.ok) {
+                    uploadJson = { success: true, publicUrl: signData.publicUrl };
+                  }
+                }
+              } catch (gcsErr) {
+                console.warn("GCS upload failed, falling back to local:", gcsErr);
+                const file = new File([blob], filename, { type: "image/png" });
+                const formData = new FormData();
+                formData.append("file", file);
+                formData.append("entityType", "jobs");
+                formData.append("entityId", effectiveProformaId);
+                formData.append("subType", "proofs");
+                const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
+                uploadJson = await uploadRes.json();
+              }
               if (uploadJson.success && uploadJson.publicUrl) {
                 if (!finalBillImageUrls.includes(uploadJson.publicUrl)) {
                   finalBillImageUrls.push(uploadJson.publicUrl);
@@ -1540,9 +1793,11 @@ export default function AdminPage() {
   const dialogReceiptData = useMemo(() => {
     if (showReceipt && isDraftPreview) {
       const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-      const discountVal = subtotal * (dialogDiscountPercent / 100);
-      const surcharge = serviceSpeed === "express_50" ? Math.ceil(subtotal * 0.5) : (serviceSpeed === "express_100" ? subtotal : 0);
-      const baseTotal = subtotal - discountVal + surcharge + fee;
+      const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
+      const surcharge = expressRate > 0 ? Math.ceil(subtotal * expressRate) : 0;
+      // Discount on (subtotal + surcharge)
+      const discountVal = (subtotal + surcharge) * (dialogDiscountPercent / 100);
+      const baseTotal = subtotal + surcharge - discountVal + fee;
       const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
       const calculatedTotal = baseTotal + vatVal;
       
@@ -1553,14 +1808,14 @@ export default function AdminPage() {
         activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
         serviceSpeed === "express_100" ? "Express 100%" : "",
-        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}` : "",
+        proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}` : "",
         proformaReceiptNumber ? `Revision: ${proformaRevision}` : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : ""
       ].filter(Boolean);
       
       const mockJob: any = {
         id: editingJobId || "DRAFT",
-        createdAt: new Date(),
+        createdAt: draftCreatedAt,
         customerName: customerName || "Walk-In",
         customerPhone: customerPhone || "-",
         items: dialogCart.map(item => ({
@@ -1585,6 +1840,10 @@ export default function AdminPage() {
       const formatted = formatJobToReceiptData(mockJob);
       formatted.isDraft = true; // Mark as draft preview
       formatted.proformaRevision = proformaRevision;
+      // Always pass the real jobId so capture logic can find it in jobStore
+      if (editingJobId) {
+        formatted.jobId = editingJobId;
+      }
       return formatted;
     } else if (activeJob) {
       const formatted = formatJobToReceiptData(activeJob);
@@ -1592,7 +1851,7 @@ export default function AdminPage() {
       return formatted;
     }
     return null;
-  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent]);
+  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt]);
 
   return (
     <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
@@ -3046,7 +3305,31 @@ export default function AdminPage() {
 
                       {/* Laundry Service Type & Speed */}
                       <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex-1 flex flex-col gap-2 min-h-[350px]">
-                        {isPricingLocked ? (
+                        {isPaidJob ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
+                            <ShieldAlert size={36} className="text-emerald-500 mb-2" />
+                            <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
+                              {currentLanguage === "en" ? "Payment Completed" : "ชำระเงินเรียบร้อยแล้ว"}
+                            </h3>
+                            <p className="text-[10px] text-slate-500 font-medium max-w-[280px] leading-relaxed">
+                              {currentLanguage === "en" 
+                                ? "This job has already been paid. Pricing and products can no longer be modified."
+                                : "ออเดอร์นี้ชำระเงินเสร็จสิ้นแล้ว ไม่สามารถแก้ไขรายการสินค้าและราคาได้อีก"}
+                            </p>
+                          </div>
+                        ) : (isShiftFromPreviousDay && isPosEnabled) ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-amber-50/60 border border-dashed border-amber-300 rounded-lg">
+                            <ShieldAlert size={36} className="text-rose-500 mb-2 animate-bounce" />
+                            <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider mb-1">
+                              {currentLanguage === "en" ? "Cross-Day Shift Detected" : "กรุณาปิดกะค้างข้ามวันก่อน"}
+                            </h3>
+                            <p className="text-[10px] text-slate-600 font-medium max-w-[280px] leading-relaxed">
+                              {currentLanguage === "en" 
+                                ? "There is an unclosed cashier shift from a previous day. Please close the shift at the POS counter first."
+                                : "มีกะพนักงานขายเปิดค้างไว้จากวันก่อน กรุณาไปปิดกะที่หน้า POS ก่อน"}
+                            </p>
+                          </div>
+                        ) : isPricingLocked ? (
                           <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
                             <ShieldAlert size={36} className="text-amber-500 mb-2 animate-bounce" />
                             <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
@@ -3340,12 +3623,30 @@ export default function AdminPage() {
                                 </div>
                               ))
                             ) : isCartLocked ? (
-                              <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
-                                <PackageOpen size={24} className="text-slate-600 mb-1.5" />
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                                  {currentLanguage === "en" ? "No Active Shift" : "ไม่มีรอบกะที่รันอยู่"}
-                                </span>
-                              </div>
+                                <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
+                                  {isPaidJob ? (
+                                    <>
+                                      <CheckCircle2 size={24} className="text-emerald-500 mb-1.5" />
+                                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                        {currentLanguage === "en" ? "Order Already Paid" : "ออเดอร์นี้ชำระเงินแล้ว"}
+                                      </span>
+                                    </>
+                                  ) : isShiftFromPreviousDay ? (
+                                    <>
+                                      <ShieldAlert size={24} className="text-rose-400 mb-1.5 animate-bounce" />
+                                      <span className="text-[9px] font-bold uppercase tracking-wider text-rose-300">
+                                        {currentLanguage === "en" ? "Cross-Day Shift: Please Close First" : "มีกะค้างจากวันก่อน กรุณาปิดกะก่อน"}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <PackageOpen size={24} className="text-slate-600 mb-1.5" />
+                                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                        {currentLanguage === "en" ? "No Active Shift" : "ไม่มีรอบกะที่รันอยู่"}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
                             ) : (
                               <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/20 rounded border border-dashed border-slate-700/30 text-center text-slate-500">
                                 <PackageOpen size={20} className="mb-1" />
@@ -3368,7 +3669,7 @@ export default function AdminPage() {
                               </div>
                             )}
 
-                          {clothingItems.other.selected && (
+                          {clothingItems.other.selected && !(isPosEnabled && dialogCart.length > 0) && (
                             <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-700/80 animate-in fade-in duration-200">
                               <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
                                 Other Price ({otherClothingName.trim() || 'Specify'})
@@ -3656,6 +3957,7 @@ export default function AdminPage() {
                                   }
                                 }
 
+                                setDraftCreatedAt(new Date());
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
                               }}
@@ -3668,7 +3970,7 @@ export default function AdminPage() {
 
                             <Button 
                               type="button"
-                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || paymentMethod !== 'paid' || isPaidJob}
+                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || paymentMethod !== 'paid' || isPaidJob || (paymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim()))}
                               onClick={() => handleCreate(true)}
                               className="flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                             >
@@ -3886,7 +4188,7 @@ export default function AdminPage() {
                           {isPickup && (
                             <div className="flex justify-between items-center text-xs">
                               <span className="text-slate-400">Pickup Dist.</span>
-                              <span className="font-medium">{pickupDist} km (ร—2)</span>
+                              <span className="font-medium">{pickupDist} km (×2)</span>
                             </div>
                           )}
                           {isDelivery && (
@@ -3901,7 +4203,7 @@ export default function AdminPage() {
                           <div className="flex justify-between items-center mb-1">
                             <Label className="text-xs font-medium text-slate-300">Laundry Price</Label>
                             <div className="relative w-24">
-                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">เธฟ</span>
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
                               <Input 
                                 type="number"
                                 className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
@@ -3924,17 +4226,17 @@ export default function AdminPage() {
                                 if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
                               }
                               const effWeight = Math.max(2, serviceWeight);
-                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}เธฟ)`;
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}฿)`;
                             })()}
                           </span>
                           {serviceSpeed !== "standard" && (
                             <div className="flex justify-between items-center mt-2">
                               <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                              <span className="text-sm font-bold text-orange-300">เธฟ{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
+                              <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
                             </div>
                           )}
 
-                          {clothingItems.other.selected && (
+                          {clothingItems.other.selected && !(isPosEnabled && dialogCart.length > 0) && (
                             <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-700/80 animate-in fade-in duration-200">
                               <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
                                 Other Price ({otherClothingName.trim() || 'Specify'})
@@ -4041,28 +4343,28 @@ export default function AdminPage() {
                                 <input type="checkbox" checked={isFreeDelivery} onChange={(e) => { setIsFreeDelivery(e.target.checked); if (!e.target.checked) setEditingFeeLock(null); }} />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
-                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}เธฟ/km</span>
+                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
                           </div>
                           <div className="text-right">
-                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">เธฟ{baseFee.toFixed(0)}</span>}
-                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>เธฟ{fee.toFixed(0)}</span>
+                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">฿{baseFee.toFixed(0)}</span>}
+                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>฿{fee.toFixed(0)}</span>
                           </div>
                         </div>
                         
                         <div className="flex justify-between items-end border-t border-slate-700 pt-2">
                           <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                          <span className="text-2xl font-black text-indigo-400">เธฟ{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
+                          <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                         </div>
 
                         {(isPickup || isDelivery) && (
                           <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
                             <div className="flex flex-col">
                               <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
-                              <span className="text-[10px] text-slate-500">Distance ร— {systemSettings?.riderCommissionPerKm || "2"}เธฟ</span>
+                              <span className="text-[10px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
                             </div>
                             <div className="text-right">
                               <span className="text-lg font-bold text-amber-400">
-                                เธฟ{selectedVIPLabel || isFreeDelivery ? "0" : (
+                                ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
                                   (isPickup ? (
                                     (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
                                       ? (activeJob.pickupCommission ?? 0)
@@ -4365,29 +4667,56 @@ export default function AdminPage() {
         customer={selectedProfileCustomer}
       />
 
-      <ThermalReceiptDialog
-        open={showReceipt}
-        onOpenChange={setShowReceipt}
-        receiptData={dialogReceiptData}
-        activeShop={activeShop}
-        receiptPaperSize={receiptPaperSize}
-        currentLanguage={currentLanguage}
-        onCloseComplete={() => {
-          setIsDraftPreview(false);
-          setIsPaymentEvent(false);
-          if (!dialogOpen) {
-            resetDialogStates();
-          }
-        }}
-        onBillImageUploaded={(newUrl) => {
-          setBillImageUrls(prev => {
-            if (!prev.includes(newUrl)) {
-              return [...prev, newUrl];
+      {receiptPaperSize === "A5" ? (
+        <A5ReceiptDialog
+          open={showReceipt}
+          onOpenChange={setShowReceipt}
+          receiptData={dialogReceiptData}
+          activeShop={activeShop}
+          currentLanguage={currentLanguage}
+          onCloseComplete={() => {
+            const wasDraft = isDraftPreview;
+            setIsDraftPreview(false);
+            setIsPaymentEvent(false);
+            if (!wasDraft && !dialogOpen) {
+              resetDialogStates();
             }
-            return prev;
-          });
-        }}
-      />
+          }}
+          onBillImageUploaded={(newUrl) => {
+            setBillImageUrls(prev => {
+              if (!prev.includes(newUrl)) {
+                return [...prev, newUrl];
+              }
+              return prev;
+            });
+          }}
+        />
+      ) : (
+        <ThermalReceiptDialog
+          open={showReceipt}
+          onOpenChange={setShowReceipt}
+          receiptData={dialogReceiptData}
+          activeShop={activeShop}
+          receiptPaperSize={receiptPaperSize}
+          currentLanguage={currentLanguage}
+          onCloseComplete={() => {
+            const wasDraft = isDraftPreview;
+            setIsDraftPreview(false);
+            setIsPaymentEvent(false);
+            if (!wasDraft && !dialogOpen) {
+              resetDialogStates();
+            }
+          }}
+          onBillImageUploaded={(newUrl) => {
+            setBillImageUrls(prev => {
+              if (!prev.includes(newUrl)) {
+                return [...prev, newUrl];
+              }
+              return prev;
+            });
+          }}
+        />
+      )}
 
     </ProtectedRoute>
   );

@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Clock, Truck, CheckCircle2, Map, User, MapPin, Navigation, Banknote, Coins, ArrowUpRight, Store, History, Play, Square } from "lucide-react";
+import { Clock, Truck, CheckCircle2, Map, User, MapPin, Navigation, Banknote, Coins, ArrowUpRight, Store, History, Play, Square, ShieldAlert } from "lucide-react";
 import { format } from "date-fns";
 import { shopStore, shiftStore, settingsStore, type Job, type JobStatus, type CashierShift } from "@/lib/store";
 import { AdminLiveMap } from "@/components/map-loader";
@@ -170,6 +170,17 @@ export function AdminDashboard({
       setSelectedBranchId(user?.branchId || shopLocations[0].id);
     }
   }, [shopLocations, user, selectedBranchId]);
+
+  const isShiftFromPreviousDay = useMemo(() => {
+    if (!activeShift?.openedAt) return false;
+    const openedDate = new Date(activeShift.openedAt);
+    const today = new Date();
+    return (
+      openedDate.getFullYear() !== today.getFullYear() ||
+      openedDate.getMonth() !== today.getMonth() ||
+      openedDate.getDate() !== today.getDate()
+    );
+  }, [activeShift]);
 
   // Compute live active shift stats
   const activeShiftStats = useMemo(() => {
@@ -413,11 +424,37 @@ export function AdminDashboard({
                 </div>
               </div>
               <div>
-                <Badge className={`text-xs font-bold px-2 py-0.5 rounded-full ${activeShift ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-100 text-slate-500 border border-slate-200"}`}>
-                  {activeShift ? (currentLanguage === "en" ? "🟢 OPEN" : "🟢 เปิดกะ") : (currentLanguage === "en" ? "🔴 CLOSED" : "🔴 ปิดกะ")}
+                <Badge className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                  !activeShift 
+                    ? "bg-slate-100 text-slate-500 border border-slate-200" 
+                    : isShiftFromPreviousDay 
+                    ? "bg-rose-50 text-rose-700 border border-rose-200 animate-pulse" 
+                    : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                }`}>
+                  {!activeShift 
+                    ? (currentLanguage === "en" ? "🔴 CLOSED" : "🔴 ปิดกะ") 
+                    : isShiftFromPreviousDay 
+                    ? (currentLanguage === "en" ? "⚠️ STALE SHIFT" : "⚠️ กะค้างข้ามวัน") 
+                    : (currentLanguage === "en" ? "🟢 OPEN" : "🟢 เปิดกะ")}
                 </Badge>
               </div>
             </div>
+
+            {activeShift && isShiftFromPreviousDay && (
+              <div className="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-medium">
+                <ShieldAlert size={18} className="text-rose-600 shrink-0 animate-bounce" />
+                <div className="flex-1">
+                  <span className="font-bold block text-rose-950">
+                    {currentLanguage === "en" ? "Cross-Day Shift Detected!" : "พบกะเปิดค้างข้ามวัน!"}
+                  </span>
+                  <span>
+                    {currentLanguage === "en" 
+                      ? `This shift was opened on ${format(new Date(activeShift.openedAt), "dd/MM/yyyy")}. Please go to the POS counter tab to close this shift first.`
+                      : `กะนี้เปิดไว้เมื่อวันที่ ${format(new Date(activeShift.openedAt), "dd/MM/yyyy")} กรุณาไปที่แท็บ POS เพื่อปิดกะนี้ก่อนเริ่มต้นทำรายการใหม่`}
+                  </span>
+                </div>
+              </div>
+            )}
 
             {/* Shift content info */}
             {activeShift ? (

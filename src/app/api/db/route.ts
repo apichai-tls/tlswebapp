@@ -17,7 +17,8 @@ export async function GET() {
       settingsRaw,
       lifetimeEarnings,
       monthEarnings,
-      completedJobsCounts
+      completedJobsCounts,
+      openShifts
     ] = await Promise.all([
       prisma.customer.findMany(),
       prisma.job.findMany({
@@ -124,6 +125,11 @@ export async function GET() {
         _count: {
           id: true
         }
+      }),
+      // All currently open cashier shifts — cheap single query, avoids separate shift check calls
+      prisma.cashierShift.findMany({
+        where: { status: 'open' },
+        select: { id: true, userId: true, branchId: true, userName: true, openedAt: true, startingCash: true, status: true }
       })
     ]);
 
@@ -181,7 +187,8 @@ export async function GET() {
       priceLists,
       shopLocations: formattedShopLocations,
       pois: [], // POIs are now lazy-loaded via /api/pois
-      settings
+      settings,
+      openShifts  // ✅ included so shift check reads from memory, not separate DB call
     });
   } catch (error) {
     console.error('Failed to read from Prisma:', error);

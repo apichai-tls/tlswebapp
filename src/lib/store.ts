@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, registerOpenShiftsSyncCallback } from './api';
 
 export type JobStatus = "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return" | "topup";
 export type JobType = "pickup" | "delivery" | "full_service";
@@ -492,8 +492,16 @@ export const jobStore = {
       }
     }
 
-    await api.updateJob(id, { ...updates, ...finalActorDetails });
+    // ─── Optimistic Update ───────────────────────────────────────────────────
+    // Update memory store immediately so UI reflects the change without waiting
+    // for the DB round-trip. This prevents jobs from disappearing from All Jobs.
+    api.optimisticUpdate(id, updates);
     emitJobChange();
+
+    // Persist to DB in background — errors are logged but don't block the UI
+    api.updateJob(id, { ...updates, ...finalActorDetails }).catch((err: any) => {
+      console.error('[store] Background DB save failed for job', id, err);
+    });
   },
 
   async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
@@ -735,6 +743,11 @@ const shiftListeners: Set<Listener> = new Set();
 let activeShift: CashierShift | null = null;
 let branchActiveShift: CashierShift | null = null;
 let hasLoadedActiveShift = false;
+let isFetchingShift = false;       // guard against concurrent fetches
+let lastShiftFetchTime = 0;        // TTL: timestamp of last successful fetch
+let currentUserId: string | null = null;   // stored so poll callback can filter
+let currentBranchId: string | undefined;   // stored so poll callback can filter
+const SHIFT_FETCH_TTL_MS = 30_000; // Re-fetch at most once per 30 seconds
 let shiftSnapshot: { activeShift: CashierShift | null; branchActiveShift: CashierShift | null; hasLoaded: boolean } = { activeShift, branchActiveShift, hasLoaded: hasLoadedActiveShift };
 
 function emitShiftChange() {
@@ -750,21 +763,30 @@ export const shiftStore = {
   getSnapshot() {
     return shiftSnapshot;
   },
-  async fetchActiveShift(userId: string, branchId?: string) {
-    hasLoadedActiveShift = false;
-    emitShiftChange();
+  async fetchActiveShift(userId: string, branchId?: string, force = false) {
+    currentUserId = userId;     // store for poll sync
+    currentBranchId = branchId; // store for poll sync
+    // Skip if already fetching — prevents parallel DB hits
+    if (isFetchingShift) return activeShift;
+    // Skip if result is fresh enough (TTL) — prevents repeated useEffect triggers hitting DB
+    if (!force && hasLoadedActiveShift && (Date.now() - lastShiftFetchTime) < SHIFT_FETCH_TTL_MS) {
+      return activeShift;
+    }
+    isFetchingShift = true;
+    // Only show loading state on first-ever load (not on silent refreshes)
+    if (!hasLoadedActiveShift) {
+      emitShiftChange();
+    }
     try {
-      const [userRes, branchRes] = await Promise.all([
-        api.getActiveCashierShift(userId),
-        branchId ? api.getBranchActiveCashierShift(branchId) : Promise.resolve(null)
-      ]);
+      // Use lightweight combined check — single DB round-trip, no job aggregation
+      const { userShift, branchShift } = await api.getShiftStatus(userId, branchId);
 
-      activeShift = userRes ? (JSON.parse(JSON.stringify(userRes), (key, value) => {
+      activeShift = userShift ? (JSON.parse(JSON.stringify(userShift), (key, value) => {
         if (key.includes('At') && value) return new Date(value);
         return value;
       }) as CashierShift) : null;
 
-      branchActiveShift = branchRes ? (JSON.parse(JSON.stringify(branchRes), (key, value) => {
+      branchActiveShift = branchShift ? (JSON.parse(JSON.stringify(branchShift), (key, value) => {
         if (key.includes('At') && value) return new Date(value);
         return value;
       }) as CashierShift) : null;
@@ -774,6 +796,7 @@ export const shiftStore = {
       }
 
       hasLoadedActiveShift = true;
+      lastShiftFetchTime = Date.now();
       emitShiftChange();
       return activeShift;
     } catch (e) {
@@ -781,6 +804,8 @@ export const shiftStore = {
       hasLoadedActiveShift = true;
       emitShiftChange();
       return null;
+    } finally {
+      isFetchingShift = false;
     }
   },
   async openShift(userId: string, userName: string, branchId: string, startingCash: number, notes?: string) {
@@ -792,6 +817,7 @@ export const shiftStore = {
       }) as CashierShift) : null;
       branchActiveShift = activeShift;
       hasLoadedActiveShift = true;
+      lastShiftFetchTime = Date.now(); // mark fresh
       emitShiftChange();
       return activeShift;
     } catch (e) {
@@ -805,6 +831,7 @@ export const shiftStore = {
       activeShift = null;
       branchActiveShift = null;
       hasLoadedActiveShift = true;
+      lastShiftFetchTime = 0; // expire TTL so next open will re-fetch
       emitShiftChange();
       return res;
     } catch (e) {
@@ -817,6 +844,35 @@ export const shiftStore = {
     branchActiveShift = null;
     hasLoadedActiveShift = false;
     emitShiftChange();
+  },
+  /**
+   * Called by api.ts after every /api/db poll — updates shift state from memory instantly.
+   * No DB call needed — openShifts is already included in the poll response.
+   */
+  syncFromPoll(openShifts: Array<{ id: string; userId: string; branchId: string; userName: string; openedAt: string; startingCash: number; status: string }>) {
+    if (!currentUserId) return; // not initialized yet
+    const userShift = openShifts.find(s => s.userId === currentUserId) || null;
+    const bShift = currentBranchId ? (openShifts.find(s => s.branchId === currentBranchId) || null) : null;
+
+    const newActiveShift = userShift ? (JSON.parse(JSON.stringify(userShift), (key, value) => {
+      if (key.includes('At') && value) return new Date(value);
+      return value;
+    }) as CashierShift) : null;
+    const newBranchShift = bShift ? (JSON.parse(JSON.stringify(bShift), (key, value) => {
+      if (key.includes('At') && value) return new Date(value);
+      return value;
+    }) as CashierShift) : null;
+
+    // Only emit if state actually changed
+    const changed =
+      JSON.stringify(activeShift) !== JSON.stringify(newActiveShift) ||
+      JSON.stringify(branchActiveShift) !== JSON.stringify(newBranchShift);
+
+    activeShift = newActiveShift;
+    branchActiveShift = newBranchShift || newActiveShift;
+    hasLoadedActiveShift = true;
+    lastShiftFetchTime = Date.now();
+    if (changed) emitShiftChange();
   },
   async getClosedShifts(tenantId?: string) {
     try {
@@ -849,3 +905,6 @@ export const shiftStore = {
     }
   }
 };
+
+// Register poll sync callback — after every /api/db refresh, shift state is updated from memory (no extra DB call)
+registerOpenShiftsSyncCallback((openShifts) => shiftStore.syncFromPoll(openShifts));

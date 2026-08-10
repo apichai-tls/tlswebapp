@@ -484,6 +484,7 @@ export function AdminSettings() {
                 >
                   <option value="80mm">80mm (Standard)</option>
                   <option value="58mm">58mm (Small)</option>
+                  <option value="A5">A5 (Half Letter)</option>
                 </select>
               </div>
 

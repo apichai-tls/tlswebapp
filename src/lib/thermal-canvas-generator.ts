@@ -82,14 +82,20 @@ export async function generateThermalReceiptImage(
     ? receiptData.id 
     : (receiptData.status === "cancel" ? `${receiptData.id}-VOID` : `#${receiptData.id}`);
 
+  const safeCreatedAt = receiptData.createdAt 
+    ? (receiptData.createdAt instanceof Date ? receiptData.createdAt : new Date(receiptData.createdAt))
+    : new Date();
+  const validCreatedAt = isNaN(safeCreatedAt.getTime()) ? new Date() : safeCreatedAt;
+
   drawRow(receiptData.isDraft ? "PROFORMA NO:" : "RECEIPT NO:", docId, true);
-  drawRow("DATE:", format(receiptData.createdAt, "dd/MM/yyyy HH:mm"));
+  if (!receiptData.isDraft && receiptData.proformaId) {
+    drawRow("PROFORMA NO:", receiptData.proformaId, true);
+  }
+  drawRow("DATE:", format(validCreatedAt, "dd/MM/yyyy HH:mm"));
   drawRow("CUSTOMER:", receiptData.customerName || "Walk-In");
   drawRow("PHONE:", receiptData.customerPhone || "-");
 
-  if (receiptData.deliveryScheduledAt) {
-    drawRow("DUE DATE:", format(new Date(receiptData.deliveryScheduledAt), "dd/MM/yyyy HH:mm"), true);
-  }
+  // Note: DUE DATE omitted to match dialog display
 
   drawDashedLine(y);
   y += 18;
@@ -108,7 +114,9 @@ export async function generateThermalReceiptImage(
   ctx.font = "14px monospace";
   receiptData.items.forEach(item => {
     ctx.textAlign = "left";
-    const name = item.name.length > 18 ? item.name.substring(0, 17) + "…" : item.name;
+    // Use English name (nameEn) if available — matches dialog which shows nameEn || name
+    const displayName = (item.nameEn || item.name) || "";
+    const name = displayName.length > 18 ? displayName.substring(0, 17) + "…" : displayName;
     ctx.fillText(name, padding, y);
     ctx.textAlign = "center";
     ctx.fillText(String(item.quantity), width / 2 + 30, y);

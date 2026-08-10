@@ -87,6 +87,12 @@ export const ensureDbLoaded = async () => {
 let isRefreshing = false; // Guard against concurrent refreshes
 const lastUpdatedJobs = new Map<string, number>();
 
+// Callback registered by shiftStore to receive openShifts from poll — avoids circular import
+let onOpenShiftsSyncCallback: ((shifts: any[]) => void) | null = null;
+export function registerOpenShiftsSyncCallback(cb: (shifts: any[]) => void) {
+  onOpenShiftsSyncCallback = cb;
+}
+
 export const refreshDb = async () => {
   if (typeof window === 'undefined') return;
   if (isRefreshing) return; // Skip if already fetching — prevents race conditions
@@ -176,6 +182,11 @@ export const refreshDb = async () => {
 
       memoryDb = parseMockDb(parsed);
       api.notify();
+
+      // ✅ Sync shift status from polling data — no separate DB call needed
+      if (parsed.openShifts && onOpenShiftsSyncCallback) {
+        onOpenShiftsSyncCallback(parsed.openShifts);
+      }
     }
   } catch (error) {
     console.error('Failed to refresh DB', error);
@@ -479,6 +490,22 @@ export const api = {
     return updatedJob;
   },
 
+  /**
+   * Update in-memory job state immediately (optimistic update) without
+   * persisting to DB. Used to make UI respond instantly before the DB
+   * round-trip completes.
+   */
+  optimisticUpdate(id: string, updates: Partial<Job>) {
+    const db = initDb();
+    const jobIndex = db.jobs.findIndex(j => j.id === id);
+    if (jobIndex === -1) return;
+
+    const existingJob = db.jobs[jobIndex];
+    const updatedJob = { ...existingJob, ...updates, updatedAt: new Date() };
+    db.jobs.splice(jobIndex, 1);
+    db.jobs.unshift(updatedJob);
+  },
+
   // --- SERVICES ---
   async getServices(): Promise<ServiceItem[]> {
     
@@ -704,6 +731,9 @@ export const api = {
   },
   async getBranchActiveCashierShift(branchId: string) {
     return dbActions.getBranchOpenShiftAction(branchId);
+  },
+  async getShiftStatus(userId: string, branchId?: string) {
+    return dbActions.getShiftStatusAction(userId, branchId);
   },
   async openCashierShift(userId: string, userName: string, branchId: string, startingCash: number, notes?: string) {
     const res = await dbActions.openShiftAction({

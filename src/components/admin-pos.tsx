@@ -74,7 +74,9 @@ import { useAuth } from "@/providers/auth-provider";
 import { useJobs } from "@/lib/use-jobs";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
+import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
+import { cleanProformaNumber, formatProformaNumber } from "@/lib/utils";
 
 const cleanRemarkForDisplay = (rawRemark: string | null | undefined) => {
   if (!rawRemark) return "";
@@ -780,7 +782,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setSelectedCustomer(null);
     setRemark("");
     setPaymentMethod("cash");
-    setIsPaid(true);
+    setIsPaid(false);
+    setPosPaymentChannel("");
     setEditingPriceItemId(null);
     setServiceSpeed("standard");
     setLoadedJobId(null);
@@ -791,7 +794,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setReceivedCash("");
     setLocalDeliveryPrice("");
     setProformaReceiptNumber("");
+    setProformaRevision(0);
+    setLastProformaCartHash("");
+    capturedReceiptUrlsRef.current = [];
     setSessionCapturedReceiptUrls([]);
+    // Reset VAT to current system settings defaults
+    setVatType((settings?.vatType as any) || "none");
+    setVatRate(parseFloat(settings?.vatRate || "7") || 7);
   };
 
   const [customerSearch, setCustomerSearch] = useState("");
@@ -800,7 +809,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   const [remark, setRemark] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "transfer" | "card" | "credit">("cash");
-  const [isPaid, setIsPaid] = useState(true);
+  const [posPaymentChannel, setPosPaymentChannel] = useState<string>("");
+  const [isPaid, setIsPaid] = useState(false);
 
   useEffect(() => {
     setReceivedCash("");
@@ -835,6 +845,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [showReceipt, setShowReceipt] = useState(false);
   const [latestJob, setLatestJob] = useState<any>(null);
   const [isDraftPreview, setIsDraftPreview] = useState(false);
+  const [proformaCreatedAt, setProformaCreatedAt] = useState<Date | null>(null);
   const [editingPriceItemId, setEditingPriceItemId] = useState<string | null>(null);
   const [topUpInputVal, setTopUpInputVal] = useState("");
   const [vatRate, setVatRate] = useState<number>(7);
@@ -1361,32 +1372,35 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }, 0);
   }, [cart]);
 
-  const discountAmount = useMemo(() => {
-    return discountBase * (discountPercent / 100);
-  }, [discountBase, discountPercent]);
-
   const expressSurcharge = useMemo(() => {
     if (selectedExpressPercent > 0) {
-      return Math.ceil((subtotal - discountAmount) * (selectedExpressPercent / 100));
+      return Math.ceil(subtotal * (selectedExpressPercent / 100));
     }
     return 0;
-  }, [selectedExpressPercent, subtotal, discountAmount]);
+  }, [selectedExpressPercent, subtotal]);
+
+  const discountAmount = useMemo(() => {
+    // Discount applies to (subtotal + express surcharge), not bare subtotal
+    return (subtotal + expressSurcharge) * (discountPercent / 100);
+  }, [subtotal, expressSurcharge, discountPercent]);
 
   const vatAmount = useMemo(() => {
     if (vatType === "none" || vatRate <= 0) return 0;
-    const baseForVat = subtotal - discountAmount + expressSurcharge;
+    // VAT base = (subtotal + surcharge) - discount
+    const baseForVat = subtotal + expressSurcharge - discountAmount;
     if (vatType === "inclusive") {
       return baseForVat * (vatRate / (100 + vatRate));
     } else {
       return baseForVat * (vatRate / 100);
     }
-  }, [vatType, vatRate, subtotal, discountAmount, expressSurcharge]);
+  }, [vatType, vatRate, subtotal, expressSurcharge, discountAmount]);
 
   const total = useMemo(() => {
-    const baseTotal = subtotal - discountAmount + expressSurcharge;
+    // Formula: (subtotal + surcharge) - discount + VAT
+    const baseTotal = subtotal + expressSurcharge - discountAmount;
     const vat = vatType === "exclusive" ? (baseTotal * (vatRate / 100)) : 0;
     return baseTotal + vat + manualAdjustment;
-  }, [subtotal, discountAmount, expressSurcharge, vatType, vatRate, manualAdjustment]);
+  }, [subtotal, expressSurcharge, discountAmount, vatType, vatRate, manualAdjustment]);
 
   const forceMemberPayment = useMemo(() => {
     if (!selectedCustomer?.isMember) return false;
@@ -1398,17 +1412,23 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     );
   }, [selectedCustomer, cart]);
 
+  const effectivePaymentChannel = forceMemberPayment ? "Deduct Member" : posPaymentChannel;
+
   // Force member payment method (credit) for member customers adding non-package items
   useEffect(() => {
     if (forceMemberPayment) {
       const hasSufficient = (selectedCustomer?.creditBalance || 0) >= total;
-      if (!hasSufficient) {
-        setIsPaid(false);
-      } else if (isPaid) {
+      if (hasSufficient) {
+        setIsPaid(true);
         setPaymentMethod("credit");
+        setPosPaymentChannel("Deduct Member");
+      } else {
+        setIsPaid(false);
+        setPosPaymentChannel("");
       }
     }
-  }, [forceMemberPayment, isPaid, total, selectedCustomer?.creditBalance]);
+  }, [forceMemberPayment, total, selectedCustomer?.creditBalance]);
+
 
   const promptpayConfig = useMemo(() => {
     if (!settings) return null;
@@ -1452,10 +1472,39 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         jobVatAmount = baseTotal * (jobVatRate / 100);
       }
 
+      // Check for last payment timestamp in adminNotesJson
+      let paymentTime: Date | null = null;
+      try {
+        if (latestJob.adminNotesJson) {
+          const parsed = JSON.parse(latestJob.adminNotesJson);
+          if (parsed && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+            const lastPay = parsed.payments[parsed.payments.length - 1];
+            if (lastPay && lastPay.timestamp) {
+              paymentTime = new Date(lastPay.timestamp);
+            }
+          }
+        }
+      } catch {}
+
+      const receiptDate = (latestJob.isPaid && paymentTime && !isNaN(paymentTime.getTime()))
+        ? paymentTime
+        : (latestJob.createdAt ? new Date(latestJob.createdAt) : new Date());
+
+      const proformaMatch = latestJob.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
+      const rawProformaId = latestJob.proformaReceiptNumber || (proformaMatch ? proformaMatch[1] : undefined);
+      const cleanBaseProforma = cleanProformaNumber(rawProformaId);
+      const revisionMatch = latestJob.remark?.match(/Revision:\s*(\d+)/i);
+      const jobProformaRevision = latestJob.proformaRevision !== undefined ? latestJob.proformaRevision : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
+      const effectiveProformaNumber = cleanBaseProforma 
+        ? formatProformaNumber(cleanBaseProforma, jobProformaRevision)
+        : undefined;
+
       return {
         id: latestJob.id ? latestJob.id.split('-')[0].toUpperCase() : "",
         jobId: latestJob.id,
-        createdAt: latestJob.createdAt ? new Date(latestJob.createdAt) : new Date(),
+        proformaId: effectiveProformaNumber,
+        proformaRevision: jobProformaRevision,
+        createdAt: receiptDate,
         customerName: latestJob.customerName || "Walk-In",
         customerPhone: latestJob.customerPhone || "-",
         items: jobItems,
@@ -1479,19 +1528,21 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       };
     }
 
-    // For Draft Preview, construct simulated payment logs
+    // For Draft Preview, construct simulated payment logs using exact proformaCreatedAt
+    const draftDate = proformaCreatedAt || new Date();
     const draftPayments: any[] = [];
-    const timestamp = new Date().toISOString();
+    const timestamp = draftDate.toISOString();
     draftPayments.push({ amount: total, method: paymentMethod, timestamp });
 
     const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
 
-    const baseProforma = proformaReceiptNumber || "PROFORMA";
-    const displayProforma = proformaRevision > 0 ? `${baseProforma}-R${proformaRevision}` : baseProforma;
+    const cleanBaseProforma = cleanProformaNumber(proformaReceiptNumber);
+    const displayProforma = formatProformaNumber(cleanBaseProforma, proformaRevision);
 
     return {
       id: displayProforma,
-      createdAt: new Date(),
+      proformaId: displayProforma,
+      createdAt: draftDate,
       customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
       customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
       items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
@@ -1513,7 +1564,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       adminNotesJson: JSON.stringify({ payments: draftPayments }),
       deliveryFee: 0
     };
-  }, [isDraftPreview, latestJob, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, discountAmount, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
+  }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, discountAmount, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
+
 
   const handleCheckout = async () => {
     if (isSpectatorMode) {
@@ -1593,11 +1645,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         try {
           const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
           const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
-          const searchTag = `-rev${effectiveRevision}.png`;
-          const alreadyCaptured = capturedReceiptUrlsRef.current.some(url => url.includes(searchTag)) || sessionCapturedReceiptUrls.some(url => url.includes(searchTag));
+          const alreadyCaptured = capturedReceiptUrlsRef.current.some(url => url.includes(filename)) || sessionCapturedReceiptUrls.some(url => url.includes(filename));
 
           if (!alreadyCaptured) {
-            const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
             const tempReceiptData: any = {
               id: effectiveProformaId,
               proformaId: proformaReceiptNumber,
@@ -1621,16 +1671,45 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               deliveryScheduledAt: new Date(deliveryScheduledTime),
               deliveryFee: 0
             };
-            const blob = await generateThermalReceiptImage(tempReceiptData, activeShop);
+            const blob = settings?.receiptPaperSize === "A5"
+              ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(tempReceiptData, activeShop)
+              : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(tempReceiptData, activeShop);
             if (blob) {
-                const file = new File([blob], filename, { type: "image/png" });
-                const formData = new FormData();
-                formData.append("file", file);
-                formData.append("entityType", "jobs");
-                formData.append("entityId", effectiveProformaId);
-                formData.append("subType", "proofs");
-                const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
-                const uploadJson = await uploadRes.json();
+                let uploadJson: { success: boolean; publicUrl?: string } = { success: false };
+                try {
+                  const signRes = await fetch("/api/upload-url", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      entityType: "job",
+                      entityId: effectiveProformaId,
+                      subType: "proofs",
+                      contentType: "image/png",
+                      filename
+                    })
+                  });
+                  const signData = await signRes.json();
+                  if (signData.uploadUrl && signData.publicUrl) {
+                    const putRes = await fetch(signData.uploadUrl, {
+                      method: "PUT",
+                      headers: { "Content-Type": "image/png" },
+                      body: blob
+                    });
+                    if (putRes.ok) {
+                      uploadJson = { success: true, publicUrl: signData.publicUrl };
+                    }
+                  }
+                } catch (gcsErr) {
+                  console.warn("GCS upload failed, falling back to local:", gcsErr);
+                  const file = new File([blob], filename, { type: "image/png" });
+                  const formData = new FormData();
+                  formData.append("file", file);
+                  formData.append("entityType", "jobs");
+                  formData.append("entityId", effectiveProformaId);
+                  formData.append("subType", "proofs");
+                  const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
+                  uploadJson = await uploadRes.json();
+                }
                 if (uploadJson.success && uploadJson.publicUrl) {
                   if (!sessionCapturedReceiptUrls.includes(uploadJson.publicUrl)) {
                     sessionCapturedReceiptUrls.push(uploadJson.publicUrl);
@@ -1648,21 +1727,27 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
       const vatText = vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : "";
+      const cleanBaseProforma = cleanProformaNumber(proformaReceiptNumber);
+      const proformaStr = cleanBaseProforma ? `Proforma: ${cleanBaseProforma}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "";
       const finalRemark = [
-        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "",
+        proformaStr,
         remark,
         expressText,
         vatText
       ].filter(Boolean).join(" | ") || undefined;
 
-      // Fetch loaded job payments if editing a saved order
+      // Fetch loaded job existing notes/logs if editing a saved order or creating a new order
       const loadedJob = jobs.find(j => j.id === loadedJobId);
       let existingPayments: any[] = [];
+      let existingNotes: any[] = [];
       if (loadedJob && loadedJob.adminNotesJson) {
         try {
           const parsed = JSON.parse(loadedJob.adminNotesJson);
-          if (parsed && Array.isArray(parsed.payments)) {
-            existingPayments = parsed.payments;
+          if (Array.isArray(parsed)) {
+            existingNotes = parsed;
+          } else if (parsed && typeof parsed === "object") {
+            if (Array.isArray(parsed.payments)) existingPayments = parsed.payments;
+            if (Array.isArray(parsed.notes)) existingNotes = parsed.notes;
           }
         } catch (e) {}
       }
@@ -1710,10 +1795,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         finalMethod = lastPay.method;
         finalChannel = getStandardChannelName(lastPay.method);
       } else {
-        finalChannel = getStandardChannelName(paymentMethod);
+        finalChannel = effectivePaymentChannel || getStandardChannelName(paymentMethod);
       }
 
-      const paymentsJsonStr = JSON.stringify({ payments: finalPayments });
+
+      const paymentsJsonStr = existingNotes.length > 0
+        ? JSON.stringify({ payments: finalPayments, notes: existingNotes })
+        : JSON.stringify({ payments: finalPayments });
 
       let finalJob = null;
       if (loadedJobId) {
@@ -1763,7 +1851,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           discount: manualAdjustment + discountAmount,
           discountPercent: discountPercent,
           items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
-          serviceType: "wash_fold",
+          serviceType: (cart[0]?.id as ServiceType) || "wash_fold",
           status: hasPosPackage ? "topup" : "billing",
           completedAt: isStandardPlan && isPaidFlag ? new Date() : undefined,
           fee: 0, 
@@ -3521,59 +3609,43 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             <div className="grid grid-cols-2 gap-4">
               {/* Column 1 */}
               <div className="space-y-3">
-                {/* Row 1: Payment Status */}
-                <div className="flex items-center justify-between">
-                  <Label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Payment Status</Label>
-                  <div className="flex bg-muted rounded-xl p-0.5 border border-border">
-                    <button
-                      type="button"
-                      disabled={forceMemberPayment && (selectedCustomer?.creditBalance || 0) < total}
-                      onClick={() => {
-                        setIsPaid(true);
-                      }}
-                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all ${
-                        forceMemberPayment && (selectedCustomer?.creditBalance || 0) < total
-                          ? "opacity-40 cursor-not-allowed"
-                          : "cursor-pointer"
-                      } ${isPaid ? "bg-emerald-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                    >
-                      PAID
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
+                {/* Payment Channel Dropdown */}
+
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest shrink-0">
+                    {currentLanguage === "en" ? "Payment Channel" : "ช่องทางการชำระ"}
+                  </Label>
+                  <select
+                    disabled={forceMemberPayment}
+                    className="h-7 text-[10px] font-bold bg-card text-foreground border border-border rounded-lg px-2 outline-none focus:border-primary cursor-pointer w-36 text-right disabled:opacity-50 disabled:cursor-not-allowed"
+                    value={effectivePaymentChannel}
+
+                    onChange={(e) => {
+                      const ch = e.target.value;
+                      setPosPaymentChannel(ch);
+                      if (!ch) {
                         setIsPaid(false);
-                      }}
-                      className={`px-3 py-0.5 text-[9px] font-bold rounded-lg transition-all cursor-pointer ${!isPaid ? "bg-amber-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                    >
-                      UNPAID
-                    </button>
-                  </div>
+                      } else {
+                        setIsPaid(true);
+                        if (ch === "Cash / COD") setPaymentMethod("cash");
+                        else if (ch === "Transfer" || ch === "PromptPay") setPaymentMethod("transfer");
+                        else if (ch === "Credit Card" || ch === "Gateway") setPaymentMethod("card");
+                        else if (ch === "Deduct Member" || ch === "HQ/Credit") setPaymentMethod("credit");
+                      }
+                    }}
+                  >
+                    <option value="">Select Channel</option>
+                    <option value="Cash / COD">Cash / COD</option>
+                    <option value="Transfer">Transfer</option>
+                    <option value="Credit Card">Credit Card</option>
+                    <option value="Gateway">Gateway</option>
+                    <option value="PromptPay">PromptPay</option>
+                    {selectedCustomer && <option value="Deduct Member">Deduct Member</option>}
+                    <option value="HQ/Credit">HQ/Credit</option>
+                  </select>
                 </div>
 
-                {/* Row 2: Method (Only shown when PAID) */}
-                {isPaid && (
-                  <div className="flex items-center justify-between">
-                    <Label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Method</Label>
-                    <div className="flex bg-muted rounded-xl p-0.5 border border-border">
-                      {(selectedCustomer && !isStandardPlan ? ["cash", "transfer", "card", "credit"] : ["cash", "transfer", "card"]).map((m) => {
-                        const active = paymentMethod === m;
-                        const isMethodDisabled = forceMemberPayment && m !== "credit";
-                        return (
-                          <button
-                            key={m}
-                            type="button"
-                            disabled={isMethodDisabled}
-                            onClick={() => setPaymentMethod(m as any)}
-                            className={`px-2.5 py-0.5 text-[9px] font-bold rounded-lg transition-all capitalize ${isMethodDisabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"} ${active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                          >
-                            {m === "credit" ? "Member" : m}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+
               </div>
 
               {/* Column 2 */}
@@ -3862,12 +3934,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     
                     let branchCode = "";
                     if (activeShop?.name) {
+                      // Only keep alphabetic chars from each word's first letter to avoid special chars like "(" in names
                       const getInitials = (name: string) => {
                         const words = name.trim().split(/\s+/);
                         if (words.length > 1) {
-                          return words.map(w => w.charAt(0)).join("").toUpperCase();
+                          return words
+                            .map(w => w.replace(/[^A-Za-z]/g, "").charAt(0))
+                            .filter(Boolean)
+                            .join("")
+                            .toUpperCase();
                         }
-                        return name.substring(0, 3).toUpperCase();
+                        return name.replace(/[^A-Za-z]/g, "").substring(0, 3).toUpperCase();
                       };
                       
                       const myInitials = getInitials(activeShop.name);
@@ -3880,8 +3957,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         branchCode = myInitials;
                       }
                     }
+                    // Final sanitize: keep only A-Z, 0-9
+                    branchCode = branchCode.replace(/[^A-Z0-9]/g, "");
                     if (!branchCode || branchCode.length < 2) {
-                      branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase();
+                      branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase().replace(/[^A-Z0-9]/g, "");
                     }
                     
                     targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
@@ -3897,6 +3976,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     }
                   }
 
+                  const clickTime = new Date();
+                  setProformaCreatedAt(clickTime);
                   setIsDraftPreview(true);
                   setShowReceipt(true);
                 }}
@@ -3910,9 +3991,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               <Button 
                 disabled={
                   isProcessing || 
+                  !!(isPaid && (!effectivePaymentChannel || effectivePaymentChannel === "")) ||
                   !!(isPaid && paymentMethod === "credit" && selectedCustomer && (selectedCustomer.creditBalance || 0) < total) ||
                   !!(isPaid && paymentMethod === "cash" && (!receivedCash || isNaN(parseFloat(receivedCash)) || parseFloat(receivedCash) < total))
                 }
+
+
                 onClick={handleCheckout}
                 className={`flex-[2] h-11 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 border-none text-white cursor-pointer ${
                   isPaid 
@@ -3948,25 +4032,45 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       </aside>
       </div> {/* Closing Main Body Layout */}
 
-      {/* Thermal Receipt Preview Dialog */}
-      <ThermalReceiptDialog
-        open={showReceipt}
-        onOpenChange={setShowReceipt}
-        receiptData={receiptData}
-        activeShop={activeShop}
-        receiptPaperSize={settings?.receiptPaperSize}
-        currentLanguage={currentLanguage}
-        onCloseComplete={() => {
-          setIsDraftPreview(false);
-          setLatestJob(null);
-        }}
-        onBillImageUploaded={(newUrl) => {
-          if (!capturedReceiptUrlsRef.current.includes(newUrl)) {
-            capturedReceiptUrlsRef.current.push(newUrl);
-          }
-          setSessionCapturedReceiptUrls(prev => prev.includes(newUrl) ? prev : [...prev, newUrl]);
-        }}
-      />      {/* Close Cashier Shift Report Dialog */}
+      {/* Receipt Preview Dialog (A5 vs Thermal 80mm/58mm) */}
+      {settings?.receiptPaperSize === "A5" ? (
+        <A5ReceiptDialog
+          open={showReceipt}
+          onOpenChange={setShowReceipt}
+          receiptData={receiptData}
+          activeShop={activeShop}
+          currentLanguage={currentLanguage}
+          onCloseComplete={() => {
+            setIsDraftPreview(false);
+            setLatestJob(null);
+          }}
+          onBillImageUploaded={(newUrl) => {
+            if (!capturedReceiptUrlsRef.current.includes(newUrl)) {
+              capturedReceiptUrlsRef.current.push(newUrl);
+            }
+            setSessionCapturedReceiptUrls(prev => prev.includes(newUrl) ? prev : [...prev, newUrl]);
+          }}
+        />
+      ) : (
+        <ThermalReceiptDialog
+          open={showReceipt}
+          onOpenChange={setShowReceipt}
+          receiptData={receiptData}
+          activeShop={activeShop}
+          receiptPaperSize={settings?.receiptPaperSize}
+          currentLanguage={currentLanguage}
+          onCloseComplete={() => {
+            setIsDraftPreview(false);
+            setLatestJob(null);
+          }}
+          onBillImageUploaded={(newUrl) => {
+            if (!capturedReceiptUrlsRef.current.includes(newUrl)) {
+              capturedReceiptUrlsRef.current.push(newUrl);
+            }
+            setSessionCapturedReceiptUrls(prev => prev.includes(newUrl) ? prev : [...prev, newUrl]);
+          }}
+        />
+      )}      {/* Close Cashier Shift Report Dialog */}
       <Dialog open={isCloseShiftOpen} onOpenChange={setIsCloseShiftOpen}>
         <DialogContent className="max-w-md p-5 bg-card border border-border shadow-2xl rounded-2xl">
           <DialogHeader className="shrink-0 mb-3">
