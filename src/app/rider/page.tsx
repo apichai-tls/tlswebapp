@@ -426,18 +426,22 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
             <span className="text-sm font-medium text-slate-700 line-clamp-2">{targetLocation}</span>
           </div>
           
-          {!!job.totalAmount && job.totalAmount > 0 && (
-            <div className="flex items-center gap-2 mt-1">
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex items-center gap-1 ${
-                job.isPaid ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-orange-50 text-orange-700 border-orange-200'
-              }`}>
-                <CreditCard size={10} className={job.isPaid ? "text-emerald-500" : "text-orange-500"} />
-                {[job.paymentMethod?.toUpperCase(), job.paymentChannel ? `(${job.paymentChannel})` : ""].filter(Boolean).join(" ")}
-                {job.paymentMethod || job.paymentChannel ? " - " : ""}
-                {job.isPaid ? 'PAID' : 'UNPAID'} ฿{job.totalAmount}
-              </span>
-            </div>
-          )}
+          {!!job.totalAmount && job.totalAmount > 0 && (() => {
+            const isWalkIn = job.source === 'pos' || (job.type as string) === 'in_store';
+            const isPaidEffective = isWalkIn ? Boolean(job.isShopPaid) : Boolean(job.isPaid);
+            return (
+              <div className="flex items-center gap-2 mt-1">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex items-center gap-1 ${
+                  isPaidEffective ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-orange-50 text-orange-700 border-orange-200'
+                }`}>
+                  <CreditCard size={10} className={isPaidEffective ? "text-emerald-500" : "text-orange-500"} />
+                  {[job.paymentMethod?.toUpperCase(), job.paymentChannel ? `(${job.paymentChannel})` : ""].filter(Boolean).join(" ")}
+                  {job.paymentMethod || job.paymentChannel ? " - " : ""}
+                  {isPaidEffective ? 'PAID' : 'UNPAID'} ฿{job.totalAmount}
+                </span>
+              </div>
+            );
+          })()}
         </div>
         
         {cleanRemark && (
@@ -1701,18 +1705,22 @@ export default function RiderPage() {
                       </a>
                     </div>
                     
-                    {!!selectedJob.job.totalAmount && selectedJob.job.totalAmount > 0 && (
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-2">
-                        <span className={`text-[11px] font-bold px-2 py-1 rounded border flex items-center gap-1.5 ${
-                          selectedJob.job.isPaid ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-orange-50 text-orange-700 border-orange-200'
-                        }`}>
-                          <CreditCard size={12} className={selectedJob.job.isPaid ? "text-emerald-500" : "text-orange-500"} />
-                          {[selectedJob.job.paymentMethod?.toUpperCase(), selectedJob.job.paymentChannel ? `(${selectedJob.job.paymentChannel})` : ""].filter(Boolean).join(" ")}
-                          {selectedJob.job.paymentMethod || selectedJob.job.paymentChannel ? " - " : ""}
-                          {selectedJob.job.isPaid ? 'PAID' : 'UNPAID'} ฿{selectedJob.job.totalAmount}
-                        </span>
-                      </div>
-                    )}
+                    {!!selectedJob.job.totalAmount && selectedJob.job.totalAmount > 0 && (() => {
+                      const isWalkIn = selectedJob.job.source === 'pos' || (selectedJob.job.type as string) === 'in_store';
+                      const isPaidEffective = isWalkIn ? Boolean(selectedJob.job.isShopPaid) : Boolean(selectedJob.job.isPaid);
+                      return (
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-2">
+                          <span className={`text-[11px] font-bold px-2 py-1 rounded border flex items-center gap-1.5 ${
+                            isPaidEffective ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-orange-50 text-orange-700 border-orange-200'
+                          }`}>
+                            <CreditCard size={12} className={isPaidEffective ? "text-emerald-500" : "text-orange-500"} />
+                            {[selectedJob.job.paymentMethod?.toUpperCase(), selectedJob.job.paymentChannel ? `(${selectedJob.job.paymentChannel})` : ""].filter(Boolean).join(" ")}
+                            {selectedJob.job.paymentMethod || selectedJob.job.paymentChannel ? " - " : ""}
+                            {isPaidEffective ? 'PAID' : 'UNPAID'} ฿{selectedJob.job.totalAmount}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {legInstruction && (
