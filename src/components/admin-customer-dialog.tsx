@@ -145,7 +145,6 @@ export function AdminCustomerDialog({
       isMember: isMember,
       isWhatsapp: isWhatsapp,
       memberId: isMember ? memberId.trim() || null : null,
-      updatedAt: customer ? customer.updatedAt : undefined,
     };
 
     try {

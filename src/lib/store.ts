@@ -452,10 +452,7 @@ export const jobStore = {
       }
     }
 
-    // Include updatedAt from the current in-memory job snapshot for OCC (Optimistic Concurrency Control).
-    // This prevents stale overwrites when this function is called from components like AdminTaskTracker.
-    const updatedAtForOCC = job?.updatedAt;
-    await api.updateJob(id, { ...updates, ...(updatedAtForOCC ? { updatedAt: updatedAtForOCC } : {}), ...finalActorDetails });
+    await api.updateJob(id, { ...updates, ...finalActorDetails });
     emitJobChange();
   },
 

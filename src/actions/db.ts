@@ -52,14 +52,6 @@ export async function updateCustomerAction(id: string, updates: any) {
   const currentCustomer = await prisma.customer.findUnique({ where: { id } });
   if (!currentCustomer) throw new Error("Customer not found");
 
-  if (updates.updatedAt) {
-    const incomingTime = new Date(updates.updatedAt).getTime();
-    const dbTime = new Date(currentCustomer.updatedAt).getTime();
-    if (dbTime > incomingTime + 1000) {
-      throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
-    }
-  }
-
   const data: any = {};
   if (updates.name !== undefined) {
     data.name = updates.name ? updates.name.toUpperCase() : updates.name;
@@ -343,13 +335,6 @@ export async function updateJobAction(id: string, updates: any) {
   console.log(`[updateJobAction] id: ${id}`, updates);
   const existingJob = await prisma.job.findUnique({ where: { id } });
   
-  if (existingJob && updates.updatedAt) {
-    const incomingTime = new Date(updates.updatedAt).getTime();
-    const dbTime = new Date(existingJob.updatedAt).getTime();
-    if (dbTime > incomingTime + 1000) {
-      throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
-    }
-  }
   const data: any = {};
   if (updates.type !== undefined) data.type = updates.type;
   if (updates.status !== undefined) {
