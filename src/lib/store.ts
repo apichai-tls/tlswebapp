@@ -74,6 +74,7 @@ export interface Customer {
   dob?: string | null;
   taxId?: string | null;
   companyName?: string | null;
+  updatedAt?: Date | string | null;
 }
 
 export interface Job {

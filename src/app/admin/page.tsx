@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
@@ -632,6 +632,7 @@ export default function AdminPage() {
   const pickupUploaderRef = useRef<MultiImageUploaderRef>(null);
   const deliveryUploaderRef = useRef<MultiImageUploaderRef>(null);
   const originalJobRef = useRef<Job | null>(null);
+  const initialFormStateRef = useRef<any>(null);
 
   const handleLogout = () => {
     logout();
@@ -686,6 +687,134 @@ export default function AdminPage() {
       dropoffLabel: j.dropoffLocation,
       status: j.status,
     }));
+
+  const buildBaseJobData = (existingJob?: Job) => {
+    const itemsPayload: { name: string; quantity: number; price: number }[] = [];
+    const labelsMap: Record<string, string> = {
+      polo: "Polo Shirt",
+      tshirt: "T-Shirt",
+      pants: "Pants",
+      dress: "Dress",
+      bedsheet: "Bedsheet"
+    };
+
+    Object.entries(clothingItems).forEach(([key, val]) => {
+      if (val.selected) {
+        let name = labelsMap[key];
+        let price = 0;
+        if (key === 'other') {
+          name = otherClothingName.trim() || "Other Item";
+          price = otherClothingPrice || 0;
+        }
+        itemsPayload.push({
+          name: name || key,
+          quantity: val.quantity,
+          price
+        });
+      }
+    });
+
+    const isAlreadyCompleted = existingJob?.status === 'completed';
+
+    const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
+    const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
+
+    const finalAdminLogs = [...adminLogs];
+    if (adminNoteInput.trim()) {
+      finalAdminLogs.push({
+        id: Math.random().toString(36).substring(7),
+        userId: user?.id || "unknown",
+        userName: (user as any)?.name || user?.email || "Admin",
+        text: adminNoteInput.trim(),
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const validPickupDate = pickupScheduledTime ? new Date(pickupScheduledTime) : null;
+    const validDeliveryDate = deliveryScheduledTime ? new Date(deliveryScheduledTime) : null;
+
+    const builtPickupLocation = isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shopLocations[selectedStoreIndex].address;
+    const builtDropoffLocation = isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : shopLocations[selectedStoreIndex].address;
+
+    return {
+      isStuck,
+      customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
+      items: itemsPayload,
+      type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
+      subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
+      source: isWalkIn ? "pos" : "app",
+      ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
+      laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
+      customerName: customerName.trim(),
+      customerPhone: customerPhone.trim(),
+      pickupLocation: builtPickupLocation,
+      dropoffLocation: builtDropoffLocation,
+      pickupCoords: isPickup ? pickupCoords : shopLocations[selectedStoreIndex].coords,
+      dropoffCoords: isDelivery ? deliveryCoords : shopLocations[selectedStoreIndex].coords,
+      scheduledAt: (isPickup ? validPickupDate : (isDelivery ? validDeliveryDate : null)) || new Date(),
+      pickupScheduledAt: isPickup ? validPickupDate : null,
+      pickupScheduledEndAt: isPickup && validPickupDate ? new Date(validPickupDate.getTime() + 30 * 60000) : null,
+      deliveryScheduledAt: isDelivery ? validDeliveryDate : null,
+      deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
+      pickupRiderId: isPickup ? pickupRiderId || null : null,
+      deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
+      paymentMethod: null,
+      isPaid: paymentMethod === 'paid',
+      isShopPaid: shopPaymentMethod === 'paid',
+      billNo,
+      fee,
+      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
+      serviceType,
+      pickupDistance: isPickup ? pickupDist : 0,
+      deliveryDistance: isDelivery ? deliveryDist : 0,
+      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
+        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
+            ? (existingJob.pickupCommission ?? 0) 
+            : Math.floor(pickupDist) * 10) 
+        : 0,
+      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) 
+        ? ((editingJobId && existingJob && existingJob.status === 'completed') 
+            ? (existingJob.deliveryCommission ?? 0) 
+            : Math.floor(deliveryDist) * 10) 
+        : 0,
+      remark: [
+        ...customRemarks,
+        isFreeDelivery ? "Free Delivery" : "",
+        serviceSpeed === "express_50" ? "Express 50%" : "",
+        serviceSpeed === "express_100" ? "Express 100%" : "",
+        isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
+        isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
+      ].filter(Boolean).join(" | ") || null,
+      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
+      branchId: shopLocations[selectedStoreIndex].id,
+      paymentChannel: paymentChannel || null,
+      creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
+      createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
+      cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
+      actorId: user?.id,
+      actorName: user?.name || user?.email,
+      actorRole: user?.role
+    };
+  };
+
+  useEffect(() => {
+    if (dialogOpen && editingJobId) {
+      const existingJob = jobs.find(j => j.id === editingJobId);
+      const timeout = setTimeout(() => {
+        initialFormStateRef.current = buildBaseJobData(existingJob);
+      }, 0);
+      return () => clearTimeout(timeout);
+    } else {
+      initialFormStateRef.current = null;
+    }
+  }, [dialogOpen, editingJobId]);
+
+  const handleSaveJob = async () => {
+    setIsSubmitting(true);
+    const existingJob = jobs.find(j => j.id === editingJobId);
+    const newJobData = buildBaseJobData(existingJob);
+    // ... proceed with saving using newJobData
+  };
 
   const handleCreateNewJob = () => {
     setEditingJobId(null);
@@ -1058,105 +1187,7 @@ export default function AdminPage() {
       return; // Stop creation if upload fails
     }
 
-    const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
-    const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
-
-    let finalAdminLogs = [...adminLogs];
-    if (adminNoteInput.trim()) {
-      finalAdminLogs.push({
-        id: Math.random().toString(36).substring(7),
-        userId: user?.id || "unknown",
-        userName: (user as any)?.name || user?.email || "Admin",
-        text: adminNoteInput.trim(),
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const itemsPayload: { name: string; quantity: number; price: number }[] = [];
-    const labelsMap: Record<string, string> = {
-      polo: "Polo Shirt",
-      tshirt: "T-Shirt",
-      pants: "Pants",
-      dress: "Dress",
-      bedsheet: "Bedsheet"
-    };
-
-    Object.entries(clothingItems).forEach(([key, val]) => {
-      if (val.selected) {
-        let name = labelsMap[key];
-        let price = 0;
-        if (key === 'other') {
-          name = otherClothingName.trim() || "Other Item";
-          price = otherClothingPrice || 0;
-        }
-        itemsPayload.push({
-          name: name || key,
-          quantity: val.quantity,
-          price
-        });
-      }
-    });
-
-    const newJobData: any = {
-      isStuck,
-      customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
-      items: itemsPayload,
-      type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
-      subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
-      source: isWalkIn ? "pos" : "app",
-      // Auto-advance to Delivery or Completed when Process is set to Ready (only if job is not already completed)
-      ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
-      laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
-      customerName: customerName.trim(),
-      customerPhone: customerPhone.trim(),
-      pickupLocation: isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shop.address,
-      dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : shop.address,
-      pickupCoords: isPickup ? pickupCoords : shop.coords,
-      dropoffCoords: isDelivery ? deliveryCoords : shop.coords,
-      scheduledAt: (isPickup ? validPickupDate : (isDelivery ? validDeliveryDate : null)) || new Date(),
-      pickupScheduledAt: isPickup ? validPickupDate : null,
-      pickupScheduledEndAt: isPickup && validPickupDate ? new Date(validPickupDate.getTime() + 30 * 60000) : null,
-      deliveryScheduledAt: isDelivery ? validDeliveryDate : null,
-      deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
-      pickupRiderId: isPickup ? pickupRiderId || null : null,
-      deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
-      paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: paymentMethod === 'paid',
-      isShopPaid: shopPaymentMethod === 'paid',
-      billNo,
-      fee,
-      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
-      serviceType,
-      pickupDistance: isPickup ? pickupDist : 0,
-      deliveryDistance: isDelivery ? deliveryDist : 0,
-      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
-        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
-            ? (existingJob.pickupCommission ?? 0) 
-            : Math.floor(pickupDist) * getCommissionRate(systemSettings)) 
-        : 0,
-      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) 
-        ? ((editingJobId && existingJob && existingJob.status === 'completed') 
-            ? (existingJob.deliveryCommission ?? 0) 
-            : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
-        : 0,
-      remark: [
-        ...customRemarks,
-        isFreeDelivery ? "Free Delivery" : "",
-        serviceSpeed === "express_50" ? "Express 50%" : "",
-        serviceSpeed === "express_100" ? "Express 100%" : "",
-        isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
-        isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
-      ].filter(Boolean).join(" | ") || null,
-      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
-      branchId: shop.id,
-      paymentChannel: paymentChannel || null,
-      creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
-      createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
-      cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
-      actorId: user?.id,
-      actorName: user?.name || user?.email,
-      actorRole: user?.role
-    };
+    const newJobData: any = buildBaseJobData();
 
     // Only set image properties if they were actually modified, to prevent stale overrides
     if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
@@ -1177,7 +1208,9 @@ export default function AdminPage() {
       if (editingJobId) {
         const payload: Partial<Job> = {};
         if (originalJobRef.current) {
-          const orig = originalJobRef.current as any;
+          // If initialFormStateRef exists, it means the user just opened the form and we took a snapshot.
+          // Diff against the snapshot (what the user actually loaded) to prevent stale overwrites.
+          const orig = initialFormStateRef.current || (originalJobRef.current as any);
           const data = newJobData as any;
           
           const fieldsToCompare = [
@@ -1219,6 +1252,7 @@ export default function AdminPage() {
             (payload as any).actorId = user?.id;
             (payload as any).actorName = user?.name || user?.email;
             (payload as any).actorRole = user?.role;
+            (payload as any).updatedAt = orig.updatedAt;
           }
         } else {
           Object.assign(payload, newJobData);
@@ -1272,6 +1306,18 @@ export default function AdminPage() {
       setIsSubmitting(false);
     }
   }
+
+  const handleEditFullJobRef = useRef(handleEditFullJob);
+  handleEditFullJobRef.current = handleEditFullJob;
+  const stableHandleEditFullJob = useCallback((job: Job) => {
+    handleEditFullJobRef.current(job);
+  }, []);
+
+  const handleCreateNewJobRef = useRef(handleCreateNewJob);
+  handleCreateNewJobRef.current = handleCreateNewJob;
+  const stableHandleCreateNewJob = useCallback(() => {
+    handleCreateNewJobRef.current();
+  }, []);
 
   return (
     <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
@@ -3302,8 +3348,8 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={handleEditFullJob} onCreateJob={handleCreateNewJob} />}
-          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={handleEditFullJob} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} />}
+          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={stableHandleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
           {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}
