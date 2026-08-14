@@ -1,4 +1,4 @@
-generator client {
+﻿generator client {
   provider = "prisma-client-js"
 }
 
@@ -216,31 +216,7 @@ model AdminUser {
   branchId     String?
   isActive     Boolean       @default(true)
   ShopLocation ShopLocation? @relation(fields: [branchId], references: [id])
-  tasksAssigned Task[]       @relation("TaskAssignee")
-  tasksCreated  Task[]       @relation("TaskCreator")
 }
-
-model Task {
-  id              String    @id @default(uuid())
-  title           String
-  description     String?
-  priority        String    @default("medium")  // low | medium | high | urgent
-  status          String    @default("todo")     // todo | in_progress | done
-  jobId           String?
-  assignedToId    String?
-  assignedToName  String?
-  createdById     String
-  createdByName   String
-  dueDate         DateTime?
-  completedAt     DateTime?
-  notesJson       String?   @db.Text            // JSON array of { id, text, userId, userName, timestamp }
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  assignedTo      AdminUser? @relation("TaskAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-  createdBy       AdminUser  @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Cascade)
-}
-
-
 
 model Article {
   id         String   @id

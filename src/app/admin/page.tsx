@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
@@ -42,7 +42,6 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
-import { AdminTasks } from "@/components/admin-tasks";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -90,7 +89,6 @@ import {
   Shirt,
   Edit,
   ClipboardList,
-  ClipboardCheck,
   Paperclip,
   Maximize2,
   Trash2,
@@ -206,14 +204,14 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "tasks"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -237,8 +235,8 @@ export default function AdminPage() {
     }
 
     // For all other roles: jump to the first tab they have access to
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => user.permissions?.includes(key);
     const firstTab = tabOrder.find(tab => hasPermission(tab));
@@ -307,7 +305,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -594,7 +592,6 @@ export default function AdminPage() {
     other: { selected: false, quantity: 1 },
   });
   const [otherClothingName, setOtherClothingName] = useState("");
-  const [otherClothingPrice, setOtherClothingPrice] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [serviceWeight, setServiceWeight] = useState(2);
   
@@ -634,7 +631,6 @@ export default function AdminPage() {
   const pickupUploaderRef = useRef<MultiImageUploaderRef>(null);
   const deliveryUploaderRef = useRef<MultiImageUploaderRef>(null);
   const originalJobRef = useRef<Job | null>(null);
-  const initialFormStateRef = useRef<any>(null);
 
   const handleLogout = () => {
     logout();
@@ -690,134 +686,6 @@ export default function AdminPage() {
       status: j.status,
     }));
 
-  const buildBaseJobData = (existingJob?: Job) => {
-    const itemsPayload: { name: string; quantity: number; price: number }[] = [];
-    const labelsMap: Record<string, string> = {
-      polo: "Polo Shirt",
-      tshirt: "T-Shirt",
-      pants: "Pants",
-      dress: "Dress",
-      bedsheet: "Bedsheet"
-    };
-
-    Object.entries(clothingItems).forEach(([key, val]) => {
-      if (val.selected) {
-        let name = labelsMap[key];
-        let price = 0;
-        if (key === 'other') {
-          name = otherClothingName.trim() || "Other Item";
-          price = otherClothingPrice || 0;
-        }
-        itemsPayload.push({
-          name: name || key,
-          quantity: val.quantity,
-          price
-        });
-      }
-    });
-
-    const isAlreadyCompleted = existingJob?.status === 'completed';
-
-    const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
-    const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
-
-    const finalAdminLogs = [...adminLogs];
-    if (adminNoteInput.trim()) {
-      finalAdminLogs.push({
-        id: Math.random().toString(36).substring(7),
-        userId: user?.id || "unknown",
-        userName: (user as any)?.name || user?.email || "Admin",
-        text: adminNoteInput.trim(),
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const validPickupDate = pickupScheduledTime ? new Date(pickupScheduledTime) : null;
-    const validDeliveryDate = deliveryScheduledTime ? new Date(deliveryScheduledTime) : null;
-
-    const builtPickupLocation = isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shopLocations[selectedStoreIndex].address;
-    const builtDropoffLocation = isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : shopLocations[selectedStoreIndex].address;
-
-    return {
-      isStuck,
-      customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
-      items: itemsPayload,
-      type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
-      subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
-      source: isWalkIn ? "pos" : "app",
-      ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
-      laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
-      customerName: customerName.trim(),
-      customerPhone: customerPhone.trim(),
-      pickupLocation: builtPickupLocation,
-      dropoffLocation: builtDropoffLocation,
-      pickupCoords: isPickup ? pickupCoords : shopLocations[selectedStoreIndex].coords,
-      dropoffCoords: isDelivery ? deliveryCoords : shopLocations[selectedStoreIndex].coords,
-      scheduledAt: (isPickup ? validPickupDate : (isDelivery ? validDeliveryDate : null)) || new Date(),
-      pickupScheduledAt: isPickup ? validPickupDate : null,
-      pickupScheduledEndAt: isPickup && validPickupDate ? new Date(validPickupDate.getTime() + 30 * 60000) : null,
-      deliveryScheduledAt: isDelivery ? validDeliveryDate : null,
-      deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
-      pickupRiderId: isPickup ? pickupRiderId || null : null,
-      deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
-      paymentMethod: null,
-      isPaid: paymentMethod === 'paid',
-      isShopPaid: shopPaymentMethod === 'paid',
-      billNo,
-      fee,
-      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
-      serviceType,
-      pickupDistance: isPickup ? pickupDist : 0,
-      deliveryDistance: isDelivery ? deliveryDist : 0,
-      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
-        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
-            ? (existingJob.pickupCommission ?? 0) 
-            : Math.floor(pickupDist) * getCommissionRate(systemSettings)) 
-        : 0,
-      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) 
-        ? ((editingJobId && existingJob && existingJob.status === 'completed') 
-            ? (existingJob.deliveryCommission ?? 0) 
-            : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
-        : 0,
-      remark: [
-        ...customRemarks,
-        isFreeDelivery ? "Free Delivery" : "",
-        serviceSpeed === "express_50" ? "Express 50%" : "",
-        serviceSpeed === "express_100" ? "Express 100%" : "",
-        isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
-        isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
-      ].filter(Boolean).join(" | ") || null,
-      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
-      branchId: shopLocations[selectedStoreIndex].id,
-      paymentChannel: paymentChannel || null,
-      creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
-      createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
-      cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
-      actorId: user?.id,
-      actorName: user?.name || user?.email,
-      actorRole: user?.role
-    };
-  };
-
-  useEffect(() => {
-    if (dialogOpen && editingJobId) {
-      const existingJob = jobs.find(j => j.id === editingJobId);
-      const timeout = setTimeout(() => {
-        initialFormStateRef.current = buildBaseJobData(existingJob);
-      }, 0);
-      return () => clearTimeout(timeout);
-    } else {
-      initialFormStateRef.current = null;
-    }
-  }, [dialogOpen, editingJobId]);
-
-  const handleSaveJob = async () => {
-    setIsSubmitting(true);
-    const existingJob = jobs.find(j => j.id === editingJobId);
-    const newJobData = buildBaseJobData(existingJob);
-    // ... proceed with saving using newJobData
-  };
-
   const handleCreateNewJob = () => {
     setEditingJobId(null);
     setShowJobLogs(false);
@@ -849,7 +717,6 @@ export default function AdminPage() {
     setServiceType("wash_fold");
     setServiceWeight(2);
     setOtherClothingName("");
-    setOtherClothingPrice(0);
     setClothingItems({
       polo: { selected: false, quantity: 1 },
       tshirt: { selected: false, quantity: 1 },
@@ -1004,7 +871,6 @@ export default function AdminPage() {
         } else {
           initialClothingItems.other = { selected: true, quantity: item.quantity };
           otherName = item.name;
-          if (item.price) setOtherClothingPrice(item.price);
         }
       });
     }
@@ -1045,7 +911,7 @@ export default function AdminPage() {
       return flattenAndResolve(imgUrl).filter(Boolean);
     };
 
-    // 🚀 Load images INSTANTLY from the local in-memory job object
+    // ๐€ Load images INSTANTLY from the local in-memory job object
     const localBagUrls = parseUrls(job.bagImageUrl);
     const localBillUrls = parseUrls(job.billImageUrl);
     const localPickupUrls = parseUrls(job.pickupProofImageUrl);
@@ -1125,7 +991,7 @@ export default function AdminPage() {
       return;
     }
     if (isPickup && pickupLoc.trim() && !pickupCoords) {
-      toast.error("กรุณาเลือกที่อยู่ขารับจากรายการแนะนำของ Google Maps");
+      toast.error("เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธฃเธฑเธเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเธเธญเธ Google Maps");
       return;
     }
     if (isDelivery && !deliveryLoc.trim()) {
@@ -1133,7 +999,7 @@ export default function AdminPage() {
       return;
     }
     if (isDelivery && deliveryLoc.trim() && !deliveryCoords) {
-      toast.error("กรุณาเลือกที่อยู่ขาส่งจากรายการแนะนำของ Google Maps");
+      toast.error("เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธชเนเธเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเธเธญเธ Google Maps");
       return;
     }
     if (!isWalkIn && !isPickup && !isDelivery) {
@@ -1189,7 +1055,114 @@ export default function AdminPage() {
       return; // Stop creation if upload fails
     }
 
-    const newJobData: any = buildBaseJobData(originalJobRef.current ?? undefined);
+    const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
+    const customRemarks = oldRemarks.filter(r => !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r));
+
+    let finalAdminLogs = [...adminLogs];
+    if (adminNoteInput.trim()) {
+      finalAdminLogs.push({
+        id: Math.random().toString(36).substring(7),
+        userId: user?.id || "unknown",
+        userName: (user as any)?.name || user?.email || "Admin",
+        text: adminNoteInput.trim(),
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const itemsPayload: { name: string; quantity: number; price: number }[] = [];
+    const labelsMap: Record<string, string> = {
+      polo: "Polo Shirt",
+      tshirt: "T-Shirt",
+      pants: "Pants",
+      dress: "Dress",
+      bedsheet: "Bedsheet"
+    };
+
+    Object.entries(clothingItems).forEach(([key, val]) => {
+      if (val.selected) {
+        let name = labelsMap[key];
+        if (key === 'other') {
+          name = otherClothingName.trim() || "Other";
+        }
+        itemsPayload.push({
+          name: name || key,
+          quantity: val.quantity,
+          price: 0
+        });
+      }
+    });
+
+    if (serviceType === 'other') {
+      const hasOther = itemsPayload.some(i => i.name.toLowerCase().includes('other'));
+      if (!hasOther) {
+        itemsPayload.push({
+          name: "Other (Custom Service)",
+          quantity: 1,
+          price: laundryPrice || 0
+        });
+      }
+    }
+
+    const newJobData: any = {
+      isStuck,
+      customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
+      items: itemsPayload,
+      type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
+      subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
+      source: isWalkIn ? "pos" : "app",
+      // Auto-advance to Delivery or Completed when Process is set to Ready (only if job is not already completed)
+      ...(!isAlreadyCompleted && editingSubStatus === 'ready' && { status: (isWalkIn && !isDelivery) ? 'completed' : 'delivery' }),
+      laundryTypes: laundryTypes.length > 0 ? laundryTypes : undefined,
+      customerName: customerName.trim(),
+      customerPhone: customerPhone.trim(),
+      pickupLocation: isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shop.address,
+      dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : shop.address,
+      pickupCoords: isPickup ? pickupCoords : shop.coords,
+      dropoffCoords: isDelivery ? deliveryCoords : shop.coords,
+      scheduledAt: (isPickup ? validPickupDate : (isDelivery ? validDeliveryDate : null)) || new Date(),
+      pickupScheduledAt: isPickup ? validPickupDate : null,
+      pickupScheduledEndAt: isPickup && validPickupDate ? new Date(validPickupDate.getTime() + 30 * 60000) : null,
+      deliveryScheduledAt: isDelivery ? validDeliveryDate : null,
+      deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
+      pickupRiderId: isPickup ? pickupRiderId || null : null,
+      deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
+      paymentMethod: null, // paymentMethod field is legacy โ€” use isPaid + paymentChannel instead
+      isPaid: paymentMethod === 'paid',
+      isShopPaid: shopPaymentMethod === 'paid',
+      billNo,
+      fee,
+      totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
+      serviceType,
+      pickupDistance: isPickup ? pickupDist : 0,
+      deliveryDistance: isDelivery ? deliveryDist : 0,
+      pickupCommission: (isPickup && !selectedVIPLabel && !isFreeDelivery) 
+        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
+            ? (existingJob.pickupCommission ?? 0) 
+            : Math.floor(pickupDist) * getCommissionRate(systemSettings)) 
+        : 0,
+      deliveryCommission: (isDelivery && !selectedVIPLabel && !isFreeDelivery) 
+        ? ((editingJobId && existingJob && existingJob.status === 'completed') 
+            ? (existingJob.deliveryCommission ?? 0) 
+            : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
+        : 0,
+      remark: [
+        ...customRemarks,
+        isFreeDelivery ? "Free Delivery" : "",
+        serviceSpeed === "express_50" ? "Express 50%" : "",
+        serviceSpeed === "express_100" ? "Express 100%" : "",
+        isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
+        isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
+      ].filter(Boolean).join(" | ") || null,
+      adminNotesJson: finalAdminLogs.length > 0 ? JSON.stringify(finalAdminLogs.map(({ isNew, ...rest }) => rest)) : null,
+      branchId: shop.id,
+      paymentChannel: paymentChannel || null,
+      creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
+      createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
+      cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
+      actorId: user?.id,
+      actorName: user?.name || user?.email,
+      actorRole: user?.role
+    };
 
     // Only set image properties if they were actually modified, to prevent stale overrides
     if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
@@ -1210,9 +1183,7 @@ export default function AdminPage() {
       if (editingJobId) {
         const payload: Partial<Job> = {};
         if (originalJobRef.current) {
-          // If initialFormStateRef exists, it means the user just opened the form and we took a snapshot.
-          // Diff against the snapshot (what the user actually loaded) to prevent stale overwrites.
-          const orig = initialFormStateRef.current || (originalJobRef.current as any);
+          const orig = originalJobRef.current as any;
           const data = newJobData as any;
           
           const fieldsToCompare = [
@@ -1254,7 +1225,6 @@ export default function AdminPage() {
             (payload as any).actorId = user?.id;
             (payload as any).actorName = user?.name || user?.email;
             (payload as any).actorRole = user?.role;
-            (payload as any).updatedAt = orig.updatedAt;
           }
         } else {
           Object.assign(payload, newJobData);
@@ -1266,7 +1236,7 @@ export default function AdminPage() {
         toast.success(`Job updated successfully!`);
       } else {
         const job = await jobStore.addJob(newJobData as any);
-        toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+        toast.success(`Job ${job.id} created โ€” Fee เธฟ${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
       }
 
       setPickupLoc("");
@@ -1308,18 +1278,6 @@ export default function AdminPage() {
       setIsSubmitting(false);
     }
   }
-
-  const handleEditFullJobRef = useRef(handleEditFullJob);
-  handleEditFullJobRef.current = handleEditFullJob;
-  const stableHandleEditFullJob = useCallback((job: Job) => {
-    handleEditFullJobRef.current(job);
-  }, []);
-
-  const handleCreateNewJobRef = useRef(handleCreateNewJob);
-  handleCreateNewJobRef.current = handleCreateNewJob;
-  const stableHandleCreateNewJob = useCallback(() => {
-    handleCreateNewJobRef.current();
-  }, []);
 
   return (
     <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
@@ -1510,18 +1468,6 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
               </motion.a>
             )}
-
-            {/* Tasks — accessible to all authenticated users */}
-            <motion.a
-              href="#tasks"
-              onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("tasks"); }}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "tasks" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-              title="Tasks"
-            >
-              <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-              {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
-            </motion.a>
             
             {hasAccess("users") && (
               <motion.a
@@ -2075,7 +2021,7 @@ export default function AdminPage() {
                           <span className="hidden sm:inline text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
                           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
 
-                            {/* Billing — auto-indicator, not clickable */}
+                            {/* Billing โ€” auto-indicator, not clickable */}
                           <div
                             className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 cursor-default ${
                               billImageUrls.length > 0
@@ -2305,7 +2251,7 @@ export default function AdminPage() {
                           {isPickup && (
                             <div className="space-y-1">
                               <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เปิดตำแหน่งใน Google Maps">
+                                <span title="เน€เธเธดเธ”เธ•เธณเนเธซเธเนเธเนเธ Google Maps">
                                   <MapPin 
                                     size={14} 
                                     className="text-emerald-600 cursor-pointer hover:text-emerald-800 transition-colors" 
@@ -2356,7 +2302,7 @@ export default function AdminPage() {
                               </div>
                               {isPickup && pickupLoc.trim() !== "" && !pickupCoords && (
                                 <span className="text-[10px] text-red-500 font-semibold block mt-1">
-                                  ⚠️ กรุณาเลือกที่อยู่จากรายการแนะนำเพื่อระบุพิกัด
+                                  โ ๏ธ เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเน€เธเธทเนเธญเธฃเธฐเธเธธเธเธดเธเธฑเธ”
                                 </span>
                               )}
                             </div>
@@ -2365,7 +2311,7 @@ export default function AdminPage() {
                           {isDelivery && (
                             <div className="space-y-1">
                               <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เปิดตำแหน่งใน Google Maps">
+                                <span title="เน€เธเธดเธ”เธ•เธณเนเธซเธเนเธเนเธ Google Maps">
                                   <Navigation 
                                     size={14} 
                                     className="text-red-600 cursor-pointer hover:text-red-800 transition-colors" 
@@ -2416,7 +2362,7 @@ export default function AdminPage() {
                               </div>
                               {isDelivery && deliveryLoc.trim() !== "" && !deliveryCoords && (
                                 <span className="text-[10px] text-red-500 font-semibold block mt-1">
-                                  ⚠️ กรุณาเลือกที่อยู่จากรายการแนะนำเพื่อระบุพิกัด
+                                  โ ๏ธ เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเน€เธเธทเนเธญเธฃเธฐเธเธธเธเธดเธเธฑเธ”
                                 </span>
                               )}
                             </div>
@@ -2902,7 +2848,7 @@ export default function AdminPage() {
                           {isPickup && (
                             <div className="flex justify-between items-center text-xs">
                               <span className="text-slate-400">Pickup Dist.</span>
-                              <span className="font-medium">{pickupDist} km (×2)</span>
+                              <span className="font-medium">{pickupDist} km (ร—2)</span>
                             </div>
                           )}
                           {isDelivery && (
@@ -2917,7 +2863,7 @@ export default function AdminPage() {
                           <div className="flex justify-between items-center mb-1">
                             <Label className="text-xs font-medium text-slate-300">Laundry Price</Label>
                             <div className="relative w-24">
-                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">เธฟ</span>
                               <Input 
                                 type="number"
                                 className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
@@ -2926,7 +2872,6 @@ export default function AdminPage() {
                               />
                             </div>
                           </div>
-
                           <span className="text-[10px] text-indigo-300 font-medium">
                             {(() => {
                               if (serviceType === "other") return "Custom service: Enter price manually";
@@ -2941,15 +2886,13 @@ export default function AdminPage() {
                                 if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
                               }
                               const effWeight = Math.max(2, serviceWeight);
-                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}฿)`;
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}เธฟ)`;
                             })()}
                           </span>
                           {serviceSpeed !== "standard" && (
                             <div className="flex justify-between items-center mt-2">
                               <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                              <span className="text-sm font-bold text-orange-300">
-                                ฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}
-                              </span>
+                              <span className="text-sm font-bold text-orange-300">เธฟ{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
                             </div>
                           )}
 
@@ -2970,24 +2913,6 @@ export default function AdminPage() {
                               </Label>
                             </div>
                           </div>
-
-                          {clothingItems.other.selected && (
-                            <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-700/80 animate-in fade-in duration-200">
-                              <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
-                                Other Price ({otherClothingName.trim() || 'Specify'})
-                              </Label>
-                              <div className="relative w-24">
-                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
-                                <Input 
-                                  type="number"
-                                  className="h-8 pl-6 pr-2 bg-slate-800 border-amber-500/50 text-amber-300 font-bold text-right text-sm focus:border-amber-400"
-                                  value={otherClothingPrice || ""}
-                                  onChange={e => setOtherClothingPrice(parseFloat(e.target.value) || 0)}
-                                  placeholder="0"
-                                />
-                              </div>
-                            </div>
-                          )}
 
                           <div className="flex flex-col gap-2 pt-2 mt-2 border-t border-slate-700">
                             <div className="grid grid-cols-2 gap-2">
@@ -3020,14 +2945,9 @@ export default function AdminPage() {
                                 <Input
                                   id="bill-no"
                                   value={billNo}
-                                  onChange={(e) => {
-                                    if (user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') {
-                                      setBillNo(e.target.value);
-                                    }
-                                  }}
-                                  disabled={!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso')}
+                                  onChange={(e) => setBillNo(e.target.value)}
                                   placeholder="Enter Bill No."
-                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') ? 'cursor-not-allowed opacity-60' : ''}`}
+                                  className="h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500"
                                 />
                               </div>
                             </div>
@@ -3077,7 +2997,7 @@ export default function AdminPage() {
                                           onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
                                           className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`}
                                         />
-                                        <span className="font-medium text-amber-400 whitespace-nowrap">วางเงินแล้ว</span>
+                                        <span className="font-medium text-amber-400 whitespace-nowrap">เธงเธฒเธเน€เธเธดเธเนเธฅเนเธง</span>
                                       </Label>
                                     )}
                                   </div>
@@ -3130,30 +3050,28 @@ export default function AdminPage() {
                                 }} />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
-                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
+                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}เธฟ/km</span>
                           </div>
                           <div className="text-right">
-                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">฿{baseFee.toFixed(0)}</span>}
-                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>฿{fee.toFixed(0)}</span>
+                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">เธฟ{baseFee.toFixed(0)}</span>}
+                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>เธฟ{fee.toFixed(0)}</span>
                           </div>
                         </div>
                         
                         <div className="flex justify-between items-end border-t border-slate-700 pt-2">
                           <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                          <span className="text-2xl font-black text-indigo-400">
-                            ฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + (clothingItems.other.selected ? (otherClothingPrice || 0) : 0) + fee).toFixed(0)}
-                          </span>
+                          <span className="text-2xl font-black text-indigo-400">เธฟ{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                         </div>
 
                         {(isPickup || isDelivery) && (
                           <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
                             <div className="flex flex-col">
                               <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
-                              <span className="text-[10px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
+                              <span className="text-[10px] text-slate-500">Distance ร— {systemSettings?.riderCommissionPerKm || "2"}เธฟ</span>
                             </div>
                             <div className="text-right">
                               <span className="text-lg font-bold text-amber-400">
-                                ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
+                                เธฟ{selectedVIPLabel || isFreeDelivery ? "0" : (
                                   (isPickup ? (
                                     (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
                                       ? (activeJob.pickupCommission ?? 0)
@@ -3362,8 +3280,8 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} />}
-          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={stableHandleEditFullJob} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={handleEditFullJob} onCreateJob={handleCreateNewJob} />}
+          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={handleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
           {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}
@@ -3373,7 +3291,6 @@ export default function AdminPage() {
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
-          {activeTab === "tasks" && <AdminTasks />}
 
 
           {/* Fallback for no access to current tab */}
