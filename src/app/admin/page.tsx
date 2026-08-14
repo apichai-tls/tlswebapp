@@ -911,7 +911,7 @@ export default function AdminPage() {
       return flattenAndResolve(imgUrl).filter(Boolean);
     };
 
-    // ๐€ Load images INSTANTLY from the local in-memory job object
+    // 🚀 Load images INSTANTLY from the local in-memory job object
     const localBagUrls = parseUrls(job.bagImageUrl);
     const localBillUrls = parseUrls(job.billImageUrl);
     const localPickupUrls = parseUrls(job.pickupProofImageUrl);
@@ -991,7 +991,7 @@ export default function AdminPage() {
       return;
     }
     if (isPickup && pickupLoc.trim() && !pickupCoords) {
-      toast.error("เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธฃเธฑเธเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเธเธญเธ Google Maps");
+      toast.error("กรุณาเลือกที่อยู่ขารับจากรายการแนะนำของ Google Maps");
       return;
     }
     if (isDelivery && !deliveryLoc.trim()) {
@@ -999,7 +999,7 @@ export default function AdminPage() {
       return;
     }
     if (isDelivery && deliveryLoc.trim() && !deliveryCoords) {
-      toast.error("เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธชเนเธเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเธเธญเธ Google Maps");
+      toast.error("กรุณาเลือกที่อยู่ขาส่งจากรายการแนะนำของ Google Maps");
       return;
     }
     if (!isWalkIn && !isPickup && !isDelivery) {
@@ -1126,7 +1126,7 @@ export default function AdminPage() {
       deliveryScheduledEndAt: isDelivery && validDeliveryDate ? new Date(validDeliveryDate.getTime() + 30 * 60000) : null,
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
-      paymentMethod: null, // paymentMethod field is legacy โ€” use isPaid + paymentChannel instead
+      paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
       isShopPaid: shopPaymentMethod === 'paid',
       billNo,
@@ -1236,7 +1236,7 @@ export default function AdminPage() {
         toast.success(`Job updated successfully!`);
       } else {
         const job = await jobStore.addJob(newJobData as any);
-        toast.success(`Job ${job.id} created โ€” Fee เธฟ${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+        toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
       }
 
       setPickupLoc("");
@@ -2021,7 +2021,7 @@ export default function AdminPage() {
                           <span className="hidden sm:inline text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
                           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
 
-                            {/* Billing โ€” auto-indicator, not clickable */}
+                            {/* Billing — auto-indicator, not clickable */}
                           <div
                             className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 cursor-default ${
                               billImageUrls.length > 0
@@ -2251,7 +2251,7 @@ export default function AdminPage() {
                           {isPickup && (
                             <div className="space-y-1">
                               <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เน€เธเธดเธ”เธ•เธณเนเธซเธเนเธเนเธ Google Maps">
+                                <span title="เปิดตำแหน่งใน Google Maps">
                                   <MapPin 
                                     size={14} 
                                     className="text-emerald-600 cursor-pointer hover:text-emerald-800 transition-colors" 
@@ -2302,7 +2302,7 @@ export default function AdminPage() {
                               </div>
                               {isPickup && pickupLoc.trim() !== "" && !pickupCoords && (
                                 <span className="text-[10px] text-red-500 font-semibold block mt-1">
-                                  โ ๏ธ เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเน€เธเธทเนเธญเธฃเธฐเธเธธเธเธดเธเธฑเธ”
+                                  ⚠️ กรุณาเลือกที่อยู่จากรายการแนะนำเพื่อระบุพิกัด
                                 </span>
                               )}
                             </div>
@@ -2311,7 +2311,7 @@ export default function AdminPage() {
                           {isDelivery && (
                             <div className="space-y-1">
                               <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เน€เธเธดเธ”เธ•เธณเนเธซเธเนเธเนเธ Google Maps">
+                                <span title="เปิดตำแหน่งใน Google Maps">
                                   <Navigation 
                                     size={14} 
                                     className="text-red-600 cursor-pointer hover:text-red-800 transition-colors" 
@@ -2362,7 +2362,7 @@ export default function AdminPage() {
                               </div>
                               {isDelivery && deliveryLoc.trim() !== "" && !deliveryCoords && (
                                 <span className="text-[10px] text-red-500 font-semibold block mt-1">
-                                  โ ๏ธ เธเธฃเธธเธ“เธฒเน€เธฅเธทเธญเธเธ—เธตเนเธญเธขเธนเนเธเธฒเธเธฃเธฒเธขเธเธฒเธฃเนเธเธฐเธเธณเน€เธเธทเนเธญเธฃเธฐเธเธธเธเธดเธเธฑเธ”
+                                  ⚠️ กรุณาเลือกที่อยู่จากรายการแนะนำเพื่อระบุพิกัด
                                 </span>
                               )}
                             </div>
@@ -2848,7 +2848,7 @@ export default function AdminPage() {
                           {isPickup && (
                             <div className="flex justify-between items-center text-xs">
                               <span className="text-slate-400">Pickup Dist.</span>
-                              <span className="font-medium">{pickupDist} km (ร—2)</span>
+                              <span className="font-medium">{pickupDist} km (×2)</span>
                             </div>
                           )}
                           {isDelivery && (
@@ -2863,7 +2863,7 @@ export default function AdminPage() {
                           <div className="flex justify-between items-center mb-1">
                             <Label className="text-xs font-medium text-slate-300">Laundry Price</Label>
                             <div className="relative w-24">
-                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">เธฟ</span>
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
                               <Input 
                                 type="number"
                                 className="h-8 pl-6 pr-2 bg-slate-800 border-slate-600 text-white font-bold text-right text-sm"
@@ -2886,13 +2886,13 @@ export default function AdminPage() {
                                 if (defaultPl && defaultPl.servicePrices[serviceType] !== undefined) pricePerKg = defaultPl.servicePrices[serviceType];
                               }
                               const effWeight = Math.max(2, serviceWeight);
-                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}เธฟ)`;
+                              return `${baseService.name} ${serviceWeight} ${baseService.unit || 'kg'} (${pricePerKg}x${effWeight} = ${Math.ceil(pricePerKg * effWeight)}฿)`;
                             })()}
                           </span>
                           {serviceSpeed !== "standard" && (
                             <div className="flex justify-between items-center mt-2">
                               <span className="text-xs text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                              <span className="text-sm font-bold text-orange-300">เธฟ{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
+                              <span className="text-sm font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : laundryPrice).toFixed(0)}</span>
                             </div>
                           )}
 
@@ -2997,7 +2997,7 @@ export default function AdminPage() {
                                           onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'cso')) e.preventDefault(); }}
                                           className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3 ${!(user?.role === 'admin' || user?.role === 'cso') ? 'cursor-not-allowed' : ''}`}
                                         />
-                                        <span className="font-medium text-amber-400 whitespace-nowrap">เธงเธฒเธเน€เธเธดเธเนเธฅเนเธง</span>
+                                        <span className="font-medium text-amber-400 whitespace-nowrap">วางเงินแล้ว</span>
                                       </Label>
                                     )}
                                   </div>
@@ -3050,28 +3050,28 @@ export default function AdminPage() {
                                 }} />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
-                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}เธฟ/km</span>
+                              <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
                           </div>
                           <div className="text-right">
-                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">เธฟ{baseFee.toFixed(0)}</span>}
-                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>เธฟ{fee.toFixed(0)}</span>
+                            {isFreeDelivery && <span className="text-xs line-through text-slate-500 mr-1">฿{baseFee.toFixed(0)}</span>}
+                            <span className={`text-sm font-bold ${isFreeDelivery ? 'text-emerald-400' : 'text-slate-300'}`}>฿{fee.toFixed(0)}</span>
                           </div>
                         </div>
                         
                         <div className="flex justify-between items-end border-t border-slate-700 pt-2">
                           <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
-                          <span className="text-2xl font-black text-indigo-400">เธฟ{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
+                          <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                         </div>
 
                         {(isPickup || isDelivery) && (
                           <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
                             <div className="flex flex-col">
                               <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
-                              <span className="text-[10px] text-slate-500">Distance ร— {systemSettings?.riderCommissionPerKm || "2"}เธฟ</span>
+                              <span className="text-[10px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
                             </div>
                             <div className="text-right">
                               <span className="text-lg font-bold text-amber-400">
-                                เธฟ{selectedVIPLabel || isFreeDelivery ? "0" : (
+                                ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
                                   (isPickup ? (
                                     (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
                                       ? (activeJob.pickupCommission ?? 0)
