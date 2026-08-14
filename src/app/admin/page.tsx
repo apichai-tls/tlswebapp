@@ -1187,7 +1187,7 @@ export default function AdminPage() {
       return; // Stop creation if upload fails
     }
 
-    const newJobData: any = buildBaseJobData();
+    const newJobData: any = buildBaseJobData(originalJobRef.current ?? undefined);
 
     // Only set image properties if they were actually modified, to prevent stale overrides
     if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
