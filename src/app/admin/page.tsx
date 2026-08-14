@@ -42,7 +42,6 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
-import { AdminTasks } from "@/components/admin-tasks";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -90,7 +89,6 @@ import {
   Shirt,
   Edit,
   ClipboardList,
-  ClipboardCheck,
   Paperclip,
   Maximize2,
   Trash2,
@@ -206,14 +204,14 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "tasks"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -237,8 +235,8 @@ export default function AdminPage() {
     }
 
     // For all other roles: jump to the first tab they have access to
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => user.permissions?.includes(key);
     const firstTab = tabOrder.find(tab => hasPermission(tab));
@@ -307,7 +305,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -1510,18 +1508,6 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
               </motion.a>
             )}
-
-            {/* Tasks — accessible to all authenticated users */}
-            <motion.a
-              href="#tasks"
-              onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("tasks"); }}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "tasks" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-              title="Tasks"
-            >
-              <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-              {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
-            </motion.a>
             
             {hasAccess("users") && (
               <motion.a
@@ -3373,7 +3359,6 @@ export default function AdminPage() {
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
-          {activeTab === "tasks" && <AdminTasks />}
 
 
           {/* Fallback for no access to current tab */}
