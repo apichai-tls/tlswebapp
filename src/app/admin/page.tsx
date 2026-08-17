@@ -42,6 +42,8 @@ import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
+import { AdminTasks } from "@/components/admin-tasks";
+import { NotificationBell } from "@/components/notification-bell";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -89,9 +91,11 @@ import {
   Shirt,
   Edit,
   ClipboardList,
+  ClipboardCheck,
   Paperclip,
   Maximize2,
   Trash2,
+  Lock,
   Menu
 } from "lucide-react";
 import Link from "next/link";
@@ -204,14 +208,14 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "tasks"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -235,8 +239,8 @@ export default function AdminPage() {
     }
 
     // For all other roles: jump to the first tab they have access to
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => user.permissions?.includes(key);
     const firstTab = tabOrder.find(tab => hasPermission(tab));
@@ -305,7 +309,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -639,7 +643,8 @@ export default function AdminPage() {
 
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
-    return user?.permissions?.includes(key);
+    if (key === 'tasks' || key === 'calculator') return true;
+    return user?.permissions?.includes(key) ?? false;
   };
 
   const parseTime = (timeStr: string) => {
@@ -1129,7 +1134,7 @@ export default function AdminPage() {
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
       isShopPaid: shopPaymentMethod === 'paid',
-      billNo,
+      billNo: (user?.role === 'admin' || user?.role === 'cso') ? billNo : (existingJob?.billNo ?? billNo),
       fee,
       totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
       serviceType,
@@ -1468,6 +1473,18 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
               </motion.a>
             )}
+
+            {/* Tasks — available to all logged in users */}
+            <motion.a
+              href="#tasks"
+              onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("tasks"); }}
+              whileHover={{ x: 2 }}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "tasks" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              title="Tasks"
+            >
+              <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+              {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
+            </motion.a>
             
             {hasAccess("users") && (
               <motion.a
@@ -1796,6 +1813,12 @@ export default function AdminPage() {
             </h1>
             
             <div className="flex items-center gap-3">
+              <NotificationBell
+                onSelectTask={(taskId) => {
+                  handleTabChange("tasks");
+                  window.dispatchEvent(new CustomEvent("open-task-modal", { detail: { taskId } }));
+                }}
+              />
               <Button 
                 variant="outline" 
                 size="icon"
@@ -2940,14 +2963,23 @@ export default function AdminPage() {
                               <div className="space-y-0.5">
                                 <Label htmlFor="bill-no" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
                                   <CreditCard size={12} className="text-slate-500" />
-                                  BILL NO.
+                                  BILL NO. {!(user?.role === 'admin' || user?.role === 'cso') && <Lock size={10} className="text-amber-500 ml-0.5" />}
                                 </Label>
                                 <Input
                                   id="bill-no"
                                   value={billNo}
-                                  onChange={(e) => setBillNo(e.target.value)}
-                                  placeholder="Enter Bill No."
-                                  className="h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500"
+                                  onChange={(e) => {
+                                    if (user?.role === 'admin' || user?.role === 'cso') {
+                                      setBillNo(e.target.value);
+                                    }
+                                  }}
+                                  disabled={!(user?.role === 'admin' || user?.role === 'cso')}
+                                  placeholder={user?.role === 'admin' || user?.role === 'cso' ? "Enter Bill No." : "-"}
+                                  className={`h-6 w-full rounded border-slate-600 px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${
+                                    !(user?.role === 'admin' || user?.role === 'cso')
+                                      ? "bg-slate-800/50 text-slate-400 cursor-not-allowed border-slate-700 select-none"
+                                      : "bg-slate-800 text-white"
+                                  }`}
                                 />
                               </div>
                             </div>
@@ -3291,7 +3323,7 @@ export default function AdminPage() {
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
-
+          {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
 
           {/* Fallback for no access to current tab */}
           {!hasAccess(activeTab) && (

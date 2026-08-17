@@ -19,9 +19,10 @@ export const bucketName = process.env.GCS_BUCKET_NAME || 'tls-images-test';
  * Structure: jobs/{YYYY}/{MM}/{DD}/{jobId}/{type}/filename-{timestamp}.jpg
  */
 export function generateGcsPath(
-  entityType: 'job' | 'rider' | 'system',
+  entityType: 'job' | 'rider' | 'system' | 'task',
   entityId: string,
-  subType?: 'bags' | 'proofs' | 'bills' | 'avatars'
+  subType?: 'bags' | 'proofs' | 'bills' | 'avatars' | 'attachments' | 'notes',
+  extension: string = 'jpg'
 ): string {
   const now = new Date();
   const timestamp = now.getTime();
@@ -30,15 +31,20 @@ export function generateGcsPath(
   const day = String(now.getDate()).padStart(2, '0');
 
   if (entityType === 'rider') {
-    return `riders/avatars/${entityId}/avatar-${timestamp}.jpg`;
+    return `riders/avatars/${entityId}/avatar-${timestamp}.${extension}`;
   }
 
   if (entityType === 'job') {
     const typeFolder = subType || 'proofs';
-    return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/img-${timestamp}.jpg`;
+    return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/img-${timestamp}.${extension}`;
   }
 
-  return `system/placeholders/img-${timestamp}.jpg`;
+  if (entityType === 'task') {
+    const folder = subType || 'attachments';
+    return `tasks/${year}/${month}/${entityId}/${folder}/file-${timestamp}.${extension}`;
+  }
+
+  return `system/placeholders/file-${timestamp}.${extension}`;
 }
 
 /**

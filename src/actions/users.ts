@@ -15,6 +15,16 @@ function safeRevalidatePath(path: string) {
 export async function getUsers() {
   try {
     const users = await prisma.adminUser.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        area: true,
+        permissions: true,
+        isActive: true,
+        createdAt: true,
+      },
       orderBy: { createdAt: 'desc' }
     });
     return { success: true, data: users };

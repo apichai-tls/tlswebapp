@@ -132,4 +132,22 @@
 /* Fix React-Leaflet z-index issues overlapping with Shadcn UI elements */
 .leaflet-container {
   z-index: 10 !important;
-}@media print { body > *:not(.print-root) { display: none !important; } }
+}
+
+@media print {
+  body:has(.print-root) > *:not(.print-root) {
+    display: none !important;
+  }
+  aside,
+  nav,
+  .print\:hidden {
+    display: none !important;
+  }
+  body, html, main {
+    background: #fff !important;
+    color: #000 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+}
+

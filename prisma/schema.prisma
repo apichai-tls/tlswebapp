@@ -218,6 +218,44 @@ model AdminUser {
   ShopLocation ShopLocation? @relation(fields: [branchId], references: [id])
 }
 
+model Task {
+  id              String    @id @default(uuid())
+  title           String
+  description     String?
+  priority        String    @default("medium") // low | medium | high | urgent
+  status          String    @default("todo")   // todo | in_progress | done
+  jobId           String?
+  assignedToId    String?
+  assignedToName  String?
+  createdById     String
+  createdByName   String
+  dueDate         DateTime?
+  completedAt     DateTime?
+  attachmentsJson String?   @db.Text           // JSON array of TaskAttachment
+  notesJson       String?   @db.Text           // JSON array of TaskNote
+  checklistJson   String?   @db.Text           // JSON array of TaskChecklistItem
+  isArchived      Boolean   @default(false)
+  archivedAt      DateTime?
+  archivedById    String?
+  archivedByName  String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String   // Recipient User ID (AdminUser id)
+  taskId    String?  // Linked Task ID
+  title     String
+  message   String
+  type      String   // overdue | due_today | assigned | note
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+
+
 model Article {
   id         String   @id
   title      String
