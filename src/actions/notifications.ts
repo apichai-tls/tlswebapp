@@ -59,7 +59,7 @@ export async function getUserNotifications(userId: string, userRole?: string) {
         status: { not: "done" },
         ...(userRole === "admin"
           ? {}
-          : { OR: [{ assignedToId: userId }, { createdById: userId }] }),
+          : { OR: [{ assignedToId: { contains: userId } }, { createdById: userId }] }),
       },
       select: {
         id: true,
@@ -87,7 +87,7 @@ export async function getUserNotifications(userId: string, userRole?: string) {
           taskId: t.id,
           taskTitle: t.title,
           title: "Due Today ⏰",
-          message: `Task "${t.title}" ครบกำหนดส่งวันนี้`,
+          message: `Task "${t.title}" is due today`,
           type: "due_today",
           isRead: false,
           createdAt: due.toISOString(),
@@ -100,7 +100,7 @@ export async function getUserNotifications(userId: string, userRole?: string) {
           taskId: t.id,
           taskTitle: t.title,
           title: "Overdue Alert 🚨",
-          message: `Task "${t.title}" เลยกำหนดส่งเมื่อ ${format(due, "d MMM")}`,
+          message: `Task "${t.title}" was overdue since ${format(due, "d MMM")}`,
           type: "overdue",
           isRead: false,
           createdAt: due.toISOString(),

@@ -33,9 +33,13 @@ import {
   RefreshCw,
   RotateCw,
   RotateCcw,
+  ClipboardCheck,
+  ClipboardList,
+  Menu,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
+import { NotificationBell } from "@/components/notification-bell";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -511,6 +515,7 @@ export default function BillingPage() {
   const hasAccess = (key: string) => {
     if (!user) return false;
     if (user.role === 'admin') return true;
+    if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
     return user.permissions?.includes(key);
   };
 
@@ -522,6 +527,7 @@ export default function BillingPage() {
   const [isMounted, setIsMounted] = useState(false);
   const [isNative, setIsNative] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Pull-to-refresh state and touch event handling
   const [pullDistance, setPullDistance] = useState(0);
@@ -728,20 +734,35 @@ export default function BillingPage() {
       {/* ============ Header ============ */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 shadow-sm">
         <div className="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Open Menu"
+            >
+              <Menu size={20} />
+            </button>
             <Logo compact className="h-8" />
             <div className="flex items-center gap-1.5 bg-blue-50 text-blue-600 rounded-lg px-2.5 py-1">
               <Receipt size={15} />
               <span className="text-xs font-bold tracking-wide">BILL UPLOAD</span>
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-500 transition-colors px-2 py-1.5 rounded-lg hover:bg-red-50"
-          >
-            <LogOut size={16} />
-            <span className="hidden sm:inline">Logout</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <NotificationBell
+              onSelectTask={() => {
+                window.location.href = `/admin#tasks`;
+              }}
+            />
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-500 transition-colors px-2 py-1.5 rounded-lg hover:bg-red-50 cursor-pointer"
+            >
+              <LogOut size={16} />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -986,6 +1007,29 @@ export default function BillingPage() {
               {!isSidebarCollapsed && <span className="truncate">Settings</span>}
             </motion.a>
           )}
+
+          {hasAccess("activity-logs") && (
+            <motion.a
+              href="/admin#activity-logs"
+              whileHover={{ x: 2 }}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              title="Activity Logs"
+            >
+              <ClipboardList size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+              {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
+            </motion.a>
+          )}
+
+          {/* Tasks — available to all logged in users */}
+          <motion.a
+            href="/admin#tasks"
+            whileHover={{ x: 2 }}
+            className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+            title="Tasks"
+          >
+            <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+            {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
+          </motion.a>
           
           {hasAccess("users") && (
             <motion.a
@@ -1019,6 +1063,14 @@ export default function BillingPage() {
         {/* Top Header */}
         <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm shrink-0">
           <div className="flex items-center gap-3 lg:hidden px-2 py-2">
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer mr-1"
+              title="Open Menu"
+            >
+              <Menu size={20} />
+            </button>
             <Logo />
           </div>
           <h1 className="hidden lg:block text-lg font-semibold text-slate-900">
@@ -1026,6 +1078,11 @@ export default function BillingPage() {
           </h1>
           
           <div className="flex items-center gap-3">
+            <NotificationBell
+              onSelectTask={() => {
+                window.location.href = `/admin#tasks`;
+              }}
+            />
             <button 
               onClick={() => window.location.href = "/admin?create=true#jobs"}
               className="gap-2 bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-sm cursor-pointer border-none rounded-lg px-4 py-2 flex items-center text-sm transition-all active:scale-[0.98]"
@@ -1117,6 +1174,214 @@ export default function BillingPage() {
   return (
     <ProtectedRoute allowedRole={["admin", "manager", "cso", "staff"]}>
       {isNative ? mobileLayout : desktopLayout}
+
+      {/* Mobile Drawer Menu for Mobile Web & Native */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.4 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="fixed inset-0 bg-black z-40"
+            />
+            {/* Sidebar Drawer */}
+            <motion.div
+              initial={{ x: "-100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "-100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 left-0 w-72 bg-white shadow-2xl z-50 flex flex-col h-full border-r border-slate-200"
+            >
+              <div className="flex h-20 items-center justify-between border-b border-slate-100 px-6">
+                <Logo />
+                <button
+                  type="button"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto hide-scrollbar">
+                {hasAccess("dashboard") && (
+                  <Link
+                    href="/admin#dashboard"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <LayoutDashboard size={18} />
+                    <span>Dashboard</span>
+                  </Link>
+                )}
+
+                {hasAccess("services") && (
+                  <Link
+                    href="/admin#services"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <Tag size={18} />
+                    <span>Service Menu</span>
+                  </Link>
+                )}
+
+                {hasAccess("pos") && (
+                  <Link
+                    href="/admin#pos"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <CreditCard size={18} />
+                    <span>POS</span>
+                  </Link>
+                )}
+
+                {hasAccess("jobs") && (
+                  <Link
+                    href="/admin#jobs"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <Package size={18} />
+                    <span>All Jobs</span>
+                  </Link>
+                )}
+
+                {hasAccess("customers") && (
+                  <Link
+                    href="/admin#customers"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <Users size={18} />
+                    <span>Customers (CRM)</span>
+                  </Link>
+                )}
+
+                {hasAccess("dispatch") && (
+                  <Link
+                    href="/admin#dispatch"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <CalendarClock size={18} />
+                    <span>Dispatch Schedule</span>
+                  </Link>
+                )}
+
+                {hasAccess("billing") && (
+                  <Link
+                    href="/billing"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold transition-colors bg-indigo-50 text-indigo-700"
+                  >
+                    <Camera size={18} />
+                    <span>Billing</span>
+                  </Link>
+                )}
+
+                {hasAccess("riders") && (
+                  <Link
+                    href="/admin#riders"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <Truck size={18} />
+                    <span>Riders</span>
+                  </Link>
+                )}
+
+                {hasAccess("map") && (
+                  <Link
+                    href="/admin#map"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <Map size={18} />
+                    <span>Live Map</span>
+                  </Link>
+                )}
+
+                {/* Tasks — available to all logged in users */}
+                <Link
+                  href="/admin#tasks"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                >
+                  <ClipboardCheck size={18} />
+                  <span>Tasks</span>
+                </Link>
+
+                {hasAccess("calculator") && (
+                  <Link
+                    href="/admin#calculator"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <Calculator size={18} />
+                    <span>Distance Calculator</span>
+                  </Link>
+                )}
+
+                {hasAccess("settings") && (
+                  <Link
+                    href="/admin#settings"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <Settings size={18} />
+                    <span>Settings</span>
+                  </Link>
+                )}
+
+                {hasAccess("activity-logs") && (
+                  <Link
+                    href="/admin#activity-logs"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <ClipboardList size={18} />
+                    <span>Activity Logs</span>
+                  </Link>
+                )}
+
+                {hasAccess("users") && (
+                  <Link
+                    href="/admin#users"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
+                  >
+                    <ShieldCheck size={18} />
+                    <span>Manage Users</span>
+                  </Link>
+                )}
+              </nav>
+
+              <div className="border-t border-slate-100 p-4 space-y-2">
+                <Link href="/privacy" onClick={() => setIsMobileMenuOpen(false)} className="flex items-center gap-3 px-4 py-2 text-sm text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-50">
+                  <ShieldCheck size={16} />
+                  <span>Privacy Policy</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    handleLogout();
+                  }}
+                  className="w-full flex items-center gap-3 px-4 py-2 text-sm text-red-500 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                >
+                  <LogOut size={16} />
+                  <span>Logout</span>
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </ProtectedRoute>
   );
 }

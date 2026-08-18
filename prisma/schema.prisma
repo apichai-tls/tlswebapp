@@ -223,7 +223,7 @@ model Task {
   title           String
   description     String?
   priority        String    @default("medium") // low | medium | high | urgent
-  status          String    @default("todo")   // todo | in_progress | done
+  status          String    @default("todo")   // todo | in_progress | stuck | done
   jobId           String?
   assignedToId    String?
   assignedToName  String?

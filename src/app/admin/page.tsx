@@ -238,11 +238,15 @@ export default function AdminPage() {
       return;
     }
 
-    // For all other roles: jump to the first tab they have access to
+    // For all other roles: jump to the first tab they have access to (default is dashboard)
     const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks"> = [
       "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "settings", "users", "activity-logs"
     ];
-    const hasPermission = (key: string) => user.permissions?.includes(key);
+    const hasPermission = (key: string) => {
+      if (user.role === 'admin') return true;
+      if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
+      return user.permissions?.includes(key) ?? false;
+    };
     const firstTab = tabOrder.find(tab => hasPermission(tab));
     if (firstTab) setActiveTab(firstTab);
   }, [user]);
@@ -643,7 +647,7 @@ export default function AdminPage() {
 
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
-    if (key === 'tasks' || key === 'calculator') return true;
+    if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
     return user?.permissions?.includes(key) ?? false;
   };
 
@@ -692,6 +696,7 @@ export default function AdminPage() {
     }));
 
   const handleCreateNewJob = () => {
+    originalJobRef.current = null;
     setEditingJobId(null);
     setShowJobLogs(false);
     setIsDetailLoading(false);
@@ -1012,7 +1017,7 @@ export default function AdminPage() {
       return;
     }
 
-    const existingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+    const existingJob = editingJobId ? (jobs.find(j => String(j.id) === String(editingJobId)) || originalJobRef.current) : null;
     const isAlreadyCompleted = existingJob?.status === "completed";
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
@@ -1134,7 +1139,9 @@ export default function AdminPage() {
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
       isShopPaid: shopPaymentMethod === 'paid',
-      billNo: (user?.role === 'admin' || user?.role === 'cso') ? billNo : (existingJob?.billNo ?? billNo),
+      billNo: (user?.role === 'admin' || user?.role === 'cso')
+        ? (billNo ? billNo.trim() : (existingJob?.billNo ?? null))
+        : (existingJob?.billNo ?? (billNo ? billNo.trim() : null)),
       fee,
       totalAmount: laundryPrice + (serviceSpeed === "express_50" ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === "express_100" ? laundryPrice : 0)) + fee,
       serviceType,
@@ -1748,6 +1755,22 @@ export default function AdminPage() {
                       <span>Activity Logs</span>
                     </a>
                   )}
+
+                  {/* Tasks — available to all logged in users */}
+                  <a
+                    href="#tasks"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleTabChange("tasks");
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                      activeTab === "tasks" ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    <ClipboardCheck size={18} />
+                    <span>Tasks</span>
+                  </a>
 
                   {hasAccess("users") && (
                     <a
@@ -2961,24 +2984,31 @@ export default function AdminPage() {
                                 </select>
                               </div>
                               <div className="space-y-0.5">
-                                <Label htmlFor="bill-no" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <CreditCard size={12} className="text-slate-500" />
-                                  BILL NO. {!(user?.role === 'admin' || user?.role === 'cso') && <Lock size={10} className="text-amber-500 ml-0.5" />}
+                                <Label htmlFor="bill-no" className="flex items-center justify-between text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <span className="flex items-center gap-1">
+                                    <CreditCard size={12} className="text-slate-500" />
+                                    BILL NO.
+                                  </span>
+                                  {!(user?.role === 'admin' || user?.role === 'cso') && (
+                                    <span className="flex items-center gap-0.5 text-[9px] text-amber-400 font-medium">
+                                      <Lock size={10} /> View Only
+                                    </span>
+                                  )}
                                 </Label>
                                 <Input
                                   id="bill-no"
                                   value={billNo}
+                                  readOnly={!(user?.role === 'admin' || user?.role === 'cso')}
                                   onChange={(e) => {
                                     if (user?.role === 'admin' || user?.role === 'cso') {
                                       setBillNo(e.target.value);
                                     }
                                   }}
-                                  disabled={!(user?.role === 'admin' || user?.role === 'cso')}
-                                  placeholder={user?.role === 'admin' || user?.role === 'cso' ? "Enter Bill No." : "-"}
-                                  className={`h-6 w-full rounded border-slate-600 px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${
+                                  placeholder={user?.role === 'admin' || user?.role === 'cso' ? "Enter Bill No." : (billNo ? "" : "No Bill No.")}
+                                  className={`h-6 w-full rounded border-slate-600 px-1.5 py-0 text-[11px] font-mono focus-visible:ring-indigo-500 ${
                                     !(user?.role === 'admin' || user?.role === 'cso')
-                                      ? "bg-slate-800/50 text-slate-400 cursor-not-allowed border-slate-700 select-none"
-                                      : "bg-slate-800 text-white"
+                                      ? "bg-slate-800/90 text-emerald-300 font-bold border-slate-700 cursor-default select-all"
+                                      : "bg-slate-800 text-white font-semibold"
                                   }`}
                                 />
                               </div>

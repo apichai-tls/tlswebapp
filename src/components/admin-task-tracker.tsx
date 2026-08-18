@@ -152,10 +152,15 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
             <p className="text-xs font-medium text-slate-500">Commission: <span className="text-emerald-600 font-bold ml-1">฿{((job.pickupCommission || 0) + (job.deliveryCommission || 0)).toFixed(0)}</span></p>
           </div>
           
-          <div className="mt-3 flex items-center gap-3">
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
             <Badge className={`${job.isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'} border-none shadow-none`}>
               {job.isPaid ? 'PAID' : 'UNPAID'}
             </Badge>
+            {job.billNo && (
+              <Badge variant="outline" className="text-[10px] font-mono font-bold bg-slate-50 text-slate-700 border-slate-300">
+                Bill: {job.billNo}
+              </Badge>
+            )}
             {!readOnly && (
               <Button 
                 variant="outline" 

@@ -4,7 +4,32 @@ import { prisma } from "@/lib/prisma";
 import { format } from "date-fns";
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
-export type TaskStatus = "todo" | "in_progress" | "done";
+export type TaskStatus = "todo" | "in_progress" | "stuck" | "done";
+
+function getAutoDueDate(priority: TaskPriority | string, baseDate: Date = new Date()): Date {
+  const d = new Date(baseDate);
+  switch (priority) {
+    case "urgent":
+      // ภายในวันที่ Assign (Today)
+      d.setHours(23, 59, 59, 999);
+      return d;
+    case "high":
+      // 48 hr (2 days)
+      d.setHours(d.getHours() + 48);
+      return d;
+    case "medium":
+      // 4 Day
+      d.setDate(d.getDate() + 4);
+      return d;
+    case "low":
+      // 7 Day
+      d.setDate(d.getDate() + 7);
+      return d;
+    default:
+      d.setDate(d.getDate() + 4);
+      return d;
+  }
+}
 
 export interface TaskAttachment {
   id: string;
@@ -67,7 +92,7 @@ export async function getTasks(viewer?: { id?: string; role?: string }) {
     if (!isAdmin && viewerId) {
       whereClause.OR = [
         { createdById: viewerId },
-        { assignedToId: viewerId },
+        { assignedToId: { contains: viewerId } },
       ];
     }
 
@@ -134,6 +159,7 @@ export async function createTask(data: {
     const cleanAssigneeId = data.assignedToId && data.assignedToId.trim() !== "" ? data.assignedToId.trim() : null;
     const cleanAssigneeName = cleanAssigneeId ? (data.assignedToName?.trim() || null) : null;
     const nextId = await generateNextTaskId();
+    const effectiveDueDate = data.dueDate ? new Date(data.dueDate) : getAutoDueDate(data.priority);
 
     const task = await prisma.task.create({
       data: {
@@ -147,13 +173,13 @@ export async function createTask(data: {
         assignedToName: cleanAssigneeName,
         createdById: data.createdById,
         createdByName: data.createdByName,
-        dueDate: data.dueDate ? new Date(data.dueDate) : null,
+        dueDate: effectiveDueDate,
         attachmentsJson: data.attachments && data.attachments.length > 0 ? JSON.stringify(data.attachments) : null,
         checklistJson: data.checklist && data.checklist.length > 0 ? JSON.stringify(data.checklist) : null,
         notesJson: JSON.stringify([
           {
             id: Math.random().toString(36).slice(2, 9),
-            text: `Created task "${data.title.trim()}" (Priority: ${data.priority.toUpperCase()}${data.assignedToName ? `, Assigned to: ${data.assignedToName}` : ""}${data.dueDate ? `, Due: ${format(new Date(data.dueDate), "d MMM yyyy")}` : ""})`,
+            text: `Created task "${data.title.trim()}" (Priority: ${data.priority.toUpperCase()}${data.assignedToName ? `, Assigned to: ${data.assignedToName}` : ""}${effectiveDueDate ? `, Due: ${format(effectiveDueDate, "d MMM yyyy")}` : ""})`,
             userId: data.createdById,
             userName: data.createdByName,
             timestamp: new Date().toISOString(),
@@ -184,20 +210,25 @@ export async function createTask(data: {
       console.warn("Failed to write ActivityLog on task creation:", e);
     }
 
-    // Trigger Notification for Assignee
-    if (cleanAssigneeId && cleanAssigneeId !== data.createdById) {
-      try {
-        await prisma.notification.create({
-          data: {
-            userId: cleanAssigneeId,
-            taskId: task.id,
-            title: "New Task Assigned 👤",
-            message: `${data.createdByName} assigned task "${task.title}" to you`,
-            type: "assigned",
-            isRead: false,
-          },
-        });
-      } catch (e) {}
+    // Trigger Notification for each Assignee
+    if (cleanAssigneeId) {
+      const assigneeIds = cleanAssigneeId.split(",").map((id) => id.trim()).filter(Boolean);
+      for (const uid of assigneeIds) {
+        if (uid !== data.createdById) {
+          try {
+            await prisma.notification.create({
+              data: {
+                userId: uid,
+                taskId: task.id,
+                title: "New Task Assigned 👤",
+                message: `${data.createdByName} assigned task "${task.title}" to you`,
+                type: "assigned",
+                isRead: false,
+              },
+            });
+          } catch (e) {}
+        }
+      }
     }
 
     return { success: true, data: task as TaskItem };
@@ -236,7 +267,10 @@ export async function updateTask(
     const actorRole = actor?.role || "staff";
 
     // 🔒 Authorization check: Only Creator, Assignee, or Super Admin can modify this Task
-    const isAuthorized = actorRole === "admin" || existing.createdById === actorId || existing.assignedToId === actorId;
+    const isAssignee = existing.assignedToId
+      ? existing.assignedToId.split(",").map((s) => s.trim()).includes(actorId)
+      : false;
+    const isAuthorized = actorRole === "admin" || existing.createdById === actorId || isAssignee;
     if (!isAuthorized) {
       return { success: false, error: "Unauthorized: You do not have permission to edit this task" };
     }
@@ -244,20 +278,19 @@ export async function updateTask(
     const isCreator = existing.createdById === actorId;
     const isAdmin = actorRole === "admin";
 
-    // 🔒 Assignee Rule: The person who is assigned (not creator & not admin) is FORBIDDEN from editing core details EXCEPT status and checklist checkbox toggling
+    // 🔒 Assignee Rule: The person who is assigned (not creator & not admin) is FORBIDDEN from editing core details EXCEPT status, checklist toggling, and assigning additional people
     if (!isCreator && !isAdmin) {
       if (
         (updates.title !== undefined && updates.title.trim() !== existing.title) ||
         (updates.description !== undefined && (updates.description?.trim() || null) !== existing.description) ||
         (updates.priority !== undefined && updates.priority !== existing.priority) ||
         (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) ||
-        (updates.assignedToId !== undefined && (updates.assignedToId?.trim() || null) !== existing.assignedToId) ||
         (updates.dueDate !== undefined && (updates.dueDate ? new Date(updates.dueDate).getTime() : null) !== (existing.dueDate ? new Date(existing.dueDate).getTime() : null)) ||
         (updates.attachments !== undefined && JSON.stringify(updates.attachments) !== (existing.attachmentsJson || "[]"))
       ) {
         return {
           success: false,
-          error: "Only the Task Creator or Super Admin can edit task details (Assignees can only change Status)",
+          error: "Only the Task Creator or Super Admin can edit core details like Title, Description, Due Date or Attachments",
         };
       }
     }
@@ -307,7 +340,7 @@ export async function updateTask(
     // Track Status change
     if (updates.status !== undefined && updates.status !== existing.status) {
       changes.status = { from: existing.status, to: updates.status };
-      const statusLabels: Record<string, string> = { todo: "To Do", in_progress: "In Progress", done: "Done" };
+      const statusLabels: Record<string, string> = { todo: "To Do", in_progress: "In Progress", stuck: "Stuck", done: "Done" };
       activityMessages.push(`Changed status from ${statusLabels[existing.status] || existing.status} to ${statusLabels[updates.status] || updates.status}`);
       data.status = updates.status;
       data.completedAt = updates.status === "done" ? new Date() : null;
@@ -399,9 +432,13 @@ export async function updateTask(
       data.notesJson = JSON.stringify(notes);
     }
 
-    const updatedTask = await prisma.task.update({ where: { id }, data });
+    // Execute Task update
+    const updatedTask = await prisma.task.update({
+      where: { id },
+      data,
+    });
 
-    // Write to ActivityLog table for audit tracking
+    // Write to ActivityLog table if changes occurred
     if (Object.keys(changes).length > 0) {
       try {
         await prisma.activityLog.create({
@@ -419,20 +456,26 @@ export async function updateTask(
       }
     }
 
-    // Trigger Notification if reassigned to another person
-    if (data.assignedToId && data.assignedToId !== existing.assignedToId && data.assignedToId !== actorId) {
-      try {
-        await prisma.notification.create({
-          data: {
-            userId: data.assignedToId,
-            taskId: id,
-            title: "Task Reassigned 👤",
-            message: `${actorName} assigned task "${updatedTask.title}" to you`,
-            type: "assigned",
-            isRead: false,
-          },
-        });
-      } catch (e) {}
+    // Trigger Notification for newly added assignees
+    if (data.assignedToId && data.assignedToId !== existing.assignedToId) {
+      const oldIds = new Set((existing.assignedToId || "").split(",").map((s) => s.trim()).filter(Boolean));
+      const newIds = data.assignedToId.split(",").map((s: string) => s.trim()).filter(Boolean);
+      for (const newId of newIds) {
+        if (!oldIds.has(newId) && newId !== actorId) {
+          try {
+            await prisma.notification.create({
+              data: {
+                userId: newId,
+                taskId: id,
+                title: "Added to Task 👤",
+                message: `${actorName} assigned task "${updatedTask.title}" to you`,
+                type: "assigned",
+                isRead: false,
+              },
+            });
+          } catch (e) {}
+        }
+      }
     }
 
     return { success: true, data: updatedTask as TaskItem };
@@ -566,10 +609,37 @@ export async function addTaskNote(
       console.warn("Failed to write ActivityLog on add note:", e);
     }
 
-    // Trigger Notification for Assignee and Creator
+    // Trigger Notification for Assignees, Creator, and @Mentioned users
     const recipients = new Set<string>();
-    if (task.assignedToId && task.assignedToId !== note.userId) recipients.add(task.assignedToId);
+    if (task.assignedToId) {
+      task.assignedToId.split(",").map((s) => s.trim()).filter(Boolean).forEach((id) => {
+        if (id !== note.userId) recipients.add(id);
+      });
+    }
     if (task.createdById && task.createdById !== note.userId) recipients.add(task.createdById);
+
+    // Scan note text for @mentions
+    try {
+      const mentionMatches = note.text.match(/@([\w\u0E00-\u0E7F]+(?:\s+[\w\u0E00-\u0E7F]+)?)/g);
+      if (mentionMatches && mentionMatches.length > 0) {
+        const allUsers = await prisma.adminUser.findMany({
+          where: { isActive: true },
+          select: { id: true, name: true },
+        });
+
+        for (const rawMatch of mentionMatches) {
+          const mentionedName = rawMatch.slice(1).trim().toLowerCase();
+          const matchedUser = allUsers.find(
+            (u) => u.name.toLowerCase() === mentionedName || u.name.toLowerCase().startsWith(mentionedName)
+          );
+          if (matchedUser && matchedUser.id !== note.userId) {
+            recipients.add(matchedUser.id);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to parse mentions:", e);
+    }
 
     for (const recipientId of recipients) {
       try {
@@ -578,7 +648,7 @@ export async function addTaskNote(
             userId: recipientId,
             taskId,
             title: "New Note on Task 💬",
-            message: `${note.userName} added a note on task "${task.title}"`,
+            message: `${note.userName} added a note on task "${task.title}": "${note.text.slice(0, 80)}"`,
             type: "note",
             isRead: false,
           },
@@ -655,8 +725,13 @@ export async function getLinkedJobDetails(jobId: string) {
     const cleanId = jobId.trim();
     if (!cleanId) return { success: false, error: "No Job ID provided" };
 
-    const job = await prisma.job.findUnique({
-      where: { id: cleanId },
+    const job = await prisma.job.findFirst({
+      where: {
+        OR: [
+          { id: cleanId },
+          { id: { equals: cleanId, mode: "insensitive" } },
+        ],
+      },
       select: {
         id: true,
         customerName: true,
