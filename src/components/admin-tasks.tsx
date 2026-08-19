@@ -2319,10 +2319,12 @@ export function calculateStaffMetrics(tasks: TaskItem[], users: AdminUser[]): St
       return doneDate.getTime() <= dueDate.getTime() + 24 * 60 * 60 * 1000;
     }).length;
 
-    const inProgress = userTasks.filter((t) => t.status === "in_progress").length;
-    const todo = userTasks.filter((t) => t.status === "todo").length;
-    const stuck = userTasks.filter((t) => t.status === "stuck").length;
-    const overdue = userTasks.filter(
+    // Active (non-archived) tasks trigger active WIP, stuck, and overdue alerts
+    const activeTasksOnly = userTasks.filter((t) => !t.isArchived);
+    const inProgress = activeTasksOnly.filter((t) => t.status === "in_progress").length;
+    const todo = activeTasksOnly.filter((t) => t.status === "todo").length;
+    const stuck = activeTasksOnly.filter((t) => t.status === "stuck").length;
+    const overdue = activeTasksOnly.filter(
       (t) => t.status !== "done" && t.dueDate && isPast(new Date(t.dueDate)) && !isToday(new Date(t.dueDate))
     ).length;
 
@@ -2417,13 +2419,19 @@ export function TaskAdminDashboard({
   onFilterStaff?: (staffName: string) => void;
 }) {
   const [timeframe, setTimeframe] = useState<"all" | "month" | "week" | "today">("all");
+  const [includeArchived, setIncludeArchived] = useState(true);
+  const [leftPanelTab, setLeftPanelTab] = useState<"bottlenecks" | "archived">("bottlenecks");
   const [staffSearch, setStaffSearch] = useState("");
   const [showFormulaTooltip, setShowFormulaTooltip] = useState(false);
+
+  const totalAllTasks = tasks.length;
+  const totalArchivedTasks = tasks.filter((t) => t.isArchived).length;
+  const totalActiveTasks = tasks.filter((t) => !t.isArchived).length;
 
   const now = new Date();
   const filteredTasksByTime = useMemo(() => {
     return tasks.filter((t) => {
-      if (t.isArchived) return false;
+      if (!includeArchived && t.isArchived) return false;
       if (timeframe === "all") return true;
       const created = new Date(t.createdAt);
       if (timeframe === "today") return isToday(created);
@@ -2436,16 +2444,17 @@ export function TaskAdminDashboard({
       }
       return true;
     });
-  }, [tasks, timeframe]);
+  }, [tasks, timeframe, includeArchived]);
 
   // Overall System KPIs
   const totalTasks = filteredTasksByTime.length;
+  const archivedInTimeframe = filteredTasksByTime.filter((t) => t.isArchived).length;
   const completedTasks = filteredTasksByTime.filter((t) => t.status === "done").length;
-  const inProgressTasks = filteredTasksByTime.filter((t) => t.status === "in_progress").length;
-  const todoTasks = filteredTasksByTime.filter((t) => t.status === "todo").length;
-  const stuckTasks = filteredTasksByTime.filter((t) => t.status === "stuck").length;
+  const inProgressTasks = filteredTasksByTime.filter((t) => !t.isArchived && t.status === "in_progress").length;
+  const todoTasks = filteredTasksByTime.filter((t) => !t.isArchived && t.status === "todo").length;
+  const stuckTasks = filteredTasksByTime.filter((t) => !t.isArchived && t.status === "stuck").length;
   const overdueTasks = filteredTasksByTime.filter(
-    (t) => t.status !== "done" && t.dueDate && isPast(new Date(t.dueDate)) && !isToday(new Date(t.dueDate))
+    (t) => !t.isArchived && t.status !== "done" && t.dueDate && isPast(new Date(t.dueDate)) && !isToday(new Date(t.dueDate))
   ).length;
 
   const onTimeDone = filteredTasksByTime.filter((t) => {
@@ -2490,7 +2499,7 @@ export function TaskAdminDashboard({
   // Bottleneck tasks (stuck or overdue)
   const bottleneckTasks = useMemo(() => {
     return filteredTasksByTime
-      .filter((t) => t.status === "stuck" || (t.status !== "done" && t.dueDate && isPast(new Date(t.dueDate))))
+      .filter((t) => !t.isArchived && (t.status === "stuck" || (t.status !== "done" && t.dueDate && isPast(new Date(t.dueDate)))))
       .sort((a, b) => {
         if (a.status === "stuck" && b.status !== "stuck") return -1;
         if (b.status === "stuck" && a.status !== "stuck") return 1;
@@ -2498,8 +2507,19 @@ export function TaskAdminDashboard({
         const dueB = b.dueDate ? new Date(b.dueDate).getTime() : 0;
         return dueA - dueB;
       })
-      .slice(0, 5);
+      .slice(0, 8);
   }, [filteredTasksByTime]);
+
+  // Archived tasks list
+  const archivedTasksList = useMemo(() => {
+    return tasks
+      .filter((t) => t.isArchived)
+      .sort((a, b) => {
+        const timeA = a.archivedAt ? new Date(a.archivedAt).getTime() : new Date(a.updatedAt).getTime();
+        const timeB = b.archivedAt ? new Date(b.archivedAt).getTime() : new Date(b.updatedAt).getTime();
+        return timeB - timeA;
+      });
+  }, [tasks]);
 
   // Priority Distribution
   const priorityCounts = useMemo(() => {
@@ -2562,29 +2582,52 @@ export function TaskAdminDashboard({
           </p>
         </div>
 
-        {/* Timeframe selector */}
-        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 shrink-0">
-          {(
-            [
-              { id: "all", label: "All Time" },
-              { id: "month", label: "This Month" },
-              { id: "week", label: "This Week" },
-              { id: "today", label: "Today" },
-            ] as const
-          ).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTimeframe(t.id)}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                timeframe === t.id
-                  ? "bg-white text-indigo-700 shadow-2xs font-bold"
-                  : "text-slate-500 hover:text-slate-800"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        {/* Controls: Timeframe selector + Include Archived toggle */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Include Archived toggle */}
+          <button
+            type="button"
+            onClick={() => setIncludeArchived(!includeArchived)}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-xl border transition-all cursor-pointer ${
+              includeArchived
+                ? "bg-indigo-50/90 border-indigo-200 text-indigo-700 font-bold shadow-2xs"
+                : "bg-slate-100/80 border-slate-200/80 text-slate-500 hover:bg-slate-200/60"
+            }`}
+            title="Toggle whether archived tasks are included in dashboard metrics"
+          >
+            <Archive size={12} className={includeArchived ? "text-indigo-600" : "text-slate-400"} />
+            <span>Include Archived</span>
+            {totalArchivedTasks > 0 && (
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${includeArchived ? "bg-indigo-200 text-indigo-800" : "bg-slate-200 text-slate-600"}`}>
+                {totalArchivedTasks}
+              </span>
+            )}
+          </button>
+
+          {/* Timeframe selector */}
+          <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 shrink-0">
+            {(
+              [
+                { id: "all", label: "All Time" },
+                { id: "month", label: "This Month" },
+                { id: "week", label: "This Week" },
+                { id: "today", label: "Today" },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTimeframe(t.id)}
+                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  timeframe === t.id
+                    ? "bg-white text-indigo-700 shadow-2xs font-bold"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -2594,7 +2637,14 @@ export function TaskAdminDashboard({
         <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-2xs flex flex-col justify-between">
           <div className="flex items-start justify-between">
             <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Tasks</span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Tasks</span>
+                {archivedInTimeframe > 0 && (
+                  <span className="text-[9px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded border border-slate-200 flex items-center gap-0.5">
+                    <Archive size={9} /> {archivedInTimeframe}
+                  </span>
+                )}
+              </div>
               <div className="text-2xl font-extrabold text-slate-900 mt-1">{totalTasks}</div>
             </div>
             <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
@@ -2884,73 +2934,145 @@ export function TaskAdminDashboard({
 
       {/* ── 3. TWO-COLUMN ANALYTICS & BOTTLENECK MONITOR ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Left (7 Cols): Bottleneck & Stuck Tasks Radar */}
+        {/* Left (7 Cols): Dual Monitor — Bottleneck Radar OR Archived Tasks */}
         <div className="lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-2xs flex flex-col">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center font-bold">
-                <AlertTriangle size={15} />
-              </div>
-              <div>
-                <h4 className="text-sm font-bold text-slate-900">Bottleneck & Stuck Radar</h4>
-                <p className="text-[11px] text-slate-400">Tasks requiring immediate management intervention</p>
-              </div>
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setLeftPanelTab("bottlenecks")}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  leftPanelTab === "bottlenecks"
+                    ? "bg-white text-rose-700 shadow-2xs font-bold"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <AlertTriangle size={13} className={leftPanelTab === "bottlenecks" ? "text-rose-600" : "text-slate-400"} />
+                <span>Bottleneck Radar</span>
+                {bottleneckTasks.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800">
+                    {bottleneckTasks.length}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setLeftPanelTab("archived")}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  leftPanelTab === "archived"
+                    ? "bg-white text-indigo-700 shadow-2xs font-bold"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <Archive size={13} className={leftPanelTab === "archived" ? "text-indigo-600" : "text-slate-400"} />
+                <span>Archived Tasks</span>
+                <span className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold ${leftPanelTab === "archived" ? "bg-indigo-100 text-indigo-800" : "bg-slate-200 text-slate-600"}`}>
+                  {archivedTasksList.length}
+                </span>
+              </button>
             </div>
-            <span className="text-xs font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full">
-              {bottleneckTasks.length} flagged
+
+            <span className="text-[11px] text-slate-400 hidden sm:inline">
+              {leftPanelTab === "bottlenecks" ? "Tasks needing action" : "Completed / Archived archive"}
             </span>
           </div>
 
           <div className="space-y-2.5 flex-1 overflow-y-auto max-h-[360px] pr-1">
-            {bottleneckTasks.length > 0 ? (
-              bottleneckTasks.map((t) => (
-                <div
-                  key={t.id}
-                  onClick={() => onOpenTask(t)}
-                  className="p-3 rounded-xl border border-slate-200/80 hover:border-indigo-300 hover:bg-indigo-50/20 transition-all cursor-pointer flex items-center justify-between gap-3 group"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
-                        #{t.id.slice(-6).toUpperCase()}
-                      </span>
-                      <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded uppercase border ${PRIORITY_CONFIG[t.priority]?.color}`}>
-                        {PRIORITY_CONFIG[t.priority]?.label}
-                      </span>
-                      {t.status === "stuck" && (
-                        <span className="text-[9px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded border border-amber-200">
-                          ⚠️ STUCK
+            {leftPanelTab === "bottlenecks" ? (
+              bottleneckTasks.length > 0 ? (
+                bottleneckTasks.map((t) => (
+                  <div
+                    key={t.id}
+                    onClick={() => onOpenTask(t)}
+                    className="p-3 rounded-xl border border-slate-200/80 hover:border-indigo-300 hover:bg-indigo-50/20 transition-all cursor-pointer flex items-center justify-between gap-3 group"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
+                          #{t.id.slice(-6).toUpperCase()}
                         </span>
-                      )}
-                      {t.dueDate && isPast(new Date(t.dueDate)) && t.status !== "done" && (
-                        <span className="text-[9px] font-bold bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded border border-rose-200">
-                          🚨 OVERDUE
+                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded uppercase border ${PRIORITY_CONFIG[t.priority]?.color}`}>
+                          {PRIORITY_CONFIG[t.priority]?.label}
                         </span>
-                      )}
-                      <span className="text-[9px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded border border-slate-200">
-                        ⏱️ {formatDurationString(Date.now() - new Date(t.createdAt).getTime())}
-                      </span>
+                        {t.status === "stuck" && (
+                          <span className="text-[9px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded border border-amber-200">
+                            ⚠️ STUCK
+                          </span>
+                        )}
+                        {t.dueDate && isPast(new Date(t.dueDate)) && t.status !== "done" && (
+                          <span className="text-[9px] font-bold bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded border border-rose-200">
+                            🚨 OVERDUE
+                          </span>
+                        )}
+                        <span className="text-[9px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded border border-slate-200">
+                          ⏱️ {formatDurationString(Date.now() - new Date(t.createdAt).getTime())}
+                        </span>
+                      </div>
+                      <div className="text-xs font-bold text-slate-900 truncate group-hover:text-indigo-600 transition-colors">
+                        {t.title}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
+                        <span>👤 {t.assignedToName || "Unassigned"}</span>
+                        {t.dueDate && <span>📅 Due: {format(new Date(t.dueDate), "d MMM yyyy")}</span>}
+                      </div>
                     </div>
-                    <div className="text-xs font-bold text-slate-900 truncate group-hover:text-indigo-600 transition-colors">
-                      {t.title}
-                    </div>
-                    <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
-                      <span>👤 {t.assignedToName || "Unassigned"}</span>
-                      {t.dueDate && <span>📅 Due: {format(new Date(t.dueDate), "d MMM yyyy")}</span>}
-                    </div>
-                  </div>
 
-                  <Button size="sm" variant="ghost" className="shrink-0 h-7 text-xs font-semibold text-indigo-600 group-hover:bg-indigo-100">
-                    Open Task →
-                  </Button>
+                    <Button size="sm" variant="ghost" className="shrink-0 h-7 text-xs font-semibold text-indigo-600 group-hover:bg-indigo-100">
+                      Open Task →
+                    </Button>
+                  </div>
+                ))
+              ) : (
+                <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center">
+                  <CheckCircle2 size={32} className="text-emerald-500 mb-2" />
+                  <p className="text-xs font-bold text-slate-700">No Bottlenecks Detected!</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">All tasks are progressing smoothly on schedule.</p>
                 </div>
-              ))
+              )
             ) : (
-              <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center">
-                <CheckCircle2 size={32} className="text-emerald-500 mb-2" />
-                <p className="text-xs font-bold text-slate-700">No Bottlenecks Detected!</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">All tasks are progressing smoothly on schedule.</p>
-              </div>
+              // ── ARCHIVED TASKS TAB LIST ──
+              archivedTasksList.length > 0 ? (
+                archivedTasksList.map((t) => (
+                  <div
+                    key={t.id}
+                    onClick={() => onOpenTask(t)}
+                    className="p-3 rounded-xl border border-slate-200/80 bg-slate-50/40 hover:border-indigo-300 hover:bg-indigo-50/20 transition-all cursor-pointer flex items-center justify-between gap-3 group"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded border border-slate-200">
+                          #{t.id.slice(-6).toUpperCase()}
+                        </span>
+                        <span className="text-[9px] font-semibold bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.2 rounded flex items-center gap-1">
+                          <Archive size={9} /> Archived
+                        </span>
+                        <span className="text-[9px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.2 rounded flex items-center gap-1">
+                          <CheckCircle2 size={9} /> {formatDurationString(new Date(t.completedAt || t.updatedAt).getTime() - new Date(t.createdAt).getTime())}
+                        </span>
+                      </div>
+                      <div className="text-xs font-bold text-slate-800 truncate group-hover:text-indigo-600 transition-colors">
+                        {t.title}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                        <span>👤 {t.assignedToName || "Unassigned"}</span>
+                        <span>📦 Archived by: {t.archivedByName || "Admin"}</span>
+                        {t.archivedAt && <span>({format(new Date(t.archivedAt), "d MMM HH:mm")})</span>}
+                      </div>
+                    </div>
+
+                    <Button size="sm" variant="ghost" className="shrink-0 h-7 text-xs font-semibold text-slate-600 group-hover:text-indigo-600 group-hover:bg-indigo-100">
+                      View Details →
+                    </Button>
+                  </div>
+                ))
+              ) : (
+                <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center">
+                  <Archive size={32} className="text-slate-300 mb-2" />
+                  <p className="text-xs font-bold text-slate-700">No Archived Tasks</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Completed tasks moved to archive will appear here.</p>
+                </div>
+              )
             )}
           </div>
         </div>
@@ -3045,6 +3167,8 @@ export function TaskUserDashboard({
   onOpenTask: (task: TaskItem) => void;
   onToggleChecklist: (taskId: string, itemId: string, completed: boolean) => void;
 }) {
+  const [userQueueTab, setUserQueueTab] = useState<"active" | "archived">("active");
+
   // My Assigned Tasks
   const myAssignedTasks = useMemo(() => {
     return tasks.filter((t) => {
@@ -3056,6 +3180,14 @@ export function TaskUserDashboard({
 
   const myCreatedTasks = useMemo(() => {
     return tasks.filter((t) => !t.isArchived && t.createdById === currentUserId);
+  }, [tasks, currentUserId]);
+
+  const myArchivedTasks = useMemo(() => {
+    return tasks.filter((t) => {
+      if (!t.isArchived) return false;
+      if (!t.assignedToId) return t.createdById === currentUserId;
+      return t.assignedToId.split(",").map((s) => s.trim()).includes(currentUserId) || t.createdById === currentUserId;
+    });
   }, [tasks, currentUserId]);
 
   // Personal Metrics
@@ -3189,12 +3321,12 @@ export function TaskUserDashboard({
             </span>
           </div>
           <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-            <span className="text-[10px] font-semibold text-indigo-200 uppercase block">Completed</span>
-            <span className="text-xl font-bold text-emerald-400 mt-0.5 block">{myDoneTasks.length}</span>
+            <span className="text-[10px] font-semibold text-indigo-200 uppercase block">Completed Work</span>
+            <span className="text-xl font-bold text-emerald-400 mt-0.5 block">{myDoneTasks.length + myArchivedTasks.length}</span>
           </div>
           <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-            <span className="text-[10px] font-semibold text-indigo-200 uppercase block">On-Time Rate</span>
-            <span className="text-xl font-bold text-white mt-0.5 block">{myMetric?.onTimeRate ?? 100}%</span>
+            <span className="text-[10px] font-semibold text-indigo-200 uppercase block">Archived Tasks</span>
+            <span className="text-xl font-bold text-slate-300 mt-0.5 block">📦 {myArchivedTasks.length}</span>
           </div>
         </div>
       </div>
@@ -3203,68 +3335,159 @@ export function TaskUserDashboard({
       <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-2xs">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
-              <Zap size={16} />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">Action Priority Queue</h3>
-              <p className="text-[11px] text-slate-400">Ordered by urgency: Overdue ➔ Urgent ➔ In Progress</p>
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setUserQueueTab("active")}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  userQueueTab === "active"
+                    ? "bg-white text-indigo-700 shadow-2xs font-bold"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <Zap size={14} className={userQueueTab === "active" ? "text-indigo-600" : "text-slate-400"} />
+                <span>Action Priority Queue</span>
+                <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800">
+                  {actionQueue.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setUserQueueTab("archived")}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                  userQueueTab === "archived"
+                    ? "bg-white text-indigo-700 shadow-2xs font-bold"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                <Archive size={14} className={userQueueTab === "archived" ? "text-indigo-600" : "text-slate-400"} />
+                <span>My Archived Work</span>
+                <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700">
+                  {myArchivedTasks.length}
+                </span>
+              </button>
             </div>
           </div>
-          <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
-            {actionQueue.length} pending
-          </span>
         </div>
 
-        {actionQueue.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {actionQueue.map((task) => {
-              const isOverdue = task.dueDate && isPast(new Date(task.dueDate)) && !isToday(new Date(task.dueDate));
-              const isDueTodayTask = task.dueDate && isToday(new Date(task.dueDate));
-              const priority = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.medium;
-              const statusCfg = STATUS_CONFIG[task.status] ?? STATUS_CONFIG.todo;
+        {userQueueTab === "active" ? (
+          actionQueue.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {actionQueue.map((task) => {
+                const isOverdue = task.dueDate && isPast(new Date(task.dueDate)) && !isToday(new Date(task.dueDate));
+                const isDueTodayTask = task.dueDate && isToday(new Date(task.dueDate));
+                const priority = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.medium;
+                const statusCfg = STATUS_CONFIG[task.status] ?? STATUS_CONFIG.todo;
 
-              const checklistCount = (() => {
-                try {
-                  const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
-                  const done = list.filter((i) => i.completed).length;
-                  return { total: list.length, done };
-                } catch {
-                  return { total: 0, done: 0 };
-                }
-              })();
+                const checklistCount = (() => {
+                  try {
+                    const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
+                    const done = list.filter((i) => i.completed).length;
+                    return { total: list.length, done };
+                  } catch {
+                    return { total: 0, done: 0 };
+                  }
+                })();
 
-              return (
+                return (
+                  <div
+                    key={task.id}
+                    onClick={() => onOpenTask(task)}
+                    className={`p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between hover:shadow-md ${
+                      isOverdue
+                        ? "bg-red-50/40 border-red-200 hover:border-red-300"
+                        : isDueTodayTask
+                        ? "bg-amber-50/40 border-amber-200 hover:border-amber-300"
+                        : task.status === "in_progress"
+                        ? "bg-blue-50/20 border-blue-200 hover:border-indigo-300"
+                        : "bg-white border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-1.5 mb-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase ${priority.color}`}>
+                            {priority.icon} {priority.label}
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.2 rounded-full ${statusCfg.color}`}>
+                            {statusCfg.label}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-medium text-slate-600 bg-slate-100/90 border border-slate-200/80 px-1.5 py-0.2 rounded flex items-center gap-1">
+                          <Clock size={10} className="text-slate-400" />
+                          <span>{formatDurationString(Date.now() - new Date(task.createdAt).getTime())}</span>
+                        </span>
+                      </div>
+
+                      <h4 className="text-xs font-bold text-slate-900 line-clamp-2 leading-snug">
+                        {task.title}
+                      </h4>
+
+                      {task.description && (
+                        <p className="text-[11px] text-slate-500 line-clamp-2 mt-1">
+                          {task.description}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
+                      <div className="flex items-center gap-1.5">
+                        {isOverdue ? (
+                          <span className="font-bold text-rose-600 flex items-center gap-1">
+                            <AlertTriangle size={11} /> Overdue
+                          </span>
+                        ) : isDueTodayTask ? (
+                          <span className="font-bold text-amber-600 flex items-center gap-1">
+                            <Clock size={11} /> Due Today!
+                          </span>
+                        ) : task.dueDate ? (
+                          <span className="text-slate-500 flex items-center gap-1">
+                            <Calendar size={11} /> {format(new Date(task.dueDate), "d MMM")}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">No deadline</span>
+                        )}
+                      </div>
+
+                      {checklistCount.total > 0 && (
+                        <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded">
+                          ✓ {checklistCount.done}/{checklistCount.total}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center">
+              <CheckCircle2 size={36} className="text-emerald-500 mb-2" />
+              <p className="text-xs font-bold text-slate-700">All Caught Up! 🎉</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">You have no active pending tasks in your queue.</p>
+            </div>
+          )
+        ) : (
+          // ── USER'S ARCHIVED TASKS TAB ──
+          myArchivedTasks.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {myArchivedTasks.map((task) => (
                 <div
                   key={task.id}
                   onClick={() => onOpenTask(task)}
-                  className={`p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between hover:shadow-md ${
-                    isOverdue
-                      ? "bg-red-50/40 border-red-200 hover:border-red-300"
-                      : isDueTodayTask
-                      ? "bg-amber-50/40 border-amber-200 hover:border-amber-300"
-                      : task.status === "in_progress"
-                      ? "bg-blue-50/20 border-blue-200 hover:border-indigo-300"
-                      : "bg-white border-slate-200 hover:border-slate-300"
-                  }`}
+                  className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50 hover:border-indigo-300 hover:bg-indigo-50/20 transition-all cursor-pointer flex flex-col justify-between"
                 >
                   <div>
-                    <div className="flex items-center justify-between gap-1.5 mb-2">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase ${priority.color}`}>
-                          {priority.icon} {priority.label}
-                        </span>
-                        <span className={`text-[10px] font-bold px-2 py-0.2 rounded-full ${statusCfg.color}`}>
-                          {statusCfg.label}
-                        </span>
-                      </div>
-                      <span className="text-[10px] font-medium text-slate-600 bg-slate-100/90 border border-slate-200/80 px-1.5 py-0.2 rounded flex items-center gap-1">
-                        <Clock size={10} className="text-slate-400" />
-                        <span>{formatDurationString(Date.now() - new Date(task.createdAt).getTime())}</span>
+                    <div className="flex items-center justify-between gap-1.5 mb-2 flex-wrap">
+                      <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded border border-slate-200">
+                        #{task.id.slice(-6).toUpperCase()}
+                      </span>
+                      <span className="text-[9px] font-semibold bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.2 rounded flex items-center gap-1">
+                        <Archive size={9} /> Archived
                       </span>
                     </div>
 
-                    <h4 className="text-xs font-bold text-slate-900 line-clamp-2 leading-snug">
+                    <h4 className="text-xs font-bold text-slate-800 line-clamp-2 leading-snug">
                       {task.title}
                     </h4>
 
@@ -3275,41 +3498,20 @@ export function TaskUserDashboard({
                     )}
                   </div>
 
-                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-                    <div className="flex items-center gap-1.5">
-                      {isOverdue ? (
-                        <span className="font-bold text-rose-600 flex items-center gap-1">
-                          <AlertTriangle size={11} /> Overdue
-                        </span>
-                      ) : isDueTodayTask ? (
-                        <span className="font-bold text-amber-600 flex items-center gap-1">
-                          <Clock size={11} /> Due Today!
-                        </span>
-                      ) : task.dueDate ? (
-                        <span className="text-slate-500 flex items-center gap-1">
-                          <Calendar size={11} /> {format(new Date(task.dueDate), "d MMM")}
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">No deadline</span>
-                      )}
-                    </div>
-
-                    {checklistCount.total > 0 && (
-                      <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded">
-                        ✓ {checklistCount.done}/{checklistCount.total}
-                      </span>
-                    )}
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
+                    <span>📦 Archived: {task.archivedAt ? format(new Date(task.archivedAt), "d MMM yyyy") : "-"}</span>
+                    <span className="text-indigo-600 font-bold">View Task →</span>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center">
-            <CheckCircle2 size={36} className="text-emerald-500 mb-2" />
-            <p className="text-xs font-bold text-slate-700">All Caught Up!</p>
-            <p className="text-[11px] text-slate-400 mt-0.5">You don't have any active tasks in your queue right now.</p>
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center">
+              <Archive size={36} className="text-slate-300 mb-2" />
+              <p className="text-xs font-bold text-slate-700">No Archived Tasks Found</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Tasks you completed and archived will appear here.</p>
+            </div>
+          )
         )}
       </div>
 
