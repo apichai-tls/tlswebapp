@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
@@ -18,7 +18,6 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, type Job, type JobStatus } from "@/lib/store";
-import { useSyncExternalStore } from "react";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -316,6 +315,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({ jobs, onEditJob, 
       const branch = shopLocations.find(s => s.id === job.branchId);
       return {
         "Job ID": job.id.split('-')[0].toUpperCase(),
+        "Bill No": job.billNo || "-",
         "Date": format(new Date(job.createdAt), "dd MMM yyyy, HH:mm"),
         "Month": format(new Date(job.createdAt), "MM"),
         "Branch": branch?.name || "-",
@@ -511,8 +511,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({ jobs, onEditJob, 
         </div>
 
       {viewMode === "list" ? (
-      <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
-        <Table>
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-x-auto print:overflow-visible print:border-none print:shadow-none">
+        <Table className="print:text-xs">
           <TableHeader>
             <TableRow className="bg-slate-50 hover:bg-slate-50">
               <TableHead className="w-[120px]">Job ID & Date</TableHead>
@@ -755,39 +755,43 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({ jobs, onEditJob, 
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-center" onClick={(e) => e.stopPropagation()}>
-                        {(user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) ? (
-                          <select 
-                            value={job.status}
-                            onChange={(e) => {
-                              const newStatus = e.target.value as JobStatus;
-                              if (newStatus === "cancel") {
-                                setCancellingJob(job);
-                              } else {
-                                const updates: any = { status: newStatus };
-                                if (newStatus === 'completed') {
-                                  updates.completedAt = new Date().toISOString();
+                        <div className="print:hidden">
+                          {(user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) ? (
+                            <select 
+                              value={job.status}
+                              onChange={(e) => {
+                                const newStatus = e.target.value as JobStatus;
+                                if (newStatus === "cancel") {
+                                  setCancellingJob(job);
+                                } else {
+                                  const updates: any = { status: newStatus };
+                                  if (newStatus === 'completed') {
+                                    updates.completedAt = new Date().toISOString();
+                                  }
+                                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                                  jobStore.updateJobDetails(job.id, updates, actorDetails);
                                 }
-                                const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
-                                jobStore.updateJobDetails(job.id, updates, actorDetails);
-                              }
-                            }}
-                            className={`w-full text-[10px] font-semibold rounded-md border py-1 px-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer ${statusConfig[job.status]?.className || ''}`}
-                          >
-                            <option value="tba">TBA</option>
-                            <option value="pending">Pending</option>
-                            <option value="pickup">Pickup</option>
-                            <option value="billing">Process</option>
-                            <option value="delivery">Delivery</option>
-                            <option value="completed">Completed</option>
-                            <option value="cancel">Cancelled</option>
-                            <option value="return">Return</option>
-                          </select>
-                        ) : (
-                          <Badge variant="outline" className={`gap-1 w-full justify-center py-0.5 h-auto text-[10px] ${statusConfig[job.status]?.className || ''}`}>
-                            {statusIcon[job.status]}
-                            {statusConfig[job.status]?.label || job.status}
-                          </Badge>
-                        )}
+                              }}
+                              className={`w-full text-[10px] font-semibold rounded-md border py-1 px-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer ${statusConfig[job.status]?.className || ''}`}
+                            >
+                              <option value="tba">TBA</option>
+                              <option value="pending">Pending</option>
+                              <option value="pickup">Pickup</option>
+                              <option value="billing">Process</option>
+                              <option value="delivery">Delivery</option>
+                              <option value="completed">Completed</option>
+                              <option value="cancel">Cancelled</option>
+                              <option value="return">Return</option>
+                            </select>
+                          ) : (
+                            <Badge variant="outline" className={`text-[10px] uppercase font-bold justify-center w-fit mx-auto ${statusConfig[job.status]?.className || ''}`}>
+                              {statusConfig[job.status]?.label || job.status}
+                            </Badge>
+                          )}
+                        </div>
+                        <span className="hidden print:inline-block text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-slate-300">
+                          {statusConfig[job.status]?.label || job.status}
+                        </span>
                       </TableCell>
                     </motion.tr>
                   );

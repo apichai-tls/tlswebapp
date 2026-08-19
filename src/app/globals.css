@@ -132,7 +132,9 @@
 /* Fix React-Leaflet z-index issues overlapping with Shadcn UI elements */
 .leaflet-container {
   z-index: 10 !important;
-}@media print { 
+}
+
+@media print { 
   /* Hides normal layout only when NOT printing a report */
   body:not(.printing-report) > *:not(.print-root) { 
     display: none !important; 
@@ -178,5 +180,21 @@
     background-color: #ffffff !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
+  }
+
+  /* From origin/main */
+  body:has(.print-root) > *:not(.print-root) {
+    display: none !important;
+  }
+  aside,
+  nav,
+  .print\:hidden {
+    display: none !important;
+  }
+  body, html, main {
+    background: #fff !important;
+    color: #000 !important;
+    overflow: visible !important;
+    height: auto !important;
   }
 }

@@ -166,6 +166,13 @@ export const refreshDb = async () => {
               updatedJob.billImageUrl = memJob.billImageUrl;
             }
 
+            // Always preserve billNo across in-memory and server state
+            if (memJob.billNo && (!serverJob.billNo || serverJob.billNo === '')) {
+              updatedJob.billNo = memJob.billNo;
+            } else if (serverJob.billNo && (!memJob.billNo || memJob.billNo === '')) {
+              updatedJob.billNo = serverJob.billNo;
+            }
+
             return updatedJob;
           }
           return serverJob;
@@ -470,6 +477,12 @@ export const api = {
     
     const existingJob = db.jobs[jobIndex];
     const finalUpdates = { ...updates };
+    
+    // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
+    if (updates.billNo !== undefined && (!updates.billNo || String(updates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
+      delete finalUpdates.billNo;
+    }
+
     if (updates.status === undefined && existingJob.status === 'tba' && (updates.pickupRiderId || updates.deliveryRiderId)) {
       finalUpdates.status = 'pending';
     }

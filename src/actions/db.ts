@@ -61,7 +61,6 @@ export async function updateCustomerAction(id: string, updates: any) {
       throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
     }
   }
-
   const data: any = {};
   if (updates.name !== undefined) {
     data.name = updates.name ? updates.name.toUpperCase() : updates.name;
@@ -256,6 +255,7 @@ export async function addJobAction(data: any) {
       riderId: data.riderId,
       bagImageUrl: data.bagImageUrl,
       billImageUrl: data.billImageUrl,
+      billNo: data.billNo ? String(data.billNo).trim() : null,
       serviceType: data.serviceType,
       laundryTypes: data.laundryTypes ? data.laundryTypes.join(',') : null,
       source: data.source,
@@ -263,6 +263,9 @@ export async function addJobAction(data: any) {
       paymentMethod: data.paymentMethod,
       paymentChannel: data.paymentChannel,
       isPaid: data.isPaid || false,
+      isShopPaid: data.isShopPaid || false,
+      csoPaidAt: data.isPaid ? new Date() : null,
+      shopPaidAt: data.isShopPaid ? new Date() : null,
       discount: data.discount || 0,
       discountPercent: data.discountPercent || 0,
       pickupDistance: data.pickupDistance,

@@ -14,6 +14,7 @@ import { FullMap, CreateJobMap } from "@/components/map-loader";
 import type { MapMarker } from "@/components/map-component";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Lock as LockIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -43,6 +44,8 @@ import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
 import { AdminReports } from "@/components/admin-reports";
+import { AdminTasks } from "@/components/admin-tasks";
+import { NotificationBell } from "@/components/notification-bell";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -91,6 +94,7 @@ import {
   Shirt,
   Edit,
   ClipboardList,
+  ClipboardCheck,
   Paperclip,
   Maximize2,
   Trash2,
@@ -211,7 +215,7 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "tasks" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -241,11 +245,15 @@ export default function AdminPage() {
       return;
     }
 
-    // For all other roles: jump to the first tab they have access to
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "settings", "users", "activity-logs"
+    // For all other roles: jump to the first tab they have access to (default is dashboard)
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "settings", "users", "activity-logs"
     ];
-    const hasPermission = (key: string) => user.permissions?.includes(key);
+    const hasPermission = (key: string) => {
+      if (user.role === 'admin') return true;
+      if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
+      return user.permissions?.includes(key) ?? false;
+    };
     const firstTab = tabOrder.find(tab => hasPermission(tab));
     if (firstTab) setActiveTab(firstTab);
   }, [user]);
@@ -266,7 +274,7 @@ export default function AdminPage() {
     window.addEventListener("scroll", handleUserActivity, { passive: true });
     window.addEventListener("touchstart", handleUserActivity, { passive: true });
 
-    let intervalTime: number | null = 3000; // Smart Polling active rate: 3 seconds (up from 5s)
+    let intervalTime: number | null = 5000; // Smart Polling active rate: 5 seconds
 
     if (activeTab === "map") {
       intervalTime = 15000; // Live Map: 15 seconds (GPS-heavy, keep slower)
@@ -312,7 +320,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "tasks") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -659,7 +667,8 @@ export default function AdminPage() {
 
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
-    return user?.permissions?.includes(key);
+    if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
+    return user?.permissions?.includes(key) ?? false;
   };
 
   const parseTime = (timeStr: string) => {
@@ -924,6 +933,7 @@ export default function AdminPage() {
   };
 
   const handleCreateNewJob = () => {
+    originalJobRef.current = null;
     setEditingJobId(null);
     setDialogSelectedCategory(null);
     setDialogCart([]);
@@ -962,7 +972,6 @@ export default function AdminPage() {
     setServiceWeight(2);
     setLaundryTypes([]); // H3 Fix: clear laundryTypes to prevent data bleeding from previous Edit Job
     setOtherClothingName("");
-    setOtherClothingPrice(0);
     setClothingItems({
       polo: { selected: false, quantity: 1 },
       tshirt: { selected: false, quantity: 1 },
@@ -1202,7 +1211,6 @@ export default function AdminPage() {
         } else {
           initialClothingItems.other = { selected: true, quantity: item.quantity };
           otherName = item.name;
-          if (item.price) setOtherClothingPrice(item.price);
         }
       });
     }
@@ -1344,7 +1352,7 @@ export default function AdminPage() {
       return;
     }
 
-    const existingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+    const existingJob = editingJobId ? (jobs.find(j => String(j.id) === String(editingJobId)) || originalJobRef.current) : null;
     const isAlreadyCompleted = existingJob?.status === "completed";
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
@@ -1453,6 +1461,20 @@ export default function AdminPage() {
       
     if (!editingJobId && !proformaReceiptNumber) {
       setDraftCreatedAt(now);
+    }
+
+    if (serviceType === 'other') {
+      const hasOther = itemsPayload.some(i => i.name.toLowerCase().includes('other'));
+      if (!hasOther) {
+        itemsPayload.push({
+          name: "Other (Custom Service)",
+          nameEn: "Other (Custom Service)",
+          quantity: 1,
+          price: laundryPrice || 0,
+          serviceId: "other",
+          unit: "pcs"
+        });
+      }
     }
 
     const newJobData: any = {
@@ -2099,6 +2121,17 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
               </motion.a>
             )}
+            {/* Tasks — available to all logged in users */}
+            <motion.a
+              href="#tasks"
+              onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("tasks"); }}
+              whileHover={{ x: 2 }}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "tasks" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+              title="Tasks"
+            >
+              <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+              {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
+            </motion.a>
             
             {hasAccess("users") && (
               <motion.a
@@ -2379,6 +2412,21 @@ export default function AdminPage() {
                       <span>Reports & Analytics</span>
                     </a>
                   )}
+                  {/* Tasks — available to all logged in users */}
+                  <a
+                    href="#tasks"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleTabChange("tasks");
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                      activeTab === "tasks" ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    <ClipboardCheck size={18} />
+                    <span>Tasks</span>
+                  </a>
 
                   {hasAccess("users") && (
                     <a
@@ -2444,6 +2492,12 @@ export default function AdminPage() {
             </h1>
             
             <div className="flex items-center gap-3">
+              <NotificationBell
+                onSelectTask={(taskId) => {
+                  handleTabChange("tasks");
+                  window.dispatchEvent(new CustomEvent("open-task-modal", { detail: { taskId } }));
+                }}
+              />
               <Button 
                 variant="outline" 
                 size="icon"
@@ -4404,15 +4458,23 @@ export default function AdminPage() {
                               </div>
 
                               <div className="space-y-0.5">
-                                <Label htmlFor="bill-no" className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <CreditCard size={12} className="text-slate-500" />
-                                  BILL NO.
+                                <Label htmlFor="bill-no" className="flex items-center justify-between text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <span className="flex items-center gap-1">
+                                    <CreditCard size={12} className="text-slate-500" />
+                                    BILL NO.
+                                  </span>
+                                  {!(user?.role === 'admin' || user?.role === 'cso') && (
+                                    <span className="flex items-center gap-0.5 text-[9px] text-amber-400 font-medium">
+                                      <LockIcon size={10} /> View Only
+                                    </span>
+                                  )}
                                 </Label>
                                 <Input
                                   id="bill-no"
                                   value={billNo}
+                                  readOnly={!(user?.role === 'admin' || user?.role === 'cso')}
                                   onChange={(e) => {
-                                    if (user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') {
+                                    if (user?.role === 'admin' || user?.role === 'cso') {
                                       setBillNo(e.target.value);
                                     }
                                   }}
@@ -4718,6 +4780,7 @@ export default function AdminPage() {
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
           {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
 
+          {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
 
           {/* Fallback for no access to current tab */}
           {!hasAccess(activeTab) && (

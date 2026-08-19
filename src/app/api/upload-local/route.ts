@@ -17,16 +17,16 @@ export async function POST(request: NextRequest) {
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    // Save to public/uploads/entityType/subType/filename
+    // Save to public/uploads/entityType/subType/entityId-timestamp.ext
     const now = Date.now();
-    const ext = file.type.split("/")[1] || "jpg";
-    let filename = `${entityId}-${now}.${ext}`;
-    if (file.name) {
-      const sanitized = file.name.replace(/[^a-zA-Z0-9_\-\.]/g, "_");
-      if (sanitized && !sanitized.startsWith("..")) {
-        filename = sanitized;
-      }
+    let ext = "jpg";
+    if (file.name && file.name.includes(".")) {
+      ext = file.name.split(".").pop() || "bin";
+    } else if (file.type && file.type.includes("/")) {
+      const sub = file.type.split("/")[1];
+      ext = sub === "jpeg" ? "jpg" : sub;
     }
+    const filename = `${entityId}-${now}.${ext}`;
     const uploadDir = path.join(process.cwd(), "public", "uploads", entityType, subType);
 
     // Ensure directory exists
