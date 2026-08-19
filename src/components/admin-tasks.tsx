@@ -2480,9 +2480,10 @@ export function TaskAdminDashboard({
       ? Math.round((doneResolutionTimes.reduce((a, b) => a + b, 0) / doneResolutionTimes.length) * 10) / 10
       : 0;
 
-  // Staff Metrics
+  // Staff Metrics (Strictly show only staff members who have at least 1 task assigned in the selected timeframe)
   const staffMetrics = useMemo(() => {
-    return calculateStaffMetrics(filteredTasksByTime, adminUsers);
+    const list = calculateStaffMetrics(filteredTasksByTime, adminUsers);
+    return list.filter((m) => m.totalAssigned > 0);
   }, [filteredTasksByTime, adminUsers]);
 
   const filteredStaffList = useMemo(() => {
@@ -2923,7 +2924,9 @@ export function TaskAdminDashboard({
               ) : (
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-slate-400">
-                    No staff records found matching "{staffSearch}"
+                    {staffSearch
+                      ? `No staff records found matching "${staffSearch}"`
+                      : "No staff task activity found for the selected timeframe."}
                   </td>
                 </tr>
               )}
