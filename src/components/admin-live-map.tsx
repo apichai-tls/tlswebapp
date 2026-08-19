@@ -62,7 +62,7 @@ function MapUpdater({ center }: { center: [number, number] }) {
   return null;
 }
 
-export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
+export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
   let riders = useRiders();
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -186,4 +186,4 @@ export function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
       </MapContainer>
     </div>
   );
-}
+});

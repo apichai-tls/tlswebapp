@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/logo";
@@ -805,12 +805,8 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (forceMemberPaymentDialog) {
-      const hasSufficient = (selectedProfileCustomer?.creditBalance || 0) >= dialogTotal;
-      if (!hasSufficient) {
-        setPaymentMethod("unpaid");
-      } else {
-        setPaymentMethod("paid");
-      }
+      // Auto-select "Deduct Member" as payment channel for Member customers
+      // But do NOT auto-set isPaid=true — user must confirm by pressing Paid themselves
       setPaymentChannel("Deduct Member");
     }
   }, [forceMemberPaymentDialog, dialogTotal, selectedProfileCustomer?.creditBalance]);
@@ -964,6 +960,7 @@ export default function AdminPage() {
     setCashPlaced(false);
     setServiceType("wash_fold");
     setServiceWeight(2);
+    setLaundryTypes([]); // H3 Fix: clear laundryTypes to prevent data bleeding from previous Edit Job
     setOtherClothingName("");
     setOtherClothingPrice(0);
     setClothingItems({
@@ -1433,7 +1430,8 @@ export default function AdminPage() {
       nameEn: item.nameEn || item.name,
       quantity: item.quantity,
       price: item.price,
-      serviceId: item.id
+      serviceId: item.id,
+      unit: item.unit || 'pcs' // M4 Fix: include unit field so reports can distinguish kg vs pcs
     }));
 
     const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
@@ -1715,6 +1713,7 @@ export default function AdminPage() {
             (payload as any).actorId = user?.id;
             (payload as any).actorName = user?.name || user?.email;
             (payload as any).actorRole = user?.role;
+            (payload as any).updatedAt = orig.updatedAt;
           }
         } else {
           Object.assign(payload, newJobData);
@@ -1724,55 +1723,85 @@ export default function AdminPage() {
           await jobStore.updateJobDetails(editingJobId, payload);
         }
         toast.success(`Job updated successfully!`);
+
+        // Handle wallet adjustments for job updates (separate flow — job already exists)
+        const isPaidNow_update = paymentMethod === 'paid';
+        const wasPaidBefore_update = existingJob ? existingJob.isPaid : false;
+        if (isPaidNow_update && !wasPaidBefore_update && selectedProfileCustomer) {
+          let balAdj = 0;
+          if (paymentChannel === "Deduct Member") balAdj -= calculatedTotal;
+          const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
+          if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+          if (balAdj !== 0) {
+            const newBal = Math.max(0, (selectedProfileCustomer.creditBalance || 0) + balAdj);
+            const upd: Partial<Customer> = { creditBalance: newBal };
+            if (balAdj > 0 && !selectedProfileCustomer.isMember) {
+              upd.isMember = true;
+              const pls = priceListStore.getSnapshot();
+              const ml = pls.find(p => p.name.toLowerCase().includes("member"));
+              if (ml) upd.priceListId = ml.id;
+            }
+            await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
+            await jobStore.updateJobDetails(editingJobId, { walletBalanceAfter: newBal });
+            setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+            toast.success(`Customer wallet updated. New balance: ฿${newBal.toLocaleString()}`);
+          }
+        }
       } else {
-        const job = await jobStore.addJob(newJobData as any);
+        // H2 Fix: For NEW jobs paid via "Deduct Member", deduct wallet BEFORE creating the job.
+        // If deduction fails → job is never created → no money leak.
+        const isPaidNow_new = paymentMethod === 'paid';
+        let preDeductedBalance: number | null = null;
+        let walletUpdates: Partial<Customer> | null = null;
+
+        if (isPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member") {
+          // Validate balance is sufficient before proceeding
+          const currentBalance = selectedProfileCustomer.creditBalance || 0;
+          if (currentBalance < calculatedTotal) {
+            toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
+            setIsSubmitting(false);
+            return;
+          }
+          preDeductedBalance = Math.max(0, currentBalance - calculatedTotal);
+          walletUpdates = { creditBalance: preDeductedBalance };
+          // Deduct wallet first — if this fails, we abort before creating the job
+          await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
+        }
+
+        // Also handle topup packages (balance increase — safe to do after job creation)
+        const packageItems = dialogCart.filter(item => item.category === "PACKAGE");
+        const packageTotal = packageItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+
+        // Now create the job — include walletBalanceAfter if pre-deducted
+        const jobDataWithWallet = preDeductedBalance !== null
+          ? { ...newJobData, walletBalanceAfter: preDeductedBalance }
+          : newJobData;
+
+        const job = await jobStore.addJob(jobDataWithWallet as any);
         savedJobId = job.id;
         toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
-      }
 
-      // Handle customer wallet balance adjustments on payment
-      const isPaidNow = paymentMethod === 'paid';
-      const wasPaidBefore = existingJob ? existingJob.isPaid : false;
-      const isNewPaymentTransition = isPaidNow && !wasPaidBefore;
-
-      if (isNewPaymentTransition && selectedProfileCustomer) {
-        let balanceAdjustment = 0;
-        
-        // 1. Deduct wallet if paid via Deduct Member
-        if (paymentChannel === "Deduct Member") {
-          balanceAdjustment -= calculatedTotal;
+        // Update local customer state if wallet was pre-deducted
+        if (preDeductedBalance !== null && selectedProfileCustomer) {
+          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: preDeductedBalance! } : null);
+          toast.success(`Customer wallet updated. New balance: ฿${preDeductedBalance!.toLocaleString()}`);
         }
 
-        // 2. Add to wallet if it is a topup package
-        const packageItems = dialogCart.filter(item => item.category === "PACKAGE");
-        if (packageItems.length > 0) {
-          const packageTotal = packageItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-          balanceAdjustment += packageTotal;
-        }
-
-        if (balanceAdjustment !== 0) {
-          const newBalance = (selectedProfileCustomer.creditBalance || 0) + balanceAdjustment;
-          const updates: Partial<Customer> = { creditBalance: newBalance };
-
-          if (balanceAdjustment > 0 && !selectedProfileCustomer.isMember) {
-            updates.isMember = true;
-            const priceLists = priceListStore.getSnapshot();
-            const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
-            if (memberList) {
-              updates.priceListId = memberList.id;
-            }
+        // Handle topup package wallet top-up (after job creation — low risk, topup adds money)
+        if (isPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
+          const currentBal = preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0);
+          const newBal = currentBal + packageTotal;
+          const upd: Partial<Customer> = { creditBalance: newBal };
+          if (!selectedProfileCustomer.isMember) {
+            upd.isMember = true;
+            const pls = priceListStore.getSnapshot();
+            const ml = pls.find(p => p.name.toLowerCase().includes("member"));
+            if (ml) upd.priceListId = ml.id;
           }
-
-          await customerStore.updateCustomer(selectedProfileCustomer.id, updates);
-          
-          setSelectedProfileCustomer(prev => prev ? {
-            ...prev,
-            creditBalance: newBalance,
-            isMember: updates.isMember !== undefined ? updates.isMember : prev.isMember,
-            priceListId: updates.priceListId !== undefined ? updates.priceListId : prev.priceListId
-          } : null);
-          
-          toast.success(`Customer wallet updated. New balance: ฿${newBalance.toLocaleString()}`);
+          await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
+          await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: newBal });
+          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+          toast.success(`Member wallet topped up. New balance: ฿${newBal.toLocaleString()}`);
         }
       }
 
@@ -1855,6 +1884,18 @@ export default function AdminPage() {
     }
     return null;
   }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt]);
+
+  const handleEditFullJobRef = useRef(handleEditFullJob);
+  handleEditFullJobRef.current = handleEditFullJob;
+  const stableHandleEditFullJob = useCallback((job: Job) => {
+    handleEditFullJobRef.current(job);
+  }, []);
+
+  const handleCreateNewJobRef = useRef(handleCreateNewJob);
+  handleCreateNewJobRef.current = handleCreateNewJob;
+  const stableHandleCreateNewJob = useCallback(() => {
+    handleCreateNewJobRef.current();
+  }, []);
 
   return (
     <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
@@ -3436,19 +3477,27 @@ export default function AdminPage() {
                                             handleServiceOrSpeedChange(s.id, serviceSpeed, serviceWeight);
                                             setDialogCart(prev => {
                                               const existing = prev.find(item => item.id === s.id);
+                                              const isKiloService = s.unit === 'kg' || s.category?.toUpperCase().includes('KILO');
                                               let updated;
                                               if (existing) {
+                                                const step = isKiloService ? 0.5 : 1;
                                                 updated = prev.map(item => 
                                                   item.id === s.id 
-                                                    ? { ...item, quantity: item.quantity + 1 }
+                                                    ? { ...item, quantity: Math.round((item.quantity + step) * 100) / 100 }
                                                     : item
                                                 );
                                               } else {
+                                                // L1 Fix: Warn if other items in cart have custom prices that won't carry over
+                                                const hasCustomPriced = prev.some(item => item.price !== item.basePrice);
+                                                if (hasCustomPriced) {
+                                                  toast(`⚠️ มีรายการที่ปรับราคาพิเศษอยู่ในตะกร้า — ราคาสินค้าใหม่จะใช้ราคาตามปกติ`, { duration: 3000 });
+                                                }
+                                                const defaultQty = isKiloService ? 2 : 1;
                                                 updated = [...prev, {
                                                   id: s.id,
                                                   name: s.name,
                                                   nameEn: s.nameEn || s.name,
-                                                  quantity: 1,
+                                                  quantity: defaultQty,
                                                   price: s.price,
                                                   category: s.category || "",
                                                   unit: s.unit || "piece"
@@ -3548,11 +3597,12 @@ export default function AdminPage() {
                                         className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-rose-400'}`}
                                         onClick={() => {
                                           setDialogCart(prev => {
-                                            const updated = prev.map(it => 
-                                              it.id === item.id 
-                                                ? { ...it, quantity: Math.max(0, it.quantity - 1) }
-                                                : it
-                                            ).filter(it => it.quantity > 0);
+                                            const updated = prev.map(it => {
+                                              if (it.id !== item.id) return it;
+                                              const isKilo = it.unit === 'kg' || it.category?.toUpperCase().includes('KILO');
+                                              const step = isKilo ? 0.5 : 1;
+                                              return { ...it, quantity: Math.round(Math.max(0, it.quantity - step) * 100) / 100 };
+                                            }).filter(it => it.quantity > 0);
                                             const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
@@ -3561,20 +3611,56 @@ export default function AdminPage() {
                                       >
                                         -
                                       </button>
-                                      <span className="w-5 text-center text-[10px] font-black text-slate-300">
-                                        {item.quantity}
-                                      </span>
+                                      {(() => {
+                                        const isKiloQty = item.unit === 'kg' || item.category?.toUpperCase().includes('KILO');
+                                        return isKiloQty ? (
+                                          <input
+                                            type="number"
+                                            step="0.01"
+                                            min="0.5"
+                                            disabled={isCartLocked}
+                                            value={item.quantity}
+                                            className="w-10 text-center text-[10px] font-black text-slate-300 bg-transparent border-none outline-none focus:ring-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            onChange={(e) => {
+                                              const raw = parseFloat(e.target.value);
+                                              if (!isNaN(raw) && raw > 0) {
+                                                const rounded = Math.round(raw * 100) / 100;
+                                                setDialogCart(prev => {
+                                                  const updated = prev.map(it => it.id === item.id ? { ...it, quantity: rounded } : it);
+                                                  setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
+                                                  return updated;
+                                                });
+                                              }
+                                            }}
+                                            onBlur={(e) => {
+                                              const raw = parseFloat(e.target.value);
+                                              if (isNaN(raw) || raw <= 0) {
+                                                setDialogCart(prev => {
+                                                  const updated = prev.map(it => it.id === item.id ? { ...it, quantity: 0.5 } : it);
+                                                  setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
+                                                  return updated;
+                                                });
+                                              }
+                                            }}
+                                          />
+                                        ) : (
+                                          <span className="w-5 text-center text-[10px] font-black text-slate-300">
+                                            {item.quantity}
+                                          </span>
+                                        );
+                                      })()}
                                       <button
                                         type="button"
                                         disabled={isCartLocked}
                                         className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400'}`}
                                         onClick={() => {
                                           setDialogCart(prev => {
-                                            const updated = prev.map(it => 
-                                              it.id === item.id 
-                                                ? { ...it, quantity: it.quantity + 1 }
-                                                : it
-                                            );
+                                            const updated = prev.map(it => {
+                                              if (it.id !== item.id) return it;
+                                              const isKilo = it.unit === 'kg' || it.category?.toUpperCase().includes('KILO');
+                                              const step = isKilo ? 0.5 : 1;
+                                              return { ...it, quantity: Math.round((it.quantity + step) * 100) / 100 };
+                                            });
                                             const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
@@ -4619,8 +4705,8 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={handleEditFullJob} onCreateJob={handleCreateNewJob} />}
-          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={handleEditFullJob} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} />}
+          {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={stableHandleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
           {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}

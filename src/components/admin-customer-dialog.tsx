@@ -155,6 +155,7 @@ export function AdminCustomerDialog({
       memberId: isMember ? memberId.trim() || null : null,
       memberStartDate: isMember && memberStartDate ? memberStartDate : null,
       memberExpiryDate: isMember && memberExpiryDate ? memberExpiryDate : null,
+      updatedAt: customer ? customer.updatedAt : undefined,
     };
 
     try {

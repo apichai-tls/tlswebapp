@@ -51,6 +51,17 @@ export async function addCustomerAction(data: any) {
 }
 
 export async function updateCustomerAction(id: string, updates: any) {
+  const currentCustomer = await prisma.customer.findUnique({ where: { id } });
+  if (!currentCustomer) throw new Error("Customer not found");
+
+  if (updates.updatedAt) {
+    const incomingTime = new Date(updates.updatedAt).getTime();
+    const dbTime = new Date(currentCustomer.updatedAt!).getTime();
+    if (dbTime > incomingTime + 1000) {
+      throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
+    }
+  }
+
   const data: any = {};
   if (updates.name !== undefined) {
     data.name = updates.name ? updates.name.toUpperCase() : updates.name;
@@ -89,8 +100,7 @@ export async function updateCustomerAction(id: string, updates: any) {
       }
     }
   } else if (updates.memberId !== undefined) {
-    const current = await prisma.customer.findUnique({ where: { id } });
-    if (current && current.isMember) {
+    if (currentCustomer.isMember) {
       if (updates.memberId && updates.memberId.trim()) {
         const memberIdUpper = updates.memberId.trim().toUpperCase();
         const existing = await prisma.customer.findFirst({
@@ -127,6 +137,34 @@ export async function updateCustomerAction(id: string, updates: any) {
   }
 
   const updatedCustomer = await prisma.customer.update({ where: { id }, data });
+
+  const changes: Record<string, { from: any, to: any }> = {};
+  for (const key of Object.keys(data)) {
+    if (currentCustomer[key as keyof typeof currentCustomer] !== data[key]) {
+      changes[key] = {
+        from: currentCustomer[key as keyof typeof currentCustomer],
+        to: data[key]
+      };
+    }
+  }
+
+  if (Object.keys(changes).length > 0) {
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: id,
+          entityType: 'customer',
+          action: 'update',
+          details: JSON.stringify(changes),
+          userId: updates.actorId || null,
+          userName: updates.actorName || null,
+        }
+      });
+      console.log(`[ActivityLog] Updated customer ${id}:`, JSON.stringify(changes));
+    } catch (err: any) {
+      console.error("Failed to write ActivityLog on customer update:", err.message);
+    }
+  }
 
   // CRM Remark Sync Logic from main branch
   if (updates.remark !== undefined) {
@@ -166,6 +204,10 @@ export async function updateCustomerAction(id: string, updates: any) {
 }
 
 export async function deleteCustomerAction(id: string) {
+  const jobsCount = await prisma.job.count({ where: { customerId: id } });
+  if (jobsCount > 0) {
+    throw new Error(`Cannot delete customer: they have ${jobsCount} historical job(s).`);
+  }
   return prisma.customer.delete({ where: { id } });
 }
 
@@ -205,7 +247,7 @@ export async function addJobAction(data: any) {
       dropoffLat: data.dropoffCoords?.lat || 0,
       dropoffLng: data.dropoffCoords?.lng || 0,
       distance: data.distance || 0,
-      fee: data.fee || 0,
+      fee: Math.max(0, Number(data.fee) || 0),
       status: data.status,
       createdAt: data.createdAt,
       scheduledAt: data.scheduledAt,
@@ -217,7 +259,7 @@ export async function addJobAction(data: any) {
       serviceType: data.serviceType,
       laundryTypes: data.laundryTypes ? data.laundryTypes.join(',') : null,
       source: data.source,
-      totalAmount: data.totalAmount,
+      totalAmount: data.totalAmount !== undefined && data.totalAmount !== null ? Math.max(0, Number(data.totalAmount) || 0) : null,
       paymentMethod: data.paymentMethod,
       paymentChannel: data.paymentChannel,
       isPaid: data.isPaid || false,
@@ -225,8 +267,8 @@ export async function addJobAction(data: any) {
       discountPercent: data.discountPercent || 0,
       pickupDistance: data.pickupDistance,
       deliveryDistance: data.deliveryDistance,
-      pickupCommission: data.pickupCommission,
-      deliveryCommission: data.deliveryCommission,
+      pickupCommission: data.pickupCommission !== undefined && data.pickupCommission !== null ? Math.max(0, Number(data.pickupCommission) || 0) : null,
+      deliveryCommission: data.deliveryCommission !== undefined && data.deliveryCommission !== null ? Math.max(0, Number(data.deliveryCommission) || 0) : null,
       pickupScheduledAt: data.pickupScheduledAt,
       pickupScheduledEndAt: data.pickupScheduledEndAt,
       deliveryScheduledAt: data.deliveryScheduledAt,
@@ -277,9 +319,25 @@ export async function getJobsByIdsAction(ids: string[]) {
 export async function updateJobAction(id: string, updates: any) {
   console.log(`[updateJobAction] id: ${id}`, updates);
   const existingJob = await prisma.job.findUnique({ where: { id } });
+  
+  if (existingJob && updates.updatedAt) {
+    const incomingTime = new Date(updates.updatedAt).getTime();
+    const dbTime = new Date(existingJob.updatedAt).getTime();
+    if (dbTime > incomingTime + 1000) {
+      throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
+    }
+  }
   const data: any = {};
   if (updates.type !== undefined) data.type = updates.type;
   if (updates.status !== undefined) {
+    if (existingJob) {
+      if (existingJob.status === 'completed' && ['pending', 'tba', 'pickup', 'billing'].includes(updates.status)) {
+        throw new Error("Cannot revert a completed job to an active state (except Delivery for rework/failed delivery).");
+      }
+      if (existingJob.status === 'cancel' && updates.status !== 'cancel') {
+        throw new Error("Cannot change the status of a cancelled job.");
+      }
+    }
     data.status = updates.status;
   } else if (existingJob && existingJob.status === 'tba' && (updates.pickupRiderId || updates.deliveryRiderId)) {
     data.status = 'pending';
@@ -363,10 +421,10 @@ export async function updateJobAction(id: string, updates: any) {
       data.csoPaidAt = null;
     }
   }
-  if (updates.fee !== undefined) data.fee = updates.fee;
+  if (updates.fee !== undefined) data.fee = Math.max(0, Number(updates.fee) || 0);
   if (updates.discount !== undefined) data.discount = updates.discount;
   if (updates.discountPercent !== undefined) data.discountPercent = updates.discountPercent;
-  if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount;
+  if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount !== null ? Math.max(0, Number(updates.totalAmount) || 0) : null;
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
   if (updates.laundryTypes !== undefined) {
     data.laundryTypes = Array.isArray(updates.laundryTypes)
@@ -390,8 +448,8 @@ export async function updateJobAction(id: string, updates: any) {
 
   if (updates.pickupDistance !== undefined) data.pickupDistance = updates.pickupDistance;
   if (updates.deliveryDistance !== undefined) data.deliveryDistance = updates.deliveryDistance;
-  if (updates.pickupCommission !== undefined) data.pickupCommission = updates.pickupCommission;
-  if (updates.deliveryCommission !== undefined) data.deliveryCommission = updates.deliveryCommission;
+  if (updates.pickupCommission !== undefined) data.pickupCommission = updates.pickupCommission !== null ? Math.max(0, Number(updates.pickupCommission) || 0) : null;
+  if (updates.deliveryCommission !== undefined) data.deliveryCommission = updates.deliveryCommission !== null ? Math.max(0, Number(updates.deliveryCommission) || 0) : null;
   if (updates.createdBy !== undefined) data.createdBy = updates.createdBy;
   if (updates.cashPlaced !== undefined) data.cashPlaced = updates.cashPlaced;
   if (updates.isStuck !== undefined) data.isStuck = updates.isStuck;

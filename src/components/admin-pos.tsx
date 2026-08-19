@@ -260,6 +260,7 @@ interface CartItem {
   basePrice: number; // To track original rate vs override
   quantity: number;
   category?: string;
+  unit?: string; // 'kg' for KILO items, 'pcs' for regular
 }
 
 interface AdminPOSProps {
@@ -801,6 +802,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     // Reset VAT to current system settings defaults
     setVatType((settings?.vatType as any) || "none");
     setVatRate(parseFloat(settings?.vatRate || "7") || 7);
+    // L2 Fix: Reset category back to "All" so POS doesn't stay stuck on previous category
+    setSelectedCategory("All");
   };
 
   const [customerSearch, setCustomerSearch] = useState("");
@@ -1306,15 +1309,20 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     playAudioFeedback("click");
     const price = customPrice !== undefined ? customPrice : getProductPrice(product);
+    // Detect KILO: check unit field (primary), category name, or product name as fallback
+    const isKilo = product.unit === 'kg' || product.category?.toUpperCase().includes('KILO') || product.name?.toUpperCase().includes('KILO');
+    const defaultQty = isKilo ? 2 : 1;
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
         if (customPrice !== undefined) {
-          return prev.map(item => item.id === product.id ? { ...item, price, basePrice: price, quantity: 1 } : item);
+          return prev.map(item => item.id === product.id ? { ...item, price, basePrice: price, quantity: defaultQty } : item);
         }
-        return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+        // For KILO items, increment by 0.5; for others by 1
+        const step = isKilo ? 0.5 : 1;
+        return prev.map(item => item.id === product.id ? { ...item, quantity: Math.round((item.quantity + step) * 100) / 100 } : item);
       }
-      return [...prev, { id: product.id, name: product.name, nameEn: product.nameEn, price: price, basePrice: price, quantity: 1, category: product.category }];
+      return [...prev, { id: product.id, name: product.name, nameEn: product.nameEn, price: price, basePrice: price, quantity: defaultQty, category: product.category, unit: product.unit }];
     });
   };
 
@@ -1328,7 +1336,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     playAudioFeedback("click");
     setCart(prev => prev.map(item => {
       if (item.id === id) {
-        const newQty = Math.max(0, item.quantity + delta);
+        const isKilo = item.unit === 'kg' || item.category?.toUpperCase().includes('KILO') || item.name?.toUpperCase().includes('KILO');
+        const step = isKilo ? 0.5 : 1;
+        const minQty = isKilo ? 0 : 0; // allow 0 to trigger removal
+        const newQty = Math.round(Math.max(minQty, item.quantity + (delta > 0 ? step : -step)) * 100) / 100;
         return { ...item, quantity: newQty };
       }
       return item;
@@ -1386,14 +1397,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   const vatAmount = useMemo(() => {
     if (vatType === "none" || vatRate <= 0) return 0;
-    // VAT base = (subtotal + surcharge) - discount
-    const baseForVat = subtotal + expressSurcharge - discountAmount;
+    // M2 Fix: VAT base = (subtotal + surcharge) - discount + manualAdjustment
+    // manualAdjustment must be included so VAT reflects the actual billable amount
+    const baseForVat = subtotal + expressSurcharge - discountAmount + manualAdjustment;
     if (vatType === "inclusive") {
-      return baseForVat * (vatRate / (100 + vatRate));
+      return Math.max(0, baseForVat) * (vatRate / (100 + vatRate));
     } else {
-      return baseForVat * (vatRate / 100);
+      return Math.max(0, baseForVat) * (vatRate / 100);
     }
-  }, [vatType, vatRate, subtotal, expressSurcharge, discountAmount]);
+  }, [vatType, vatRate, subtotal, expressSurcharge, discountAmount, manualAdjustment]);
 
   const total = useMemo(() => {
     // Formula: (subtotal + surcharge) - discount + VAT
@@ -3218,6 +3230,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             <AnimatePresence mode="popLayout">
               {cart.map(item => {
                 const displayItemName = (currentLanguage === "en" && item.nameEn) ? item.nameEn : item.name;
+                const isKiloItem = item.unit === 'kg' || item.category?.toUpperCase().includes('KILO') || item.name?.toUpperCase().includes('KILO');
                 return (
                   <motion.div 
                     layout
@@ -3240,35 +3253,60 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     </div>
  
                     {/* Middle: Compact Qty Controls */}
-                    <div className="flex items-center bg-card border border-border rounded-lg overflow-hidden w-20 h-7.5 shadow-sm shrink-0">
-                      <motion.button 
-                        whileTap={isPaidJob ? {} : { scale: 0.85 }}
-                        whileHover={isPaidJob ? {} : { backgroundColor: "var(--muted)" }}
-                        type="button"
-                        disabled={isPaidJob}
-                        onClick={() => updateQuantity(item.id, -1)}
-                        className={`w-6.5 h-7.5 text-muted-foreground border-r border-border transition-colors flex items-center justify-center ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
-                      >
-                        <Minus size={10} />
-                      </motion.button>
-                      <input 
-                        type="number" 
-                        step="0.1" 
-                        disabled={isPaidJob}
-                        className="h-7.5 w-7 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
-                        value={item.quantity}
-                        onChange={(e) => updateCartItem(item.id, { quantity: parseFloat(e.target.value) || 0 })}
-                      />
-                      <motion.button 
-                        whileTap={isPaidJob ? {} : { scale: 0.85 }}
-                        whileHover={isPaidJob ? {} : { backgroundColor: "var(--muted)" }}
-                        type="button"
-                        disabled={isPaidJob}
-                        onClick={() => updateQuantity(item.id, 1)}
-                        className={`w-6.5 h-7.5 text-muted-foreground border-l border-border transition-colors flex items-center justify-center ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
-                      >
-                        <Plus size={10} />
-                      </motion.button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isKiloItem && (
+                        <span className="text-[9px] font-bold text-blue-500 bg-blue-500/10 border border-blue-300/40 px-1 py-0.5 rounded-md">kg</span>
+                      )}
+                      <div className={`flex items-center bg-card border border-border rounded-lg overflow-hidden h-7.5 shadow-sm ${isKiloItem ? 'w-24' : 'w-20'}`}>
+                        <motion.button 
+                          whileTap={isPaidJob ? {} : { scale: 0.85 }}
+                          whileHover={isPaidJob ? {} : { backgroundColor: "var(--muted)" }}
+                          type="button"
+                          disabled={isPaidJob}
+                          onClick={() => updateQuantity(item.id, -1)}
+                          className={`w-6.5 h-7.5 text-muted-foreground border-r border-border transition-colors flex items-center justify-center ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
+                        >
+                          <Minus size={10} />
+                        </motion.button>
+                        <input 
+                          type="number" 
+                          step={isKiloItem ? "0.01" : "1"}
+                          min={isKiloItem ? "0.5" : "1"}
+                          disabled={isPaidJob}
+                          className={`h-7.5 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground disabled:opacity-50 disabled:cursor-not-allowed ${isKiloItem ? 'w-11' : 'w-7'}`}
+                          defaultValue={item.quantity}
+                          key={`qty-${item.id}-${item.quantity}`}
+                          onChange={(e) => {
+                            // M1 Fix: Allow empty/in-progress typing without bouncing the value back
+                            // Only commit if the user has typed a valid positive number
+                            const raw = parseFloat(e.target.value);
+                            if (!isNaN(raw) && raw > 0) {
+                              const rounded = isKiloItem ? Math.round(raw * 100) / 100 : Math.max(1, Math.round(raw));
+                              updateCartItem(item.id, { quantity: rounded });
+                            }
+                          }}
+                          onBlur={(e) => {
+                            // On blur: enforce minimum and fallback for empty/invalid input
+                            const raw = parseFloat(e.target.value);
+                            if (isNaN(raw) || raw <= 0) {
+                              updateCartItem(item.id, { quantity: isKiloItem ? 0.5 : 1 });
+                            } else {
+                              const rounded = isKiloItem ? Math.round(raw * 100) / 100 : Math.max(1, Math.round(raw));
+                              updateCartItem(item.id, { quantity: rounded });
+                            }
+                          }}
+                        />
+                        <motion.button 
+                          whileTap={isPaidJob ? {} : { scale: 0.85 }}
+                          whileHover={isPaidJob ? {} : { backgroundColor: "var(--muted)" }}
+                          type="button"
+                          disabled={isPaidJob}
+                          onClick={() => updateQuantity(item.id, 1)}
+                          className={`w-6.5 h-7.5 text-muted-foreground border-l border-border transition-colors flex items-center justify-center ${isPaidJob ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
+                        >
+                          <Plus size={10} />
+                        </motion.button>
+                      </div>
                     </div>
  
                     {/* Right: Interactive Price & Delete */}

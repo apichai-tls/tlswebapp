@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { useRiders } from "@/lib/use-riders";
 import { jobStore, shopStore, type Job } from "@/lib/store";
@@ -56,7 +56,8 @@ const RIDER_COLORS = [
   '#84cc16', // lime
 ];
 
-export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void }) {
+
+export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void }) {
   const allJobs = useJobs();
   const allRiders = useRiders();
   const { user } = useAuth();
@@ -519,4 +520,4 @@ export function AdminDispatch({ onEditJob }: { onEditJob?: (job: Job) => void })
       </Dialog>
     </div>
   );
-}
+});

@@ -79,6 +79,7 @@ export interface Customer {
   dob?: string | null;
   taxId?: string | null;
   companyName?: string | null;
+  updatedAt?: Date | string | null;
   memberStartDate?: Date | string | null;
   memberExpiryDate?: Date | string | null;
 }
@@ -753,6 +754,29 @@ let lastShiftFetchTime = 0;        // TTL: timestamp of last successful fetch
 let currentUserId: string | null = null;   // stored so poll callback can filter
 let currentBranchId: string | undefined;   // stored so poll callback can filter
 const SHIFT_FETCH_TTL_MS = 30_000; // Re-fetch at most once per 30 seconds
+const SHIFT_CACHE_KEY = 'pos_shift_cache';
+
+// ⚡ Pre-warm: Load last known shift from localStorage immediately (before any network call)
+// This makes hasLoaded=true instantly so the POS renders without the "Checking shift status..." spinner.
+// The value is validated against the DB in the background via fetchActiveShift.
+if (typeof window !== 'undefined') {
+  try {
+    const cached = localStorage.getItem(SHIFT_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached, (key, value) => {
+        if (key.includes('At') && value) return new Date(value);
+        return value;
+      });
+      activeShift = parsed.activeShift ?? null;
+      branchActiveShift = parsed.branchActiveShift ?? null;
+      hasLoadedActiveShift = true; // skip spinner — we have a cached value
+      lastShiftFetchTime = parsed.cachedAt ?? 0;
+    }
+  } catch (e) {
+    // ignore — corrupted cache is fine, will re-fetch
+  }
+}
+
 let shiftSnapshot: { activeShift: CashierShift | null; branchActiveShift: CashierShift | null; hasLoaded: boolean } = { activeShift, branchActiveShift, hasLoaded: hasLoadedActiveShift };
 
 function emitShiftChange() {
@@ -769,16 +793,22 @@ export const shiftStore = {
     return shiftSnapshot;
   },
   async fetchActiveShift(userId: string, branchId?: string, force = false) {
+    const prevUserId = currentUserId;
+    const prevBranchId = currentBranchId;
     currentUserId = userId;     // store for poll sync
     currentBranchId = branchId; // store for poll sync
-    // Skip if already fetching — prevents parallel DB hits
-    if (isFetchingShift) return activeShift;
+
+    // Skip if already fetching the SAME userId+branchId combination — prevents duplicate DB hits
+    // But allow through if branchId changed (second useEffect call with real branchId)
+    if (isFetchingShift && prevUserId === userId && prevBranchId === branchId) return activeShift;
+
     // Skip if result is fresh enough (TTL) — prevents repeated useEffect triggers hitting DB
-    if (!force && hasLoadedActiveShift && (Date.now() - lastShiftFetchTime) < SHIFT_FETCH_TTL_MS) {
+    // Only skip if branchId didn't change (stale cache with a different branch is not valid)
+    if (!force && hasLoadedActiveShift && prevBranchId === branchId && (Date.now() - lastShiftFetchTime) < SHIFT_FETCH_TTL_MS) {
       return activeShift;
     }
     isFetchingShift = true;
-    // Only show loading state on first-ever load (not on silent refreshes)
+    // Only show loading state on first-ever load with no cache (not on silent refreshes)
     if (!hasLoadedActiveShift) {
       emitShiftChange();
     }
@@ -802,6 +832,18 @@ export const shiftStore = {
 
       hasLoadedActiveShift = true;
       lastShiftFetchTime = Date.now();
+
+      // ⚡ Persist to localStorage so next POS open is instant (no spinner)
+      try {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(SHIFT_CACHE_KEY, JSON.stringify({
+            activeShift,
+            branchActiveShift,
+            cachedAt: lastShiftFetchTime,
+          }));
+        }
+      } catch (e) { /* ignore quota errors */ }
+
       emitShiftChange();
       return activeShift;
     } catch (e) {
@@ -823,6 +865,8 @@ export const shiftStore = {
       branchActiveShift = activeShift;
       hasLoadedActiveShift = true;
       lastShiftFetchTime = Date.now(); // mark fresh
+      // Save opened shift to cache immediately
+      try { if (typeof window !== 'undefined') localStorage.setItem(SHIFT_CACHE_KEY, JSON.stringify({ activeShift, branchActiveShift, cachedAt: lastShiftFetchTime })); } catch (e) {}
       emitShiftChange();
       return activeShift;
     } catch (e) {
@@ -837,6 +881,8 @@ export const shiftStore = {
       branchActiveShift = null;
       hasLoadedActiveShift = true;
       lastShiftFetchTime = 0; // expire TTL so next open will re-fetch
+      // Clear localStorage cache so next open shows no stale shift
+      try { if (typeof window !== 'undefined') localStorage.removeItem(SHIFT_CACHE_KEY); } catch (e) {}
       emitShiftChange();
       return res;
     } catch (e) {
@@ -848,6 +894,8 @@ export const shiftStore = {
     activeShift = null;
     branchActiveShift = null;
     hasLoadedActiveShift = false;
+    // Also clear localStorage cache so next open starts fresh
+    try { if (typeof window !== 'undefined') localStorage.removeItem(SHIFT_CACHE_KEY); } catch (e) {}
     emitShiftChange();
   },
   /**
