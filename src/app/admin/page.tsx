@@ -1338,10 +1338,8 @@ export default function AdminPage() {
       toast.error("Please fill in the delivery location.");
       return;
     }
-    if (!isWalkIn && !isPickup && !isDelivery) {
-      toast.error("Please select at least one service (Pickup, Delivery, or Walk-In).");
-      return;
-    }
+    // No service type selected is allowed — Package/Online sale (will be set to TBA or completed)
+
     // Shift check disabled (CASHIER_SHIFT_ENABLED=false)
     // if (isPosEnabled && isShiftFromPreviousDay) { ... }
 
@@ -1486,11 +1484,18 @@ export default function AdminPage() {
       type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
       subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
       source: isWalkIn ? "pos" : "app",
-      status: (hasPackage && paymentMethod === 'paid') 
-        ? "topup" 
-        : (!isAlreadyCompleted && editingSubStatus === 'ready') 
-          ? ((isWalkIn && !isDelivery) ? 'completed' : 'delivery')
-          : (editingJobId ? undefined : "pending"),
+      status: (() => {
+        const isNoService = !isPickup && !isDelivery && !isWalkIn;
+        // Package/Online sale — no service type selected
+        if (isNoService) {
+          return paymentMethod === 'paid' ? 'completed' : 'tba';
+        }
+        // Normal laundry job
+        if (!isAlreadyCompleted && editingSubStatus === 'ready') {
+          return (isWalkIn && !isDelivery) ? 'completed' : 'delivery';
+        }
+        return editingJobId ? undefined : 'pending';
+      })(),
       laundryTypes: derivedLaundryTypes,
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
