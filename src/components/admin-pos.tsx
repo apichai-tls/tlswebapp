@@ -2280,18 +2280,18 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               </div>
             </div>
             <h1 className="text-xl font-black text-foreground tracking-tight">
-              {currentLanguage === "en" ? "Select Branch to Monitor/Operate" : "เลือกสาขาเพื่อดูแลระบบ / เริ่มงาน"}
+              {currentLanguage === "en" ? "Select Branch to Operate" : "เลือกสาขาเพื่อเริ่มงาน"}
             </h1>
             <p className="text-[10px] text-muted-foreground mt-1 font-semibold">
               {currentLanguage === "en" 
-                ? "Select any branch below to view its active POS cart, drawer stats, or open a shift."
-                : "กรุณาเลือกสาขาที่ต้องการตรวจสอบข้อมูลรอบกะ หรือเปิดเครื่องขายสินค้า (POS)"}
+                ? "Select any branch below to start using the POS system."
+                : "กรุณาเลือกสาขาที่ต้องการเริ่มต้นระบบ POS"}
             </p>
           </div>
           
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {shops.map(shop => {
-              const activeShopShift = allOpenShifts.find(s => s.branchId === shop.id);
+              const activeShopShift = CASHIER_SHIFT_ENABLED ? allOpenShifts.find(s => s.branchId === shop.id) : null;
               return (
                 <motion.button
                   key={shop.id}
