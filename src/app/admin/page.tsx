@@ -731,13 +731,14 @@ export default function AdminPage() {
   // Derived lock states
   const currentShopConfig = shopLocations[selectedStoreIndex] || shopLocations[0];
   const activeShopConfig = activeJob ? shopLocations.find(s => s.id === activeJob.branchId) : currentShopConfig;
-  const isPosEnabled = activeShopConfig?.isPosEnabled ?? false;
+  // CASHIER_SHIFT_ENABLED=false: force POS UI always on, remove shift-based locks
+  const isPosEnabled = true; // was: activeShopConfig?.isPosEnabled ?? false
   
   useEffect(() => {
-    if (user && isPosEnabled) {
+    if (user && (activeShopConfig?.isPosEnabled ?? false)) {
       shiftStore.fetchActiveShift(user.id, activeShopConfig?.id);
     }
-  }, [user, isPosEnabled, activeShopConfig?.id]);
+  }, [user, activeShopConfig?.isPosEnabled, activeShopConfig?.id]);
   const isShiftFromPreviousDay = useMemo(() => {
     if (!activeShift?.openedAt) return false;
     const openedDate = new Date(activeShift.openedAt);
@@ -752,8 +753,9 @@ export default function AdminPage() {
   const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
   const isPaidJob = editingJobId ? (jobStore.getSnapshot().find(j => j.id === editingJobId)?.status === 'completed' || jobStore.getSnapshot().find(j => j.id === editingJobId)?.isPaid) : false;
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
-  const isPricingLocked = isPaidJob || (isPosEnabled && (!hasValidActiveShift || isShiftFromPreviousDay) && (!isCsoOrAdmin || isShiftFromPreviousDay));
-  const isCartLocked = isPaidJob || (isPosEnabled && (!hasValidActiveShift || isShiftFromPreviousDay) && (!isCsoOrAdmin || isShiftFromPreviousDay));
+  // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
+  const isPricingLocked = isPaidJob;
+  const isCartLocked = isPaidJob;
   const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
 
   // Proforma states
@@ -1340,12 +1342,9 @@ export default function AdminPage() {
       toast.error("Please select at least one service (Pickup, Delivery, or Walk-In).");
       return;
     }
-    if (isPosEnabled && isShiftFromPreviousDay) {
-      toast.error(currentLanguage === "en" 
-        ? "Unclosed shift from a previous day detected. Please close the shift at the POS counter first." 
-        : "พบกะเปิดค้างข้ามวัน กรุณาไปปิดกะที่หน้า POS ก่อนเริ่มทำรายการใหม่");
-      return;
-    }
+    // Shift check disabled (CASHIER_SHIFT_ENABLED=false)
+    // if (isPosEnabled && isShiftFromPreviousDay) { ... }
+
 
     if (paymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim())) {
       toast.error(currentLanguage === "en" ? "Please select a payment channel." : "กรุณาเลือกช่องทางการชำระเงิน (Payment Channel)");
@@ -3415,31 +3414,8 @@ export default function AdminPage() {
                                 : "ออเดอร์นี้ชำระเงินเสร็จสิ้นแล้ว ไม่สามารถแก้ไขรายการสินค้าและราคาได้อีก"}
                             </p>
                           </div>
-                        ) : (isShiftFromPreviousDay && isPosEnabled) ? (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-amber-50/60 border border-dashed border-amber-300 rounded-lg">
-                            <ShieldAlert size={36} className="text-rose-500 mb-2 animate-bounce" />
-                            <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider mb-1">
-                              {currentLanguage === "en" ? "Cross-Day Shift Detected" : "กรุณาปิดกะค้างข้ามวันก่อน"}
-                            </h3>
-                            <p className="text-[10px] text-slate-600 font-medium max-w-[280px] leading-relaxed">
-                              {currentLanguage === "en" 
-                                ? "There is an unclosed cashier shift from a previous day. Please close the shift at the POS counter first."
-                                : "มีกะพนักงานขายเปิดค้างไว้จากวันก่อน กรุณาไปปิดกะที่หน้า POS ก่อน"}
-                            </p>
-                          </div>
-                        ) : isPricingLocked ? (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
-                            <ShieldAlert size={36} className="text-amber-500 mb-2 animate-bounce" />
-                            <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
-                              {currentLanguage === "en" ? "Cashier Shift Required" : "จำเป็นต้องเปิดกะแคชเชียร์ก่อน"}
-                            </h3>
-                            <p className="text-[10px] text-slate-500 font-medium max-w-[280px] leading-relaxed">
-                              {currentLanguage === "en" 
-                                ? "Please open a cashier shift at the POS counter to manage products, pricing, and checkout."
-                                : "กรุณาเปิดกะพนักงานขายที่หน้าลิ้นชัก POS เพื่อเริ่มต้นจัดการรายการสินค้า ราคา และการคิดเงิน"}
-                            </p>
-                          </div>
                         ) : (
+
                           <div className="flex-1 flex flex-col gap-1">
                             <span className="flex items-center justify-between pb-1.5 border-b border-slate-100 shrink-0 select-none">
                               <Label className="flex items-center gap-1.5 text-xs font-bold text-slate-500 border-none pb-0">
