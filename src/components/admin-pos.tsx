@@ -672,6 +672,8 @@ const getCategoryStyles = (category: string) => {
 };
 
 export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPreselected }: AdminPOSProps = {}) {
+  const CASHIER_SHIFT_ENABLED = false; // Set to true to re-enable cashier shift system
+
   const { user } = useAuth();
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const allShops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -1767,7 +1769,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       // Construct new payments list for this transaction
       const newPayments: any[] = [];
       const timestamp = new Date().toISOString();
-      const shiftId = activeShift?.id;
+      const shiftId = CASHIER_SHIFT_ENABLED ? activeShift?.id : undefined;
 
       const payAmt = loadedJob ? (total - existingPayments.reduce((s, p) => s + p.amount, 0)) : total;
       if (isPaid && payAmt > 0) {
@@ -1842,7 +1844,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           status: hasPosPackage ? "topup" : undefined,
           completedAt: isPaidFlag && isStandardPlan ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
-          shiftId: activeShift?.id || undefined,
+          shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || undefined) : undefined,
           billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
         });
 
@@ -1868,7 +1870,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           completedAt: isStandardPlan && isPaidFlag ? new Date() : undefined,
           fee: 0, 
           branchId: activeShop?.id || activeBranchId,
-          shiftId: activeShift?.id || undefined,
+          shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || undefined) : undefined,
           isPaid: isPaidFlag,
           paymentMethod: isPaidFlag ? finalMethod : undefined,
           paymentChannel: isPaidFlag ? finalChannel : undefined,
@@ -1966,7 +1968,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     );
   }
 
-  if (hasLoadedShift && activeShift && isShiftFromPreviousDay) {
+  if (CASHIER_SHIFT_ENABLED && hasLoadedShift && activeShift && isShiftFromPreviousDay) {
     return (
       <>
         <div className="flex items-center justify-center h-[calc(100vh-4rem)] w-full bg-background/95 backdrop-blur-sm font-sans p-4">
@@ -2354,7 +2356,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     );
   }
 
-  if (hasLoadedShift && activeShift && activeShift.branchId !== activeBranchId && !isSpectatorMode) {
+  if (CASHIER_SHIFT_ENABLED && hasLoadedShift && activeShift && activeShift.branchId !== activeBranchId && !isSpectatorMode) {
     const shiftBranchName = shops.find(s => s.id === activeShift.branchId)?.name || "สาขาอื่น";
     return (
       <div className="flex items-center justify-center h-[calc(100vh-4rem)] w-full bg-background/95 backdrop-blur-sm font-sans p-4">
@@ -2405,7 +2407,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     );
   }
 
-  if (hasLoadedShift && !activeShift && !isSpectatorMode) {
+  if (CASHIER_SHIFT_ENABLED && hasLoadedShift && !activeShift && !isSpectatorMode) {
     const handleOpenShift = async (e: React.FormEvent) => {
       e.preventDefault();
       const cashVal = parseFloat(startingCash);
