@@ -213,9 +213,36 @@ model AdminUser {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   area         String?
+  department   String?       // management | accounting_cso | branch_ops | logistics
   branchId     String?
   isActive     Boolean       @default(true)
   ShopLocation ShopLocation? @relation(fields: [branchId], references: [id])
+}
+
+model Department {
+  id          String   @id @default(uuid())
+  key         String   @unique  // e.g. "management", "accounting_cso", "branch_ops", "logistics"
+  name        String            // e.g. "Management & IT"
+  nameTh      String?           // e.g. "ฝ่ายบริหาร & ไอที"
+  icon        String   @default("🏢") // emoji e.g. "🏢", "💼", "🧺", "🛵"
+  color       String   @default("indigo") // e.g. "indigo", "sky", "emerald", "amber", "rose", "purple"
+  order       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model RoleDefinition {
+  id          String   @id @default(uuid())
+  key         String   @unique  // e.g. "admin", "manager", "cso", "staff", "rider"
+  name        String            // e.g. "Branch Manager"
+  nameTh      String?           // e.g. "ผู้จัดการสาขา"
+  color       String   @default("slate") // e.g. "indigo", "emerald", "sky", "amber", "rose", "purple", "slate", "teal"
+  isSystem    Boolean  @default(false)
+  order       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model Task {

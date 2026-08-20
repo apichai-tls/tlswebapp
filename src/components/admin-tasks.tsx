@@ -12,7 +12,7 @@ import {
   Inbox, Flame, CheckSquare, RotateCw, Search,
   BarChart2, Star, Award, TrendingUp, Timer, Target, Activity,
   Layers, ShieldCheck, ArrowUpRight, ChevronRight, Zap, Trophy,
-  UserCheck, AlertCircle, HelpCircle
+  UserCheck, AlertCircle, HelpCircle, UploadCloud, Upload
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +28,8 @@ import {
   type TaskItem, type TaskPriority, type TaskStatus, type TaskNote, type TaskAttachment, type TaskChecklistItem,
 } from "@/actions/tasks";
 import { getUsers } from "@/actions/users";
+import { getDepartments, type DepartmentItem } from "@/actions/departments";
+import { getRoles, type RoleItem } from "@/actions/roles";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,11 +37,19 @@ export interface AdminUser {
   id: string;
   name: string;
   role: string;
+  department?: string | null;
   area: string | null;
   isActive: boolean;
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
+
+export const DEPARTMENT_CONFIG: Record<string, { key: string; label: string; labelTh: string; color: string; badgeClass: string; icon: string }> = {
+  management: { key: "management", label: "Management & IT", labelTh: "ฝ่ายบริหาร & ไอที", color: "text-indigo-700", badgeClass: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: "🏢" },
+  accounting_cso: { key: "accounting_cso", label: "Accounting & CSO", labelTh: "ฝ่ายบัญชี & CSO", color: "text-sky-700", badgeClass: "bg-sky-50 text-sky-700 border-sky-200", icon: "💼" },
+  branch_ops: { key: "branch_ops", label: "Branch Operations", labelTh: "ฝ่ายปฏิบัติการสาขา", color: "text-emerald-700", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: "🧺" },
+  logistics: { key: "logistics", label: "Logistics Fleet", labelTh: "ฝ่ายขนส่ง & ไรเดอร์", color: "text-amber-700", badgeClass: "bg-amber-50 text-amber-700 border-amber-200", icon: "🛵" },
+};
 
 const PRIORITY_CONFIG: Record<string, { label: string; color: string; icon: string; dueHint: string }> = {
   low:    { label: "Low",    color: "bg-slate-100 text-slate-600 border-slate-200",     icon: "▽", dueHint: "7 Days" },
@@ -279,43 +289,149 @@ function AttachmentBadge({
   const isImg = isImageFile(attachment.type, attachment.name);
 
   return (
-    <div className="group relative flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-xs transition-colors max-w-[200px]">
+    <div className="group relative flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg p-1 text-xs transition-colors max-w-[220px]">
       {isImg ? (
         <button
           type="button"
           onClick={() => onPreviewImage?.(attachment.url)}
-          className="flex items-center gap-1.5 truncate text-slate-700 hover:text-indigo-600 cursor-pointer"
+          className="flex items-center gap-1.5 min-w-0 truncate text-slate-700 hover:text-indigo-600 cursor-pointer text-left"
           title={`Click to view ${attachment.name}`}
         >
-          <ImageIcon size={13} className="text-blue-500 shrink-0" />
-          <span className="truncate text-[11px] font-medium">{attachment.name}</span>
+          <div className="w-7 h-7 rounded overflow-hidden bg-slate-200 border border-slate-300 shrink-0 relative">
+            <img
+              src={attachment.url}
+              alt={attachment.name}
+              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-150"
+            />
+          </div>
+          <div className="min-w-0 flex-1 truncate">
+            <span className="truncate text-[11px] font-medium block leading-tight">{attachment.name}</span>
+            {attachment.size && (
+              <span className="text-[9px] text-slate-400 block leading-none mt-0.5">
+                {formatFileSize(attachment.size)}
+              </span>
+            )}
+          </div>
         </button>
       ) : (
         <a
           href={attachment.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1.5 truncate text-slate-700 hover:text-indigo-600"
+          className="flex items-center gap-1.5 truncate text-slate-700 hover:text-indigo-600 px-1"
           title={`Download/Open ${attachment.name}`}
         >
           {getFileIcon(attachment.type, attachment.name)}
-          <span className="truncate text-[11px] font-medium">{attachment.name}</span>
+          <div className="min-w-0 flex-1 truncate">
+            <span className="truncate text-[11px] font-medium block leading-tight">{attachment.name}</span>
+            {attachment.size && (
+              <span className="text-[9px] text-slate-400 block leading-none mt-0.5">
+                {formatFileSize(attachment.size)}
+              </span>
+            )}
+          </div>
         </a>
-      )}
-
-      {attachment.size && (
-        <span className="text-[9px] text-slate-400 shrink-0">({formatFileSize(attachment.size)})</span>
       )}
 
       {onDelete && (
         <button
           type="button"
           onClick={onDelete}
-          className="p-0.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors ml-auto shrink-0"
+          className="p-1 rounded-md hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors ml-auto shrink-0 cursor-pointer"
           title="Remove file"
         >
-          <X size={11} />
+          <X size={12} />
         </button>
+      )}
+    </div>
+  );
+}
+
+function AttachmentsGallery({
+  attachments,
+  onDelete,
+  onPreviewImage,
+  imageSize = "normal",
+}: {
+  attachments: TaskAttachment[];
+  onDelete?: (attId: string) => void;
+  onPreviewImage?: (url: string) => void;
+  imageSize?: "small" | "normal" | "large";
+}) {
+  const images = attachments.filter((a) => isImageFile(a.type, a.name));
+  const docs = attachments.filter((a) => !isImageFile(a.type, a.name));
+
+  const gridCols =
+    imageSize === "small"
+      ? "grid-cols-3 sm:grid-cols-4"
+      : imageSize === "large"
+      ? "grid-cols-2 sm:grid-cols-3"
+      : "grid-cols-2 sm:grid-cols-3 md:grid-cols-4";
+
+  return (
+    <div className="space-y-2">
+      {/* Image Gallery Grid */}
+      {images.length > 0 && (
+        <div className={`grid ${gridCols} gap-2`}>
+          {images.map((img) => (
+            <div
+              key={img.id}
+              onClick={() => onPreviewImage?.(img.url)}
+              className="group relative flex flex-col rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 bg-slate-100 transition-all cursor-pointer shadow-2xs hover:shadow-md aspect-square"
+              title={`Click to zoom: ${img.name}`}
+            >
+              <img
+                src={img.url}
+                alt={img.name}
+                className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-200"
+              />
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center pointer-events-none">
+                <ZoomIn size={20} className="text-white opacity-0 group-hover:opacity-100 drop-shadow-md transition-opacity" />
+              </div>
+
+              {/* Top-Right Delete button */}
+              {onDelete && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(img.id);
+                  }}
+                  className="absolute top-1 right-1 p-1 rounded-full bg-black/60 hover:bg-rose-600 text-white transition-colors cursor-pointer shadow-sm z-10"
+                  title="Remove image"
+                >
+                  <X size={12} />
+                </button>
+              )}
+
+              {/* Bottom filename overlay */}
+              <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-1.5 pt-3 pointer-events-none">
+                <span className="text-[10px] text-white font-medium block truncate leading-tight">
+                  {img.name}
+                </span>
+                {img.size && (
+                  <span className="text-[8px] text-slate-300 block leading-none mt-0.5">
+                    {formatFileSize(img.size)}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Non-Image Documents */}
+      {docs.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {docs.map((doc) => (
+            <AttachmentBadge
+              key={doc.id}
+              attachment={doc}
+              onDelete={onDelete ? () => onDelete(doc.id) : undefined}
+              onPreviewImage={onPreviewImage}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
@@ -465,8 +581,9 @@ function NotesPanel({
     }, 10);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const [isDraggingNoteFile, setIsDraggingNoteFile] = useState(false);
+
+  const processNoteFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
     setUploading(true);
     try {
@@ -482,6 +599,20 @@ function NotesPanel({
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      await processNoteFiles(e.target.files);
+    }
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+      const files = Array.from(e.clipboardData.files);
+      e.preventDefault();
+      await processNoteFiles(files);
     }
   };
 
@@ -657,14 +788,12 @@ function NotesPanel({
                     )}
                     {/* Note attachments */}
                     {note.attachments && note.attachments.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mt-2 pt-1.5 border-t border-slate-100">
-                        {note.attachments.map((att) => (
-                          <AttachmentBadge
-                            key={att.id}
-                            attachment={att}
-                            onPreviewImage={onPreviewImage}
-                          />
-                        ))}
+                      <div className="mt-2 pt-2 border-t border-slate-100">
+                        <AttachmentsGallery
+                          attachments={note.attachments}
+                          onPreviewImage={onPreviewImage}
+                          imageSize="large"
+                        />
                       </div>
                     )}
                   </div>
@@ -726,20 +855,60 @@ function NotesPanel({
 
       {/* Attachments preview before posting */}
       {noteAttachments.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mb-2 p-2 bg-slate-50 border border-slate-200 rounded-lg shrink-0">
-          {noteAttachments.map((att) => (
-            <AttachmentBadge
-              key={att.id}
-              attachment={att}
-              onDelete={() => setNoteAttachments((prev) => prev.filter((a) => a.id !== att.id))}
-              onPreviewImage={onPreviewImage}
-            />
-          ))}
+        <div className="mb-2 p-2 bg-slate-50 border border-slate-200 rounded-xl shrink-0">
+          <div className="flex items-center justify-between mb-1.5 px-0.5">
+            <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+              <Paperclip size={11} className="text-indigo-600" /> Attached ({noteAttachments.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => setNoteAttachments([])}
+              className="text-[10px] text-rose-500 hover:text-rose-700 font-semibold cursor-pointer"
+            >
+              Clear all
+            </button>
+          </div>
+          <AttachmentsGallery
+            attachments={noteAttachments}
+            onDelete={(attId) => setNoteAttachments((prev) => prev.filter((a) => a.id !== attId))}
+            onPreviewImage={onPreviewImage}
+            imageSize="small"
+          />
         </div>
       )}
 
-      {/* Input box (Available in both tabs for convenience) */}
-      <div className="flex gap-2 items-end mt-auto pt-2 border-t border-slate-100 shrink-0 relative">
+      {/* Input box (Available in both tabs for convenience) with Drag & Drop & Paste */}
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsDraggingNoteFile(true);
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsDraggingNoteFile(false);
+        }}
+        onDrop={async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsDraggingNoteFile(false);
+          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            await processNoteFiles(e.dataTransfer.files);
+          }
+        }}
+        className={`flex gap-2 items-end mt-auto pt-2 border-t border-slate-100 shrink-0 relative transition-all rounded-xl p-1 ${
+          isDraggingNoteFile ? "bg-indigo-50/90 ring-2 ring-indigo-400 ring-dashed" : ""
+        }`}
+      >
+        {/* Drag & Drop Visual Overlay */}
+        {isDraggingNoteFile && (
+          <div className="absolute inset-0 bg-indigo-600/95 text-white z-50 flex items-center justify-center gap-2 rounded-xl backdrop-blur-xs font-bold text-xs shadow-lg animate-in fade-in duration-150 pointer-events-none">
+            <UploadCloud size={20} className="animate-bounce text-indigo-200" />
+            <span>Drop images or files here to attach to Note</span>
+          </div>
+        )}
+
         {/* @Mention Suggestion Menu (Strictly for Assigned Staff in this Task) */}
         {mentionOpen && (
           <div
@@ -801,7 +970,8 @@ function NotesPanel({
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKey}
-            placeholder="Type @ to mention someone, or type message... (Ctrl+Enter to send)"
+            onPaste={handlePaste}
+            placeholder="Type @ to mention someone, paste/drag images, or type message... (Ctrl+Enter to send)"
             rows={2}
             className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 pr-16 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 transition-all bg-white"
           />
@@ -826,7 +996,7 @@ function NotesPanel({
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
               className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
-              title="Attach photos or documents to Note"
+              title="Attach photos or documents to Note (or Drag & Drop / Paste)"
             >
               {uploading ? <Loader2 size={13} className="animate-spin" /> : <Paperclip size={13} />}
             </button>
@@ -905,7 +1075,9 @@ function TaskCard({
     try {
       const parsed: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
       const userNotes = parsed.filter((n) => n.type !== "activity");
-      return userNotes.length > 0 ? userNotes[userNotes.length - 1] : null;
+      if (userNotes.length === 0) return null;
+      const sorted = [...userNotes].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      return sorted[0] || null;
     } catch {
       return null;
     }
@@ -915,6 +1087,14 @@ function TaskCard({
     try { return task.attachmentsJson ? JSON.parse(task.attachmentsJson) : []; }
     catch { return []; }
   }, [task.attachmentsJson]);
+
+  const imageAttachments = useMemo(() => {
+    return attachments.filter((a) => isImageFile(a.type, a.name));
+  }, [attachments]);
+
+  const docAttachments = useMemo(() => {
+    return attachments.filter((a) => !isImageFile(a.type, a.name));
+  }, [attachments]);
 
   const checklist: TaskChecklistItem[] = useMemo(() => {
     try { return task.checklistJson ? JSON.parse(task.checklistJson) : []; }
@@ -1071,10 +1251,66 @@ function TaskCard({
         </div>
       )}
 
-      {/* Task Attachments Strip */}
-      {attachments.length > 0 && (
+      {/* Task Image Attachments Large Visual Strip on Card */}
+      {imageAttachments.length > 0 && (
+        imageAttachments.length === 1 ? (
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              onPreviewImage?.(imageAttachments[0].url);
+            }}
+            className="relative w-full h-32 rounded-xl overflow-hidden mb-2.5 border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-pointer shadow-2xs hover:shadow-md transition-all"
+            title={`Click to zoom: ${imageAttachments[0].name}`}
+          >
+            <img
+              src={imageAttachments[0].url}
+              alt={imageAttachments[0].name}
+              className="w-full h-full object-cover group-hover/cardimg:scale-105 transition-transform duration-200"
+            />
+            <div className="absolute inset-0 bg-black/0 group-hover/cardimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
+              <ZoomIn size={22} className="text-white opacity-0 group-hover/cardimg:opacity-100 drop-shadow-md transition-opacity" />
+            </div>
+            <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-1.5 pt-3 pointer-events-none">
+              <span className="text-[10px] text-white font-medium block truncate">
+                {imageAttachments[0].name}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-1.5 mb-2.5">
+            {imageAttachments.slice(0, 4).map((img, idx) => (
+              <div
+                key={img.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPreviewImage?.(img.url);
+                }}
+                className="relative h-20 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-pointer shadow-2xs hover:shadow-md transition-all"
+                title={`Click to zoom: ${img.name}`}
+              >
+                <img
+                  src={img.url}
+                  alt={img.name}
+                  className="w-full h-full object-cover group-hover/cardimg:scale-110 transition-transform duration-200"
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover/cardimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
+                  <ZoomIn size={14} className="text-white opacity-0 group-hover/cardimg:opacity-100 drop-shadow transition-opacity" />
+                </div>
+                {idx === 3 && imageAttachments.length > 4 && (
+                  <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white text-xs font-bold pointer-events-none">
+                    +{imageAttachments.length - 3}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {/* Non-Image Document Attachments on Card */}
+      {docAttachments.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-2.5">
-          {attachments.map((att) => (
+          {docAttachments.map((att) => (
             <AttachmentBadge
               key={att.id}
               attachment={att}
@@ -1166,9 +1402,48 @@ function TaskCard({
               {format(new Date(latestNote.timestamp), "d MMM HH:mm")}
             </span>
           </div>
-          <div className="text-[11px] text-slate-600 leading-snug line-clamp-2 pl-4 break-words">
-            {renderMessageText(latestNote.text)}
-          </div>
+          {latestNote.text && (
+            <div className="text-[11px] text-slate-600 leading-snug line-clamp-2 pl-4 break-words">
+              {renderMessageText(latestNote.text)}
+            </div>
+          )}
+          {/* Note images preview in Latest Note box */}
+          {latestNote.attachments && latestNote.attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2 pl-4">
+              {latestNote.attachments.map((att) => {
+                const isImg = isImageFile(att.type, att.name);
+                if (isImg) {
+                  return (
+                    <div
+                      key={att.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onPreviewImage?.(att.url);
+                      }}
+                      className="relative w-14 h-14 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/noteimg bg-slate-100 cursor-pointer shadow-2xs hover:shadow-md transition-all shrink-0"
+                      title={`Click to zoom: ${att.name}`}
+                    >
+                      <img
+                        src={att.url}
+                        alt={att.name}
+                        className="w-full h-full object-cover group-hover/noteimg:scale-110 transition-transform duration-150"
+                      />
+                      <div className="absolute inset-0 bg-black/0 group-hover/noteimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
+                        <ZoomIn size={12} className="text-white opacity-0 group-hover/noteimg:opacity-100 drop-shadow transition-opacity" />
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <AttachmentBadge
+                    key={att.id}
+                    attachment={att}
+                    onPreviewImage={onPreviewImage}
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -1442,8 +1717,9 @@ export function TaskFormModal({
     return extractJobImages(linkedJob);
   }, [linkedJob]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const [isDraggingModalFiles, setIsDraggingModalFiles] = useState(false);
+
+  const processModalFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
     setUploading(true);
     try {
@@ -1459,6 +1735,12 @@ export function TaskFormModal({
     } finally {
       setUploading(false);
       if (modalFileInputRef.current) modalFileInputRef.current.value = "";
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      await processModalFiles(e.target.files);
     }
   };
 
@@ -1839,42 +2121,93 @@ export function TaskFormModal({
                       </button>
                     )}
 
-                    {/* Matching user list */}
+                    {/* Matching user list grouped by Department */}
                     {filteredUsers.length > 0 ? (
-                      filteredUsers.map((u) => {
-                        const isSelected = selectedAssignees.some((a) => a.id === u.id);
+                      Object.entries(
+                        filteredUsers.reduce((acc, u) => {
+                          const deptKey = u.department || "branch_ops";
+                          if (!acc[deptKey]) acc[deptKey] = [];
+                          acc[deptKey].push(u);
+                          return acc;
+                        }, {} as Record<string, AdminUser[]>)
+                      ).map(([deptKey, groupUsers]) => {
+                        const dept = DEPARTMENT_CONFIG[deptKey] || {
+                          label: deptKey,
+                          icon: "📁",
+                          badgeClass: "bg-slate-100 text-slate-700 border-slate-200",
+                        };
+                        const allGroupSelected = groupUsers.every((u) => selectedAssignees.some((a) => a.id === u.id));
+
                         return (
-                          <button
-                            key={u.id}
-                            type="button"
-                            onClick={() => {
-                              if (isSelected) {
-                                setSelectedAssignees((prev) => prev.filter((a) => a.id !== u.id));
-                              } else {
-                                setSelectedAssignees((prev) => [...prev, u]);
-                              }
-                              setAssigneeSearch("");
-                              assigneeInputRef.current?.focus();
-                            }}
-                            className={`w-full text-left px-3 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 transition-colors cursor-pointer ${
-                              isSelected ? "bg-indigo-50 text-indigo-700 font-bold border border-indigo-100" : "hover:bg-slate-50 text-slate-700 font-medium"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                              <div className={`w-5.5 h-5.5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                                isSelected ? "bg-indigo-600 text-white shadow-2xs" : "bg-slate-100 text-slate-700 border border-slate-200"
-                              }`}>
-                                {u.name.slice(0, 1).toUpperCase()}
-                              </div>
-                              <span className="truncate text-xs font-semibold text-slate-800">{u.name}</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full font-medium">
-                                {ROLE_LABELS[u.role] ?? u.role} {u.area ? `· ${u.area}` : ""}
+                          <div key={deptKey} className="space-y-1 mb-2 last:mb-0">
+                            {/* Department Header with Select All Button */}
+                            <div className="flex items-center justify-between px-2 py-1 bg-slate-50 border border-slate-100 rounded-lg text-[10px] font-bold text-slate-700">
+                              <span className="flex items-center gap-1">
+                                <span>{dept.icon}</span>
+                                <span>{dept.label}</span>
+                                <span className="text-slate-400 font-normal">({groupUsers.length})</span>
                               </span>
-                              {isSelected && <Check size={14} className="text-indigo-600 shrink-0" />}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (allGroupSelected) {
+                                    const groupIds = groupUsers.map((u) => u.id);
+                                    setSelectedAssignees((prev) => prev.filter((a) => !groupIds.includes(a.id)));
+                                  } else {
+                                    const toAdd = groupUsers.filter((u) => !selectedAssignees.some((a) => a.id === u.id));
+                                    setSelectedAssignees((prev) => [...prev, ...toAdd]);
+                                  }
+                                }}
+                                className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer"
+                              >
+                                {allGroupSelected ? "Deselect all" : "+ Select all"}
+                              </button>
                             </div>
-                          </button>
+
+                            {/* Staff items in department */}
+                            {groupUsers.map((u) => {
+                              const isSelected = selectedAssignees.some((a) => a.id === u.id);
+                              return (
+                                <button
+                                  key={u.id}
+                                  type="button"
+                                  onClick={() => {
+                                    if (isSelected) {
+                                      setSelectedAssignees((prev) => prev.filter((a) => a.id !== u.id));
+                                    } else {
+                                      setSelectedAssignees((prev) => [...prev, u]);
+                                    }
+                                    setAssigneeSearch("");
+                                    assigneeInputRef.current?.focus();
+                                  }}
+                                  className={`w-full text-left px-3 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                                    isSelected
+                                      ? "bg-indigo-50 text-indigo-700 font-bold border border-indigo-100"
+                                      : "hover:bg-slate-50 text-slate-700 font-medium"
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                    <div
+                                      className={`w-5.5 h-5.5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                                        isSelected
+                                          ? "bg-indigo-600 text-white shadow-2xs"
+                                          : "bg-slate-100 text-slate-700 border border-slate-200"
+                                      }`}
+                                    >
+                                      {u.name.slice(0, 1).toUpperCase()}
+                                    </div>
+                                    <span className="truncate text-xs font-semibold text-slate-800">{u.name}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full font-medium">
+                                      {ROLE_LABELS[u.role] ?? u.role} {u.area ? `· ${u.area}` : ""}
+                                    </span>
+                                    {isSelected && <Check size={14} className="text-indigo-600 shrink-0" />}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
                         );
                       })
                     ) : (
@@ -1959,28 +2292,37 @@ export function TaskFormModal({
 
                     {/* Photos from the Linked Job */}
                     {jobPhotos.length > 0 ? (
-                      <div className="space-y-1 pt-1.5 border-t border-indigo-100/80">
+                      <div className="space-y-1.5 pt-2 border-t border-indigo-100/80">
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] font-bold text-indigo-900 uppercase tracking-wider flex items-center gap-1">
-                            <ImageIcon size={10} className="text-indigo-600" />
+                            <ImageIcon size={11} className="text-indigo-600" />
                             Job Photos ({jobPhotos.length})
                           </span>
+                          <span className="text-[10px] text-indigo-600 font-medium">Click to zoom</span>
                         </div>
 
-                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto p-1 bg-white/90 rounded-lg border border-indigo-100">
+                        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-56 overflow-y-auto p-2 bg-white/95 rounded-xl border border-indigo-100/90 shadow-2xs">
                           {jobPhotos.map((photo, idx) => (
                             <button
                               key={idx}
                               type="button"
                               onClick={() => onPreviewImage(photo.url)}
-                              className="group relative flex flex-col items-center gap-0.5 bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded p-0.5 transition-all cursor-pointer shadow-2xs"
+                              className="group relative flex flex-col rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 bg-slate-100 transition-all cursor-pointer shadow-2xs hover:shadow-md aspect-square"
                               title={`Preview: ${photo.label}`}
                             >
                               <img
                                 src={photo.url}
                                 alt={photo.label}
-                                className="w-10 h-10 object-cover rounded group-hover:scale-105 transition-transform"
+                                className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-200"
                               />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center">
+                                <ZoomIn size={18} className="text-white opacity-0 group-hover:opacity-100 drop-shadow-md transition-opacity" />
+                              </div>
+                              {photo.label && (
+                                <span className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent text-[9px] text-white font-medium px-1.5 py-0.5 truncate text-left">
+                                  {photo.label}
+                                </span>
+                              )}
                             </button>
                           ))}
                         </div>
@@ -2113,8 +2455,30 @@ export function TaskFormModal({
               )}
             </div>
 
-            {/* Task Attachments Section */}
-            <div className="space-y-2 pt-2.5 border-t border-slate-100 shrink-0">
+            {/* Task Attachments Section with Drag & Drop */}
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (canEditTaskDetails) setIsDraggingModalFiles(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingModalFiles(false);
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingModalFiles(false);
+                if (canEditTaskDetails && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  await processModalFiles(e.dataTransfer.files);
+                }
+              }}
+              className={`space-y-2 pt-2.5 border-t border-slate-100 shrink-0 rounded-xl transition-all ${
+                isDraggingModalFiles ? "bg-indigo-50/70 p-2 border-indigo-300 ring-2 ring-indigo-400 ring-dashed" : ""
+              }`}
+            >
               <div className="flex items-center justify-between">
                 <Label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                   <Paperclip size={13} className="text-indigo-600" />
@@ -2141,26 +2505,47 @@ export function TaskFormModal({
                 />
               </div>
 
-              {/* Uploaded attachments badge list */}
+              {/* Uploaded attachments gallery */}
               {attachments.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border border-slate-200 rounded-xl max-h-24 overflow-y-auto">
-                  {attachments.map((att) => (
-                    <AttachmentBadge
-                      key={att.id}
-                      attachment={att}
-                      onDelete={canEditTaskDetails ? () => setAttachments((prev) => prev.filter((a) => a.id !== att.id)) : undefined}
+                <div className="space-y-2">
+                  <div className="p-2 bg-slate-50/80 border border-slate-200 rounded-xl max-h-52 overflow-y-auto">
+                    <AttachmentsGallery
+                      attachments={attachments}
+                      onDelete={canEditTaskDetails ? (attId) => setAttachments((prev) => prev.filter((a) => a.id !== attId)) : undefined}
                       onPreviewImage={onPreviewImage}
+                      imageSize="normal"
                     />
-                  ))}
+                  </div>
+
+                  {canEditTaskDetails && (
+                    <div
+                      onClick={() => modalFileInputRef.current?.click()}
+                      className={`border border-dashed rounded-lg p-2 text-center cursor-pointer transition-all flex items-center justify-center gap-1.5 text-xs ${
+                        isDraggingModalFiles
+                          ? "border-indigo-500 bg-indigo-100/70 text-indigo-800 font-bold"
+                          : "border-slate-200 hover:border-indigo-300 bg-white hover:bg-slate-50 text-slate-500"
+                      }`}
+                    >
+                      <UploadCloud size={14} className={isDraggingModalFiles ? "text-indigo-600 animate-bounce" : "text-slate-400"} />
+                      <span>{isDraggingModalFiles ? "Drop files to add" : "+ Drag & Drop or click to add more files"}</span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 canEditTaskDetails ? (
                   <div
                     onClick={() => modalFileInputRef.current?.click()}
-                    className="border border-dashed border-slate-200 hover:border-indigo-300 rounded-xl p-2.5 text-center cursor-pointer transition-colors bg-slate-50/50 hover:bg-indigo-50/30"
+                    className={`border-2 border-dashed rounded-xl p-3 text-center cursor-pointer transition-all ${
+                      isDraggingModalFiles
+                        ? "border-indigo-500 bg-indigo-50 text-indigo-800 ring-2 ring-indigo-300 scale-[1.01]"
+                        : "border-slate-200 hover:border-indigo-300 bg-slate-50/50 hover:bg-indigo-50/30 text-slate-500"
+                    }`}
                   >
-                    <Paperclip size={14} className="mx-auto text-slate-400 mb-0.5" />
-                    <p className="text-xs text-slate-500 font-medium">Click to upload photos or documents</p>
+                    <UploadCloud size={18} className={`mx-auto mb-1 ${isDraggingModalFiles ? "text-indigo-600 animate-bounce" : "text-slate-400"}`} />
+                    <p className="text-xs font-semibold">
+                      {isDraggingModalFiles ? "Drop files to upload immediately" : "Click to upload or Drag & Drop images/files here"}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Supports PNG, JPG, WebP, PDF, Documents</p>
                   </div>
                 ) : (
                   <p className="text-xs text-slate-400 italic p-2 bg-slate-50 rounded-lg border border-slate-100">
@@ -2410,11 +2795,13 @@ export function calculateStaffMetrics(tasks: TaskItem[], users: AdminUser[]): St
 export function TaskAdminDashboard({
   tasks,
   adminUsers,
+  departments = [],
   onOpenTask,
   onFilterStaff,
 }: {
   tasks: TaskItem[];
   adminUsers: AdminUser[];
+  departments?: DepartmentItem[];
   onOpenTask: (task: TaskItem) => void;
   onFilterStaff?: (staffName: string) => void;
 }) {
@@ -2422,6 +2809,7 @@ export function TaskAdminDashboard({
   const [includeArchived, setIncludeArchived] = useState(true);
   const [leftPanelTab, setLeftPanelTab] = useState<"bottlenecks" | "archived">("bottlenecks");
   const [staffSearch, setStaffSearch] = useState("");
+  const [dashboardDept, setDashboardDept] = useState<string>("all");
   const [showFormulaTooltip, setShowFormulaTooltip] = useState(false);
 
   const totalAllTasks = tasks.length;
@@ -2487,15 +2875,20 @@ export function TaskAdminDashboard({
   }, [filteredTasksByTime, adminUsers]);
 
   const filteredStaffList = useMemo(() => {
-    const q = staffSearch.trim().toLowerCase();
-    if (!q) return staffMetrics;
-    return staffMetrics.filter(
-      (m) =>
+    return staffMetrics.filter((m) => {
+      if (dashboardDept !== "all") {
+        if ((m.user.department || "branch_ops") !== dashboardDept) return false;
+      }
+      const q = staffSearch.trim().toLowerCase();
+      if (!q) return true;
+      return (
         m.user.name.toLowerCase().includes(q) ||
         (ROLE_LABELS[m.user.role] || m.user.role).toLowerCase().includes(q) ||
-        (m.user.area || "").toLowerCase().includes(q)
-    );
-  }, [staffMetrics, staffSearch]);
+        (m.user.area || "").toLowerCase().includes(q) ||
+        ((m.user.department && DEPARTMENT_CONFIG[m.user.department]?.label) || "").toLowerCase().includes(q)
+      );
+    });
+  }, [staffMetrics, staffSearch, dashboardDept]);
 
   // Bottleneck tasks (stuck or overdue)
   const bottleneckTasks = useMemo(() => {
@@ -2762,7 +3155,27 @@ export function TaskAdminDashboard({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap shrink-0">
+            {/* Department Filter Selector in Leaderboard */}
+            <select
+              value={dashboardDept}
+              onChange={(e) => setDashboardDept(e.target.value)}
+              className="h-8 text-xs font-semibold bg-white border border-slate-200 rounded-lg px-2.5 text-slate-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300"
+            >
+              <option value="all">🏢 All Departments</option>
+              {departments.length > 0
+                ? departments.map((d) => (
+                    <option key={d.key} value={d.key}>
+                      {d.icon} {d.name} {d.nameTh ? `(${d.nameTh})` : ""}
+                    </option>
+                  ))
+                : Object.entries(DEPARTMENT_CONFIG).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v.icon} {v.label} ({v.labelTh})
+                    </option>
+                  ))}
+            </select>
+
             <div className="relative w-full sm:w-56">
               <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <Input
@@ -2810,6 +3223,8 @@ export function TaskAdminDashboard({
                       ? "🥉 #3"
                       : `#${idx + 1}`;
 
+                  const dept = m.user.department ? DEPARTMENT_CONFIG[m.user.department] : undefined;
+
                   return (
                     <tr
                       key={m.user.id}
@@ -2829,7 +3244,14 @@ export function TaskAdminDashboard({
                             {m.user.name.charAt(0).toUpperCase()}
                           </div>
                           <div>
-                            <div className="font-bold text-slate-900">{m.user.name}</div>
+                            <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                              <span>{m.user.name}</span>
+                              {dept && (
+                                <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border ${dept.badgeClass}`}>
+                                  {dept.icon} {dept.label}
+                                </span>
+                              )}
+                            </div>
                             <div className="text-[10px] text-slate-400 flex items-center gap-1">
                               <span>{ROLE_LABELS[m.user.role] || m.user.role}</span>
                               {m.user.area && <span>· {m.user.area}</span>}
@@ -3622,11 +4044,14 @@ export function AdminTasks() {
   const { user } = useAuth();
   const [tasks, setTasks] = useState<TaskItem[]>(() => cachedTasks || []);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>(() => cachedAdminUsers || []);
+  const [departments, setDepartments] = useState<DepartmentItem[]>([]);
+  const [roles, setRoles] = useState<RoleItem[]>([]);
   const [loading, setLoading] = useState(() => !cachedTasks);
   const [isSyncing, setIsSyncing] = useState(false);
   const isFetchingRef = useRef(false);
   const [viewMode, setViewMode] = useState<"board" | "list" | "dashboard">("board");
   const [filterStatus, setFilterStatus] = useState<"all" | "mine" | "open" | "overdue" | "due_today" | "archived">("all");
+  const [filterDepartment, setFilterDepartment] = useState<string>("all");
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -3689,6 +4114,16 @@ export function AdminTasks() {
           if (res.success && res.data && mounted) {
             cachedAdminUsers = res.data as AdminUser[];
             setAdminUsers(res.data as AdminUser[]);
+          }
+        }),
+        getDepartments().then((res) => {
+          if (res.success && res.data && mounted) {
+            setDepartments(res.data as DepartmentItem[]);
+          }
+        }),
+        getRoles().then((res) => {
+          if (res.success && res.data && mounted) {
+            setRoles(res.data as RoleItem[]);
           }
         }),
       ]);
@@ -3791,7 +4226,19 @@ export function AdminTasks() {
         }
       }
 
-      // 2. Super Search multi-term matching (searches ID, title, description, job, staff, notes, checklist, attachments)
+      // 2. Department filter
+      if (filterDepartment !== "all") {
+        const assigneeIds = t.assignedToId ? t.assignedToId.split(",").map((s) => s.trim()) : [];
+        const assignedUsers = adminUsers.filter((u) => assigneeIds.includes(u.id));
+        const hasMatchingAssignee = assignedUsers.some((u) => (u.department || 'branch_ops') === filterDepartment);
+
+        const creatorUser = adminUsers.find((u) => u.id === t.createdById);
+        const isMatchingCreator = creatorUser ? (creatorUser.department || 'branch_ops') === filterDepartment : false;
+
+        if (!hasMatchingAssignee && !isMatchingCreator) return false;
+      }
+
+      // 3. Super Search multi-term matching (searches ID, title, description, job, staff, notes, checklist, attachments)
       if (terms.length === 0) return true;
 
       const checklistTexts = (() => {
@@ -3837,7 +4284,7 @@ export function AdminTasks() {
 
       return terms.every((term) => searchableBlob.includes(term));
     });
-  }, [tasks, filterStatus, user?.id, searchQuery]);
+  }, [tasks, filterStatus, filterDepartment, adminUsers, user?.id, searchQuery]);
 
   const pendingCount = tasks.filter((t) => !t.isArchived && t.status !== "done").length;
   const archivedCount = tasks.filter((t) => t.isArchived).length;
@@ -4089,6 +4536,36 @@ export function AdminTasks() {
             </button>
           </div>
 
+          {/* Department Filter Dropdown */}
+          <div className="relative shrink-0">
+            <select
+              value={filterDepartment}
+              onChange={(e) => setFilterDepartment(e.target.value)}
+              className={`h-8 text-xs font-bold rounded-lg px-2.5 pr-7 border transition-all cursor-pointer appearance-none bg-no-repeat bg-right ${
+                filterDepartment !== "all"
+                  ? "bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-100"
+                  : "bg-slate-50 hover:bg-white text-slate-700 border-slate-200"
+              }`}
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
+                backgroundPosition: "calc(100% - 8px) center",
+              }}
+            >
+              <option value="all">🏢 All Departments</option>
+              {departments.length > 0
+                ? departments.map((d) => (
+                    <option key={d.key} value={d.key}>
+                      {d.icon} {d.name} {d.nameTh ? `(${d.nameTh})` : ""}
+                    </option>
+                  ))
+                : Object.entries(DEPARTMENT_CONFIG).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v.icon} {v.label} ({v.labelTh})
+                    </option>
+                  ))}
+            </select>
+          </div>
+
           <div className="flex items-center gap-1.5 shrink-0">
             {/* View Mode Switcher: Dashboard / Board / List */}
             <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5">
@@ -4172,6 +4649,7 @@ export function AdminTasks() {
               <TaskAdminDashboard
                 tasks={tasks}
                 adminUsers={adminUsers}
+                departments={departments}
                 onOpenTask={openEdit}
                 onFilterStaff={(staffName) => {
                   setSearchQuery(staffName);

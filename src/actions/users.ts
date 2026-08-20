@@ -21,6 +21,7 @@ export async function getUsers() {
         email: true,
         role: true,
         area: true,
+        department: true,
         permissions: true,
         isActive: true,
         createdAt: true,
@@ -34,7 +35,7 @@ export async function getUsers() {
   }
 }
 
-export async function createUser(data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null }) {
+export async function createUser(data: { name: string; email: string; password?: string; role: string; department?: string | null; permissions: string[]; area?: string | null }) {
   try {
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
@@ -50,6 +51,7 @@ export async function createUser(data: { name: string; email: string; password?:
         email: data.email.toLowerCase().trim(),
         password: hashPassword(data.password || 'password123'),
         role: data.role,
+        department: data.department || null,
         permissions: JSON.stringify(data.permissions),
         area: data.area
       }
@@ -76,7 +78,7 @@ export async function createUser(data: { name: string; email: string; password?:
   }
 }
 
-export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; permissions: string[]; area?: string | null; isActive?: boolean }) {
+export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; department?: string | null; permissions: string[]; area?: string | null; isActive?: boolean }) {
   try {
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
@@ -90,6 +92,7 @@ export async function updateUser(id: string, data: { name: string; email: string
       name: data.name,
       email: data.email.toLowerCase().trim(),
       role: data.role,
+      department: data.department !== undefined ? data.department : undefined,
       permissions: JSON.stringify(data.permissions),
       area: data.area,
       ...(data.isActive !== undefined && { isActive: data.isActive })
