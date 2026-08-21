@@ -53,7 +53,9 @@ export async function loginUser(email: string, password?: string) {
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role as "admin" | "manager" | "cso" | "staff",
+        role: user.role,
+        department: user.department || undefined,
+        isDepartmentHead: user.isDepartmentHead ?? false,
         permissions: permissionsArray,
         area: user.area || undefined
       }

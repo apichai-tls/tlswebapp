@@ -22,6 +22,7 @@ export async function getUsers() {
         role: true,
         area: true,
         department: true,
+        isDepartmentHead: true,
         permissions: true,
         isActive: true,
         createdAt: true,
@@ -35,7 +36,7 @@ export async function getUsers() {
   }
 }
 
-export async function createUser(data: { name: string; email: string; password?: string; role: string; department?: string | null; permissions: string[]; area?: string | null }) {
+export async function createUser(data: { name: string; email: string; password?: string; role: string; department?: string | null; isDepartmentHead?: boolean; permissions: string[]; area?: string | null }) {
   try {
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
@@ -52,6 +53,7 @@ export async function createUser(data: { name: string; email: string; password?:
         password: hashPassword(data.password || 'password123'),
         role: data.role,
         department: data.department || null,
+        isDepartmentHead: data.isDepartmentHead ?? false,
         permissions: JSON.stringify(data.permissions),
         area: data.area
       }
@@ -78,7 +80,7 @@ export async function createUser(data: { name: string; email: string; password?:
   }
 }
 
-export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; department?: string | null; permissions: string[]; area?: string | null; isActive?: boolean }) {
+export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; department?: string | null; isDepartmentHead?: boolean; permissions: string[]; area?: string | null; isActive?: boolean }) {
   try {
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
@@ -93,6 +95,7 @@ export async function updateUser(id: string, data: { name: string; email: string
       email: data.email.toLowerCase().trim(),
       role: data.role,
       department: data.department !== undefined ? data.department : undefined,
+      isDepartmentHead: data.isDepartmentHead !== undefined ? data.isDepartmentHead : undefined,
       permissions: JSON.stringify(data.permissions),
       area: data.area,
       ...(data.isActive !== undefined && { isActive: data.isActive })

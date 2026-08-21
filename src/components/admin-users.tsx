@@ -41,6 +41,7 @@ interface AdminUser {
   name: string;
   role: string;
   department?: string | null;
+  isDepartmentHead?: boolean;
   password?: string;
   permissions: string;
   area?: string | null;
@@ -99,6 +100,7 @@ export function AdminUsers() {
   const [name, setName] = useState("");
   const [role, setRole] = useState("staff");
   const [department, setDepartment] = useState("branch_ops");
+  const [isDepartmentHead, setIsDepartmentHead] = useState(false);
   const [area, setArea] = useState("BKK");
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
 
@@ -168,6 +170,7 @@ export function AdminUsers() {
     setName("");
     setRole(roles[0]?.key || "staff");
     setDepartment(departments[0]?.key || "branch_ops");
+    setIsDepartmentHead(false);
     setArea("BKK");
     setSelectedPerms([]);
     setEditingId(null);
@@ -189,6 +192,7 @@ export function AdminUsers() {
           ? "logistics"
           : "branch_ops")
     );
+    setIsDepartmentHead(user.isDepartmentHead ?? false);
     setArea(user.area || "BKK");
     try {
       setSelectedPerms(JSON.parse(user.permissions));
@@ -227,6 +231,7 @@ export function AdminUsers() {
           password: password || undefined,
           role,
           department,
+          isDepartmentHead,
           area: area || null,
           permissions: selectedPerms,
         });
@@ -240,6 +245,7 @@ export function AdminUsers() {
           password,
           role,
           department,
+          isDepartmentHead,
           area: area || null,
           permissions: selectedPerms,
         });
@@ -555,6 +561,32 @@ export function AdminUsers() {
               </div>
             </div>
 
+            {/* Department Head Toggle */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-amber-50/70 border border-amber-200 rounded-2xl">
+              <div>
+                <label className="text-xs font-bold text-amber-950 flex items-center gap-1.5 cursor-pointer">
+                  <span>🌟 Department Head (หัวหน้าแผนก)</span>
+                  {isDepartmentHead && (
+                    <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full border border-amber-300">
+                      👑 Active Head
+                    </span>
+                  )}
+                </label>
+                <p className="text-[11px] text-amber-800 mt-0.5">
+                  เปิดใช้งานหากต้องการให้พนักงานท่านนี้เป็นหัวหน้าแผนก สามารถมองเห็นและติดตาม Task ของลูกน้องทุกคนในแผนกเดียวกันได้ (1 แผนกมีหัวหน้าได้หลายคน หรือไม่มีก็ได้)
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={isDepartmentHead}
+                  onChange={(e) => setIsDepartmentHead(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+
             <div>
               <div className="flex items-center justify-between mb-4">
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Menu Access Permissions</label>
@@ -692,7 +724,14 @@ export function AdminUsers() {
                     return (
                       <tr key={user.id} className="hover:bg-slate-50 transition-colors">
                         <td className="px-6 py-4">
-                          <div className="font-bold text-slate-900">{user.name}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-900">{user.name}</span>
+                            {user.isDepartmentHead && (
+                              <span className="px-1.5 py-0.2 text-[9px] font-black uppercase rounded-md bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-0.5 shadow-2xs">
+                                👑 Head
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-slate-500">{user.email}</div>
                         </td>
                         <td className="px-6 py-4">
@@ -809,6 +848,8 @@ export function AdminUsers() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {departments.map((dept) => {
                 const badgeClass = getBadgeClass(dept.color);
+                const deptHeads = activeUsers.filter((u) => u.department === dept.key && u.isDepartmentHead);
+
                 return (
                   <div
                     key={dept.id}
@@ -842,6 +883,28 @@ export function AdminUsers() {
                       <h4 className="font-extrabold text-slate-900 text-sm">{dept.name}</h4>
                       {dept.nameTh && <p className="text-xs font-semibold text-slate-500 mt-0.5">{dept.nameTh}</p>}
                       <p className="text-[10px] font-mono text-slate-400 mt-1">Key: {dept.key}</p>
+
+                      {/* Department Heads Display */}
+                      <div className="mt-3 pt-2.5 border-t border-slate-100/80">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                          👑 Department Head(s)
+                        </span>
+                        {deptHeads.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {deptHeads.map((h) => (
+                              <span
+                                key={h.id}
+                                className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md"
+                              >
+                                <span>👑</span>
+                                <span>{h.name}</span>
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-slate-400 italic">No head assigned</span>
+                        )}
+                      </div>
                     </div>
 
                     <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">

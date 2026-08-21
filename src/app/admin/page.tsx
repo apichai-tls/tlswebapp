@@ -1292,7 +1292,7 @@ export default function AdminPage() {
   }
 
   return (
-    <ProtectedRoute allowedRole={['admin', 'manager', 'cso', 'staff']}>
+    <ProtectedRoute allowedRole="non-rider">
       <AnimatePresence mode="wait">
         <motion.div
         className="flex min-h-screen"

@@ -26,25 +26,26 @@ export function generateGcsPath(
 ): string {
   const now = new Date();
   const timestamp = now.getTime();
+  const randomSuffix = Math.random().toString(36).slice(2, 7);
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
 
   if (entityType === 'rider') {
-    return `riders/avatars/${entityId}/avatar-${timestamp}.${extension}`;
+    return `riders/avatars/${entityId}/avatar-${timestamp}-${randomSuffix}.${extension}`;
   }
 
   if (entityType === 'job') {
     const typeFolder = subType || 'proofs';
-    return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/img-${timestamp}.${extension}`;
+    return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/img-${timestamp}-${randomSuffix}.${extension}`;
   }
 
   if (entityType === 'task') {
     const folder = subType || 'attachments';
-    return `tasks/${year}/${month}/${entityId}/${folder}/file-${timestamp}.${extension}`;
+    return `tasks/${year}/${month}/${entityId}/${folder}/file-${timestamp}-${randomSuffix}.${extension}`;
   }
 
-  return `system/placeholders/file-${timestamp}.${extension}`;
+  return `system/placeholders/file-${timestamp}-${randomSuffix}.${extension}`;
 }
 
 /**

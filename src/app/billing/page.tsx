@@ -1172,7 +1172,7 @@ export default function BillingPage() {
   );
 
   return (
-    <ProtectedRoute allowedRole={["admin", "manager", "cso", "staff"]}>
+    <ProtectedRoute allowedRole="non-rider">
       {isNative ? mobileLayout : desktopLayout}
 
       {/* Mobile Drawer Menu for Mobile Web & Native */}

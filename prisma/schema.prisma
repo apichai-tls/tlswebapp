@@ -212,11 +212,12 @@ model AdminUser {
   permissions  String
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
-  area         String?
-  department   String?       // management | accounting_cso | branch_ops | logistics
-  branchId     String?
-  isActive     Boolean       @default(true)
-  ShopLocation ShopLocation? @relation(fields: [branchId], references: [id])
+  area             String?
+  department       String?       // management | accounting_cso | branch_ops | logistics
+  branchId         String?
+  isActive         Boolean       @default(true)
+  isDepartmentHead Boolean       @default(false)
+  ShopLocation     ShopLocation? @relation(fields: [branchId], references: [id])
 }
 
 model Department {

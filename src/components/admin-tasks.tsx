@@ -38,6 +38,7 @@ export interface AdminUser {
   name: string;
   role: string;
   department?: string | null;
+  isDepartmentHead?: boolean;
   area: string | null;
   isActive: boolean;
 }
@@ -275,6 +276,33 @@ async function uploadTaskFile(
   };
 }
 
+// ─── File Download Helper ─────────────────────────────────────────────────────
+
+export async function downloadAttachment(url: string, filename: string) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Fetch failed");
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = filename || "download";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 3000);
+  } catch {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename || "download";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+}
+
 // ─── Attachment Item View ─────────────────────────────────────────────────────
 
 function AttachmentBadge({
@@ -288,16 +316,44 @@ function AttachmentBadge({
 }) {
   const isImg = isImageFile(attachment.type, attachment.name);
 
+  const handleDragStart = (e: React.DragEvent) => {
+    e.stopPropagation();
+    const mime = attachment.type || (isImg ? "image/jpeg" : "application/octet-stream");
+    const name = attachment.name || "download";
+    const url = attachment.url;
+    try {
+      // Standard HTML5 DownloadURL for WebKit/Chrome dragging out to Mac Desktop/Finder
+      e.dataTransfer.setData("DownloadURL", `${mime}:${name}:${url}`);
+      e.dataTransfer.setData("text/uri-list", url);
+      e.dataTransfer.setData("text/plain", url);
+      e.dataTransfer.effectAllowed = "copy";
+    } catch (err) {
+      console.error("Drag start error:", err);
+    }
+  };
+
+  const handleDownload = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    downloadAttachment(attachment.url, attachment.name);
+  };
+
   return (
-    <div className="group relative flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg p-1 text-xs transition-colors max-w-[220px]">
+    <div
+      draggable
+      onDragStart={handleDragStart}
+      className="group relative flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg p-1.5 text-xs transition-all max-w-[260px] cursor-grab active:cursor-grabbing hover:border-indigo-300 shadow-2xs hover:shadow-xs select-none"
+    >
       {isImg ? (
-        <button
-          type="button"
-          onClick={() => onPreviewImage?.(attachment.url)}
-          className="flex items-center gap-1.5 min-w-0 truncate text-slate-700 hover:text-indigo-600 cursor-pointer text-left"
-          title={`Click to view ${attachment.name}`}
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            onPreviewImage?.(attachment.url);
+          }}
+          className="flex items-center gap-1.5 min-w-0 truncate text-slate-700 hover:text-indigo-600 cursor-pointer text-left flex-1"
+          title={`Click to view ${attachment.name} (Drag to Mac Desktop to save)`}
         >
-          <div className="w-7 h-7 rounded overflow-hidden bg-slate-200 border border-slate-300 shrink-0 relative">
+          <div className="w-7 h-7 rounded overflow-hidden bg-slate-200 border border-slate-300 shrink-0 relative pointer-events-none">
             <img
               src={attachment.url}
               alt={attachment.name}
@@ -305,39 +361,54 @@ function AttachmentBadge({
             />
           </div>
           <div className="min-w-0 flex-1 truncate">
-            <span className="truncate text-[11px] font-medium block leading-tight">{attachment.name}</span>
+            <span className="truncate text-[11px] font-bold block leading-tight">{attachment.name}</span>
             {attachment.size && (
               <span className="text-[9px] text-slate-400 block leading-none mt-0.5">
                 {formatFileSize(attachment.size)}
               </span>
             )}
           </div>
-        </button>
+        </div>
       ) : (
-        <a
-          href={attachment.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1.5 truncate text-slate-700 hover:text-indigo-600 px-1"
-          title={`Download/Open ${attachment.name}`}
+        <div
+          onClick={handleDownload}
+          className="flex items-center gap-1.5 truncate text-slate-700 hover:text-indigo-600 px-1 cursor-pointer flex-1"
+          title={`Click to download ${attachment.name} (Drag to Mac Desktop to save)`}
         >
-          {getFileIcon(attachment.type, attachment.name)}
+          <div className="shrink-0 pointer-events-none">
+            {getFileIcon(attachment.type, attachment.name)}
+          </div>
           <div className="min-w-0 flex-1 truncate">
-            <span className="truncate text-[11px] font-medium block leading-tight">{attachment.name}</span>
+            <span className="truncate text-[11px] font-bold block leading-tight text-slate-800 group-hover:text-indigo-700">
+              {attachment.name}
+            </span>
             {attachment.size && (
               <span className="text-[9px] text-slate-400 block leading-none mt-0.5">
                 {formatFileSize(attachment.size)}
               </span>
             )}
           </div>
-        </a>
+        </div>
       )}
+
+      {/* Quick Download Action Button */}
+      <button
+        type="button"
+        onClick={handleDownload}
+        className="p-1 rounded hover:bg-indigo-100 text-slate-400 hover:text-indigo-600 transition-colors shrink-0 cursor-pointer"
+        title={`Download ${attachment.name}`}
+      >
+        <Download size={12} />
+      </button>
 
       {onDelete && (
         <button
           type="button"
-          onClick={onDelete}
-          className="p-1 rounded-md hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors ml-auto shrink-0 cursor-pointer"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="p-1 rounded-md hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors shrink-0 cursor-pointer"
           title="Remove file"
         >
           <X size={12} />
@@ -376,33 +447,61 @@ function AttachmentsGallery({
           {images.map((img) => (
             <div
               key={img.id}
+              draggable
+              onDragStart={(e) => {
+                e.stopPropagation();
+                const mime = img.type || "image/jpeg";
+                const name = img.name || "image.jpg";
+                const url = img.url;
+                try {
+                  e.dataTransfer.setData("DownloadURL", `${mime}:${name}:${url}`);
+                  e.dataTransfer.setData("text/uri-list", url);
+                  e.dataTransfer.setData("text/plain", url);
+                  e.dataTransfer.effectAllowed = "copy";
+                } catch (err) {
+                  console.error("Drag start error:", err);
+                }
+              }}
               onClick={() => onPreviewImage?.(img.url)}
-              className="group relative flex flex-col rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 bg-slate-100 transition-all cursor-pointer shadow-2xs hover:shadow-md aspect-square"
-              title={`Click to zoom: ${img.name}`}
+              className="group relative flex flex-col rounded-xl overflow-hidden border border-slate-200 hover:border-indigo-400 bg-slate-100 transition-all cursor-grab active:cursor-grabbing shadow-2xs hover:shadow-md aspect-square select-none"
+              title={`Click to zoom: ${img.name} (Drag to Mac Desktop to save)`}
             >
               <img
                 src={img.url}
                 alt={img.name}
-                className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-200"
+                className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-200 pointer-events-none"
               />
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center pointer-events-none">
                 <ZoomIn size={20} className="text-white opacity-0 group-hover:opacity-100 drop-shadow-md transition-opacity" />
               </div>
 
-              {/* Top-Right Delete button */}
-              {onDelete && (
+              {/* Action Buttons Top-Right (Download & Delete) */}
+              <div className="absolute top-1 right-1 flex items-center gap-1 z-10">
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDelete(img.id);
+                    downloadAttachment(img.url, img.name);
                   }}
-                  className="absolute top-1 right-1 p-1 rounded-full bg-black/60 hover:bg-rose-600 text-white transition-colors cursor-pointer shadow-sm z-10"
-                  title="Remove image"
+                  className="p-1 rounded-full bg-black/60 hover:bg-indigo-600 text-white transition-colors cursor-pointer shadow-sm"
+                  title={`Download ${img.name}`}
                 >
-                  <X size={12} />
+                  <Download size={11} />
                 </button>
-              )}
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(img.id);
+                    }}
+                    className="p-1 rounded-full bg-black/60 hover:bg-rose-600 text-white transition-colors cursor-pointer shadow-sm"
+                    title="Remove image"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
 
               {/* Bottom filename overlay */}
               <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-1.5 pt-3 pointer-events-none">
@@ -1255,21 +1354,49 @@ function TaskCard({
       {imageAttachments.length > 0 && (
         imageAttachments.length === 1 ? (
           <div
+            draggable
+            onDragStart={(e) => {
+              e.stopPropagation();
+              const img = imageAttachments[0];
+              const mime = img.type || "image/jpeg";
+              const name = img.name || "image.jpg";
+              const url = img.url;
+              try {
+                e.dataTransfer.setData("DownloadURL", `${mime}:${name}:${url}`);
+                e.dataTransfer.setData("text/uri-list", url);
+                e.dataTransfer.setData("text/plain", url);
+                e.dataTransfer.effectAllowed = "copy";
+              } catch (err) {}
+            }}
             onClick={(e) => {
               e.stopPropagation();
               onPreviewImage?.(imageAttachments[0].url);
             }}
-            className="relative w-full h-32 rounded-xl overflow-hidden mb-2.5 border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-pointer shadow-2xs hover:shadow-md transition-all"
-            title={`Click to zoom: ${imageAttachments[0].name}`}
+            className="relative w-full h-32 rounded-xl overflow-hidden mb-2.5 border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-grab active:cursor-grabbing shadow-2xs hover:shadow-md transition-all select-none"
+            title={`Click to zoom: ${imageAttachments[0].name} (Drag to Mac Desktop to save)`}
           >
             <img
               src={imageAttachments[0].url}
               alt={imageAttachments[0].name}
-              className="w-full h-full object-cover group-hover/cardimg:scale-105 transition-transform duration-200"
+              className="w-full h-full object-cover group-hover/cardimg:scale-105 transition-transform duration-200 pointer-events-none"
             />
             <div className="absolute inset-0 bg-black/0 group-hover/cardimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
               <ZoomIn size={22} className="text-white opacity-0 group-hover/cardimg:opacity-100 drop-shadow-md transition-opacity" />
             </div>
+
+            {/* Top-Right Download Button */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                downloadAttachment(imageAttachments[0].url, imageAttachments[0].name);
+              }}
+              className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/60 hover:bg-indigo-600 text-white transition-colors cursor-pointer shadow-sm z-10 opacity-0 group-hover/cardimg:opacity-100"
+              title={`Download ${imageAttachments[0].name}`}
+            >
+              <Download size={12} />
+            </button>
+
             <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-1.5 pt-3 pointer-events-none">
               <span className="text-[10px] text-white font-medium block truncate">
                 {imageAttachments[0].name}
@@ -1281,21 +1408,48 @@ function TaskCard({
             {imageAttachments.slice(0, 4).map((img, idx) => (
               <div
                 key={img.id}
+                draggable
+                onDragStart={(e) => {
+                  e.stopPropagation();
+                  const mime = img.type || "image/jpeg";
+                  const name = img.name || "image.jpg";
+                  const url = img.url;
+                  try {
+                    e.dataTransfer.setData("DownloadURL", `${mime}:${name}:${url}`);
+                    e.dataTransfer.setData("text/uri-list", url);
+                    e.dataTransfer.setData("text/plain", url);
+                    e.dataTransfer.effectAllowed = "copy";
+                  } catch (err) {}
+                }}
                 onClick={(e) => {
                   e.stopPropagation();
                   onPreviewImage?.(img.url);
                 }}
-                className="relative h-20 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-pointer shadow-2xs hover:shadow-md transition-all"
-                title={`Click to zoom: ${img.name}`}
+                className="relative h-20 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/cardimg bg-slate-100 cursor-grab active:cursor-grabbing shadow-2xs hover:shadow-md transition-all select-none"
+                title={`Click to zoom: ${img.name} (Drag to Mac Desktop to save)`}
               >
                 <img
                   src={img.url}
                   alt={img.name}
-                  className="w-full h-full object-cover group-hover/cardimg:scale-110 transition-transform duration-200"
+                  className="w-full h-full object-cover group-hover/cardimg:scale-110 transition-transform duration-200 pointer-events-none"
                 />
                 <div className="absolute inset-0 bg-black/0 group-hover/cardimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
                   <ZoomIn size={14} className="text-white opacity-0 group-hover/cardimg:opacity-100 drop-shadow transition-opacity" />
                 </div>
+
+                {/* Top-Right Download Button */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    downloadAttachment(img.url, img.name);
+                  }}
+                  className="absolute top-1 right-1 p-0.5 rounded-full bg-black/60 hover:bg-indigo-600 text-white transition-colors cursor-pointer shadow-sm z-10 opacity-0 group-hover/cardimg:opacity-100"
+                  title={`Download ${img.name}`}
+                >
+                  <Download size={10} />
+                </button>
+
                 {idx === 3 && imageAttachments.length > 4 && (
                   <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white text-xs font-bold pointer-events-none">
                     +{imageAttachments.length - 3}
@@ -1416,17 +1570,30 @@ function TaskCard({
                   return (
                     <div
                       key={att.id}
+                      draggable
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        const mime = att.type || "image/jpeg";
+                        const name = att.name || "image.jpg";
+                        const url = att.url;
+                        try {
+                          e.dataTransfer.setData("DownloadURL", `${mime}:${name}:${url}`);
+                          e.dataTransfer.setData("text/uri-list", url);
+                          e.dataTransfer.setData("text/plain", url);
+                          e.dataTransfer.effectAllowed = "copy";
+                        } catch (err) {}
+                      }}
                       onClick={(e) => {
                         e.stopPropagation();
                         onPreviewImage?.(att.url);
                       }}
-                      className="relative w-14 h-14 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/noteimg bg-slate-100 cursor-pointer shadow-2xs hover:shadow-md transition-all shrink-0"
-                      title={`Click to zoom: ${att.name}`}
+                      className="relative w-14 h-14 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400 group/noteimg bg-slate-100 cursor-grab active:cursor-grabbing shadow-2xs hover:shadow-md transition-all shrink-0 select-none"
+                      title={`Click to zoom: ${att.name} (Drag to Mac Desktop to save)`}
                     >
                       <img
                         src={att.url}
                         alt={att.name}
-                        className="w-full h-full object-cover group-hover/noteimg:scale-110 transition-transform duration-150"
+                        className="w-full h-full object-cover group-hover/noteimg:scale-110 transition-transform duration-150 pointer-events-none"
                       />
                       <div className="absolute inset-0 bg-black/0 group-hover/noteimg:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
                         <ZoomIn size={12} className="text-white opacity-0 group-hover/noteimg:opacity-100 drop-shadow transition-opacity" />
@@ -3582,6 +3749,8 @@ export function TaskUserDashboard({
   adminUsers,
   currentUserId,
   currentUserName,
+  currentUserDept,
+  isDepartmentHead,
   onOpenTask,
   onToggleChecklist,
 }: {
@@ -3589,10 +3758,31 @@ export function TaskUserDashboard({
   adminUsers: AdminUser[];
   currentUserId: string;
   currentUserName: string;
+  currentUserDept?: string | null;
+  isDepartmentHead?: boolean;
   onOpenTask: (task: TaskItem) => void;
   onToggleChecklist: (taskId: string, itemId: string, completed: boolean) => void;
 }) {
-  const [userQueueTab, setUserQueueTab] = useState<"active" | "archived">("active");
+  const [userQueueTab, setUserQueueTab] = useState<"active" | "archived" | "department_team">("active");
+
+  // Department Subordinates (for Department Heads)
+  const departmentSubordinates = useMemo(() => {
+    if (!currentUserDept) return [];
+    return adminUsers.filter((u) => u.department === currentUserDept && u.isActive !== false);
+  }, [adminUsers, currentUserDept]);
+
+  // Department Subordinate Tasks
+  const departmentSubordinateTasks = useMemo(() => {
+    if (!isDepartmentHead || !currentUserDept) return [];
+    const subIds = departmentSubordinates.map((u) => u.id);
+    return tasks.filter((t) => {
+      if (t.isArchived) return false;
+      if (subIds.includes(t.createdById)) return true;
+      if (!t.assignedToId) return false;
+      const assignees = t.assignedToId.split(",").map((s) => s.trim());
+      return assignees.some((aid) => subIds.includes(aid));
+    });
+  }, [tasks, departmentSubordinates, isDepartmentHead, currentUserDept]);
 
   // My Assigned Tasks
   const myAssignedTasks = useMemo(() => {
@@ -3700,19 +3890,35 @@ export function TaskUserDashboard({
 
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 relative z-10">
           <div>
-            <div className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-md border border-white/15 px-3 py-1 rounded-full text-xs font-semibold text-indigo-200 mb-3">
-              <UserCheck size={13} className="text-emerald-400" />
-              <span>Personal Action Center</span>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <div className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-md border border-white/15 px-3 py-1 rounded-full text-xs font-semibold text-indigo-200">
+                <UserCheck size={13} className="text-emerald-400" />
+                <span>Personal Action Center</span>
+              </div>
+              {isDepartmentHead && (
+                <div className="inline-flex items-center gap-1.5 bg-amber-400/90 text-amber-950 px-3 py-1 rounded-full text-xs font-black shadow-2xs">
+                  <span>👑 Head of {DEPARTMENT_CONFIG[currentUserDept || ""]?.labelTh || currentUserDept || "Department"}</span>
+                </div>
+              )}
             </div>
+
             <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
               Welcome back, {currentUserName}! 👋
             </h2>
             <p className="text-xs sm:text-sm text-indigo-200 mt-1 max-w-xl">
-              You have <strong className="text-white">{myActiveTasks.length} active tasks</strong> assigned.{" "}
-              {myDueToday.length > 0 && (
-                <span className="text-amber-300 font-bold">
-                  🔥 {myDueToday.length} task(s) due today!
-                </span>
+              {isDepartmentHead ? (
+                <>
+                  You are tracking <strong className="text-white">{departmentSubordinateTasks.length} department tasks</strong> across {departmentSubordinates.length} team members · <strong className="text-amber-300">{myActiveTasks.length} personal tasks</strong> assigned to you.
+                </>
+              ) : (
+                <>
+                  You have <strong className="text-white">{myActiveTasks.length} active tasks</strong> assigned.{" "}
+                  {myDueToday.length > 0 && (
+                    <span className="text-amber-300 font-bold">
+                      🔥 {myDueToday.length} task(s) due today!
+                    </span>
+                  )}
+                </>
               )}
             </p>
           </div>
@@ -3736,15 +3942,22 @@ export function TaskUserDashboard({
         {/* Quick Personal KPIs */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-5 border-t border-white/10 text-xs">
           <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-            <span className="text-[10px] font-semibold text-indigo-200 uppercase block">Active Tasks</span>
+            <span className="text-[10px] font-semibold text-indigo-200 uppercase block">My Active Tasks</span>
             <span className="text-xl font-bold text-white mt-0.5 block">{myActiveTasks.length}</span>
           </div>
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10">
-            <span className="text-[10px] font-semibold text-indigo-200 uppercase block">Due Today / Urgent</span>
-            <span className={`text-xl font-bold mt-0.5 block ${myDueToday.length > 0 ? "text-amber-300" : "text-white"}`}>
-              {myDueToday.length}
-            </span>
-          </div>
+          {isDepartmentHead ? (
+            <div className="bg-amber-400/10 rounded-xl p-3 border border-amber-400/20">
+              <span className="text-[10px] font-semibold text-amber-200 uppercase block">👑 Team Tasks</span>
+              <span className="text-xl font-bold text-amber-300 mt-0.5 block">{departmentSubordinateTasks.length}</span>
+            </div>
+          ) : (
+            <div className="bg-white/5 rounded-xl p-3 border border-white/10">
+              <span className="text-[10px] font-semibold text-indigo-200 uppercase block">Due Today / Urgent</span>
+              <span className={`text-xl font-bold mt-0.5 block ${myDueToday.length > 0 ? "text-amber-300" : "text-white"}`}>
+                {myDueToday.length}
+              </span>
+            </div>
+          )}
           <div className="bg-white/5 rounded-xl p-3 border border-white/10">
             <span className="text-[10px] font-semibold text-indigo-200 uppercase block">Completed Work</span>
             <span className="text-xl font-bold text-emerald-400 mt-0.5 block">{myDoneTasks.length + myArchivedTasks.length}</span>
@@ -3759,8 +3972,8 @@ export function TaskUserDashboard({
       {/* ── 2. ACTION PRIORITY QUEUE ("What to do next") ── */}
       <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-2xs">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl flex-wrap">
               <button
                 type="button"
                 onClick={() => setUserQueueTab("active")}
@@ -3771,11 +3984,35 @@ export function TaskUserDashboard({
                 }`}
               >
                 <Zap size={14} className={userQueueTab === "active" ? "text-indigo-600" : "text-slate-400"} />
-                <span>Action Priority Queue</span>
+                <span>My Action Queue</span>
                 <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800">
                   {actionQueue.length}
                 </span>
               </button>
+
+              {isDepartmentHead && (
+                <button
+                  type="button"
+                  onClick={() => setUserQueueTab("department_team")}
+                  className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                    userQueueTab === "department_team"
+                      ? "bg-amber-500 text-white shadow-2xs font-bold"
+                      : "text-amber-800 hover:text-amber-950 hover:bg-amber-100/60"
+                  }`}
+                >
+                  <Users size={14} className={userQueueTab === "department_team" ? "text-white" : "text-amber-700"} />
+                  <span>👑 Department Team Tasks</span>
+                  <span
+                    className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      userQueueTab === "department_team"
+                        ? "bg-amber-600 text-white"
+                        : "bg-amber-100 text-amber-900 border border-amber-200"
+                    }`}
+                  >
+                    {departmentSubordinateTasks.length}
+                  </span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -3890,6 +4127,84 @@ export function TaskUserDashboard({
               <CheckCircle2 size={36} className="text-emerald-500 mb-2" />
               <p className="text-xs font-bold text-slate-700">All Caught Up! 🎉</p>
               <p className="text-[11px] text-slate-400 mt-0.5">You have no active pending tasks in your queue.</p>
+            </div>
+          )
+        ) : userQueueTab === "department_team" ? (
+          // ── 👑 DEPARTMENT TEAM TASKS TAB (FOR DEPARTMENT HEADS) ──
+          departmentSubordinateTasks.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {departmentSubordinateTasks.map((task) => {
+                const isOverdue = task.dueDate && isPast(new Date(task.dueDate)) && !isToday(new Date(task.dueDate));
+                const isDueTodayTask = task.dueDate && isToday(new Date(task.dueDate));
+                const priority = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.medium;
+                const statusCfg = STATUS_CONFIG[task.status] ?? STATUS_CONFIG.todo;
+
+                const assigneeNames = task.assignedToName || "Unassigned";
+
+                return (
+                  <div
+                    key={task.id}
+                    onClick={() => onOpenTask(task)}
+                    className="p-4 rounded-xl border border-amber-200/80 bg-amber-50/20 hover:border-amber-400 hover:bg-amber-50/50 transition-all cursor-pointer flex flex-col justify-between hover:shadow-md"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-1.5 mb-2">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase ${priority.color}`}>
+                            {priority.icon} {priority.label}
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.2 rounded-full ${statusCfg.color}`}>
+                            {statusCfg.label}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded flex items-center gap-1">
+                          👤 {assigneeNames}
+                        </span>
+                      </div>
+
+                      <h4 className="text-xs font-bold text-slate-900 line-clamp-2 leading-snug">
+                        {task.title}
+                      </h4>
+
+                      {task.description && (
+                        <p className="text-[11px] text-slate-500 line-clamp-2 mt-1">
+                          {task.description}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mt-3 pt-2.5 border-t border-slate-200/70 flex items-center justify-between text-[11px]">
+                      <div className="flex items-center gap-1.5">
+                        {isOverdue ? (
+                          <span className="font-bold text-rose-600 flex items-center gap-1">
+                            <AlertTriangle size={11} /> Overdue
+                          </span>
+                        ) : isDueTodayTask ? (
+                          <span className="font-bold text-amber-600 flex items-center gap-1">
+                            <Clock size={11} /> Due Today!
+                          </span>
+                        ) : task.dueDate ? (
+                          <span className="text-slate-500 flex items-center gap-1">
+                            <Calendar size={11} /> {format(new Date(task.dueDate), "d MMM")}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">No deadline</span>
+                        )}
+                      </div>
+
+                      <span className="text-[10px] text-amber-900 font-bold hover:underline">
+                        Supervise & Edit →
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center">
+              <Users size={36} className="text-amber-400 mb-2" />
+              <p className="text-xs font-bold text-slate-700">No Active Team Tasks</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Tasks created by or assigned to staff in your department will appear here.</p>
             </div>
           )
         ) : (
@@ -4051,8 +4366,19 @@ export function AdminTasks() {
   const isFetchingRef = useRef(false);
   const [viewMode, setViewMode] = useState<"board" | "list" | "dashboard">("board");
   const [filterStatus, setFilterStatus] = useState<"all" | "mine" | "open" | "overdue" | "due_today" | "archived">("all");
-  const [filterDepartment, setFilterDepartment] = useState<string>("all");
+  const [filterDepartment, setFilterDepartment] = useState<string>(() => {
+    if (user?.isDepartmentHead && user?.department) {
+      return user.department;
+    }
+    return "all";
+  });
   const [modalOpen, setModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (user?.isDepartmentHead && user?.department) {
+      setFilterDepartment(user.department);
+    }
+  }, [user?.isDepartmentHead, user?.department]);
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [mobileKanbanCol, setMobileKanbanCol] = useState<TaskStatus>("todo");
@@ -4069,7 +4395,16 @@ export function AdminTasks() {
     isFetchingRef.current = true;
     if (!silent) setIsSyncing(true);
     try {
-      const res = await getTasks(user ? { id: user.id, role: user.role } : undefined);
+      const res = await getTasks(
+        user
+          ? {
+              id: user.id,
+              role: user.role,
+              isDepartmentHead: user.isDepartmentHead,
+              department: user.department,
+            }
+          : undefined
+      );
       if (res.success && res.data) {
         cachedTasks = res.data;
         setTasks(res.data);
@@ -4161,7 +4496,7 @@ export function AdminTasks() {
       window.removeEventListener("focus", handleFocus);
       window.removeEventListener("tasks-changed", handleTasksChanged);
     };
-  }, [user?.id, user?.role]);
+  }, [user?.id, user?.role, user?.isDepartmentHead, user?.department]);
 
   // Listen to external navigation events from NotificationBell
   useEffect(() => {
@@ -4174,7 +4509,16 @@ export function AdminTasks() {
           setModalOpen(true);
         } else {
           // If task not loaded yet, reload tasks and open
-          getTasks(user ? { id: user.id, role: user.role } : undefined).then((res) => {
+          getTasks(
+            user
+              ? {
+                  id: user.id,
+                  role: user.role,
+                  isDepartmentHead: user.isDepartmentHead,
+                  department: user.department,
+                }
+              : undefined
+          ).then((res) => {
             if (res.success && res.data) {
               setTasks(res.data);
               const found = res.data.find((t) => t.id === taskId);
@@ -4189,7 +4533,7 @@ export function AdminTasks() {
     };
     window.addEventListener("open-task-modal", handleOpenTask);
     return () => window.removeEventListener("open-task-modal", handleOpenTask);
-  }, [tasks, user?.id, user?.role]);
+  }, [tasks, user?.id, user?.role, user?.isDepartmentHead, user?.department]);
 
   const overdueCount = useMemo(() => {
     return tasks.filter((t) => !t.isArchived && t.status !== "done" && t.dueDate && isPast(new Date(t.dueDate)) && !isToday(new Date(t.dueDate))).length;
@@ -5010,14 +5354,39 @@ export function AdminTasks() {
       {previewImage && (
         <Dialog open={!!previewImage} onOpenChange={(open) => !open && setPreviewImage(null)}>
           <DialogContent className="sm:max-w-3xl w-[95vw] rounded-2xl mx-auto p-0 bg-black/95 border-none shadow-2xl overflow-hidden flex flex-col items-center justify-center h-[70vh] sm:h-[80vh] z-[99999]">
-            <button
-              type="button"
-              className="absolute top-4 right-4 text-white hover:text-red-400 bg-black/40 hover:bg-black/60 rounded-full p-2 transition-colors z-10 cursor-pointer"
-              onClick={() => setPreviewImage(null)}
-            >
-              <X size={22} />
-            </button>
-            <img src={previewImage} className="max-w-full max-h-[80vh] object-contain rounded-xl" alt="Preview" />
+            <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+              <button
+                type="button"
+                className="text-white hover:text-indigo-300 bg-black/50 hover:bg-black/80 rounded-full p-2 transition-colors cursor-pointer"
+                onClick={() => downloadAttachment(previewImage, "image.jpg")}
+                title="Download Image"
+              >
+                <Download size={20} />
+              </button>
+              <button
+                type="button"
+                className="text-white hover:text-red-400 bg-black/50 hover:bg-black/80 rounded-full p-2 transition-colors cursor-pointer"
+                onClick={() => setPreviewImage(null)}
+                title="Close"
+              >
+                <X size={22} />
+              </button>
+            </div>
+            <img
+              src={previewImage}
+              draggable
+              onDragStart={(e) => {
+                try {
+                  e.dataTransfer.setData("DownloadURL", `image/jpeg:image.jpg:${previewImage}`);
+                  e.dataTransfer.setData("text/uri-list", previewImage);
+                  e.dataTransfer.setData("text/plain", previewImage);
+                  e.dataTransfer.effectAllowed = "copy";
+                } catch (err) {}
+              }}
+              className="max-w-full max-h-[80vh] object-contain rounded-xl select-none cursor-grab active:cursor-grabbing"
+              alt="Preview"
+              title="Click and drag to Mac Desktop to save"
+            />
           </DialogContent>
         </Dialog>
       )}
