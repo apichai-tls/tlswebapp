@@ -763,6 +763,11 @@ export default function AdminPage() {
   const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string | null>(null);
   const [proformaRevision, setProformaRevision] = useState<number>(0);
   const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
+  // true = user pressed Proforma button at least once since opening this edit session
+  // → Save Changes should NOT auto-gen a new image (user already reviewed & confirmed it)
+  // false = user has NOT pressed Proforma after the most recent cart change
+  // → Save Changes SHOULD auto-gen a new image (guard against user forgetting)
+  const [proformaPressedSinceLastEdit, setProformaPressedSinceLastEdit] = useState<boolean>(false);
   const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
   const [draftCreatedAt, setDraftCreatedAt] = useState<Date>(new Date());
   const [showReceipt, setShowReceipt] = useState<boolean>(false);
@@ -943,6 +948,7 @@ export default function AdminPage() {
     setProformaReceiptNumber(null);
     setProformaRevision(0);
     setLastProformaCartHash(null);
+    setProformaPressedSinceLastEdit(false);
     setIsDraftPreview(false);
     setDraftCreatedAt(new Date());
     setShowReceipt(false);
@@ -1126,6 +1132,7 @@ export default function AdminPage() {
       deliveryAt: job.deliveryScheduledAt ? format(roundToNearest30(new Date(job.deliveryScheduledAt)), "yyyy-MM-dd'T'HH:mm") : "",
     }) : null;
     setLastProformaCartHash(initialCartHash);
+    setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
     const rawLaundry = job.laundryTypes as any;
@@ -1449,7 +1456,12 @@ export default function AdminPage() {
       customerPhone: customerPhone || "",
       deliveryAt: deliveryScheduledTime || "",
     });
-    const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
+    // Cart changed = hash differs from the state when the job was loaded (or last proforma press)
+    const cartChangedAfterProforma = Boolean(
+      proformaReceiptNumber &&
+      lastProformaCartHash &&
+      (currentCartHash !== lastProformaCartHash)
+    );
 
     let effectiveRevision = proformaRevision;
     if (cartChangedAfterProforma) {
@@ -1622,11 +1634,22 @@ export default function AdminPage() {
       actorRole: user?.role
     };
 
-    // Only capture proforma image during handleCreate if:
-    // 1. Creating a brand new job that has a proforma number (!editingJobId && proformaReceiptNumber)
-    // 2. Editing an existing job WHERE the cart actually changed (editingJobId && cartChangedAfterProforma)
-    // When editing an existing job with no cart change, NEVER auto-capture extra images on Save Changes!
-    const shouldCaptureProforma = Boolean(proformaReceiptNumber && (!editingJobId || cartChangedAfterProforma));
+    // Decide whether to auto-generate a new proforma image on Save:
+    //
+    // NEW JOB: always capture if proforma number exists
+    // EDIT JOB – capture only when BOTH conditions are met:
+    //   a) Something in the cart/customer/delivery changed (cartChangedAfterProforma = true)
+    //   b) User did NOT press the Proforma button after that change
+    //      (proformaPressedSinceLastEdit = false → user forgot to re-press Proforma)
+    //
+    // If user DID press Proforma already, the Dialog's captureRef already saved rev image
+    // via uploadAndSave — we must NOT create a duplicate here.
+    const shouldCaptureProforma = Boolean(
+      proformaReceiptNumber && (
+        !editingJobId ||
+        (cartChangedAfterProforma && !proformaPressedSinceLastEdit)
+      )
+    );
 
     if (shouldCaptureProforma) {
       try {
@@ -4165,6 +4188,7 @@ export default function AdminPage() {
                                   }
                                 }
 
+                                setProformaPressedSinceLastEdit(true); // user has reviewed proforma — Save won't auto-gen
                                 setDraftCreatedAt(new Date());
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
