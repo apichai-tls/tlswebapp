@@ -91,6 +91,7 @@ export function A5ReceiptDialog({
     // Check duplication
     if (open && (snapshotData.autoCapture || snapshotData.isDraft)) {
       if (capturedKeysRef.current.has(captureKey)) return;
+      capturedKeysRef.current.add(captureKey); // Lock immediately to prevent duplicate runs on re-render
     }
 
     const filename = snapshotData.isDraft 

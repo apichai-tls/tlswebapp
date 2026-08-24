@@ -4072,7 +4072,15 @@ export default function AdminPage() {
                               variant="outline"
                               disabled={dialogCart.length === 0}
                               onClick={() => {
-                                const cartHash = JSON.stringify(dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })));
+                                const cartHash = JSON.stringify({
+                                  items: dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
+                                  speed: serviceSpeed,
+                                  fee: fee,
+                                  freeDelivery: activeIsFreeDelivery,
+                                  disc: dialogDiscountPercent,
+                                  vatType: dialogVatType,
+                                  vatRate: dialogVatRate,
+                                });
 
                                 let targetProformaNum = proformaReceiptNumber;
                                 let targetRevision = proformaRevision;

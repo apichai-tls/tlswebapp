@@ -240,6 +240,7 @@ export function ThermalReceiptDialog({
 
     const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
     if (capturedKeysRef.current.has(captureKey)) return;
+    capturedKeysRef.current.add(captureKey); // Lock immediately to prevent duplicate runs on re-render
 
     const runCapture = async () => {
       const filename = snapshotData.isDraft 

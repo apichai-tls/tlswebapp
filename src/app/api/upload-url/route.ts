@@ -4,7 +4,8 @@ import { generateGcsPath, generateUploadUrl, bucketName } from '@/lib/gcs';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { entityType, entityId, subType, contentType, fileName } = body;
+    const { entityType, entityId, subType, contentType, fileName, filename } = body;
+    const actualFileName = fileName || filename;
 
     // Validate request
     if (!entityType || !entityId) {
@@ -17,15 +18,15 @@ export async function POST(request: NextRequest) {
 
     const type = contentType || 'application/octet-stream';
     let ext = 'jpg';
-    if (fileName && fileName.includes('.')) {
-      ext = fileName.split('.').pop() || 'bin';
+    if (actualFileName && actualFileName.includes('.')) {
+      ext = actualFileName.split('.').pop() || 'bin';
     } else if (type.includes('/')) {
       const sub = type.split('/')[1];
       ext = sub === 'jpeg' ? 'jpg' : sub;
     }
     
     // Generate the path in GCS
-    const filePath = generateGcsPath(entityType as 'job' | 'rider' | 'system' | 'task', entityId, subType, ext);
+    const filePath = generateGcsPath(entityType as 'job' | 'rider' | 'system' | 'task', entityId, subType, ext, actualFileName);
 
     // Generate the signed URL for upload (expires in 5 minutes)
     const uploadUrl = await generateUploadUrl(filePath, type, 5);

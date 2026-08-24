@@ -26,7 +26,10 @@ export async function POST(request: NextRequest) {
       const sub = file.type.split("/")[1];
       ext = sub === "jpeg" ? "jpg" : sub;
     }
-    const filename = `${entityId}-${now}.${ext}`;
+    const actualName = file.name && (file.name.startsWith("proforma-") || file.name.startsWith("receipt-"))
+      ? file.name
+      : `${entityId}-${now}.${ext}`;
+    const filename = actualName;
     const uploadDir = path.join(process.cwd(), "public", "uploads", entityType, subType);
 
     // Ensure directory exists

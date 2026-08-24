@@ -22,7 +22,8 @@ export function generateGcsPath(
   entityType: 'job' | 'rider' | 'system' | 'task',
   entityId: string,
   subType?: 'bags' | 'proofs' | 'bills' | 'avatars' | 'attachments' | 'notes',
-  extension: string = 'jpg'
+  extension: string = 'jpg',
+  customFileName?: string
 ): string {
   const now = new Date();
   const timestamp = now.getTime();
@@ -37,6 +38,9 @@ export function generateGcsPath(
 
   if (entityType === 'job') {
     const typeFolder = subType || 'proofs';
+    if (customFileName && (customFileName.startsWith('proforma-') || customFileName.startsWith('receipt-'))) {
+      return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/${customFileName}`;
+    }
     return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/img-${timestamp}-${randomSuffix}.${extension}`;
   }
 
