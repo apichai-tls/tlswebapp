@@ -43,7 +43,11 @@ export async function generateThermalReceiptImage(
   const subtotalVal = receiptData.subtotal + receiptData.expressSurcharge + (receiptData.deliveryFee || 0) - receiptData.discount;
   const cleanRemark = cleanRemarkForDisplay(receiptData.remark);
   const logoUrl = activeShop?.logoUrl || "/logo.png";
-  const docId = receiptData.isDraft ? (receiptData.proformaId || receiptData.id || "DRAFT") : `#${receiptData.id}`;
+  const docId = receiptData.isDraft 
+    ? (receiptData.proformaRevision && receiptData.proformaRevision > 0 
+        ? `${cleanRemarkForDisplay(receiptData.proformaId || receiptData.id || "DRAFT")}-R${receiptData.proformaRevision}` 
+        : (receiptData.proformaId || receiptData.id || "DRAFT"))
+    : `#${receiptData.id}`;
 
   const itemsHtml = receiptData.items.map(item => `
     <div style="display: flex; font-size: 10px; line-height: 1.25; margin-bottom: 4px;">

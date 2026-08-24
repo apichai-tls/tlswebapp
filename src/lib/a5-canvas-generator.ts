@@ -100,7 +100,7 @@ export async function generateA5ReceiptImage(
           </h2>
           <div style="font-size: 12px; margin-bottom: 4px;">
             <span style="font-weight: bold; color: #404040; margin-right: 4px;">${receiptData.isDraft ? "PROFORMA NO:" : "RECEIPT NO:"}</span>
-            <span style="font-family: monospace; font-weight: 500; color: #171717;">${receiptData.proformaId || receiptData.id || "DRAFT"}</span>
+            <span style="font-family: monospace; font-weight: 500; color: #171717;">${receiptData.isDraft ? (receiptData.proformaRevision && receiptData.proformaRevision > 0 ? `${cleanRemarkForDisplay(receiptData.proformaId || receiptData.id || "DRAFT")}-R${receiptData.proformaRevision}` : (receiptData.proformaId || receiptData.id || "DRAFT")) : `#${receiptData.id}`}</span>
           </div>
           <div style="font-size: 12px;">
             <span style="font-weight: bold; color: #404040; margin-right: 4px;">DATE:</span>
