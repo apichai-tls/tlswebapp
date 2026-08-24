@@ -1442,6 +1442,9 @@ export default function AdminPage() {
       disc: dialogDiscountPercent,
       vatType: dialogVatType,
       vatRate: dialogVatRate,
+      customerName: customerName || "",
+      customerPhone: customerPhone || "",
+      deliveryAt: deliveryScheduledTime || "",
     });
     const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
 
@@ -4105,6 +4108,9 @@ export default function AdminPage() {
                                   disc: dialogDiscountPercent,
                                   vatType: dialogVatType,
                                   vatRate: dialogVatRate,
+                                  customerName: customerName || "",
+                                  customerPhone: customerPhone || "",
+                                  deliveryAt: deliveryScheduledTime || "",
                                 });
 
                                 let targetProformaNum = proformaReceiptNumber;
