@@ -618,3 +618,229 @@ export function A5ReceiptDialog({
 
 // Global variable just for internal print state toggling
 let printModeActive = false;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Standalone exported component — identical to renderReceiptContent(false).
+// Used by a5-canvas-generator.ts to render the exact same React DOM that the
+// Dialog uses, so html2canvas-pro captures pixel-identical output.
+// ─────────────────────────────────────────────────────────────────────────────
+export interface A5ReceiptContentProps {
+  receiptData: ReceiptData;
+  activeShop?: ShopInfo | null;
+  currentLanguage?: string;
+}
+
+export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "en" }: A5ReceiptContentProps) {
+  const formatCurrency = (val: number) =>
+    val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const cleanRemark = (rawRemark: string | null | undefined) => {
+    if (!rawRemark) return "";
+    return rawRemark
+      .split(" | ")
+      .filter(p => !p.startsWith("VAT:") && !p.startsWith("Express") && !p.startsWith("Proforma:") && !p.startsWith("Revision:"))
+      .join(" | ")
+      .trim();
+  };
+
+  const payments: PaymentLog[] = (() => {
+    try {
+      if (receiptData.adminNotesJson) {
+        const parsed = JSON.parse(receiptData.adminNotesJson);
+        if (parsed && Array.isArray(parsed.payments)) return parsed.payments as PaymentLog[];
+      }
+    } catch { /* ignore */ }
+    return [];
+  })();
+  const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
+
+  const safeDate = receiptData.createdAt
+    ? (receiptData.createdAt instanceof Date ? receiptData.createdAt : new Date(receiptData.createdAt))
+    : new Date();
+  const validDate = isNaN(safeDate.getTime()) ? new Date() : safeDate;
+
+  // Build the full proforma display ID (base + revision suffix)
+  const proformaDisplayId = receiptData.isDraft
+    ? (receiptData.proformaRevision && receiptData.proformaRevision > 0
+        ? `${receiptData.proformaId || "DRAFT"}-R${receiptData.proformaRevision}`
+        : (receiptData.proformaId || "DRAFT"))
+    : null;
+
+  return (
+    <div className="w-[559px] min-h-[793px] bg-white text-zinc-800 p-8 relative box-border font-sans">
+      {/* Header */}
+      <div className="flex justify-between items-start mb-4">
+        <div className="flex-1">
+          <div className="mb-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={activeShop?.logoUrl || "/logo.png"} alt="Shop Logo" className="h-10 object-contain filter grayscale contrast-125" />
+          </div>
+          <h1 className="text-lg font-black text-neutral-900 uppercase tracking-tight leading-tight">{activeShop?.name || "That Laundry Shop"}</h1>
+          <p className="text-xs text-neutral-600 max-w-[250px] mt-1">{activeShop?.address || "123 Sukhumvit Road, Bangkok"}</p>
+          <p className="text-xs text-neutral-600">Tel: {activeShop?.phone || "081-111-2222"}</p>
+          {activeShop?.taxId && <p className="text-xs text-neutral-600"><span className="font-bold">TAX ID:</span> {activeShop.taxId}</p>}
+        </div>
+        <div className="text-right">
+          <h2 className="text-lg font-black text-neutral-900 uppercase tracking-wider mb-2">
+            {receiptData.isDraft ? "PROFORMA INVOICE" : (receiptData.status === "cancel" ? "VOID RECEIPT" : "RECEIPT")}
+          </h2>
+          {receiptData.isDraft ? (
+            <div className="text-xs mb-1">
+              <span className="font-bold text-neutral-700 mr-1">PROFORMA NO:</span>
+              <span className="font-mono font-medium text-neutral-900">{proformaDisplayId}</span>
+            </div>
+          ) : (
+            <>
+              {!receiptData.status?.includes("cancel") && (
+                <div className="text-xs mb-1">
+                  <span className="font-bold text-neutral-700 mr-1">RECEIPT NO:</span>
+                  <span className="font-mono font-medium text-neutral-900">#{receiptData.id}</span>
+                </div>
+              )}
+              {receiptData.proformaId && (
+                <div className="text-xs mb-1">
+                  <span className="font-bold text-neutral-700 mr-1">PROFORMA NO:</span>
+                  <span className="font-mono font-medium text-neutral-900">{receiptData.proformaId}</span>
+                </div>
+              )}
+            </>
+          )}
+          <div className="text-xs">
+            <span className="font-bold text-neutral-700 mr-1">DATE:</span>
+            <span className="font-medium text-neutral-900">{format(validDate, "dd/MM/yyyy HH:mm")}</span>
+          </div>
+        </div>
+      </div>
+
+      <hr className="border-neutral-300 mb-4" />
+
+      {/* Customer + Collection Date */}
+      <div className="flex justify-between mb-4">
+        <div className="flex-1">
+          <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-1">BILLED TO</h3>
+          <p className="text-sm font-bold text-neutral-900 leading-tight">{receiptData.customerName}</p>
+          <p className="text-xs text-neutral-600 font-mono">{receiptData.customerPhone}</p>
+        </div>
+        {receiptData.deliveryScheduledAt && (
+          <div className="flex-1 text-right">
+            <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-1">COLLECTION DATE</h3>
+            <p className="text-sm font-bold text-neutral-900 leading-tight">{format(new Date(receiptData.deliveryScheduledAt), "dd/MM/yyyy")}</p>
+            <p className="text-xs text-neutral-600">{format(new Date(receiptData.deliveryScheduledAt), "HH:mm")}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Items Table */}
+      <table className="w-full text-left mb-4 border-collapse">
+        <thead>
+          <tr className="border-b-2 border-neutral-800 text-sm font-bold text-neutral-900">
+            <th className="py-2 px-1 w-[50%]">DESCRIPTION</th>
+            <th className="py-2 px-1 text-center">QTY</th>
+            <th className="py-2 px-1 text-right">UNIT PRICE</th>
+            <th className="py-2 px-1 text-right">TOTAL</th>
+          </tr>
+        </thead>
+        <tbody className="text-sm text-neutral-800 font-medium">
+          {receiptData.items.map((item, idx) => (
+            <tr key={idx} className="border-b border-neutral-200">
+              <td className="py-3 px-1">{item.nameEn || item.name}</td>
+              <td className="py-3 px-1 text-center font-mono">{item.quantity}</td>
+              <td className="py-3 px-1 text-right font-mono">{formatCurrency(item.price)}</td>
+              <td className="py-3 px-1 text-right font-mono">{formatCurrency(item.price * item.quantity)}</td>
+            </tr>
+          ))}
+          {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
+            <tr className="border-b border-neutral-200">
+              <td className="py-3 px-1">Delivery Fee</td>
+              <td className="py-3 px-1 text-center font-mono">1</td>
+              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.deliveryFee)}</td>
+              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.deliveryFee)}</td>
+            </tr>
+          )}
+          {receiptData.expressSurcharge > 0 && (
+            <tr className="border-b border-neutral-200 text-rose-700">
+              <td className="py-3 px-1">Express Surcharge{receiptData.serviceSpeed === "express_50" ? " (+50%)" : " (+100%)"}</td>
+              <td className="py-3 px-1 text-center font-mono">1</td>
+              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.expressSurcharge)}</td>
+              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.expressSurcharge)}</td>
+            </tr>
+          )}
+          {receiptData.discount > 0 && (
+            <tr className="border-b border-neutral-200 text-emerald-600">
+              <td className="py-3 px-1">Discount{receiptData.discountPercent && receiptData.discountPercent > 0 ? ` (${receiptData.discountPercent}%)` : ""}</td>
+              <td className="py-3 px-1 text-center font-mono">1</td>
+              <td className="py-3 px-1 text-right font-mono">-{formatCurrency(receiptData.discount)}</td>
+              <td className="py-3 px-1 text-right font-mono">-{formatCurrency(receiptData.discount)}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      {/* Totals */}
+      <div className="flex justify-end mb-8">
+        <div className="w-1/2">
+          <div className="flex justify-between py-1.5 text-sm text-neutral-700">
+            <span>SUBTOTAL</span>
+            <span className="font-mono">฿{formatCurrency(receiptData.subtotal + receiptData.expressSurcharge + (receiptData.deliveryFee || 0) - receiptData.discount)}</span>
+          </div>
+          {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
+            <div className="flex justify-between py-1.5 text-sm text-neutral-700 border-b border-neutral-200">
+              <span>VAT ({receiptData.vatRate}%)</span>
+              <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
+            </div>
+          )}
+          <div className="flex justify-between py-3 text-lg font-black text-neutral-900 border-t-2 border-neutral-900">
+            <span>GRAND TOTAL</span>
+            <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
+          </div>
+          {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
+            <div className="flex justify-between py-1 text-xs text-neutral-500">
+              <span>Includes VAT {receiptData.vatRate}%</span>
+              <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
+            </div>
+          )}
+          {payments.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-dashed border-neutral-300">
+              {payments.map((p, pIdx) => (
+                <div key={pIdx} className="flex justify-between py-1 text-sm text-neutral-800">
+                  <span className="uppercase text-xs font-bold">{format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID ({p.method === "credit" ? "MEMBER" : p.method})</span>
+                  <span className="font-mono font-bold">฿{formatCurrency(p.amount)}</span>
+                </div>
+              ))}
+              <div className="flex justify-between py-2 mt-2 text-sm font-black text-neutral-900 border-t border-neutral-200">
+                <span>TOTAL PAID</span>
+                <span className="font-mono">฿{formatCurrency(totalPaid)}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="mt-auto absolute bottom-[10mm] left-[10mm] right-[10mm]">
+        <div className="flex items-end justify-between">
+          <div className="w-2/3">
+            {cleanRemark(receiptData.remark) && (
+              <div className="p-3 bg-neutral-100 rounded-lg text-sm text-neutral-700 border border-neutral-200">
+                <span className="font-bold text-neutral-900">REMARKS:</span><br />
+                {cleanRemark(receiptData.remark)}
+              </div>
+            )}
+          </div>
+          <div className="w-1/3 text-right">
+            {receiptData.status === "cancel" && (
+              <div className="text-lg text-rose-600 font-black uppercase border-4 border-rose-600 px-4 py-2 inline-block transform -rotate-6 rounded-md opacity-80">VOIDED</div>
+            )}
+          </div>
+        </div>
+        <div className="text-center mt-8 pt-4 border-t border-neutral-200">
+          <p className="text-xs text-neutral-500 font-medium">
+            {receiptData.isDraft
+              ? "This is a proforma invoice, not an official tax receipt."
+              : (receiptData.status === "cancel" ? "This order has been cancelled" : "Thank you for your business!")}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
