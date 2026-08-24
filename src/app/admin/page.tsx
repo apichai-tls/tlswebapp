@@ -1444,12 +1444,6 @@ export default function AdminPage() {
       });
     }
 
-    // Always bump revision on Save/Create — no conditions
-    let effectiveRevision = proformaRevision + 1;
-    if (proformaReceiptNumber) {
-      setProformaRevision(effectiveRevision);
-    }
-
     const itemsPayload = dialogCart.map(item => ({
       name: item.name,
       nameEn: item.nameEn || item.name,
@@ -1549,7 +1543,7 @@ export default function AdminPage() {
             : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
         : 0,
       remark: [
-        proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "",
+        proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}${proformaRevision > 0 ? `-R${proformaRevision}` : ""}` : "",
         ...customRemarks,
         activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
@@ -1605,7 +1599,7 @@ export default function AdminPage() {
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
       proformaReceiptNumber: proformaReceiptNumber || null,
-      proformaRevision: proformaReceiptNumber ? effectiveRevision : null,
+      proformaRevision: proformaReceiptNumber ? proformaRevision : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced,
@@ -1613,93 +1607,6 @@ export default function AdminPage() {
       actorName: user?.name || user?.email,
       actorRole: user?.role
     };
-
-    // Always generate proforma image on Save/Create when proforma number exists
-    const shouldCaptureProforma = Boolean(proformaReceiptNumber);
-
-    if (shouldCaptureProforma) {
-      try {
-        const cleanBaseProforma = cleanProformaNumber(proformaReceiptNumber);
-        const effectiveProformaId = `${cleanBaseProforma}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
-        const filename = `proforma-${cleanBaseProforma}-rev${effectiveRevision}.png`;
-        const alreadyCaptured = finalBillImageUrls.some(url => url.includes(filename));
-
-        if (!alreadyCaptured) {
-          const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
-          const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
-          const tempReceiptData: any = {
-            id: effectiveProformaId,
-            proformaId: cleanBaseProforma,
-            proformaRevision: effectiveRevision,
-            createdAt: effectiveCreatedAt,
-            customerName: customerName || "Walk-In",
-            customerPhone: customerPhone || "-",
-            items: dialogCart.map(item => ({ name: item.name, nameEn: item.nameEn || item.name, quantity: item.quantity, price: item.price })),
-            subtotal: dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0),
-            expressSurcharge: serviceSpeed === "express_50" ? Math.ceil(dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0) * 0.5) : (serviceSpeed === "express_100" ? dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0) : 0),
-            serviceSpeed,
-            discount: dialogDiscountAmount,
-            total: calculatedTotal,
-            isPaid: paymentMethod === 'paid',
-            paymentChannel,
-            remark: [activeIsFreeDelivery ? "Free Delivery" : "", serviceSpeed === "express_50" ? "Express 50%" : "", serviceSpeed === "express_100" ? "Express 100%" : "", `Proforma: ${cleanBaseProforma}`, `Revision: ${effectiveRevision}`].filter(Boolean).join(" | ") || undefined,
-            isDraft: true,
-            vatType: dialogVatType,
-            vatRate: dialogVatRate,
-            vatAmount: 0,
-            deliveryScheduledAt: new Date(deliveryScheduledTime),
-            deliveryFee: fee
-          };
-          const blob = receiptPaperSize === "A5" 
-            ? await generateA5ReceiptImage(tempReceiptData, activeShop)
-            : await generateThermalReceiptImage(tempReceiptData, activeShop);
-          if (blob) {
-              let uploadJson: { success: boolean; publicUrl?: string } = { success: false };
-              try {
-                const signRes = await fetch("/api/upload-url", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    entityType: "job",
-                    entityId: effectiveProformaId,
-                    subType: "proofs",
-                    contentType: "image/png",
-                    filename
-                  })
-                });
-                const signData = await signRes.json();
-                if (signData.uploadUrl && signData.publicUrl) {
-                  const putRes = await fetch(signData.uploadUrl, {
-                    method: "PUT",
-                    headers: { "Content-Type": "image/png" },
-                    body: blob
-                  });
-                  if (putRes.ok) {
-                    uploadJson = { success: true, publicUrl: signData.publicUrl };
-                  }
-                }
-              } catch (gcsErr) {
-                console.warn("GCS upload failed, falling back to local:", gcsErr);
-                const file = new File([blob], filename, { type: "image/png" });
-                const formData = new FormData();
-                formData.append("file", file);
-                formData.append("entityType", "jobs");
-                formData.append("entityId", effectiveProformaId);
-                formData.append("subType", "proofs");
-                const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
-                uploadJson = await uploadRes.json();
-              }
-              if (uploadJson.success && uploadJson.publicUrl) {
-                if (!finalBillImageUrls.includes(uploadJson.publicUrl)) {
-                  finalBillImageUrls.push(uploadJson.publicUrl);
-                }
-              }
-            }
-          }
-        } catch (e) {
-        console.error("Proforma image capture in page.tsx handleCreate failed:", e);
-      }
-    }
 
     // Only set image properties if they were actually modified, to prevent stale overrides
     if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
