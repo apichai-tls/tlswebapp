@@ -1046,12 +1046,14 @@ export default function AdminPage() {
     const itemsList = Array.isArray(job.items) ? job.items : [];
     const mappedCart = itemsList.map((item: any) => {
       const matched = services.find(s => s.name === item.name || s.nameEn === item.nameEn || s.id === item.serviceId);
+      const originalBase = matched ? matched.price : (item.basePrice !== undefined ? item.basePrice : item.price);
       return {
         id: matched?.id || item.serviceId || Math.random().toString(),
         name: item.name,
         nameEn: item.nameEn || item.name,
         quantity: item.quantity || 1,
         price: item.price || 0,
+        basePrice: item.basePrice !== undefined ? item.basePrice : originalBase,
         category: matched?.category || "",
         unit: matched?.unit || "piece"
       };
@@ -1065,6 +1067,7 @@ export default function AdminPage() {
           nameEn: "Other (Custom Price)",
           quantity: 1,
           price: job.fee || 0,
+          basePrice: job.fee || 0,
           category: "other",
           unit: "piece"
         });
@@ -1077,6 +1080,7 @@ export default function AdminPage() {
             nameEn: matched.nameEn || matched.name,
             quantity: 1,
             price: job.fee || 0,
+            basePrice: matched.price,
             category: matched.category,
             unit: matched.unit || "piece"
           });
@@ -3502,6 +3506,7 @@ export default function AdminPage() {
                                           nameEn: "Other (Custom Price)",
                                           quantity: 1,
                                           price: laundryPrice || 0,
+                                          basePrice: laundryPrice || 0,
                                           category: "other",
                                           unit: "piece"
                                         }];
@@ -3555,7 +3560,7 @@ export default function AdminPage() {
                                                 );
                                               } else {
                                                 // L1 Fix: Warn if other items in cart have custom prices that won't carry over
-                                                const hasCustomPriced = prev.some(item => item.price !== item.basePrice);
+                                                const hasCustomPriced = prev.some(item => item.basePrice !== undefined && item.price !== item.basePrice);
                                                 if (hasCustomPriced) {
                                                   toast(`⚠️ มีรายการที่ปรับราคาพิเศษอยู่ในตะกร้า — ราคาสินค้าใหม่จะใช้ราคาตามปกติ`, { duration: 3000 });
                                                 }
@@ -3566,6 +3571,7 @@ export default function AdminPage() {
                                                   nameEn: s.nameEn || s.name,
                                                   quantity: defaultQty,
                                                   price: s.price,
+                                                  basePrice: s.price,
                                                   category: s.category || "",
                                                   unit: s.unit || "piece"
                                                 }];
