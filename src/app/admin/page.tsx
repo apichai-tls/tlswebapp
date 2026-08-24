@@ -3743,8 +3743,7 @@ export default function AdminPage() {
                                         +
                                       </button>
                                     </div>
-                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1 py-0.5 w-16" title="Unit price per piece/kg (ราคาต่อหน่วย)">
-                                      <span className="text-[9px] text-slate-400 font-semibold mr-0.5">@฿</span>
+                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1.5 py-0.5 w-14" title="Unit price (ราคาต่อหน่วย)">
                                       <input 
                                         type="number"
                                         disabled={isCartLocked}
