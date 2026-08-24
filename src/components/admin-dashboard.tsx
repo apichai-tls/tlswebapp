@@ -109,7 +109,16 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
     setLoadingTasks(true);
     try {
       const [tasksRes, usersRes] = await Promise.all([
-        getTasks(user ? { id: user.id, role: user.role } : undefined),
+        getTasks(
+          user
+            ? {
+                id: user.id,
+                role: user.role,
+                isDepartmentHead: user.isDepartmentHead,
+                department: user.department,
+              }
+            : undefined
+        ),
         getUsers(),
       ]);
       if (tasksRes.success && tasksRes.data) {
@@ -558,6 +567,8 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
             adminUsers={adminUsers}
             currentUserId={currentUserId}
             currentUserName={currentUserName}
+            currentUserDept={user?.department}
+            isDepartmentHead={user?.isDepartmentHead}
             onOpenTask={(task) => {
               setEditingTask(task);
               setModalOpen(true);

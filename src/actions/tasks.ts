@@ -83,17 +83,38 @@ export interface TaskItem {
   updatedAt: Date;
 }
 
-export async function getTasks(viewer?: { id?: string; role?: string }) {
+export async function getTasks(viewer?: {
+  id?: string;
+  role?: string;
+  isDepartmentHead?: boolean;
+  department?: string | null;
+}) {
   try {
     const isAdmin = viewer?.role === "admin";
+    const isDeptHead = viewer?.isDepartmentHead === true;
+    const dept = viewer?.department;
     const viewerId = viewer?.id;
 
     const whereClause: any = {};
     if (!isAdmin && viewerId) {
-      whereClause.OR = [
-        { createdById: viewerId },
-        { assignedToId: { contains: viewerId } },
-      ];
+      if (isDeptHead && dept) {
+        // Query all staff IDs in the same department
+        const deptStaff = await prisma.adminUser.findMany({
+          where: { department: dept, isActive: true },
+          select: { id: true },
+        });
+        const deptStaffIds = Array.from(new Set([viewerId, ...deptStaff.map((u) => u.id)]));
+
+        whereClause.OR = [
+          { createdById: { in: deptStaffIds } },
+          ...deptStaffIds.map((sid) => ({ assignedToId: { contains: sid } })),
+        ];
+      } else {
+        whereClause.OR = [
+          { createdById: viewerId },
+          { assignedToId: { contains: viewerId } },
+        ];
+      }
     }
 
     const tasks = await prisma.task.findMany({

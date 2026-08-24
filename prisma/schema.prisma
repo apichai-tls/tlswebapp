@@ -212,19 +212,20 @@ model ActivityLog {
 }
 
 model AdminUser {
-  id          String        @id @default(uuid())
-  email       String        @unique
-  password    String
-  name        String
-  role        String        @default("staff")
-  permissions String
-  area        String?
-  department  String?       // management | accounting_cso | branch_ops | logistics
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  branchId    String?
-  isActive    Boolean       @default(true)
-  branch      ShopLocation? @relation(fields: [branchId], references: [id])
+  id               String        @id @default(uuid())
+  email            String        @unique
+  password         String
+  name             String
+  role             String        @default("staff")
+  permissions      String
+  area             String?
+  department       String?       // management | accounting_cso | branch_ops | logistics
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  branchId         String?
+  isActive         Boolean       @default(true)
+  isDepartmentHead Boolean       @default(false)
+  branch           ShopLocation? @relation(fields: [branchId], references: [id])
 }
 
 model CashierShift {

@@ -8,7 +8,9 @@ export interface User {
   id: string;
   email: string;
   name?: string;
-  role: 'admin' | 'superadmin' | 'rider' | 'manager' | 'cso' | 'staff';
+  role: string;
+  department?: string;
+  isDepartmentHead?: boolean;
   permissions: string[];
   area?: string;
   branchId?: string | null;
