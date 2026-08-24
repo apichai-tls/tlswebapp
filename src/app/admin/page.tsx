@@ -1444,30 +1444,10 @@ export default function AdminPage() {
       });
     }
 
-    const currentCartHash = JSON.stringify({
-      items: dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
-      speed: serviceSpeed,
-      fee: fee,
-      freeDelivery: activeIsFreeDelivery,
-      disc: dialogDiscountPercent,
-      vatType: dialogVatType,
-      vatRate: dialogVatRate,
-      customerName: customerName || "",
-      customerPhone: customerPhone || "",
-      deliveryAt: deliveryScheduledTime || "",
-    });
-    // Cart changed = hash differs from the state when the job was loaded (or last proforma press)
-    const cartChangedAfterProforma = Boolean(
-      proformaReceiptNumber &&
-      lastProformaCartHash &&
-      (currentCartHash !== lastProformaCartHash)
-    );
-
-    let effectiveRevision = proformaRevision;
-    if (cartChangedAfterProforma) {
-      effectiveRevision = proformaRevision + 1;
+    // Always bump revision on Save/Create — no conditions
+    let effectiveRevision = proformaRevision + 1;
+    if (proformaReceiptNumber) {
       setProformaRevision(effectiveRevision);
-      setLastProformaCartHash(currentCartHash);
     }
 
     const itemsPayload = dialogCart.map(item => ({
@@ -1634,22 +1614,8 @@ export default function AdminPage() {
       actorRole: user?.role
     };
 
-    // Decide whether to auto-generate a new proforma image on Save:
-    //
-    // NEW JOB: always capture if proforma number exists
-    // EDIT JOB – capture only when BOTH conditions are met:
-    //   a) Something in the cart/customer/delivery changed (cartChangedAfterProforma = true)
-    //   b) User did NOT press the Proforma button after that change
-    //      (proformaPressedSinceLastEdit = false → user forgot to re-press Proforma)
-    //
-    // If user DID press Proforma already, the Dialog's captureRef already saved rev image
-    // via uploadAndSave — we must NOT create a duplicate here.
-    const shouldCaptureProforma = Boolean(
-      proformaReceiptNumber && (
-        !editingJobId ||
-        (cartChangedAfterProforma && !proformaPressedSinceLastEdit)
-      )
-    );
+    // Always generate proforma image on Save/Create when proforma number exists
+    const shouldCaptureProforma = Boolean(proformaReceiptNumber);
 
     if (shouldCaptureProforma) {
       try {
