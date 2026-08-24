@@ -1091,7 +1091,7 @@ export default function AdminPage() {
     setDialogCart(mappedCart);
     const existingProformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
     const existingRevisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
-    let loadedProformaNum = (job as any).proformaReceiptNumber || (existingProformaMatch ? existingProformaMatch[1] : null);
+    let loadedProformaNum = cleanProformaNumber((job as any).proformaReceiptNumber || (existingProformaMatch ? existingProformaMatch[1] : null)) || null;
     let loadedRevision = (job as any).proformaRevision !== undefined ? (job as any).proformaRevision : (existingRevisionMatch ? parseInt(existingRevisionMatch[1], 10) : 0);
 
     // Fallback: if no proforma number found in remark, try to recover from billImageUrl filenames
@@ -1551,7 +1551,7 @@ export default function AdminPage() {
             : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
         : 0,
       remark: [
-        proformaReceiptNumber ? `Proforma: ${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "",
+        proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "",
         ...customRemarks,
         activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
@@ -1624,8 +1624,9 @@ export default function AdminPage() {
 
     if (shouldCaptureProforma) {
       try {
-        const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
-        const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
+        const cleanBaseProforma = cleanProformaNumber(proformaReceiptNumber);
+        const effectiveProformaId = `${cleanBaseProforma}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
+        const filename = `proforma-${cleanBaseProforma}-rev${effectiveRevision}.png`;
         const alreadyCaptured = finalBillImageUrls.some(url => url.includes(filename));
 
         if (!alreadyCaptured) {
@@ -1633,7 +1634,7 @@ export default function AdminPage() {
           const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
           const tempReceiptData: any = {
             id: effectiveProformaId,
-            proformaId: proformaReceiptNumber,
+            proformaId: cleanBaseProforma,
             proformaRevision: effectiveRevision,
             createdAt: effectiveCreatedAt,
             customerName: customerName || "Walk-In",
@@ -1646,7 +1647,7 @@ export default function AdminPage() {
             total: calculatedTotal,
             isPaid: paymentMethod === 'paid',
             paymentChannel,
-            remark: [activeIsFreeDelivery ? "Free Delivery" : "", serviceSpeed === "express_50" ? "Express 50%" : "", serviceSpeed === "express_100" ? "Express 100%" : "", `Proforma: ${proformaReceiptNumber}`, `Revision: ${effectiveRevision}`].filter(Boolean).join(" | ") || undefined,
+            remark: [activeIsFreeDelivery ? "Free Delivery" : "", serviceSpeed === "express_50" ? "Express 50%" : "", serviceSpeed === "express_100" ? "Express 100%" : "", `Proforma: ${cleanBaseProforma}`, `Revision: ${effectiveRevision}`].filter(Boolean).join(" | ") || undefined,
             isDraft: true,
             vatType: dialogVatType,
             vatRate: dialogVatRate,
@@ -1920,7 +1921,8 @@ export default function AdminPage() {
         status: editingSubStatus || "billing",
         laundryTypes: derivedLaundryTypes,
         proformaReceiptNumber,
-        proformaRevision
+        proformaRevision,
+        deliveryScheduledAt: deliveryScheduledTime ? new Date(deliveryScheduledTime) : undefined
       };
       
       const formatted = formatJobToReceiptData(mockJob);
@@ -1937,7 +1939,7 @@ export default function AdminPage() {
       return formatted;
     }
     return null;
-  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt]);
+  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt, deliveryScheduledTime]);
 
   const handleEditFullJobRef = useRef(handleEditFullJob);
   handleEditFullJobRef.current = handleEditFullJob;
