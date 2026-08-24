@@ -1121,6 +1121,9 @@ export default function AdminPage() {
       disc: job.discountPercent || 0,
       vatType: (job as any).vatType || "none",
       vatRate: (job as any).vatRate || 0,
+      customerName: job.customerName || "",
+      customerPhone: job.customerPhone || "",
+      deliveryAt: job.deliveryScheduledAt ? format(roundToNearest30(new Date(job.deliveryScheduledAt)), "yyyy-MM-dd'T'HH:mm") : "",
     }) : null;
     setLastProformaCartHash(initialCartHash);
     setIsDraftPreview(false);
