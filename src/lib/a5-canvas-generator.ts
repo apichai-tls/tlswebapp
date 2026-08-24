@@ -35,7 +35,7 @@ export async function generateA5ReceiptImage(
   container.style.zIndex = "-99999";
   container.style.opacity = "0.01";
   container.style.pointerEvents = "none";
-  container.style.width = "148mm";
+  container.style.width = "559px"; // 148mm at 96dpi — matches Tailwind w-[148mm]
 
   const safeCreatedAt = receiptData.createdAt 
     ? (receiptData.createdAt instanceof Date ? receiptData.createdAt : new Date(receiptData.createdAt))
@@ -84,7 +84,7 @@ export async function generateA5ReceiptImage(
   ` : "";
 
   container.innerHTML = `
-    <div style="width: 148mm; min-height: 210mm; background-color: #ffffff; color: #27272a; padding: 32px; font-family: 'Inter', system-ui, -apple-system, sans-serif; position: relative; box-sizing: border-box; text-align: left;">
+    <div style="width: 559px; min-height: 793px; background-color: #ffffff; color: #27272a; padding: 32px; font-family: 'Inter', system-ui, -apple-system, sans-serif; position: relative; box-sizing: border-box; text-align: left;">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
         <div style="flex: 1;">
           <div style="margin-bottom: 8px;">
