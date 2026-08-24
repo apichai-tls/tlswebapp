@@ -1,5 +1,6 @@
 import { format } from "date-fns";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
+import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
 
 function formatCurrency(val: number): string {
   return (val || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -66,7 +67,7 @@ export async function generateThermalReceiptImage(
   ` : "";
 
   container.innerHTML = `
-    <div style="width: 280px; background-color: #ffffff; color: #27272a; padding: 20px; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; position: relative; box-sizing: border-box; text-align: left; font-size: 10px;">
+    <div style="width: 280px; background-color: #ffffff; color: #27272a; padding: 20px; font-family: 'Inter', system-ui, -apple-system, sans-serif; position: relative; box-sizing: border-box; text-align: left; font-size: 10px;">
       ${receiptData.isDraft ? `
         <div style="text-align: center; margin-bottom: 8px;">
           <span style="background-color: #e5e5e5; color: #171717; font-weight: bold; font-size: 8px; padding: 2px 8px; border-radius: 9999px; text-transform: uppercase; border: 1px solid #a3a3a3;">
@@ -146,10 +147,8 @@ export async function generateThermalReceiptImage(
   document.body.appendChild(container);
 
   try {
-    if (document.fonts?.ready) {
-      await document.fonts.ready;
-    }
-    await new Promise(r => setTimeout(r, 60));
+    // Ensure Inter font is loaded before capturing — key fix for font consistency
+    await ensureReceiptFontsLoaded();
 
     const html2canvas = (await import("html2canvas-pro")).default;
     const canvas = await html2canvas(container.firstElementChild as HTMLElement, {

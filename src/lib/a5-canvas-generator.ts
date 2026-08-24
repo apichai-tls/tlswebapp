@@ -1,5 +1,6 @@
 import { format } from "date-fns";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
+import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
 
 function formatCurrency(val: number): string {
   return (val || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -83,7 +84,7 @@ export async function generateA5ReceiptImage(
   ` : "";
 
   container.innerHTML = `
-    <div style="width: 148mm; min-height: 210mm; background-color: #ffffff; color: #27272a; padding: 32px; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; position: relative; box-sizing: border-box; text-align: left;">
+    <div style="width: 148mm; min-height: 210mm; background-color: #ffffff; color: #27272a; padding: 32px; font-family: 'Inter', system-ui, -apple-system, sans-serif; position: relative; box-sizing: border-box; text-align: left;">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
         <div style="flex: 1;">
           <div style="margin-bottom: 8px;">
@@ -189,10 +190,9 @@ export async function generateA5ReceiptImage(
   document.body.appendChild(container);
 
   try {
-    if (document.fonts?.ready) {
-      await document.fonts.ready;
-    }
-    await new Promise(r => setTimeout(r, 60));
+    // Ensure Inter font is loaded before capturing — this is the key fix
+    // that makes background-generated images look identical to Dialog preview.
+    await ensureReceiptFontsLoaded();
 
     const html2canvas = (await import("html2canvas-pro")).default;
     const canvas = await html2canvas(container.firstElementChild as HTMLElement, {
