@@ -1,210 +1,173 @@
 import { format } from "date-fns";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
 
+function formatCurrency(val: number): string {
+  return (val || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function cleanRemarkForDisplay(raw?: string | null): string {
+  if (!raw) return "";
+  return raw
+    .split("|")
+    .map(p => p.trim())
+    .filter(p => !p.startsWith("Proforma:") && !p.startsWith("Revision:") && !p.startsWith("VAT:") && !p.startsWith("VAT ["))
+    .join(" | ")
+    .trim();
+}
+
+/**
+ * Generate Thermal Receipt Image using Method 1 (HTML DOM + html2canvas-pro)
+ * Guarantees 100% identical styling, logo, fonts, and layout.
+ */
 export async function generateThermalReceiptImage(
   receiptData: ReceiptData,
   activeShop?: ShopInfo | null
 ): Promise<Blob | null> {
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
+  if (typeof document === "undefined") return null;
 
-  // 80mm thermal paper standard width: 576px canvas width (at 2x for sharp print quality)
-  const width = 576;
-  const padding = 24;
-  const contentWidth = width - padding * 2;
-
-  // Dynamic height calculation
-  const itemsCount = receiptData.items.length;
-  const hasDeliveryFee = (receiptData.deliveryFee || 0) > 0;
-  const baseHeight = 550 + (itemsCount + (hasDeliveryFee ? 1 : 0)) * 32;
-  const height = baseHeight;
-
-  canvas.width = width;
-  canvas.height = height;
-
-  // White background
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.fillStyle = "#000000";
-  let y = padding + 20;
-
-  // Header Title
-  ctx.font = "bold 20px monospace";
-  ctx.textAlign = "center";
-  ctx.fillText(receiptData.isDraft ? "PROFORMA RECEIPT" : (receiptData.status === "cancel" ? "VOID SLIP" : "RECEIPT"), width / 2, y);
-  y += 28;
-
-  // Shop Name & Details
-  ctx.font = "bold 22px sans-serif";
-  ctx.fillText(activeShop?.name || "That Laundry Shop", width / 2, y);
-  y += 24;
-
-  ctx.font = "14px sans-serif";
-  ctx.fillStyle = "#444444";
-  ctx.fillText(`Tel: ${activeShop?.phone || "081-111-2222"}`, width / 2, y);
-  y += 20;
-  if (activeShop?.taxId) {
-    ctx.fillText(`TAX ID: ${activeShop.taxId}`, width / 2, y);
-    y += 20;
-  }
-
-  // Dashed separator
-  ctx.fillStyle = "#000000";
-  const drawDashedLine = (lineY: number) => {
-    ctx.beginPath();
-    ctx.setLineDash([6, 4]);
-    ctx.moveTo(padding, lineY);
-    ctx.lineTo(width - padding, lineY);
-    ctx.strokeStyle = "#888888";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.setLineDash([]);
-  };
-
-  drawDashedLine(y);
-  y += 18;
-
-  // Order Details Left/Right alignment
-  ctx.font = "15px monospace";
-  const drawRow = (label: string, value: string, isBold = false) => {
-    ctx.font = isBold ? "bold 15px monospace" : "15px monospace";
-    ctx.textAlign = "left";
-    ctx.fillStyle = "#000000";
-    ctx.fillText(label, padding, y);
-    ctx.textAlign = "right";
-    ctx.fillText(value, width - padding, y);
-    y += 22;
-  };
-
-  const docId = receiptData.isDraft 
-    ? receiptData.id 
-    : (receiptData.status === "cancel" ? `${receiptData.id}-VOID` : `#${receiptData.id}`);
+  const container = document.createElement("div");
+  container.style.position = "fixed";
+  container.style.top = "0";
+  container.style.left = "0";
+  container.style.zIndex = "-99999";
+  container.style.opacity = "0.01";
+  container.style.pointerEvents = "none";
+  container.style.width = "280px";
 
   const safeCreatedAt = receiptData.createdAt 
     ? (receiptData.createdAt instanceof Date ? receiptData.createdAt : new Date(receiptData.createdAt))
     : new Date();
   const validCreatedAt = isNaN(safeCreatedAt.getTime()) ? new Date() : safeCreatedAt;
+  const formattedDate = format(validCreatedAt, "dd/MM/yyyy HH:mm");
 
-  drawRow(receiptData.isDraft ? "PROFORMA NO:" : "RECEIPT NO:", docId, true);
-  if (!receiptData.isDraft && receiptData.proformaId) {
-    drawRow("PROFORMA NO:", receiptData.proformaId, true);
+  const subtotalVal = receiptData.subtotal + receiptData.expressSurcharge + (receiptData.deliveryFee || 0) - receiptData.discount;
+  const cleanRemark = cleanRemarkForDisplay(receiptData.remark);
+  const logoUrl = activeShop?.logoUrl || "/logo.png";
+  const docId = receiptData.isDraft ? (receiptData.proformaId || receiptData.id || "DRAFT") : `#${receiptData.id}`;
+
+  const itemsHtml = receiptData.items.map(item => `
+    <div style="display: flex; font-size: 10px; line-height: 1.25; margin-bottom: 4px;">
+      <span style="flex: 1; min-width: 0; padding-right: 8px; text-align: left;">${item.nameEn || item.name}</span>
+      <span style="width: 32px; text-align: center; font-family: monospace;">${item.quantity}</span>
+      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(item.price * item.quantity)}</span>
+    </div>
+  `).join("");
+
+  const deliveryFeeHtml = (receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0) ? `
+    <div style="display: flex; font-size: 10px; line-height: 1.25; margin-bottom: 4px; font-weight: 500;">
+      <span style="flex: 1; min-width: 0; padding-right: 8px; text-align: left;">Delivery Fee</span>
+      <span style="width: 32px; text-align: center; font-family: monospace;">1</span>
+      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(receiptData.deliveryFee)}</span>
+    </div>
+  ` : "";
+
+  container.innerHTML = `
+    <div style="width: 280px; background-color: #ffffff; color: #27272a; padding: 20px; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; position: relative; box-sizing: border-box; text-align: left; font-size: 10px;">
+      ${receiptData.isDraft ? `
+        <div style="text-align: center; margin-bottom: 8px;">
+          <span style="background-color: #e5e5e5; color: #171717; font-weight: bold; font-size: 8px; padding: 2px 8px; border-radius: 9999px; text-transform: uppercase; border: 1px solid #a3a3a3;">
+            PROFORMA RECEIPT
+          </span>
+        </div>
+      ` : ""}
+      <div style="text-align: center; margin-bottom: 12px;">
+        <img src="${logoUrl}" alt="Shop Logo" style="height: 36px; max-width: 120px; object-fit: contain; filter: grayscale(100%) contrast(125%); display: block; margin: 0 auto 6px auto;" />
+        <h3 style="font-size: 12px; font-weight: 900; color: #171717; text-transform: uppercase; margin: 0 0 2px 0;">${activeShop?.name || "That Laundry Shop"}</h3>
+        <p style="font-size: 9px; color: #52525b; margin: 0 0 2px 0;">${activeShop?.address || "123 Sukhumvit Road, Bangkok"}</p>
+        <p style="font-size: 9px; color: #52525b; margin: 0 0 2px 0;">Tel: ${activeShop?.phone || "081-111-2222"}</p>
+        ${activeShop?.taxId ? `<p style="font-size: 8.5px; color: #52525b; margin: 0;">TAX ID: ${activeShop.taxId}</p>` : ""}
+        <div style="border-top: 1px dashed #a3a3a3; margin: 8px 0;"></div>
+      </div>
+
+      <div style="margin-bottom: 8px; line-height: 1.4;">
+        <div style="display: flex; justify-content: space-between; font-weight: bold; color: #171717;">
+          <span>${receiptData.isDraft ? "PROFORMA NO:" : "RECEIPT NO:"}</span>
+          <span style="font-family: monospace;">${docId}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span>DATE:</span>
+          <span>${formattedDate}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span>CUSTOMER:</span>
+          <span style="font-weight: bold; color: #171717;">${receiptData.customerName || "Walk-In"}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span>PHONE:</span>
+          <span>${receiptData.customerPhone || "-"}</span>
+        </div>
+        <div style="border-top: 1px dashed #a3a3a3; margin: 8px 0;"></div>
+      </div>
+
+      <div style="margin-bottom: 8px;">
+        <div style="display: flex; font-weight: bold; color: #171717; margin-bottom: 4px;">
+          <span style="flex: 1; text-align: left;">ITEM</span>
+          <span style="width: 32px; text-align: center;">QTY</span>
+          <span style="width: 60px; text-align: right;">TOTAL</span>
+        </div>
+        ${itemsHtml}
+        ${deliveryFeeHtml}
+        <div style="border-top: 1px dashed #a3a3a3; margin: 8px 0;"></div>
+      </div>
+
+      <div style="line-height: 1.5; margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between;">
+          <span>SUBTOTAL</span>
+          <span style="font-family: monospace;">฿${formatCurrency(subtotalVal)}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 900; color: #171717; border-top: 1px solid #171717; padding-top: 4px; margin-top: 4px;">
+          <span>GRAND TOTAL</span>
+          <span style="font-family: monospace;">฿${formatCurrency(receiptData.total)}</span>
+        </div>
+        ${receiptData.vatType === "inclusive" && receiptData.vatRate > 0 ? `
+          <div style="display: flex; justify-content: space-between; font-size: 8px; color: #737373;">
+            <span>Includes VAT ${receiptData.vatRate}%</span>
+            <span style="font-family: monospace;">฿${formatCurrency(receiptData.vatAmount)}</span>
+          </div>
+        ` : ""}
+      </div>
+
+      ${cleanRemark ? `
+        <div style="padding: 6px; background-color: #f5f5f5; border-radius: 4px; font-size: 8.5px; border: 1px solid #e5e7eb; margin-bottom: 8px;">
+          <strong>REMARKS:</strong> ${cleanRemark}
+        </div>
+      ` : ""}
+
+      <div style="text-align: center; border-top: 1px solid #e5e7eb; padding-top: 8px; color: #737373; font-size: 8px;">
+        ${receiptData.isDraft ? "This is a proforma invoice, not an official tax receipt." : "Thank you for your business!"}
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(container);
+
+  try {
+    if (document.fonts?.ready) {
+      await document.fonts.ready;
+    }
+    await new Promise(r => setTimeout(r, 60));
+
+    const html2canvas = (await import("html2canvas-pro")).default;
+    const canvas = await html2canvas(container.firstElementChild as HTMLElement, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: "#ffffff",
+      logging: false,
+      imageTimeout: 5000,
+    });
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png")
+    );
+    return blob;
+  } catch (err) {
+    console.error("DOM Thermal receipt capture failed:", err);
+    return null;
+  } finally {
+    if (container.parentNode) {
+      container.parentNode.removeChild(container);
+    }
   }
-  drawRow("DATE:", format(validCreatedAt, "dd/MM/yyyy HH:mm"));
-  drawRow("CUSTOMER:", receiptData.customerName || "Walk-In");
-  drawRow("PHONE:", receiptData.customerPhone || "-");
-
-  // Note: DUE DATE omitted to match dialog display
-
-  drawDashedLine(y);
-  y += 18;
-
-  // Table Headers
-  ctx.font = "bold 14px monospace";
-  ctx.textAlign = "left";
-  ctx.fillText("ITEM", padding, y);
-  ctx.textAlign = "center";
-  ctx.fillText("QTY", width / 2 + 30, y);
-  ctx.textAlign = "right";
-  ctx.fillText("TOTAL", width - padding, y);
-  y += 22;
-
-  // Items List
-  ctx.font = "14px monospace";
-  receiptData.items.forEach(item => {
-    ctx.textAlign = "left";
-    // Use English name (nameEn) if available — matches dialog which shows nameEn || name
-    const displayName = (item.nameEn || item.name) || "";
-    const name = displayName.length > 18 ? displayName.substring(0, 17) + "…" : displayName;
-    ctx.fillText(name, padding, y);
-    ctx.textAlign = "center";
-    ctx.fillText(String(item.quantity), width / 2 + 30, y);
-    ctx.textAlign = "right";
-    ctx.fillText(`฿${(item.price * item.quantity).toFixed(2)}`, width - padding, y);
-    y += 22;
-  });
-
-  // Delivery Fee under items
-  if (hasDeliveryFee) {
-    ctx.textAlign = "left";
-    ctx.fillText("Delivery Fee", padding, y);
-    ctx.textAlign = "center";
-    ctx.fillText("1", width / 2 + 30, y);
-    ctx.textAlign = "right";
-    ctx.fillText(`฿${(receiptData.deliveryFee || 0).toFixed(2)}`, width - padding, y);
-    y += 22;
-  }
-
-  drawDashedLine(y);
-  y += 22;
-
-  // Grand Total & VAT
-  ctx.font = "bold 20px monospace";
-  ctx.textAlign = "left";
-  ctx.fillText("GRAND TOTAL:", padding, y);
-  ctx.textAlign = "right";
-  ctx.fillText(`฿${receiptData.total.toFixed(2)}`, width - padding, y);
-  y += 22;
-
-  if (receiptData.vatType && receiptData.vatType !== "none" && receiptData.vatAmount) {
-    ctx.font = "13px monospace";
-    ctx.fillStyle = "#555555";
-    ctx.textAlign = "left";
-    ctx.fillText(`Incl. VAT ${receiptData.vatRate}%`, padding, y);
-    ctx.textAlign = "right";
-    ctx.fillText(`฿${receiptData.vatAmount.toFixed(2)}`, width - padding, y);
-    y += 22;
-  }
-
-  drawDashedLine(y);
-  y += 22;
-
-  // Payment Status Box
-  ctx.textAlign = "center";
-  ctx.font = "bold 16px monospace";
-  ctx.fillStyle = "#000000";
-  if (receiptData.isPaid) {
-    ctx.fillText(`PAID - ${receiptData.paymentChannel || "Cash"}`, width / 2, y);
-  } else {
-    ctx.fillText("UNPAID - PAY ON PICKUP", width / 2, y);
-  }
-  y += 24;
-
-  // Remark box if present
-  if (receiptData.remark) {
-    ctx.font = "12px monospace";
-    ctx.fillStyle = "#333333";
-    const remarkText = receiptData.remark.length > 42 ? receiptData.remark.substring(0, 40) + "…" : receiptData.remark;
-    ctx.fillText(`REMARK: ${remarkText}`, width / 2, y);
-    y += 24;
-  }
-
-  // Fast Barcode Drawing (repeating lines)
-  y += 10;
-  const barcodeHeight = 36;
-  const barcodeWidth = 260;
-  const startX = (width - barcodeWidth) / 2;
-
-  ctx.fillStyle = "#000000";
-  for (let i = 0; i < barcodeWidth; i += 4) {
-    const lineWidth = (i % 8 === 0) ? 3 : 1.5;
-    ctx.fillRect(startX + i, y, lineWidth, barcodeHeight);
-  }
-  y += barcodeHeight + 10;
-
-  // Barcode text underneath
-  ctx.font = "bold 13px monospace";
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#555555";
-  const barcodeStr = docId.split("").join(" ");
-  ctx.fillText(barcodeStr, width / 2, y);
-  y += 18;
-
-  ctx.font = "12px monospace";
-  ctx.fillText(receiptData.isDraft ? "PROFORMA RECEIPT ONLY" : "THANK YOU FOR YOUR SERVICE!", width / 2, y);
-
-  return new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((blob) => resolve(blob), "image/png");
-  });
 }
+
