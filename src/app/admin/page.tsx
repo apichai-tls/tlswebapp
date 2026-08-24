@@ -1113,7 +1113,16 @@ export default function AdminPage() {
 
     setProformaReceiptNumber(loadedProformaNum);
     setProformaRevision(loadedRevision);
-    setLastProformaCartHash(loadedProformaNum ? JSON.stringify(mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price }))) : null);
+    const initialCartHash = loadedProformaNum ? JSON.stringify({
+      items: mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
+      speed: (job.remark?.includes("Express 100%") ? "express_100" : (job.remark?.includes("Express 50%") ? "express_50" : "standard")),
+      fee: job.fee || 0,
+      freeDelivery: job.remark ? job.remark.includes("Free Delivery") : false,
+      disc: job.discountPercent || 0,
+      vatType: (job as any).vatType || "none",
+      vatRate: (job as any).vatRate || 0,
+    }) : null;
+    setLastProformaCartHash(initialCartHash);
     setIsDraftPreview(false);
     setShowReceipt(false);
     const rawLaundry = job.laundryTypes as any;
@@ -1425,7 +1434,15 @@ export default function AdminPage() {
       });
     }
 
-    const currentCartHash = JSON.stringify(dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })));
+    const currentCartHash = JSON.stringify({
+      items: dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
+      speed: serviceSpeed,
+      fee: fee,
+      freeDelivery: activeIsFreeDelivery,
+      disc: dialogDiscountPercent,
+      vatType: dialogVatType,
+      vatRate: dialogVatRate,
+    });
     const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
 
     let effectiveRevision = proformaRevision;
@@ -1599,7 +1616,13 @@ export default function AdminPage() {
       actorRole: user?.role
     };
 
-    if (proformaReceiptNumber) {
+    // Only capture proforma image during handleCreate if:
+    // 1. Creating a brand new job that has a proforma number (!editingJobId && proformaReceiptNumber)
+    // 2. Editing an existing job WHERE the cart actually changed (editingJobId && cartChangedAfterProforma)
+    // When editing an existing job with no cart change, NEVER auto-capture extra images on Save Changes!
+    const shouldCaptureProforma = Boolean(proformaReceiptNumber && (!editingJobId || cartChangedAfterProforma));
+
+    if (shouldCaptureProforma) {
       try {
         const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
         const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
