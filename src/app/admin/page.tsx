@@ -3743,8 +3743,8 @@ export default function AdminPage() {
                                         +
                                       </button>
                                     </div>
-                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1 py-0.5 w-18">
-                                      <span className="text-[10px] text-slate-500 font-bold mr-0.5">฿</span>
+                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1 py-0.5 w-16" title="Unit price per piece/kg (ราคาต่อหน่วย)">
+                                      <span className="text-[9px] text-slate-400 font-semibold mr-0.5">@฿</span>
                                       <input 
                                         type="number"
                                         disabled={isCartLocked}
@@ -3764,6 +3764,11 @@ export default function AdminPage() {
                                           });
                                         }}
                                       />
+                                    </div>
+                                    <div className="min-w-[42px] text-right" title="Total for this item (ราคารวมรายการนี้)">
+                                      <span className="text-[11px] font-black text-amber-400">
+                                        ฿{Math.round(item.price * item.quantity).toLocaleString()}
+                                      </span>
                                     </div>
                                     {!isCartLocked && (
                                       <button
