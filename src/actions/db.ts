@@ -288,6 +288,9 @@ export async function addJobAction(data: any) {
       isStuck: data.isStuck || false,
       shiftId: data.shiftId || null,
       walletBalanceAfter: data.walletBalanceAfter !== undefined ? data.walletBalanceAfter : null,
+      proformaNumber: data.proformaNumber || (data as any).proformaReceiptNumber || null,
+      proformaRevision: data.proformaRevision !== undefined ? data.proformaRevision : null,
+      proformaCartHash: data.proformaCartHash || null,
     }
   });
 

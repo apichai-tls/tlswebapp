@@ -91,6 +91,9 @@ export async function GET() {
           isShopPaid: true,
           csoPaidAt: true,
           shopPaidAt: true,
+          proformaNumber: true,
+          proformaRevision: true,
+          proformaCartHash: true,
         }
       }),
       prisma.rider.findMany(),

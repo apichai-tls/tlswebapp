@@ -1778,52 +1778,65 @@ export default function AdminPage() {
           await jobStore.updateJobDetails(targetEditingJobId, imageUpdates);
         }
 
-        // Auto-generate and upload Proforma image in background if revision bumped without manual review
-        if (proformaReceiptNumber && effectiveProformaRevision > 0 && currentCartHash !== lastProformaCartHash && targetEditingJobId) {
+        // Auto-generate and upload Proforma image in background if targetProformaNum exists and image not yet captured
+        const targetCleanProforma = cleanProformaNumber(targetProformaNum);
+        if (targetCleanProforma && targetEditingJobId) {
           (async () => {
             try {
-              const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
-              const proformaReceiptData: any = {
-                id: targetEditingJobId,
-                createdAt: effectiveCreatedAt,
-                customerName: customerName.trim() || "Walk-In",
-                customerPhone: customerPhone.trim() || "-",
-                items: itemsPayload,
-                subtotal,
-                expressSurcharge: surcharge,
-                serviceSpeed,
-                discount: discountVal,
-                discountPercent: dialogDiscountPercent,
-                total: calculatedTotal,
-                isPaid: false,
-                paymentChannel: paymentChannel || null,
-                remark: newJobData.remark,
-                isDraft: true,
-                vatType: dialogVatType,
-                vatRate: dialogVatRate,
-                vatAmount: vatVal,
-                deliveryFee: fee,
-                proformaId: cleanProformaNumber(proformaReceiptNumber),
-                proformaRevision: effectiveProformaRevision,
-                jobId: targetEditingJobId
-              };
-              const blob = await generateThermalReceiptImage(proformaReceiptData, activeShop);
-              if (blob) {
-                const pFilename = `proforma-${cleanProformaNumber(proformaReceiptNumber)}-rev${effectiveProformaRevision}.png`;
-                const uploadedUrl = await uploadReceiptImage(blob, targetEditingJobId, pFilename);
-                if (uploadedUrl) {
-                  const currJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
-                  let bills: string[] = [];
-                  try {
-                    if (currJob?.billImageUrl) {
-                      const p = JSON.parse(currJob.billImageUrl);
-                      bills = Array.isArray(p) ? p : [p];
+              const pFilename = `proforma-${targetCleanProforma}-rev${effectiveProformaRevision || 0}.png`;
+              const currJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
+              let bills: string[] = [];
+              try {
+                if (currJob?.billImageUrl) {
+                  const p = JSON.parse(currJob.billImageUrl);
+                  bills = Array.isArray(p) ? p : [p];
+                }
+              } catch {}
+
+              const alreadyHasProforma = bills.some(b => b.includes(pFilename));
+              if (!alreadyHasProforma) {
+                const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+                const proformaReceiptData: any = {
+                  id: targetEditingJobId,
+                  createdAt: effectiveCreatedAt,
+                  customerName: customerName.trim() || "Walk-In",
+                  customerPhone: customerPhone.trim() || "-",
+                  items: itemsPayload,
+                  subtotal,
+                  expressSurcharge: surcharge,
+                  serviceSpeed,
+                  discount: discountVal,
+                  discountPercent: dialogDiscountPercent,
+                  total: calculatedTotal,
+                  isPaid: false,
+                  paymentChannel: paymentChannel || null,
+                  remark: newJobData.remark,
+                  isDraft: true,
+                  vatType: dialogVatType,
+                  vatRate: dialogVatRate,
+                  vatAmount: vatVal,
+                  deliveryFee: fee,
+                  proformaId: targetCleanProforma,
+                  proformaRevision: effectiveProformaRevision || 0,
+                  jobId: targetEditingJobId
+                };
+                const blob = await generateThermalReceiptImage(proformaReceiptData, activeShop);
+                if (blob) {
+                  const uploadedUrl = await uploadReceiptImage(blob, targetEditingJobId, pFilename);
+                  if (uploadedUrl) {
+                    const freshJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
+                    let freshBills: string[] = [];
+                    try {
+                      if (freshJob?.billImageUrl) {
+                        const p = JSON.parse(freshJob.billImageUrl);
+                        freshBills = Array.isArray(p) ? p : [p];
+                      }
+                    } catch {}
+                    if (!freshBills.includes(uploadedUrl)) {
+                      await jobStore.updateJobDetails(targetEditingJobId, {
+                        billImageUrl: JSON.stringify([...freshBills, uploadedUrl])
+                      });
                     }
-                  } catch {}
-                  if (!bills.includes(uploadedUrl)) {
-                    await jobStore.updateJobDetails(targetEditingJobId, {
-                      billImageUrl: JSON.stringify([...bills, uploadedUrl])
-                    });
                   }
                 }
               }
