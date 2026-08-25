@@ -659,15 +659,41 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     : new Date();
   const validDate = isNaN(safeDate.getTime()) ? new Date() : safeDate;
 
-  // Build the full proforma display ID (base + revision suffix)
   const proformaDisplayId = receiptData.isDraft
     ? (receiptData.proformaRevision && receiptData.proformaRevision > 0
         ? `${receiptData.proformaId || "DRAFT"}-R${receiptData.proformaRevision}`
         : (receiptData.proformaId || "DRAFT"))
     : null;
 
+  // Auto-scale: estimate rows = items + optional rows (delivery fee, surcharge, discount, payments)
+  const extraRows = (receiptData.deliveryFee && receiptData.deliveryFee > 0 ? 1 : 0)
+    + (receiptData.expressSurcharge > 0 ? 1 : 0)
+    + (receiptData.discount > 0 ? 1 : 0);
+  const totalRows = receiptData.items.length + extraRows;
+
+  // Compact mode: use tighter row padding when many rows
+  const compact = totalRows > 7;
+  const veryCompact = totalRows > 11;
+  const rowPy = veryCompact ? "py-1" : compact ? "py-1.5" : "py-3";
+  const tableFontSize = veryCompact ? "text-xs" : "text-sm";
+
+  // Scale factor to ensure content fits within A5 page height (793px)
+  const rowPx = veryCompact ? 22 : compact ? 30 : 40;
+  const estimatedHeight = 64 + 130 + 60 + (totalRows * rowPx) + 90 + 80 + 48;
+  const A5_HEIGHT = 793;
+  const scale = estimatedHeight > A5_HEIGHT ? Math.max(0.60, A5_HEIGHT / estimatedHeight) : 1;
+
   return (
-    <div className="w-[559px] min-h-[793px] bg-white text-zinc-800 p-8 relative box-border font-sans">
+    <div style={{ width: 559, height: A5_HEIGHT, overflow: "hidden", position: "relative" }}>
+      <div
+        style={{
+          width: 559,
+          minHeight: A5_HEIGHT,
+          transformOrigin: "top left",
+          transform: scale < 1 ? `scale(${scale})` : undefined,
+        }}
+        className="bg-white text-zinc-800 p-8 box-border font-sans"
+      >
       {/* Header */}
       <div className="flex justify-between items-start mb-4">
         <div className="flex-1">
@@ -731,53 +757,53 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       </div>
 
       {/* Items Table */}
-      <table className="w-full text-left mb-4 border-collapse">
+      <table className={`w-full text-left mb-4 border-collapse ${tableFontSize}`}>
         <thead>
-          <tr className="border-b-2 border-neutral-800 text-sm font-bold text-neutral-900">
+          <tr className="border-b-2 border-neutral-800 font-bold text-neutral-900">
             <th className="py-2 px-1 w-[50%]">DESCRIPTION</th>
             <th className="py-2 px-1 text-center">QTY</th>
             <th className="py-2 px-1 text-right">UNIT PRICE</th>
             <th className="py-2 px-1 text-right">TOTAL</th>
           </tr>
         </thead>
-        <tbody className="text-sm text-neutral-800 font-medium">
+        <tbody className="text-neutral-800 font-medium">
           {receiptData.items.map((item, idx) => (
             <tr key={idx} className="border-b border-neutral-200">
-              <td className="py-3 px-1">{item.nameEn || item.name}</td>
-              <td className="py-3 px-1 text-center font-mono">{item.quantity}</td>
-              <td className="py-3 px-1 text-right font-mono">{formatCurrency(item.price)}</td>
-              <td className="py-3 px-1 text-right font-mono">{formatCurrency(item.price * item.quantity)}</td>
+              <td className={`${rowPy} px-1`}>{item.nameEn || item.name}</td>
+              <td className={`${rowPy} px-1 text-center font-mono`}>{item.quantity}</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price)}</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price * item.quantity)}</td>
             </tr>
           ))}
           {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
             <tr className="border-b border-neutral-200">
-              <td className="py-3 px-1">Delivery Fee</td>
-              <td className="py-3 px-1 text-center font-mono">1</td>
-              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.deliveryFee)}</td>
-              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.deliveryFee)}</td>
+              <td className={`${rowPy} px-1`}>Delivery Fee</td>
+              <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.deliveryFee)}</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.deliveryFee)}</td>
             </tr>
           )}
           {receiptData.expressSurcharge > 0 && (
             <tr className="border-b border-neutral-200 text-rose-700">
-              <td className="py-3 px-1">Express Surcharge{receiptData.serviceSpeed === "express_50" ? " (+50%)" : " (+100%)"}</td>
-              <td className="py-3 px-1 text-center font-mono">1</td>
-              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.expressSurcharge)}</td>
-              <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.expressSurcharge)}</td>
+              <td className={`${rowPy} px-1`}>Express Surcharge{receiptData.serviceSpeed === "express_50" ? " (+50%)" : " (+100%)"}</td>
+              <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.expressSurcharge)}</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.expressSurcharge)}</td>
             </tr>
           )}
           {receiptData.discount > 0 && (
             <tr className="border-b border-neutral-200 text-emerald-600">
-              <td className="py-3 px-1">Discount{receiptData.discountPercent && receiptData.discountPercent > 0 ? ` (${receiptData.discountPercent}%)` : ""}</td>
-              <td className="py-3 px-1 text-center font-mono">1</td>
-              <td className="py-3 px-1 text-right font-mono">-{formatCurrency(receiptData.discount)}</td>
-              <td className="py-3 px-1 text-right font-mono">-{formatCurrency(receiptData.discount)}</td>
+              <td className={`${rowPy} px-1`}>Discount{receiptData.discountPercent && receiptData.discountPercent > 0 ? ` (${receiptData.discountPercent}%)` : ""}</td>
+              <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>-{formatCurrency(receiptData.discount)}</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>-{formatCurrency(receiptData.discount)}</td>
             </tr>
           )}
         </tbody>
       </table>
 
       {/* Totals */}
-      <div className="flex justify-end mb-8">
+      <div className="flex justify-end mb-6">
         <div className="w-1/2">
           <div className="flex justify-between py-1.5 text-sm text-neutral-700">
             <span>SUBTOTAL</span>
@@ -817,7 +843,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       </div>
 
       {/* Footer */}
-      <div className="mt-auto absolute bottom-[10mm] left-[10mm] right-[10mm]">
+      <div className="pt-4 border-t border-neutral-200">
         <div className="flex items-end justify-between">
           <div className="w-2/3">
             {cleanRemark(receiptData.remark) && (
@@ -841,6 +867,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
           </p>
         </div>
       </div>
+    </div>
     </div>
   );
 }
