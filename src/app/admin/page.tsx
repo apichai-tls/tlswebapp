@@ -1044,8 +1044,10 @@ export default function AdminPage() {
       setDialogVatType(vatMatch[1].toLowerCase() as any);
       setDialogVatRate(parseFloat(vatMatch[2]));
     } else {
-      setDialogVatType("none");
-      setDialogVatRate(0);
+      const defaultVatType = (systemSettings?.vatType as any) || "none";
+      const defaultVatRate = parseFloat(systemSettings?.vatRate || "7") || 7;
+      setDialogVatType(defaultVatType);
+      setDialogVatRate(defaultVatRate);
     }
     
     setShowJobLogs(false);
@@ -1960,6 +1962,8 @@ export default function AdminPage() {
         laundryTypes: derivedLaundryTypes,
         proformaReceiptNumber,
         proformaRevision,
+        vatType: dialogVatType,
+        vatRate: dialogVatRate,
         deliveryScheduledAt: deliveryScheduledTime ? new Date(deliveryScheduledTime) : undefined
       };
       

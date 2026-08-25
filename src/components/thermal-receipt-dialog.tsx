@@ -117,14 +117,25 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   const jobSurcharge = expressPercent > 0 ? Math.ceil(jobSubtotal * (expressPercent / 100)) : 0;
 
   const vatMatch = job.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
-  const jobVatType = vatMatch ? vatMatch[1].toLowerCase() : "none";
-  const jobVatRate = vatMatch ? parseFloat(vatMatch[2]) : 0;
+  let jobVatType = (job as any).vatType || (vatMatch ? vatMatch[1].toLowerCase() : "none");
+  let jobVatRate = (job as any).vatRate !== undefined ? (job as any).vatRate : (vatMatch ? parseFloat(vatMatch[2]) : 0);
   
-  const baseTotal = jobSubtotal + jobSurcharge + (rawJob.fee || 0);
+  if (jobVatType === "none" && !vatMatch && typeof window !== "undefined") {
+    try {
+      const { settingsStore } = require("@/lib/store");
+      const sysSettings = settingsStore.getSnapshot();
+      if (sysSettings?.vatType && sysSettings.vatType !== "none") {
+        jobVatType = sysSettings.vatType.toLowerCase();
+        jobVatRate = parseFloat(sysSettings.vatRate || "7") || 7;
+      }
+    } catch {}
+  }
+
+  const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0)) - (job.discount || 0));
   let jobVatAmount = 0;
-  if (jobVatType === "inclusive") {
+  if (jobVatType === "inclusive" && jobVatRate > 0) {
     jobVatAmount = baseTotal * (jobVatRate / (100 + jobVatRate));
-  } else if (jobVatType === "exclusive") {
+  } else if (jobVatType === "exclusive" && jobVatRate > 0) {
     jobVatAmount = baseTotal * (jobVatRate / 100);
   }
 
