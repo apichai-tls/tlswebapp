@@ -188,7 +188,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     status: job.status,
     adminNotesJson: job.adminNotesJson,
     deliveryFee: rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0),
-    proformaId: effectiveProformaNumber || rawProformaId,
+    proformaId: cleanBaseProforma || rawProformaId,  // base number only — display layers append -R{n}
     proformaRevision: proformaRevision,
     jobId: job.id
   };
