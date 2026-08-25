@@ -488,8 +488,9 @@ export const api = {
     }
     
     const updatedJob = { ...existingJob, ...finalUpdates, updatedAt: new Date() };
-    db.jobs.splice(jobIndex, 1);
-    db.jobs.unshift(updatedJob);
+    const newJobs = [...db.jobs];
+    newJobs[jobIndex] = updatedJob;
+    db.jobs = newJobs;
     
     // Prune old entries
     for (const [key, value] of lastUpdatedJobs.entries()) {
@@ -515,8 +516,10 @@ export const api = {
 
     const existingJob = db.jobs[jobIndex];
     const updatedJob = { ...existingJob, ...updates, updatedAt: new Date() };
-    db.jobs.splice(jobIndex, 1);
-    db.jobs.unshift(updatedJob);
+    const newJobs = [...db.jobs];
+    newJobs[jobIndex] = updatedJob;
+    db.jobs = newJobs;
+    lastUpdatedJobs.set(id, Date.now());
   },
 
   // --- SERVICES ---

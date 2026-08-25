@@ -1419,41 +1419,11 @@ export default function AdminPage() {
     const targetEditingJobId = editingJobId;
     const isEditMode = !!targetEditingJobId;
 
-    // Trigger upload promises concurrently before dialog close
+    // Trigger upload promises concurrently
     const bagUploadPromise = uploaderRef.current ? uploaderRef.current.startUpload() : Promise.resolve(finalBagImageUrls);
     const billUploadPromise = billUploaderRef.current ? billUploaderRef.current.startUpload() : Promise.resolve(finalBillImageUrls);
     const pickupUploadPromise = (user?.role === 'admin' && pickupUploaderRef.current) ? pickupUploaderRef.current.startUpload() : Promise.resolve(pickupProofImageUrls);
     const deliveryUploadPromise = (user?.role === 'admin' && deliveryUploaderRef.current) ? deliveryUploaderRef.current.startUpload() : Promise.resolve(deliveryProofImageUrls);
-
-    // If editing existing job (not payment flow), close dialog immediately and show saving state on Kanban
-    if (isEditMode && !isPayment) {
-      setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
-      setDialogOpen(false);
-    }
-
-    try {
-      const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
-        bagUploadPromise,
-        billUploadPromise,
-        pickupUploadPromise,
-        deliveryUploadPromise
-      ]);
-      finalBagImageUrls = bagUrls;
-      finalBillImageUrls = billUrls;
-      finalPickupProofUrls = pickupUrls;
-      finalDeliveryProofUrls = deliveryUrls;
-    } catch (err: any) {
-      setIsSubmitting(false);
-      if (targetEditingJobId) {
-        setSavingJobIds(prev => {
-          const next = new Set(prev);
-          next.delete(targetEditingJobId);
-          return next;
-        });
-      }
-      toast.error(`Failed to upload images: ${err.message || 'Unknown error'}`);
-      return; // Stop creation if upload fails
-    }
 
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
     const customRemarks = oldRemarks.filter(r => 
@@ -1640,19 +1610,13 @@ export default function AdminPage() {
       actorRole: user?.role
     };
 
-    // Only set image properties if they were actually modified, to prevent stale overrides
-    if (!targetEditingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
-      newJobData.bagImageUrl = finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null;
-    }
-    if (!targetEditingJobId || JSON.stringify(finalBillImageUrls) !== JSON.stringify(origBillImageUrls)) {
-      newJobData.billImageUrl = finalBillImageUrls.length > 0 ? JSON.stringify(finalBillImageUrls) : null;
-    }
-    if (!targetEditingJobId || JSON.stringify(finalPickupProofUrls) !== JSON.stringify(origPickupProofImageUrls)) {
-      newJobData.pickupProofImageUrl = finalPickupProofUrls.length > 0 ? JSON.stringify(finalPickupProofUrls) : null;
-    }
-    if (!targetEditingJobId || JSON.stringify(finalDeliveryProofUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
-      newJobData.deliveryProofImageUrl = finalDeliveryProofUrls.length > 0 ? JSON.stringify(finalDeliveryProofUrls) : null;
-      newJobData.proofImageUrl = finalDeliveryProofUrls.length > 0 ? JSON.stringify(finalDeliveryProofUrls) : null;
+    // Preserve existing images for optimistic edit state
+    if (targetEditingJobId && existingJob) {
+      newJobData.bagImageUrl = existingJob.bagImageUrl || null;
+      newJobData.billImageUrl = existingJob.billImageUrl || null;
+      newJobData.pickupProofImageUrl = existingJob.pickupProofImageUrl || null;
+      newJobData.deliveryProofImageUrl = existingJob.deliveryProofImageUrl || null;
+      newJobData.proofImageUrl = existingJob.proofImageUrl || null;
     }
 
     try {
@@ -1708,9 +1672,46 @@ export default function AdminPage() {
           Object.assign(payload, newJobData);
         }
 
+        // 1. Optimistic memory update first — Kanban reflects change in 0ms!
         if (Object.keys(payload).length > 0) {
           await jobStore.updateJobDetails(targetEditingJobId, payload);
         }
+
+        // 2. Close dialog immediately if not payment flow
+        if (!isPayment) {
+          setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
+          setDialogOpen(false);
+          setEditingJobId(null);
+          setAdminLogs([]);
+        }
+
+        // 3. Complete uploads in background
+        const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
+          bagUploadPromise,
+          billUploadPromise,
+          pickupUploadPromise,
+          deliveryUploadPromise
+        ]);
+
+        const imageUpdates: any = {};
+        if (JSON.stringify(bagUrls) !== JSON.stringify(origBagImageUrls)) {
+          imageUpdates.bagImageUrl = bagUrls.length > 0 ? JSON.stringify(bagUrls) : null;
+        }
+        if (JSON.stringify(billUrls) !== JSON.stringify(origBillImageUrls)) {
+          imageUpdates.billImageUrl = billUrls.length > 0 ? JSON.stringify(billUrls) : null;
+        }
+        if (JSON.stringify(pickupUrls) !== JSON.stringify(origPickupProofImageUrls)) {
+          imageUpdates.pickupProofImageUrl = pickupUrls.length > 0 ? JSON.stringify(pickupUrls) : null;
+        }
+        if (JSON.stringify(deliveryUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
+          imageUpdates.deliveryProofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
+          imageUpdates.proofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
+        }
+
+        if (Object.keys(imageUpdates).length > 0) {
+          await jobStore.updateJobDetails(targetEditingJobId, imageUpdates);
+        }
+
         toast.success(`Job updated successfully!`);
 
         // Handle wallet adjustments for job updates (separate flow — job already exists)
@@ -1737,6 +1738,18 @@ export default function AdminPage() {
           }
         }
       } else {
+        // Upload images for NEW job
+        const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
+          bagUploadPromise,
+          billUploadPromise,
+          pickupUploadPromise,
+          deliveryUploadPromise
+        ]);
+        newJobData.bagImageUrl = bagUrls.length > 0 ? JSON.stringify(bagUrls) : null;
+        newJobData.billImageUrl = billUrls.length > 0 ? JSON.stringify(billUrls) : null;
+        newJobData.pickupProofImageUrl = pickupUrls.length > 0 ? JSON.stringify(pickupUrls) : null;
+        newJobData.deliveryProofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
+        newJobData.proofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
         // H2 Fix: For NEW jobs paid via "Deduct Member", deduct wallet BEFORE creating the job.
         // If deduction fails → job is never created → no money leak.
         const isPaidNow_new = paymentMethod === 'paid';
