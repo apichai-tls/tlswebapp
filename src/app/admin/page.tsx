@@ -772,6 +772,7 @@ export default function AdminPage() {
   const [draftCreatedAt, setDraftCreatedAt] = useState<Date>(new Date());
   const [showReceipt, setShowReceipt] = useState<boolean>(false);
   const [isPaymentEvent, setIsPaymentEvent] = useState<boolean>(false);
+  const [savingJobIds, setSavingJobIds] = useState<Set<string>>(new Set());
   const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
 
   const forceMemberPaymentDialog = useMemo(() => {
@@ -1414,27 +1415,41 @@ export default function AdminPage() {
     let finalBillImageUrls: string[] = [];
     let finalPickupProofUrls: string[] = [];
     let finalDeliveryProofUrls: string[] = [];
-    try {
-      if (uploaderRef.current) {
-        finalBagImageUrls = await uploaderRef.current.startUpload();
-      }
-      if (billUploaderRef.current) {
-        finalBillImageUrls = await billUploaderRef.current.startUpload();
-      }
+    const targetEditingJobId = editingJobId;
+    const isEditMode = !!targetEditingJobId;
 
-      if (user?.role === 'admin') {
-        if (pickupUploaderRef.current) {
-          finalPickupProofUrls = await pickupUploaderRef.current.startUpload();
-        }
-        if (deliveryUploaderRef.current) {
-          finalDeliveryProofUrls = await deliveryUploaderRef.current.startUpload();
-        }
-      } else {
-        finalPickupProofUrls = pickupProofImageUrls;
-        finalDeliveryProofUrls = deliveryProofImageUrls;
-      }
+    // Trigger upload promises concurrently before dialog close
+    const bagUploadPromise = uploaderRef.current ? uploaderRef.current.startUpload() : Promise.resolve(finalBagImageUrls);
+    const billUploadPromise = billUploaderRef.current ? billUploaderRef.current.startUpload() : Promise.resolve(finalBillImageUrls);
+    const pickupUploadPromise = (user?.role === 'admin' && pickupUploaderRef.current) ? pickupUploaderRef.current.startUpload() : Promise.resolve(pickupProofImageUrls);
+    const deliveryUploadPromise = (user?.role === 'admin' && deliveryUploaderRef.current) ? deliveryUploaderRef.current.startUpload() : Promise.resolve(deliveryProofImageUrls);
+
+    // If editing existing job (not payment flow), close dialog immediately and show saving state on Kanban
+    if (isEditMode && !isPayment) {
+      setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
+      setDialogOpen(false);
+    }
+
+    try {
+      const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
+        bagUploadPromise,
+        billUploadPromise,
+        pickupUploadPromise,
+        deliveryUploadPromise
+      ]);
+      finalBagImageUrls = bagUrls;
+      finalBillImageUrls = billUrls;
+      finalPickupProofUrls = pickupUrls;
+      finalDeliveryProofUrls = deliveryUrls;
     } catch (err: any) {
       setIsSubmitting(false);
+      if (targetEditingJobId) {
+        setSavingJobIds(prev => {
+          const next = new Set(prev);
+          next.delete(targetEditingJobId);
+          return next;
+        });
+      }
       toast.error(`Failed to upload images: ${err.message || 'Unknown error'}`);
       return; // Stop creation if upload fails
     }
@@ -1792,6 +1807,13 @@ export default function AdminPage() {
       toast.error(`Failed to save job: ${err.message || 'Unknown error'}`);
     } finally {
       setIsSubmitting(false);
+      if (targetEditingJobId) {
+        setSavingJobIds(prev => {
+          const next = new Set(prev);
+          next.delete(targetEditingJobId);
+          return next;
+        });
+      }
     }
   }
 
@@ -4761,7 +4783,7 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} savingJobIds={savingJobIds} />}
           {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={stableHandleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}

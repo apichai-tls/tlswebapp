@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,7 +47,17 @@ type FilterDate = "today" | "yesterday" | "custom";
 const KANBAN_COLUMNS: JobStatus[] = ['tba', 'pending', 'pickup', 'billing', 'delivery', 'completed', 'cancel'];
 
 
-export const AdminAllJobs = React.memo(function AdminAllJobs({ jobs, onEditJob, onCreateJob }: { jobs: Job[], onEditJob?: (job: Job) => void, onCreateJob?: () => void }) {
+export const AdminAllJobs = React.memo(function AdminAllJobs({ 
+  jobs, 
+  onEditJob, 
+  onCreateJob,
+  savingJobIds,
+}: { 
+  jobs: Job[], 
+  onEditJob?: (job: Job) => void, 
+  onCreateJob?: () => void,
+  savingJobIds?: Set<string>,
+}) {
   const riders = useRiders();
   const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
   const [searchTerm, setSearchTerm] = useState("");
@@ -578,7 +588,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({ jobs, onEditJob, 
                               </span>
                             )}
                           </div>
-                          <div className="flex gap-1 items-center">
+                          <div className="flex gap-1 items-center flex-wrap">
+                          {savingJobIds?.has(job.id) && (
+                            <span className="inline-flex items-center gap-1 text-[9px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded shadow-xs animate-pulse">
+                              <RefreshCw size={9} className="animate-spin text-blue-600" />
+                              กำลังบันทึก...
+                            </span>
+                          )}
                           {job.source === 'pos' && (
                             <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">
                               POS
@@ -917,9 +933,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({ jobs, onEditJob, 
                         }
                         
                         const isPinned = checkIsPinned(job, user);
+                        const isSaving = savingJobIds?.has(job.id);
                         
                         let cardBgClass = 'bg-white border-slate-200';
-                        if (job.isStuck) cardBgClass = 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70';
+                        if (isSaving) cardBgClass = 'bg-blue-50/40 border-blue-300 ring-2 ring-blue-400/40 animate-pulse';
+                        else if (job.isStuck) cardBgClass = 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70';
                         else if (isPinned) cardBgClass = 'bg-orange-50 border-orange-300 text-orange-950 hover:bg-orange-100/70';
 
                         return (
@@ -954,7 +972,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({ jobs, onEditJob, 
                                   )}
                                 </div>
                               </div>
-                              <div className="flex gap-1 items-center">
+                              <div className="flex gap-1 items-center flex-wrap">
+                                {isSaving && (
+                                  <span className="inline-flex items-center gap-1 text-[9px] font-bold text-blue-700 bg-blue-100/80 border border-blue-300 px-1.5 py-0.5 rounded shadow-xs shrink-0">
+                                    <RefreshCw size={9} className="animate-spin text-blue-600" />
+                                    กำลังบันทึก...
+                                  </span>
+                                )}
                                 {job.isStuck && (
                                   <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-red-100 text-red-700 border-red-200 shrink-0">Stuck</Badge>
                                 )}
