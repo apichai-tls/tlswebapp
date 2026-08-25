@@ -1055,14 +1055,16 @@ export default function AdminPage() {
       const matchedById = item.serviceId ? services.find(s => s.id === item.serviceId) : null;
       // Priority 2: name match (fallback for legacy items without serviceId)
       const matched = matchedById || services.find(s => s.name === item.name || s.nameEn === item.nameEn);
-      const originalBase = matched ? matched.price : (item.basePrice !== undefined ? item.basePrice : item.price);
+      // basePrice: use stored value first, then stored item.price (DB is the truth), then catalog as last resort.
+      // Using item.price prevents false-positive "custom price" toast when catalog changes since last save.
+      const basePrice = item.basePrice !== undefined ? item.basePrice : (item.price || matched?.price || 0);
       return {
         id: item.serviceId || matched?.id || Math.random().toString(), // always prefer stored serviceId
         name: item.name,
         nameEn: item.nameEn || item.name,
         quantity: item.quantity || 1,
         price: item.price || 0,
-        basePrice: item.basePrice !== undefined ? item.basePrice : originalBase,
+        basePrice,
         category: matched?.category || "",
         unit: matched?.unit || "piece"
       };
@@ -1456,6 +1458,7 @@ export default function AdminPage() {
       nameEn: item.nameEn || item.name,
       quantity: item.quantity,
       price: item.price,
+      basePrice: item.basePrice,
       serviceId: item.id,
       unit: item.unit || 'pcs' // M4 Fix: include unit field so reports can distinguish kg vs pcs
     }));
@@ -1489,6 +1492,7 @@ export default function AdminPage() {
           nameEn: "Other (Custom Service)",
           quantity: 1,
           price: laundryPrice || 0,
+          basePrice: laundryPrice || 0,
           serviceId: "other",
           unit: "pcs"
         });
