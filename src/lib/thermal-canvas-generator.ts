@@ -174,3 +174,48 @@ export async function generateThermalReceiptImage(
   }
 }
 
+/**
+ * Upload a receipt/proforma image blob to GCS with fallback to local storage
+ */
+export async function uploadReceiptImage(blob: Blob, entityId: string, filename: string): Promise<string | null> {
+  try {
+    const signRes = await fetch("/api/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entityType: "job",
+        entityId: entityId || "unknown",
+        subType: "proofs",
+        contentType: "image/png",
+        filename
+      })
+    });
+    const signData = await signRes.json();
+    if (signData.uploadUrl && signData.publicUrl) {
+      const putRes = await fetch(signData.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "image/png" },
+        body: blob
+      });
+      if (putRes.ok) return signData.publicUrl;
+    }
+  } catch (gcsErr) {
+    console.warn("GCS upload failed, falling back to local:", gcsErr);
+  }
+
+  try {
+    const file = new File([blob], filename, { type: "image/png" });
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("entityType", "jobs");
+    formData.append("entityId", entityId || "unknown");
+    formData.append("subType", "proofs");
+    const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+    const data = await res.json();
+    if (data.success && data.publicUrl) return data.publicUrl;
+  } catch (localErr) {
+    console.error("Local upload failed:", localErr);
+  }
+  return null;
+}
+
