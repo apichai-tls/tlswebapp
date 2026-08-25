@@ -326,7 +326,11 @@ export async function updateJobAction(id: string, updates: any) {
   console.log(`[updateJobAction] id: ${id}`, updates);
   const existingJob = await prisma.job.findUnique({ where: { id } });
   
-  if (existingJob && updates.updatedAt) {
+  const isMediaOrProformaOnlyUpdate = Object.keys(updates).every(k => 
+    ['billImageUrl', 'bagImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl', 'proformaNumber', 'proformaRevision', 'proformaCartHash', 'adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt'].includes(k)
+  );
+
+  if (existingJob && updates.updatedAt && !isMediaOrProformaOnlyUpdate) {
     const incomingTime = new Date(updates.updatedAt).getTime();
     const dbTime = new Date(existingJob.updatedAt).getTime();
     if (dbTime > incomingTime + 1000) {
