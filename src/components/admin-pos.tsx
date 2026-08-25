@@ -1646,25 +1646,62 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const currentCartHash = JSON.stringify(cart.map(it => ({ id: it.id, q: it.quantity, price: it.price })));
       const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
 
+      let targetProformaNum = proformaReceiptNumber;
       let effectiveRevision = proformaRevision;
 
-      if (cartChangedAfterProforma) {
+      if (!targetProformaNum) {
+        const shopId = activeShop?.id || "default";
+        const proformaKey = `proformaSeq_${shopId}`;
+        const currentSeq = parseInt(settings?.[proformaKey] || "0", 10);
+        const nextSeq = currentSeq + 1;
+        setTimeout(() => {
+          settingsStore.updateSetting(proformaKey, String(nextSeq)).catch(() => {});
+        }, 500);
+
+        let branchCode = "";
+        if (activeShop?.name) {
+          const getInitials = (name: string) => {
+            const words = name.trim().split(/\s+/);
+            if (words.length > 1) {
+              return words.map(w => w.charAt(0)).join("").toUpperCase();
+            }
+            return name.substring(0, 3).toUpperCase();
+          };
+          const myInitials = getInitials(activeShop.name);
+          const isDuplicate = shops.some((s: any) => s.id !== activeShop?.id && getInitials(s.name) === myInitials);
+          if (isDuplicate) {
+            const suffix = (activeShop.id || "").slice(-3).toUpperCase();
+            branchCode = `${myInitials}${suffix}`;
+          } else {
+            branchCode = myInitials;
+          }
+        }
+        if (!branchCode || branchCode.length < 2) {
+          branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase();
+        }
+
+        targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
+        effectiveRevision = 0;
+        setProformaReceiptNumber(targetProformaNum);
+        setProformaRevision(0);
+        setLastProformaCartHash(currentCartHash);
+      } else if (cartChangedAfterProforma) {
         effectiveRevision = proformaRevision + 1;
         setProformaRevision(effectiveRevision);
         setLastProformaCartHash(currentCartHash);
       }
 
       // If a Proforma quote exists (whether newly issued, unchanged, or revised), ensure its PNG snapshot is captured and uploaded before saving the job
-      if (proformaReceiptNumber) {
+      if (targetProformaNum) {
         try {
-          const effectiveProformaId = `${proformaReceiptNumber}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
-          const filename = `proforma-${proformaReceiptNumber}-rev${effectiveRevision}.png`;
+          const effectiveProformaId = `${targetProformaNum}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
+          const filename = `proforma-${cleanProformaNumber(targetProformaNum)}-rev${effectiveRevision}.png`;
           const alreadyCaptured = capturedReceiptUrlsRef.current.some(url => url.includes(filename)) || sessionCapturedReceiptUrls.some(url => url.includes(filename));
 
           if (!alreadyCaptured) {
             const tempReceiptData: any = {
               id: effectiveProformaId,
-              proformaId: proformaReceiptNumber,
+              proformaId: cleanProformaNumber(targetProformaNum),
               proformaRevision: effectiveRevision,
               createdAt: new Date(),
               customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
@@ -1741,7 +1778,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
       const vatText = vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : "";
-      const cleanBaseProforma = cleanProformaNumber(proformaReceiptNumber);
+      const cleanBaseProforma = cleanProformaNumber(targetProformaNum);
       const proformaStr = cleanBaseProforma ? `Proforma: ${cleanBaseProforma}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "";
       const finalRemark = [
         proformaStr,
@@ -1846,7 +1883,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           deliveryScheduledAt: new Date(deliveryScheduledTime),
           shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || undefined) : undefined,
           billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
-        });
+          proformaReceiptNumber: targetProformaNum || undefined,
+          proformaNumber: targetProformaNum || undefined,
+          proformaRevision: targetProformaNum ? effectiveRevision : undefined,
+          proformaCartHash: targetProformaNum ? (currentCartHash || undefined) : undefined,
+        } as any);
 
         const allJobs = jobStore.getSnapshot();
         finalJob = allJobs.find(j => j.id === loadedJobId);
@@ -1879,6 +1920,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           createdBy: user?.name || user?.email || "POS Counter",
           deliveryScheduledAt: new Date(deliveryScheduledTime),
           billImageUrl: allSessionUrls.length > 0 ? JSON.stringify(allSessionUrls) : undefined,
+          proformaReceiptNumber: targetProformaNum || undefined,
+          proformaNumber: targetProformaNum || undefined,
+          proformaRevision: targetProformaNum ? effectiveRevision : undefined,
+          proformaCartHash: targetProformaNum ? (currentCartHash || undefined) : undefined,
         });
       }
 

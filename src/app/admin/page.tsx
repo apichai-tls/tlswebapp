@@ -1505,10 +1505,48 @@ export default function AdminPage() {
       deliveryAt: deliveryScheduledTime || "",
     });
 
+    let targetProformaNum = proformaReceiptNumber;
     let effectiveProformaRevision = proformaRevision;
     let effectiveProformaCartHash = lastProformaCartHash;
 
-    if (proformaReceiptNumber && lastProformaCartHash && currentCartHash !== lastProformaCartHash) {
+    if (!targetProformaNum) {
+      const shopId = shop?.id || "default";
+      const proformaKey = `proformaSeq_${shopId}`;
+      const currentSeq = parseInt(systemSettings?.[proformaKey] || "0", 10);
+      const nextSeq = currentSeq + 1;
+      setTimeout(() => {
+        settingsStore.updateSetting(proformaKey, String(nextSeq)).catch(() => {});
+      }, 500);
+
+      let branchCode = "";
+      if (shop?.name) {
+        const getInitials = (name: string) => {
+          const words = name.trim().split(/\s+/);
+          if (words.length > 1) {
+            return words.map(w => w.charAt(0)).join("").toUpperCase();
+          }
+          return name.substring(0, 3).toUpperCase();
+        };
+        const myInitials = getInitials(shop.name);
+        const isDuplicate = shopLocations.some(s => s.id !== shop.id && getInitials(s.name) === myInitials);
+        if (isDuplicate) {
+          const suffix = (shop.id || "").slice(-3).toUpperCase();
+          branchCode = `${myInitials}${suffix}`;
+        } else {
+          branchCode = myInitials;
+        }
+      }
+      if (!branchCode || branchCode.length < 2) {
+        branchCode = (shop?.id || "PR").split("-")[0].toUpperCase();
+      }
+
+      targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
+      effectiveProformaRevision = 0;
+      effectiveProformaCartHash = currentCartHash;
+      setProformaReceiptNumber(targetProformaNum);
+      setProformaRevision(0);
+      setLastProformaCartHash(currentCartHash);
+    } else if (lastProformaCartHash && currentCartHash !== lastProformaCartHash) {
       effectiveProformaRevision = proformaRevision + 1;
       effectiveProformaCartHash = currentCartHash;
       setProformaRevision(effectiveProformaRevision);
@@ -1570,7 +1608,7 @@ export default function AdminPage() {
             : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
         : 0,
       remark: [
-        proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}${effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
+        targetProformaNum ? `Proforma: ${cleanProformaNumber(targetProformaNum)}${effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
         ...customRemarks,
         activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
@@ -1625,10 +1663,10 @@ export default function AdminPage() {
 
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
-      proformaReceiptNumber: proformaReceiptNumber || null,
-      proformaNumber: proformaReceiptNumber || null,
-      proformaRevision: proformaReceiptNumber ? effectiveProformaRevision : null,
-      proformaCartHash: proformaReceiptNumber ? (effectiveProformaCartHash || null) : null,
+      proformaReceiptNumber: targetProformaNum || null,
+      proformaNumber: targetProformaNum || null,
+      proformaRevision: targetProformaNum ? effectiveProformaRevision : null,
+      proformaCartHash: targetProformaNum ? (effectiveProformaCartHash || null) : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced,
@@ -1887,6 +1925,61 @@ export default function AdminPage() {
           await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: newBal });
           setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
           toast.success(`Member wallet topped up. New balance: ฿${newBal.toLocaleString()}`);
+        }
+
+        // Auto-generate Proforma PNG image in background for newly created job
+        if (targetProformaNum && savedJobId) {
+          (async () => {
+            try {
+              const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              const proformaReceiptData: any = {
+                id: savedJobId,
+                createdAt: effectiveCreatedAt,
+                customerName: customerName.trim() || "Walk-In",
+                customerPhone: customerPhone.trim() || "-",
+                items: itemsPayload,
+                subtotal,
+                expressSurcharge: surcharge,
+                serviceSpeed,
+                discount: discountVal,
+                discountPercent: dialogDiscountPercent,
+                total: calculatedTotal,
+                isPaid: false,
+                paymentChannel: paymentChannel || null,
+                remark: newJobData.remark,
+                isDraft: true,
+                vatType: dialogVatType,
+                vatRate: dialogVatRate,
+                vatAmount: vatVal,
+                deliveryFee: fee,
+                proformaId: cleanProformaNumber(targetProformaNum),
+                proformaRevision: 0,
+                jobId: savedJobId
+              };
+              const blob = await generateThermalReceiptImage(proformaReceiptData, activeShop);
+              if (blob) {
+                const pFilename = `proforma-${cleanProformaNumber(targetProformaNum)}-rev0.png`;
+                const uploadedUrl = await uploadReceiptImage(blob, savedJobId, pFilename);
+                if (uploadedUrl) {
+                  const currJob = jobStore.getSnapshot().find(j => j.id === savedJobId);
+                  let bills: string[] = [];
+                  try {
+                    if (currJob?.billImageUrl) {
+                      const p = JSON.parse(currJob.billImageUrl);
+                      bills = Array.isArray(p) ? p : [p];
+                    }
+                  } catch {}
+                  if (!bills.includes(uploadedUrl)) {
+                    await jobStore.updateJobDetails(savedJobId, {
+                      billImageUrl: JSON.stringify([...bills, uploadedUrl])
+                    });
+                  }
+                }
+              }
+            } catch (err) {
+              console.error("Background auto-proforma image generation failed for new job:", err);
+            }
+          })();
         }
       }
 
