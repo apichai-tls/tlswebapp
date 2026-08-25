@@ -3538,10 +3538,10 @@ export default function AdminPage() {
                       transition={{ delay: 0.2, duration: 0.3 }}
                     >
                       {/* One Unified Consolidated Dark Card */}
-                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md flex-1 flex flex-col gap-3 min-h-[500px] h-full justify-between overflow-hidden">
+                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md flex-1 flex flex-col gap-3 min-h-[500px] h-full overflow-hidden">
                         
                         {/* Cart / Order Items List */}
-                        <div className="flex flex-col gap-2">
+                        <div className="flex flex-col gap-2 flex-1 min-h-0">
                           <div className="flex justify-between items-center shrink-0 select-none pb-0.5">
                             <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
                               {isPosEnabled ? (
@@ -3569,7 +3569,7 @@ export default function AdminPage() {
                               </Label>
                             )}
                           </div>
-                          <div id="order-items-list" className="overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar max-h-[280px]">
+                          <div id="order-items-list" className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar">
                             {!isPosEnabled ? (
                               <div className="flex-1 flex flex-col items-center justify-center p-4 h-full min-h-[200px]">
                                 <div className="w-full max-w-[240px] space-y-4 text-center">
