@@ -1140,20 +1140,12 @@ export default function AdminPage() {
     setProformaReceiptNumber(loadedProformaNum);
     setProformaRevision(loadedRevision);
 
-    // Use DB-stored cart hash (no more localStorage) — falls back to initialCartHash for legacy jobs
-    const initialCartHash = loadedProformaNum ? JSON.stringify({
-      items: mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
-      speed: (job.remark?.includes("Express 100%") ? "express_100" : (job.remark?.includes("Express 50%") ? "express_50" : "standard")),
-      fee: job.fee || 0,
-      freeDelivery: job.remark ? job.remark.includes("Free Delivery") : false,
-      disc: job.discountPercent || 0,
-      vatType: (job as any).vatType || "none",
-      vatRate: (job as any).vatRate || 0,
-      customerName: job.customerName || "",
-      customerPhone: job.customerPhone || "",
-      deliveryAt: job.deliveryScheduledAt ? format(roundToNearest30(new Date(job.deliveryScheduledAt)), "yyyy-MM-dd'T'HH:mm") : "",
-    }) : null;
-    setLastProformaCartHash(loadedCartHash ?? initialCartHash);
+    // Use DB-stored cart hash (no more localStorage).
+    // If proformaCartHash is null (legacy jobs that predate the DB field), set to null so that
+    // the next Proforma press always triggers a bump — the DB will then be populated correctly.
+    // Do NOT fall back to initialCartHash: initialCartHash reflects current DB items, so if items
+    // were added after the last proforma, the hashes would incorrectly match → no bump.
+    setLastProformaCartHash(loadedCartHash);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
