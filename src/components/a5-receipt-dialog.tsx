@@ -331,7 +331,11 @@ export function A5ReceiptDialog({
             {receiptData.isDraft ? (
               <div className="text-xs mb-1">
                 <span className="font-bold text-neutral-700 mr-1">{currentLanguage === "en" ? "PROFORMA NO:" : "เลขที่ชั่วคราว:"}</span>
-                <span className="font-mono font-medium text-neutral-900">{receiptData.proformaId || "DRAFT"}</span>
+                <span className="font-mono font-medium text-neutral-900">
+                  {receiptData.proformaRevision && receiptData.proformaRevision > 0
+                    ? `${receiptData.proformaId || "DRAFT"}-R${receiptData.proformaRevision}`
+                    : (receiptData.proformaId || "DRAFT")}
+                </span>
               </div>
             ) : (
               <>

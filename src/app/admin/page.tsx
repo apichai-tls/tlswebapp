@@ -1114,7 +1114,9 @@ export default function AdminPage() {
           // Match: proforma-<PR-NUMBER>-rev<N>.png  where PR-NUMBER can contain any chars except -rev
           const proformaFileMatch = filename.match(/^proforma-(PR-.+)-rev(\d+)\.png$/i);
           if (proformaFileMatch) {
-            loadedProformaNum = cleanProformaNumber(proformaFileMatch[1]);
+            // Strip any trailing -R{n} suffix from the captured number (e.g. "PR-TLS-00009-R1" → "PR-TLS-00009")
+            const rawNum = proformaFileMatch[1].replace(/-R\d+$/i, "");
+            loadedProformaNum = cleanProformaNumber(rawNum);
             loadedRevision = parseInt(proformaFileMatch[2], 10);
             break;
           }
@@ -4066,6 +4068,10 @@ export default function AdminPage() {
                                   setLastProformaCartHash(cartHash);
                                   if (editingJobId) localStorage.setItem(`proformaHash_${editingJobId}`, cartHash);
                                 } else {
+                                  console.log("[Proforma] existing num:", targetProformaNum, "rev:", proformaRevision);
+                                  console.log("[Proforma] cartHash:", cartHash);
+                                  console.log("[Proforma] lastProformaCartHash:", lastProformaCartHash);
+                                  console.log("[Proforma] hashes equal?", cartHash === lastProformaCartHash);
                                   if (cartHash !== lastProformaCartHash) {
                                     targetRevision = proformaRevision + 1;
                                     setProformaRevision(targetRevision);
