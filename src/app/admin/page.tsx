@@ -8,6 +8,7 @@ import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
 import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
+import { refreshDb } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
@@ -281,7 +282,7 @@ export default function AdminPage() {
       intervalTime = 15000; // Live Map: 15 seconds (GPS-heavy, keep slower)
     } else if (activeTab === "riders") {
       intervalTime = null; // Rider Report: No auto-refresh
-      import("@/lib/api").then(m => m.refreshDb()); // Refresh once when opened
+      refreshDb(); // Refresh once when opened
     }
 
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -302,11 +303,11 @@ export default function AdminPage() {
         if (timeSinceLastActive > IDLE_TIMEOUT_MS) {
           // Monitor Mode (Idle): Slow down polling to every 4th tick (e.g. 12s for 3s interval, 60s for 15s interval)
           if (tickCount % 4 === 0) {
-            import("@/lib/api").then(m => m.refreshDb());
+            refreshDb();
           }
         } else {
           // Active Mode: Poll at regular interval rate
-          import("@/lib/api").then(m => m.refreshDb());
+          refreshDb();
         }
       }, intervalTime);
     }
@@ -532,7 +533,7 @@ export default function AdminPage() {
       try {
         await addJobLogAction(editingJobId, newLog, user?.id, user?.name || user?.email);
         // Sync local store so other parts of the app update immediately
-        import("@/lib/api").then(m => m.refreshDb());
+        refreshDb();
       } catch (err) {
         console.error("Failed to instantly save admin log:", err);
       }
@@ -569,7 +570,7 @@ export default function AdminPage() {
           actorName: user?.name || user?.email,
           actorRole: user?.role
         });
-        import("@/lib/api").then(m => m.refreshDb());
+        refreshDb();
       } catch (err) {
         console.error("Failed to delete admin log:", err);
         toast.error("Failed to delete admin log");
@@ -894,7 +895,7 @@ export default function AdminPage() {
                 actorName: user?.name || user?.email,
                 actorRole: user?.role
               });
-              import("@/lib/api").then(m => m.refreshDb());
+              refreshDb();
             }
           } catch {}
         }
