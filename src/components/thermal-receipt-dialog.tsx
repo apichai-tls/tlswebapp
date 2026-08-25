@@ -529,7 +529,11 @@ export function ThermalReceiptDialog({
               {receiptData.proformaId && (
                 <div className="flex justify-between font-bold text-neutral-900">
                   <span>{currentLanguage === "en" ? "PROFORMA NO:" : "เลขที่ใบชั่วคราว:"}</span>
-                  <span>{receiptData.proformaId}</span>
+                  <span>
+                    {receiptData.proformaRevision && receiptData.proformaRevision > 0
+                      ? `${receiptData.proformaId}-R${receiptData.proformaRevision}`
+                      : receiptData.proformaId}
+                  </span>
                 </div>
               )}
             </>

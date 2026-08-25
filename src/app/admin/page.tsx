@@ -1491,6 +1491,28 @@ export default function AdminPage() {
       }
     }
 
+    const currentCartHash = JSON.stringify({
+      items: dialogCart.map(item => ({ id: item.id, qty: item.quantity, price: item.price })),
+      discount: dialogDiscountPercent,
+      vatType: dialogVatType,
+      vatRate: dialogVatRate,
+      serviceSpeed,
+      fee,
+      customerName: customerName.trim(),
+      customerPhone: customerPhone.trim(),
+      deliveryAt: deliveryScheduledTime || "",
+    });
+
+    let effectiveProformaRevision = proformaRevision;
+    let effectiveProformaCartHash = lastProformaCartHash;
+
+    if (proformaReceiptNumber && lastProformaCartHash && currentCartHash !== lastProformaCartHash) {
+      effectiveProformaRevision = proformaRevision + 1;
+      effectiveProformaCartHash = currentCartHash;
+      setProformaRevision(effectiveProformaRevision);
+      setLastProformaCartHash(currentCartHash);
+    }
+
     const newJobData: any = {
       isStuck,
       createdAt: effectiveCreatedAt,
@@ -1546,7 +1568,7 @@ export default function AdminPage() {
             : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
         : 0,
       remark: [
-        proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}${proformaRevision > 0 ? `-R${proformaRevision}` : ""}` : "",
+        proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}${effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
         ...customRemarks,
         activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
@@ -1603,8 +1625,8 @@ export default function AdminPage() {
       paymentChannel: paymentChannel || null,
       proformaReceiptNumber: proformaReceiptNumber || null,
       proformaNumber: proformaReceiptNumber || null,
-      proformaRevision: proformaReceiptNumber ? proformaRevision : null,
-      proformaCartHash: proformaReceiptNumber ? (lastProformaCartHash || null) : null,
+      proformaRevision: proformaReceiptNumber ? effectiveProformaRevision : null,
+      proformaCartHash: proformaReceiptNumber ? (effectiveProformaCartHash || null) : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced,
