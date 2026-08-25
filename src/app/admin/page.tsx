@@ -919,6 +919,10 @@ export default function AdminPage() {
     setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setPaymentMethod("unpaid");
+    setPaymentChannel("");
+    setSelectedProfileCustomer(null);
+    setCustomerName("");
+    setCustomerPhone("");
     setPickupRiderId("");
     setDeliveryRiderId("");
     setBagImageUrls([]);
@@ -933,6 +937,8 @@ export default function AdminPage() {
     setLaundryTypes([]);
     setServiceSpeed("standard");
     setSelectedVIPLabel("");
+    setSelectedMemberLabel("");
+    setSelectedMemberId("");
     setAdminNote("");
     setAdminNoteInput("");
     setShowAdminNote(false);
@@ -948,6 +954,11 @@ export default function AdminPage() {
     setDialogSelectedCategory(null);
     setDialogCart([]);
     setProformaReceiptNumber(null);
+    setPaymentChannel("");
+    setPaymentMethod("unpaid");
+    setSelectedProfileCustomer(null);
+    setCustomerName("");
+    setCustomerPhone("");
     setProformaRevision(0);
     setLastProformaCartHash(null);
     setProformaPressedSinceLastEdit(false);
@@ -1493,6 +1504,12 @@ export default function AdminPage() {
           unit: "pcs"
         });
       }
+    }
+
+    if (paymentChannel === "Deduct Member" && !selectedProfileCustomer?.isMember) {
+      toast.error("Customer is not a member. Cannot use Deduct Member payment channel.");
+      setIsSubmitting(false);
+      return;
     }
 
     const currentCartHash = JSON.stringify({
@@ -4209,7 +4226,9 @@ export default function AdminPage() {
                                 <option value="Credit Card">Credit Card</option>
                                 <option value="Gateway">Gateway</option>
                                 <option value="PromptPay">PromptPay</option>
-                                <option value="Deduct Member">Deduct Member</option>
+                                {selectedProfileCustomer?.isMember && (
+                                  <option value="Deduct Member">Deduct Member</option>
+                                )}
                                 <option value="HQ/Credit">HQ/Credit</option>
                               </select>
                             </div>
@@ -5078,9 +5097,11 @@ export default function AdminPage() {
             if (c.isMember) {
               setSelectedMemberLabel("Member");
               setSelectedMemberId(c.memberId || "");
+              setPaymentChannel("Deduct Member");
             } else {
               setSelectedMemberLabel("");
               setSelectedMemberId("");
+              setPaymentChannel(prev => prev === "Deduct Member" ? "" : prev);
             }
             setCustomerPriceListId(c.priceListId || null);
             handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);

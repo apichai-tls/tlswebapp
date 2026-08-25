@@ -3725,7 +3725,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     <option value="Credit Card">Credit Card</option>
                     <option value="Gateway">Gateway</option>
                     <option value="PromptPay">PromptPay</option>
-                    {selectedCustomer && <option value="Deduct Member">Deduct Member</option>}
+                    {selectedCustomer?.isMember && <option value="Deduct Member">Deduct Member</option>}
                     <option value="HQ/Credit">HQ/Credit</option>
                   </select>
                 </div>
