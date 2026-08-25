@@ -210,13 +210,15 @@ export function A5ReceiptDialog({
   }, [open, receiptData, activeShop, onBillImageUploaded]);
 
 
-  // Cleanup blob URL when dialog is closed
+  // Cleanup blob URL and reset capture dedup set when dialog is closed
   useEffect(() => {
     if (!open) {
       setCapturedPreviewUrl(prev => {
         if (prev) URL.revokeObjectURL(prev);
         return null;
       });
+      // Reset so the next open always captures fresh (new revision)
+      capturedKeysRef.current.clear();
     }
   }, [open]);
 
@@ -283,6 +285,15 @@ export function A5ReceiptDialog({
   };
 
   const renderReceiptContent = (printMode: boolean = false) => {
+    const extraRows = (receiptData.deliveryFee && receiptData.deliveryFee > 0 ? 1 : 0)
+      + (receiptData.expressSurcharge > 0 ? 1 : 0)
+      + (receiptData.discount > 0 ? 1 : 0);
+    const totalRows = receiptData.items.length + extraRows;
+    const compact = totalRows > 7;
+    const veryCompact = totalRows > 11;
+    const rowPy = veryCompact ? "py-1" : compact ? "py-1.5" : "py-3";
+    const tableFontSize = veryCompact ? "text-xs" : "text-sm";
+
     return (
       <div 
         ref={printMode ? undefined : receiptRef}
@@ -371,54 +382,54 @@ export function A5ReceiptDialog({
         </div>
 
         {/* Items Table */}
-        <table className="w-full text-left mb-4 border-collapse">
+        <table className={`w-full text-left mb-4 border-collapse ${tableFontSize}`}>
           <thead>
-            <tr className="border-b-2 border-neutral-800 text-sm font-bold text-neutral-900">
+            <tr className="border-b-2 border-neutral-800 font-bold text-neutral-900">
               <th className="py-2 px-1 w-[50%]">{currentLanguage === "en" ? "DESCRIPTION" : "รายการ"}</th>
               <th className="py-2 px-1 text-center">{currentLanguage === "en" ? "QTY" : "จำนวน"}</th>
               <th className="py-2 px-1 text-right">{currentLanguage === "en" ? "UNIT PRICE" : "ราคาต่อหน่วย"}</th>
               <th className="py-2 px-1 text-right">{currentLanguage === "en" ? "TOTAL" : "รวม"}</th>
             </tr>
           </thead>
-          <tbody className="text-sm text-neutral-800 font-medium">
+          <tbody className="text-neutral-800 font-medium">
             {receiptData.items.map((item, idx) => (
               <tr key={idx} className="border-b border-neutral-200">
-                <td className="py-3 px-1">
+                <td className={`${rowPy} px-1`}>
                   {currentLanguage === "en" ? (item.nameEn || item.name) : item.name}
                 </td>
-                <td className="py-3 px-1 text-center font-mono">{item.quantity}</td>
-                <td className="py-3 px-1 text-right font-mono">{formatCurrency(item.price)}</td>
-                <td className="py-3 px-1 text-right font-mono">{formatCurrency(item.price * item.quantity)}</td>
+                <td className={`${rowPy} px-1 text-center font-mono`}>{item.quantity}</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price)}</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price * item.quantity)}</td>
               </tr>
             ))}
             {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
               <tr className="border-b border-neutral-200">
-                <td className="py-3 px-1">{currentLanguage === "en" ? "Delivery Fee" : "ค่าจัดส่ง"}</td>
-                <td className="py-3 px-1 text-center font-mono">1</td>
-                <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.deliveryFee)}</td>
-                <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.deliveryFee)}</td>
+                <td className={`${rowPy} px-1`}>{currentLanguage === "en" ? "Delivery Fee" : "ค่าจัดส่ง"}</td>
+                <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.deliveryFee)}</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.deliveryFee)}</td>
               </tr>
             )}
             {receiptData.expressSurcharge > 0 && (
               <tr className="border-b border-neutral-200 text-rose-700">
-                <td className="py-3 px-1">
+                <td className={`${rowPy} px-1`}>
                   {currentLanguage === "en" ? "Express Surcharge" : "ค่าบริการด่วนพิเศษ"}
                   {receiptData.serviceSpeed === "express_50" ? " (+50%)" : " (+100%)"}
                 </td>
-                <td className="py-3 px-1 text-center font-mono">1</td>
-                <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.expressSurcharge)}</td>
-                <td className="py-3 px-1 text-right font-mono">{formatCurrency(receiptData.expressSurcharge)}</td>
+                <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.expressSurcharge)}</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.expressSurcharge)}</td>
               </tr>
             )}
             {receiptData.discount > 0 && (
               <tr className="border-b border-neutral-200 text-emerald-600">
-                <td className="py-3 px-1">
+                <td className={`${rowPy} px-1`}>
                   {currentLanguage === "en" ? "Discount" : "ส่วนลด"}
                   {receiptData.discountPercent && receiptData.discountPercent > 0 ? ` (${receiptData.discountPercent}%)` : ""}
                 </td>
-                <td className="py-3 px-1 text-center font-mono">1</td>
-                <td className="py-3 px-1 text-right font-mono">-{formatCurrency(receiptData.discount)}</td>
-                <td className="py-3 px-1 text-right font-mono">-{formatCurrency(receiptData.discount)}</td>
+                <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>-{formatCurrency(receiptData.discount)}</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>-{formatCurrency(receiptData.discount)}</td>
               </tr>
             )}
           </tbody>
