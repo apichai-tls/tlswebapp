@@ -1034,6 +1034,7 @@ export default function AdminPage() {
   };
 
   const handleEditFullJob = (job: Job) => {
+    originalJobRef.current = JSON.parse(JSON.stringify(job));
     setEditingJobId(job.id);
     setDialogDiscountPercent(job.discountPercent || 0);
     setShowDialogDiscount(!!job.discountPercent && job.discountPercent > 0);
@@ -1510,7 +1511,7 @@ export default function AdminPage() {
         if (!isAlreadyCompleted && editingSubStatus === 'ready') {
           return (isWalkIn && !isDelivery) ? 'completed' : 'delivery';
         }
-        return editingJobId ? undefined : 'pending';
+        return (editingJobId && existingJob) ? existingJob.status : 'pending';
       })(),
       laundryTypes: derivedLaundryTypes,
       customerName: customerName.trim(),
@@ -1601,7 +1602,9 @@ export default function AdminPage() {
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
       proformaReceiptNumber: proformaReceiptNumber || null,
+      proformaNumber: proformaReceiptNumber || null,
       proformaRevision: proformaReceiptNumber ? proformaRevision : null,
+      proformaCartHash: proformaReceiptNumber ? (lastProformaCartHash || null) : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced,
@@ -1635,7 +1638,8 @@ export default function AdminPage() {
             'pickupDistance', 'deliveryDistance', 'pickupCommission', 'deliveryCommission',
             'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
-            'laundryTypes', 'items', 'paymentChannel'
+            'laundryTypes', 'items', 'paymentChannel',
+            'proformaNumber', 'proformaRevision', 'proformaCartHash'
           ];
           
           fieldsToCompare.forEach(f => {

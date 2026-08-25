@@ -476,18 +476,23 @@ export const api = {
     if (jobIndex === -1) throw new Error("Job not found");
     
     const existingJob = db.jobs[jobIndex];
-    const finalUpdates = { ...updates };
+    const cleanUpdates: Partial<Job> = {};
+    for (const key of Object.keys(updates) as (keyof Job)[]) {
+      if (updates[key] !== undefined) {
+        cleanUpdates[key] = updates[key] as any;
+      }
+    }
     
     // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
-    if (updates.billNo !== undefined && (!updates.billNo || String(updates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
-      delete finalUpdates.billNo;
+    if (cleanUpdates.billNo !== undefined && (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
+      delete cleanUpdates.billNo;
     }
 
-    if (updates.status === undefined && existingJob.status === 'tba' && (updates.pickupRiderId || updates.deliveryRiderId)) {
-      finalUpdates.status = 'pending';
+    if (cleanUpdates.status === undefined && existingJob.status === 'tba' && (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)) {
+      cleanUpdates.status = 'pending';
     }
     
-    const updatedJob = { ...existingJob, ...finalUpdates, updatedAt: new Date() };
+    const updatedJob = { ...existingJob, ...cleanUpdates, updatedAt: new Date() };
     const newJobs = [...db.jobs];
     newJobs[jobIndex] = updatedJob;
     db.jobs = newJobs;
@@ -500,7 +505,7 @@ export const api = {
     }
     lastUpdatedJobs.set(id, Date.now());
 
-    await dbActions.updateJobAction(id, updates);
+    await dbActions.updateJobAction(id, cleanUpdates);
     return updatedJob;
   },
 
@@ -515,7 +520,23 @@ export const api = {
     if (jobIndex === -1) return;
 
     const existingJob = db.jobs[jobIndex];
-    const updatedJob = { ...existingJob, ...updates, updatedAt: new Date() };
+    const cleanUpdates: Partial<Job> = {};
+    for (const key of Object.keys(updates) as (keyof Job)[]) {
+      if (updates[key] !== undefined) {
+        cleanUpdates[key] = updates[key] as any;
+      }
+    }
+
+    // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
+    if (cleanUpdates.billNo !== undefined && (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
+      delete cleanUpdates.billNo;
+    }
+
+    if (cleanUpdates.status === undefined && existingJob.status === 'tba' && (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)) {
+      cleanUpdates.status = 'pending';
+    }
+
+    const updatedJob = { ...existingJob, ...cleanUpdates, updatedAt: new Date() };
     const newJobs = [...db.jobs];
     newJobs[jobIndex] = updatedJob;
     db.jobs = newJobs;
