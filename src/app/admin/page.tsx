@@ -998,8 +998,10 @@ export default function AdminPage() {
     }
     setDialogDiscountPercent(0);
     setShowDialogDiscount(false);
-    setDialogVatType("none");
-    setDialogVatRate(0);
+    const defaultVatType = (systemSettings?.vatType as any) || "none";
+    const defaultVatRate = parseFloat(systemSettings?.vatRate || "7") || 7;
+    setDialogVatType(defaultVatType);
+    setDialogVatRate(defaultVatRate);
     setEditingFeeLock(null);
     setSelectedVIPLabel("");
     setSelectedMemberLabel("");
