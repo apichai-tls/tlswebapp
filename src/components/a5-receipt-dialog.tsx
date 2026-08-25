@@ -159,7 +159,6 @@ export function A5ReceiptDialog({
     };
 
     const runCapture = async () => {
-      setIsGenerating(true);
       try {
         // Capture from the off-screen captureRef (full-size, no Dialog CSS/scaling)
         const target = captureRef.current;
@@ -187,19 +186,12 @@ export function A5ReceiptDialog({
 
         if (!blob) return;
 
-        // Show the captured image inside the dialog IMMEDIATELY
-        const previewUrl = URL.createObjectURL(blob);
-        setCapturedPreviewUrl(previewUrl);
-        setIsGenerating(false);
-
-        // Upload the SAME blob to GCS in the background (non-blocking)
+        // Upload to GCS in the background (non-blocking)
         if (open && (snapshotData.autoCapture || snapshotData.isDraft)) {
           uploadAndSave(blob).catch(err => console.error("Background receipt upload failed:", err));
         }
       } catch (err) {
         console.error("Failed to capture and upload receipt image:", err);
-      } finally {
-        setIsGenerating(false);
       }
     };
 
@@ -563,30 +555,11 @@ export function A5ReceiptDialog({
               </div>
             </div>
             
-            {/* Receipt preview area */}
+            {/* Receipt preview area — renders instantly in 0ms */}
             <div className="w-full flex justify-center pt-4 bg-neutral-800 overflow-hidden" style={{ height: 'calc(210mm * 0.8 + 1rem)' }}>
-              {isGenerating ? (
-                // Loading state while capturing
-                <div className="flex flex-col items-center justify-center text-white gap-3 h-full">
-                  <Loader2 className="animate-spin" size={32} />
-                  <span className="text-sm font-medium">{currentLanguage === "en" ? "Generating receipt image..." : "กำลังสร้างรูปใบเสร็จ..."}</span>
-                </div>
-              ) : capturedPreviewUrl ? (
-                // Show the captured image — SAME image that will be saved to Bill/Transfer
-                <div className="transform scale-[0.8] origin-top">
-                  <img
-                    src={capturedPreviewUrl}
-                    alt="Proforma Receipt"
-                    className="shadow-2xl border border-neutral-300 block"
-                    style={{ width: "148mm", display: "block" }}
-                  />
-                </div>
-              ) : (
-                // Fallback HTML receipt (while fonts/capture not ready yet)
-                <div className="transform scale-[0.8] origin-top">
-                  {renderReceiptContent(false)}
-                </div>
-              )}
+              <div className="transform scale-[0.8] origin-top">
+                {renderReceiptContent(false)}
+              </div>
             </div>
             
             {/* Bottom Close Button */}
