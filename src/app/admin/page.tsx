@@ -1745,10 +1745,14 @@ export default function AdminPage() {
           await jobStore.updateJobDetails(targetEditingJobId, payload);
         }
 
-        // 2. Close dialog immediately if not payment flow
-        if (!isPayment) {
-          setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
-          setDialogOpen(false);
+        // 2. Close dialog immediately — Kanban & UI reflect change in 0ms!
+        setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
+        setDialogOpen(false);
+        if (isPayment) {
+          setIsDraftPreview(false);
+          setIsPaymentEvent(true);
+          setShowReceipt(true);
+        } else {
           setEditingJobId(null);
           setAdminLogs([]);
         }
@@ -1923,6 +1927,19 @@ export default function AdminPage() {
 
         const job = await jobStore.addJob(jobDataWithWallet as any);
         savedJobId = job.id;
+        
+        // Close dialog immediately — UI updates in 0ms!
+        setDialogOpen(false);
+        if (isPayment) {
+          setEditingJobId(savedJobId);
+          setIsDraftPreview(false);
+          setIsPaymentEvent(true);
+          setShowReceipt(true);
+        } else {
+          setEditingJobId(null);
+          setAdminLogs([]);
+        }
+
         toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
 
         // Update local customer state if wallet was pre-deducted
@@ -2008,19 +2025,6 @@ export default function AdminPage() {
             }
           })();
         }
-      }
-
-      if (!isPayment) {
-        setDialogOpen(false);
-        setEditingJobId(null);
-        setAdminLogs([]);
-      } else {
-        setEditingJobId(savedJobId);
-      }
-      setIsDraftPreview(false);
-      if (isPayment) {
-        setIsPaymentEvent(true);
-        setShowReceipt(true);
       }
     } catch (err: any) {
       console.error("Job Save Error:", err);
