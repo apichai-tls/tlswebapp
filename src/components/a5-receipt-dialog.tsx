@@ -281,10 +281,39 @@ export function A5ReceiptDialog({
       + (receiptData.expressSurcharge > 0 ? 1 : 0)
       + (receiptData.discount > 0 ? 1 : 0);
     const totalRows = receiptData.items.length + extraRows;
-    const compact = totalRows > 7;
-    const veryCompact = totalRows > 11;
-    const rowPy = veryCompact ? "py-1" : compact ? "py-1.5" : "py-3";
-    const tableFontSize = veryCompact ? "text-xs" : "text-sm";
+
+    // Granular responsive sizing ONLY for items table and prices:
+    let tableFontSize = "text-sm";
+    let rowPy = "py-2.5";
+    let thPy = "py-2";
+    let tableMb = "mb-4";
+    let sectionGap = "mb-4";
+
+    if (totalRows > 20) {
+      tableFontSize = "text-[9px] leading-tight";
+      rowPy = "py-[2px]";
+      thPy = "py-[3px]";
+      tableMb = "mb-1.5";
+      sectionGap = "mb-2";
+    } else if (totalRows > 15) {
+      tableFontSize = "text-[10px] leading-tight";
+      rowPy = "py-1";
+      thPy = "py-1";
+      tableMb = "mb-2";
+      sectionGap = "mb-2.5";
+    } else if (totalRows > 11) {
+      tableFontSize = "text-[11px] leading-snug";
+      rowPy = "py-1.5";
+      thPy = "py-1.5";
+      tableMb = "mb-2.5";
+      sectionGap = "mb-3";
+    } else if (totalRows > 7) {
+      tableFontSize = "text-xs";
+      rowPy = "py-2";
+      thPy = "py-1.5";
+      tableMb = "mb-3";
+      sectionGap = "mb-3.5";
+    }
 
     return (
       <div 
@@ -297,7 +326,7 @@ export function A5ReceiptDialog({
         style={printMode ? { margin: "0 auto", overflow: "hidden" } : undefined}
       >
         {/* Header Section */}
-        <div className="flex justify-between items-start mb-4">
+        <div className={`flex justify-between items-start ${sectionGap}`}>
           <div className="flex-1">
             {(activeShop?.logoUrl || true) && (
               <div className="mb-2">
@@ -363,10 +392,10 @@ export function A5ReceiptDialog({
           </div>
         </div>
 
-        <hr className="border-neutral-300 mb-4" />
+        <hr className={`border-neutral-300 ${sectionGap}`} />
 
         {/* Customer Section */}
-        <div className="flex justify-between mb-4">
+        <div className={`flex justify-between ${sectionGap}`}>
           <div className="flex-1">
             <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-1">{currentLanguage === "en" ? "BILLED TO" : "ลูกค้า"}</h3>
             <p className="text-sm font-bold text-neutral-900 leading-tight">{receiptData.customerName}</p>
@@ -382,13 +411,13 @@ export function A5ReceiptDialog({
         </div>
 
         {/* Items Table */}
-        <table className={`w-full text-left mb-4 border-collapse ${tableFontSize}`}>
+        <table className={`w-full text-left ${tableMb} border-collapse ${tableFontSize}`}>
           <thead>
             <tr className="border-b-2 border-neutral-800 font-bold text-neutral-900">
-              <th className="py-2 px-1 w-[50%]">{currentLanguage === "en" ? "DESCRIPTION" : "รายการ"}</th>
-              <th className="py-2 px-1 text-center">{currentLanguage === "en" ? "QTY" : "จำนวน"}</th>
-              <th className="py-2 px-1 text-right">{currentLanguage === "en" ? "UNIT PRICE" : "ราคาต่อหน่วย"}</th>
-              <th className="py-2 px-1 text-right">{currentLanguage === "en" ? "TOTAL" : "รวม"}</th>
+              <th className={`${thPy} px-1 w-[50%]`}>{currentLanguage === "en" ? "DESCRIPTION" : "รายการ"}</th>
+              <th className={`${thPy} px-1 text-center`}>{currentLanguage === "en" ? "QTY" : "จำนวน"}</th>
+              <th className={`${thPy} px-1 text-right`}>{currentLanguage === "en" ? "UNIT PRICE" : "ราคาต่อหน่วย"}</th>
+              <th className={`${thPy} px-1 text-right`}>{currentLanguage === "en" ? "TOTAL" : "รวม"}</th>
             </tr>
           </thead>
           <tbody className="text-neutral-800 font-medium">
@@ -663,15 +692,46 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     + (receiptData.discount > 0 ? 1 : 0);
   const totalRows = receiptData.items.length + extraRows;
 
-  // Compact mode: use tighter row padding when many rows
-  const compact = totalRows > 7;
-  const veryCompact = totalRows > 11;
-  const rowPy = veryCompact ? "py-1" : compact ? "py-1.5" : "py-3";
-  const tableFontSize = veryCompact ? "text-xs" : "text-sm";
+  // Granular responsive sizing ONLY for items table and prices:
+  let tableFontSize = "text-sm";
+  let rowPy = "py-2.5";
+  let thPy = "py-2";
+  let tableMb = "mb-4";
+  let sectionGap = "mb-4";
+  let rowPx = 36;
+
+  if (totalRows > 20) {
+    tableFontSize = "text-[9px] leading-tight";
+    rowPy = "py-[2px]";
+    thPy = "py-[3px]";
+    tableMb = "mb-1.5";
+    sectionGap = "mb-2";
+    rowPx = 16;
+  } else if (totalRows > 15) {
+    tableFontSize = "text-[10px] leading-tight";
+    rowPy = "py-1";
+    thPy = "py-1";
+    tableMb = "mb-2";
+    sectionGap = "mb-2.5";
+    rowPx = 19;
+  } else if (totalRows > 11) {
+    tableFontSize = "text-[11px] leading-snug";
+    rowPy = "py-1.5";
+    thPy = "py-1.5";
+    tableMb = "mb-2.5";
+    sectionGap = "mb-3";
+    rowPx = 23;
+  } else if (totalRows > 7) {
+    tableFontSize = "text-xs";
+    rowPy = "py-2";
+    thPy = "py-1.5";
+    tableMb = "mb-3";
+    sectionGap = "mb-3.5";
+    rowPx = 28;
+  }
 
   // Scale factor to ensure content fits within A5 page height (793px)
-  const rowPx = veryCompact ? 22 : compact ? 30 : 40;
-  const estimatedHeight = 64 + 130 + 60 + (totalRows * rowPx) + 90 + 80 + 48;
+  const estimatedHeight = 64 + 110 + 50 + (totalRows * rowPx) + 80 + 70 + 35;
   const A5_HEIGHT = 793;
   const scale = estimatedHeight > A5_HEIGHT ? Math.max(0.60, A5_HEIGHT / estimatedHeight) : 1;
 
@@ -687,7 +747,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
         className="bg-white text-zinc-800 p-8 box-border font-sans"
       >
       {/* Header */}
-      <div className="flex justify-between items-start mb-4">
+      <div className={`flex justify-between items-start ${sectionGap}`}>
         <div className="flex-1">
           <div className="mb-2">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -734,10 +794,10 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
         </div>
       </div>
 
-      <hr className="border-neutral-300 mb-4" />
+      <hr className={`border-neutral-300 ${sectionGap}`} />
 
       {/* Customer + Collection Date */}
-      <div className="flex justify-between mb-4">
+      <div className={`flex justify-between ${sectionGap}`}>
         <div className="flex-1">
           <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-1">BILLED TO</h3>
           <p className="text-sm font-bold text-neutral-900 leading-tight">{receiptData.customerName}</p>
@@ -753,13 +813,13 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       </div>
 
       {/* Items Table */}
-      <table className={`w-full text-left mb-4 border-collapse ${tableFontSize}`}>
+      <table className={`w-full text-left ${tableMb} border-collapse ${tableFontSize}`}>
         <thead>
           <tr className="border-b-2 border-neutral-800 font-bold text-neutral-900">
-            <th className="py-2 px-1 w-[50%]">DESCRIPTION</th>
-            <th className="py-2 px-1 text-center">QTY</th>
-            <th className="py-2 px-1 text-right">UNIT PRICE</th>
-            <th className="py-2 px-1 text-right">TOTAL</th>
+            <th className={`${thPy} px-1 w-[50%]`}>DESCRIPTION</th>
+            <th className={`${thPy} px-1 text-center`}>QTY</th>
+            <th className={`${thPy} px-1 text-right`}>UNIT PRICE</th>
+            <th className={`${thPy} px-1 text-right`}>TOTAL</th>
           </tr>
         </thead>
         <tbody className="text-neutral-800 font-medium">
