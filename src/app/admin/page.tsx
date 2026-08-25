@@ -3584,7 +3584,7 @@ export default function AdminPage() {
                               </div>
                             ) : dialogCart.length > 0 ? (
                               dialogCart.map((item, idx) => (
-                                <div key={item.id || idx} className="flex justify-between items-center bg-slate-800/40 hover:bg-slate-800/80 p-1.5 rounded border border-slate-700/30 text-[11px] transition-all">
+                                <div key={`${item.id}_${idx}`} className="flex justify-between items-center bg-slate-800/40 hover:bg-slate-800/80 p-1.5 rounded border border-slate-700/30 text-[11px] transition-all">
                                   <div className="flex-1 min-w-0 pr-1.5 flex items-center gap-1">
                                     <span className="font-bold text-white truncate">{item.name}</span>
                                     <span className="text-[9px] text-slate-400 font-bold uppercase shrink-0">({item.category})</span>
