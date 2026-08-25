@@ -1051,10 +1051,13 @@ export default function AdminPage() {
     setDialogSelectedCategory(null);
     const itemsList = Array.isArray(job.items) ? job.items : [];
     const mappedCart = itemsList.map((item: any) => {
-      const matched = services.find(s => s.name === item.name || s.nameEn === item.nameEn || s.id === item.serviceId);
+      // Priority 1: exact serviceId match (most reliable — prevents name collisions like Blouse IRON vs Blouse PCS)
+      const matchedById = item.serviceId ? services.find(s => s.id === item.serviceId) : null;
+      // Priority 2: name match (fallback for legacy items without serviceId)
+      const matched = matchedById || services.find(s => s.name === item.name || s.nameEn === item.nameEn);
       const originalBase = matched ? matched.price : (item.basePrice !== undefined ? item.basePrice : item.price);
       return {
-        id: matched?.id || item.serviceId || Math.random().toString(),
+        id: item.serviceId || matched?.id || Math.random().toString(), // always prefer stored serviceId
         name: item.name,
         nameEn: item.nameEn || item.name,
         quantity: item.quantity || 1,
