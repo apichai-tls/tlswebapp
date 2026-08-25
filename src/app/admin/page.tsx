@@ -1100,32 +1100,47 @@ export default function AdminPage() {
     }
 
     setDialogCart(mappedCart);
-    const existingProformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
-    const existingRevisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
-    let loadedProformaNum = cleanProformaNumber((job as any).proformaReceiptNumber || (existingProformaMatch ? existingProformaMatch[1] : null)) || null;
-    let loadedRevision = (job as any).proformaRevision !== undefined ? (job as any).proformaRevision : (existingRevisionMatch ? parseInt(existingRevisionMatch[1], 10) : 0);
 
-    // Fallback: if no proforma number found in remark, try to recover from billImageUrl filenames
+    // ── Load proforma versioning from DB fields (primary) ──────────────────────────────
+    // Priority 1: dedicated DB fields added in migration add_proforma_fields
+    let loadedProformaNum: string | null = (job as any).proformaNumber || null;
+    let loadedRevision: number = (job as any).proformaRevision ?? null;
+    let loadedCartHash: string | null = (job as any).proformaCartHash || null;
+
+    // Priority 2: legacy fallback — parse from remark (old jobs before DB fields)
+    if (!loadedProformaNum) {
+      const existingProformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
+      const existingRevisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
+      loadedProformaNum = cleanProformaNumber((job as any).proformaReceiptNumber || (existingProformaMatch ? existingProformaMatch[1] : null)) || null;
+      if (loadedRevision === null) {
+        loadedRevision = existingRevisionMatch ? parseInt(existingRevisionMatch[1], 10) : 0;
+      }
+    }
+
+    // Priority 3: legacy fallback — parse from billImageUrl filenames (very old jobs)
     if (!loadedProformaNum && job.billImageUrl) {
       try {
         const billUrls: string[] = JSON.parse(job.billImageUrl);
         for (const url of billUrls) {
           const filename = url.split('/').pop() || '';
-          // Match: proforma-<PR-NUMBER>-rev<N>.png  where PR-NUMBER can contain any chars except -rev
           const proformaFileMatch = filename.match(/^proforma-(PR-.+)-rev(\d+)\.png$/i);
           if (proformaFileMatch) {
-            // Strip any trailing -R{n} suffix from the captured number (e.g. "PR-TLS-00009-R1" → "PR-TLS-00009")
+            // Strip any trailing -R{n} suffix (e.g. "PR-TLS-00009-R1" → "PR-TLS-00009")
             const rawNum = proformaFileMatch[1].replace(/-R\d+$/i, "");
             loadedProformaNum = cleanProformaNumber(rawNum);
-            loadedRevision = parseInt(proformaFileMatch[2], 10);
+            if (loadedRevision === null) loadedRevision = parseInt(proformaFileMatch[2], 10);
             break;
           }
         }
       } catch {}
     }
 
+    if (loadedRevision === null) loadedRevision = 0;
+
     setProformaReceiptNumber(loadedProformaNum);
     setProformaRevision(loadedRevision);
+
+    // Use DB-stored cart hash (no more localStorage) — falls back to initialCartHash for legacy jobs
     const initialCartHash = loadedProformaNum ? JSON.stringify({
       items: mappedCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
       speed: (job.remark?.includes("Express 100%") ? "express_100" : (job.remark?.includes("Express 50%") ? "express_50" : "standard")),
@@ -1138,11 +1153,7 @@ export default function AdminPage() {
       customerPhone: job.customerPhone || "",
       deliveryAt: job.deliveryScheduledAt ? format(roundToNearest30(new Date(job.deliveryScheduledAt)), "yyyy-MM-dd'T'HH:mm") : "",
     }) : null;
-    // Restore the cart hash from when the last proforma was generated (persisted in localStorage).
-    // This allows correct revision bumping even after page reload / re-open of the edit form.
-    // Falls back to initialCartHash as best guess for legacy jobs that have no stored hash.
-    const storedProformaHash = job.id ? localStorage.getItem(`proformaHash_${job.id}`) : null;
-    setLastProformaCartHash(storedProformaHash ?? initialCartHash);
+    setLastProformaCartHash(loadedCartHash ?? initialCartHash);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
@@ -4066,17 +4077,27 @@ export default function AdminPage() {
                                   setProformaReceiptNumber(targetProformaNum);
                                   setProformaRevision(0);
                                   setLastProformaCartHash(cartHash);
-                                  if (editingJobId) localStorage.setItem(`proformaHash_${editingJobId}`, cartHash);
+                                  // Persist to DB — no more localStorage
+                                  if (editingJobId) {
+                                    jobStore.updateJobDetails(editingJobId, {
+                                      proformaNumber: targetProformaNum,
+                                      proformaRevision: 0,
+                                      proformaCartHash: cartHash,
+                                    } as any);
+                                  }
                                 } else {
-                                  console.log("[Proforma] existing num:", targetProformaNum, "rev:", proformaRevision);
-                                  console.log("[Proforma] cartHash:", cartHash);
-                                  console.log("[Proforma] lastProformaCartHash:", lastProformaCartHash);
-                                  console.log("[Proforma] hashes equal?", cartHash === lastProformaCartHash);
                                   if (cartHash !== lastProformaCartHash) {
                                     targetRevision = proformaRevision + 1;
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
-                                    if (editingJobId) localStorage.setItem(`proformaHash_${editingJobId}`, cartHash);
+                                    // Persist to DB — no more localStorage
+                                    if (editingJobId) {
+                                      jobStore.updateJobDetails(editingJobId, {
+                                        proformaNumber: targetProformaNum,
+                                        proformaRevision: targetRevision,
+                                        proformaCartHash: cartHash,
+                                      } as any);
+                                    }
                                   }
                                 }
 

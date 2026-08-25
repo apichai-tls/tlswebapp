@@ -414,6 +414,9 @@ export async function updateJobAction(id: string, updates: any) {
   }
   if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
   if (updates.billImageUrl !== undefined) data.billImageUrl = updates.billImageUrl;
+  if ((updates as any).proformaNumber !== undefined) (data as any).proformaNumber = (updates as any).proformaNumber;
+  if ((updates as any).proformaRevision !== undefined) (data as any).proformaRevision = (updates as any).proformaRevision;
+  if ((updates as any).proformaCartHash !== undefined) (data as any).proformaCartHash = (updates as any).proformaCartHash;
   if (updates.paymentMethod !== undefined) data.paymentMethod = updates.paymentMethod;
   if (updates.paymentChannel !== undefined) data.paymentChannel = updates.paymentChannel;
   if (updates.isPaid !== undefined) {

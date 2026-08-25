@@ -113,6 +113,11 @@ model Job {
   branch                 ShopLocation? @relation(fields: [branchId], references: [id])
   customer               Customer?     @relation(fields: [customerId], references: [id])
   shift                  CashierShift? @relation(fields: [shiftId], references: [id])
+
+  // Proforma versioning — stored in DB so all sessions/browsers stay in sync
+  proformaNumber         String?   // base number e.g. "PR-TLS-00009" (no revision suffix)
+  proformaRevision       Int?      // current revision: 0, 1, 2 ...
+  proformaCartHash       String?   // JSON hash of cart when last proforma was generated
 }
 
 model ServiceItem {
