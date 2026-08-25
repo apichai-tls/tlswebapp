@@ -1131,7 +1131,11 @@ export default function AdminPage() {
       customerPhone: job.customerPhone || "",
       deliveryAt: job.deliveryScheduledAt ? format(roundToNearest30(new Date(job.deliveryScheduledAt)), "yyyy-MM-dd'T'HH:mm") : "",
     }) : null;
-    setLastProformaCartHash(initialCartHash);
+    // Restore the cart hash from when the last proforma was generated (persisted in localStorage).
+    // This allows correct revision bumping even after page reload / re-open of the edit form.
+    // Falls back to initialCartHash as best guess for legacy jobs that have no stored hash.
+    const storedProformaHash = job.id ? localStorage.getItem(`proformaHash_${job.id}`) : null;
+    setLastProformaCartHash(storedProformaHash ?? initialCartHash);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
@@ -4053,11 +4057,13 @@ export default function AdminPage() {
                                   setProformaReceiptNumber(targetProformaNum);
                                   setProformaRevision(0);
                                   setLastProformaCartHash(cartHash);
+                                  if (editingJobId) localStorage.setItem(`proformaHash_${editingJobId}`, cartHash);
                                 } else {
                                   if (cartHash !== lastProformaCartHash) {
                                     targetRevision = proformaRevision + 1;
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
+                                    if (editingJobId) localStorage.setItem(`proformaHash_${editingJobId}`, cartHash);
                                   }
                                 }
 
