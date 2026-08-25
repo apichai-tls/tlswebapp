@@ -1640,23 +1640,23 @@ export default function AdminPage() {
     };
 
     // Only set image properties if they were actually modified, to prevent stale overrides
-    if (!editingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
+    if (!targetEditingJobId || JSON.stringify(finalBagImageUrls) !== JSON.stringify(origBagImageUrls)) {
       newJobData.bagImageUrl = finalBagImageUrls.length > 0 ? JSON.stringify(finalBagImageUrls) : null;
     }
-    if (!editingJobId || JSON.stringify(finalBillImageUrls) !== JSON.stringify(origBillImageUrls)) {
+    if (!targetEditingJobId || JSON.stringify(finalBillImageUrls) !== JSON.stringify(origBillImageUrls)) {
       newJobData.billImageUrl = finalBillImageUrls.length > 0 ? JSON.stringify(finalBillImageUrls) : null;
     }
-    if (!editingJobId || JSON.stringify(finalPickupProofUrls) !== JSON.stringify(origPickupProofImageUrls)) {
+    if (!targetEditingJobId || JSON.stringify(finalPickupProofUrls) !== JSON.stringify(origPickupProofImageUrls)) {
       newJobData.pickupProofImageUrl = finalPickupProofUrls.length > 0 ? JSON.stringify(finalPickupProofUrls) : null;
     }
-    if (!editingJobId || JSON.stringify(finalDeliveryProofUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
+    if (!targetEditingJobId || JSON.stringify(finalDeliveryProofUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
       newJobData.deliveryProofImageUrl = finalDeliveryProofUrls.length > 0 ? JSON.stringify(finalDeliveryProofUrls) : null;
       newJobData.proofImageUrl = finalDeliveryProofUrls.length > 0 ? JSON.stringify(finalDeliveryProofUrls) : null;
     }
 
     try {
-      let savedJobId = editingJobId;
-      if (editingJobId) {
+      let savedJobId = targetEditingJobId;
+      if (targetEditingJobId) {
         const payload: Partial<Job> = {};
         if (originalJobRef.current) {
           const orig = originalJobRef.current as any;
@@ -1708,7 +1708,7 @@ export default function AdminPage() {
         }
 
         if (Object.keys(payload).length > 0) {
-          await jobStore.updateJobDetails(editingJobId, payload);
+          await jobStore.updateJobDetails(targetEditingJobId, payload);
         }
         toast.success(`Job updated successfully!`);
 
@@ -1730,7 +1730,7 @@ export default function AdminPage() {
               if (ml) upd.priceListId = ml.id;
             }
             await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
-            await jobStore.updateJobDetails(editingJobId, { walletBalanceAfter: newBal });
+            await jobStore.updateJobDetails(targetEditingJobId, { walletBalanceAfter: newBal });
             setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
             toast.success(`Customer wallet updated. New balance: ฿${newBal.toLocaleString()}`);
           }
