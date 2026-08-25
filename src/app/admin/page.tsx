@@ -3541,7 +3541,7 @@ export default function AdminPage() {
                       <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md flex-1 flex flex-col gap-3 min-h-[500px] h-full justify-between overflow-hidden">
                         
                         {/* Cart / Order Items List */}
-                        <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-hidden">
+                        <div className="flex flex-col gap-2">
                           <div className="flex justify-between items-center shrink-0 select-none pb-0.5">
                             <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
                               {isPosEnabled ? (
