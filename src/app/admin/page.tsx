@@ -859,7 +859,7 @@ export default function AdminPage() {
   }, [categories, activeShift, user?.role]);
   // Clean up isNew flags when the Edit Job dialog closes without saving
   useEffect(() => {
-    if (!dialogOpen && editingJobId && !showReceipt) {
+    if (!dialogOpen && editingJobId && !showReceipt && !isSubmitting) {
       const stripNewNotes = async () => {
         const currentJob = jobs.find(j => j.id === editingJobId);
         if (currentJob && currentJob.adminNotesJson) {
@@ -904,7 +904,7 @@ export default function AdminPage() {
       setEditingJobId(null);
       setAdminLogs([]);
     }
-  }, [dialogOpen, editingJobId, jobs, showReceipt]);
+  }, [dialogOpen, editingJobId, jobs, showReceipt, isSubmitting]);
 
 
   const resetDialogStates = () => {
@@ -1795,8 +1795,11 @@ export default function AdminPage() {
 
       if (!isPayment) {
         setDialogOpen(false);
+        setEditingJobId(null);
+        setAdminLogs([]);
+      } else {
+        setEditingJobId(savedJobId);
       }
-      setEditingJobId(savedJobId);
       setIsDraftPreview(false);
       if (isPayment) {
         setIsPaymentEvent(true);
