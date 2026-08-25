@@ -3569,7 +3569,7 @@ export default function AdminPage() {
                               </Label>
                             )}
                           </div>
-                          <div id="order-items-list" className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar">
+                          <div id="order-items-list" className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar max-h-[280px]">
                             {!isPosEnabled ? (
                               <div className="flex-1 flex flex-col items-center justify-center p-4 h-full min-h-[200px]">
                                 <div className="w-full max-w-[240px] space-y-4 text-center">

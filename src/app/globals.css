@@ -198,3 +198,22 @@
     height: auto !important;
   }
 }
+
+/* ── Visible thin scrollbar for dark panels (show-scrollbar utility) ── */
+.show-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+.show-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.show-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.show-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #475569;
+  border-radius: 9999px;
+}
+.show-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
