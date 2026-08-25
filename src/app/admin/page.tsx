@@ -1528,7 +1528,7 @@ export default function AdminPage() {
     let effectiveProformaRevision = proformaRevision;
     let effectiveProformaCartHash = lastProformaCartHash;
 
-    if (!targetProformaNum) {
+    if (!targetProformaNum && isPayment) {
       const shopId = shop?.id || "default";
       const proformaKey = `proformaSeq_${shopId}`;
       const currentSeq = parseInt(systemSettings?.[proformaKey] || "0", 10);
@@ -1565,7 +1565,7 @@ export default function AdminPage() {
       setProformaReceiptNumber(targetProformaNum);
       setProformaRevision(0);
       setLastProformaCartHash(currentCartHash);
-    } else if (lastProformaCartHash && currentCartHash !== lastProformaCartHash) {
+    } else if (targetProformaNum && lastProformaCartHash && currentCartHash !== lastProformaCartHash) {
       effectiveProformaRevision = proformaRevision + 1;
       effectiveProformaCartHash = currentCartHash;
       setProformaRevision(effectiveProformaRevision);
