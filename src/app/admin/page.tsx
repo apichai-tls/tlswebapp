@@ -1565,7 +1565,7 @@ export default function AdminPage() {
       setProformaReceiptNumber(targetProformaNum);
       setProformaRevision(0);
       setLastProformaCartHash(currentCartHash);
-    } else if (targetProformaNum && lastProformaCartHash && currentCartHash !== lastProformaCartHash) {
+    } else if (targetProformaNum && (!lastProformaCartHash || currentCartHash !== lastProformaCartHash) && !proformaPressedSinceLastEdit) {
       effectiveProformaRevision = proformaRevision + 1;
       effectiveProformaCartHash = currentCartHash;
       setProformaRevision(effectiveProformaRevision);
