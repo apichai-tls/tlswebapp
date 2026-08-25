@@ -1795,7 +1795,10 @@ export default function AdminPage() {
 
               const alreadyHasProforma = bills.some(b => b.includes(pFilename));
               if (!alreadyHasProforma) {
-                const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+                const calculatedVatAmount = dialogVatType === "inclusive" && dialogVatRate > 0
+                  ? (baseTotal * (dialogVatRate / (100 + dialogVatRate)))
+                  : (dialogVatType === "exclusive" && dialogVatRate > 0 ? (baseTotal * (dialogVatRate / 100)) : 0);
+
                 const proformaReceiptData: any = {
                   id: targetEditingJobId,
                   createdAt: effectiveCreatedAt,
@@ -1814,14 +1817,17 @@ export default function AdminPage() {
                   isDraft: true,
                   vatType: dialogVatType,
                   vatRate: dialogVatRate,
-                  vatAmount: vatVal,
+                  vatAmount: calculatedVatAmount,
                   deliveryFee: fee,
                   proformaId: targetCleanProforma,
                   proformaRevision: effectiveProformaRevision || 0,
                   jobId: targetEditingJobId
                 };
-                const blob = await generateThermalReceiptImage(proformaReceiptData, activeShop);
+                const blob = receiptPaperSize === "A5"
+                  ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaReceiptData, activeShop)
+                  : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaReceiptData, activeShop);
                 if (blob) {
+                  const { uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
                   const uploadedUrl = await uploadReceiptImage(blob, targetEditingJobId, pFilename);
                   if (uploadedUrl) {
                     const freshJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
@@ -1944,7 +1950,10 @@ export default function AdminPage() {
         if (targetProformaNum && savedJobId) {
           (async () => {
             try {
-              const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              const calculatedVatAmount = dialogVatType === "inclusive" && dialogVatRate > 0
+                ? (baseTotal * (dialogVatRate / (100 + dialogVatRate)))
+                : (dialogVatType === "exclusive" && dialogVatRate > 0 ? (baseTotal * (dialogVatRate / 100)) : 0);
+
               const proformaReceiptData: any = {
                 id: savedJobId,
                 createdAt: effectiveCreatedAt,
@@ -1963,14 +1972,17 @@ export default function AdminPage() {
                 isDraft: true,
                 vatType: dialogVatType,
                 vatRate: dialogVatRate,
-                vatAmount: vatVal,
+                vatAmount: calculatedVatAmount,
                 deliveryFee: fee,
                 proformaId: cleanProformaNumber(targetProformaNum),
                 proformaRevision: 0,
                 jobId: savedJobId
               };
-              const blob = await generateThermalReceiptImage(proformaReceiptData, activeShop);
+              const blob = receiptPaperSize === "A5"
+                ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaReceiptData, activeShop)
+                : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaReceiptData, activeShop);
               if (blob) {
+                const { uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
                 const pFilename = `proforma-${cleanProformaNumber(targetProformaNum)}-rev0.png`;
                 const uploadedUrl = await uploadReceiptImage(blob, savedJobId, pFilename);
                 if (uploadedUrl) {
