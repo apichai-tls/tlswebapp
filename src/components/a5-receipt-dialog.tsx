@@ -282,37 +282,84 @@ export function A5ReceiptDialog({
       + (receiptData.discount > 0 ? 1 : 0);
     const totalRows = receiptData.items.length + extraRows;
 
-    // Granular responsive sizing ONLY for items table and prices:
+    // Granular responsive sizing for Items Table AND Totals Section:
     let tableFontSize = "text-sm";
     let rowPy = "py-2.5";
     let thPy = "py-2";
     let tableMb = "mb-4";
     let sectionGap = "mb-4";
 
+    // Totals section responsive sizing:
+    let totalSubtotalText = "text-sm";
+    let totalGrandText = "text-lg font-black";
+    let totalVatText = "text-xs";
+    let totalPy = "py-1.5";
+    let grandPy = "py-2.5";
+    let totalsMb = "mb-6";
+    let totalsWidth = "w-1/2";
+    let footerMt = "mt-6 pt-3";
+
     if (totalRows > 20) {
+      tableFontSize = "text-[8.5px] leading-tight";
+      rowPy = "py-[1px]";
+      thPy = "py-[1.5px]";
+      tableMb = "mb-1";
+      sectionGap = "mb-1.5";
+
+      totalSubtotalText = "text-[9px]";
+      totalGrandText = "text-xs font-black";
+      totalVatText = "text-[8px]";
+      totalPy = "py-[1px]";
+      grandPy = "py-0.5";
+      totalsMb = "mb-1.5";
+      totalsWidth = "w-5/12";
+      footerMt = "mt-1 pt-1";
+    } else if (totalRows > 15) {
+      // e.g. Job 2026002710 with 17 items
       tableFontSize = "text-[9px] leading-tight";
       rowPy = "py-[2px]";
-      thPy = "py-[3px]";
+      thPy = "py-1";
       tableMb = "mb-1.5";
       sectionGap = "mb-2";
-    } else if (totalRows > 15) {
-      tableFontSize = "text-[10px] leading-tight";
+
+      totalSubtotalText = "text-[10px]";
+      totalGrandText = "text-sm font-black";
+      totalVatText = "text-[8.5px]";
+      totalPy = "py-0.5";
+      grandPy = "py-1";
+      totalsMb = "mb-2.5";
+      totalsWidth = "w-5/12";
+      footerMt = "mt-2 pt-2";
+    } else if (totalRows > 11) {
+      tableFontSize = "text-[10.5px] leading-snug";
       rowPy = "py-1";
       thPy = "py-1";
       tableMb = "mb-2";
       sectionGap = "mb-2.5";
-    } else if (totalRows > 11) {
-      tableFontSize = "text-[11px] leading-snug";
+
+      totalSubtotalText = "text-xs";
+      totalGrandText = "text-base font-black";
+      totalVatText = "text-[9.5px]";
+      totalPy = "py-0.5";
+      grandPy = "py-1.5";
+      totalsMb = "mb-3.5";
+      totalsWidth = "w-1/2";
+      footerMt = "mt-3 pt-2";
+    } else if (totalRows > 7) {
+      tableFontSize = "text-xs";
       rowPy = "py-1.5";
       thPy = "py-1.5";
       tableMb = "mb-2.5";
       sectionGap = "mb-3";
-    } else if (totalRows > 7) {
-      tableFontSize = "text-xs";
-      rowPy = "py-2";
-      thPy = "py-1.5";
-      tableMb = "mb-3";
-      sectionGap = "mb-3.5";
+
+      totalSubtotalText = "text-xs";
+      totalGrandText = "text-base font-black";
+      totalVatText = "text-[10px]";
+      totalPy = "py-1";
+      grandPy = "py-2";
+      totalsMb = "mb-4";
+      totalsWidth = "w-1/2";
+      footerMt = "mt-4 pt-2";
     }
 
     return (
@@ -465,24 +512,24 @@ export function A5ReceiptDialog({
         </table>
 
         {/* Totals Section */}
-        <div className="flex justify-end mb-8">
-          <div className="w-1/2">
-            <div className="flex justify-between py-1.5 text-sm text-neutral-700">
+        <div className={`flex justify-end ${totalsMb}`}>
+          <div className={totalsWidth}>
+            <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700`}>
               <span>{currentLanguage === "en" ? "SUBTOTAL" : "ยอดรวม"}</span>
               <span className="font-mono">฿{formatCurrency(receiptData.subtotal + receiptData.expressSurcharge + (receiptData.deliveryFee || 0) - receiptData.discount)}</span>
             </div>
             {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
-              <div className="flex justify-between py-1.5 text-sm text-neutral-700 border-b border-neutral-200">
+              <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700 border-b border-neutral-200`}>
                 <span>{currentLanguage === "en" ? `VAT (${receiptData.vatRate}%)` : `ภาษีมูลค่าเพิ่ม (${receiptData.vatRate}%)`}</span>
                 <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
               </div>
             )}
-            <div className="flex justify-between py-3 text-lg font-black text-neutral-900 border-t-2 border-neutral-900">
+            <div className={`flex justify-between ${grandPy} ${totalGrandText} text-neutral-900 border-t-2 border-neutral-900`}>
               <span>{currentLanguage === "en" ? "GRAND TOTAL" : "ยอดสุทธิ"}</span>
               <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
             </div>
             {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
-              <div className="flex justify-between py-1 text-xs text-neutral-500">
+              <div className={`flex justify-between ${totalPy} ${totalVatText} text-neutral-500`}>
                 <span>{currentLanguage === "en" ? `Includes VAT ${receiptData.vatRate}%` : `รวมภาษีมูลค่าเพิ่ม ${receiptData.vatRate}%`}</span>
                 <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
               </div>
@@ -490,21 +537,21 @@ export function A5ReceiptDialog({
 
             {/* Payments */}
             {payments.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-dashed border-neutral-300">
+              <div className="mt-2 pt-2 border-t border-dashed border-neutral-300">
                 {payments.map((p, pIdx) => (
-                  <div key={pIdx} className="flex justify-between py-1 text-sm text-neutral-800">
-                    <span className="uppercase text-xs font-bold">
+                  <div key={pIdx} className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-800`}>
+                    <span className="uppercase text-[9px] font-bold">
                       {format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID ({p.method === "credit" ? "MEMBER" : p.method})
                     </span>
                     <span className="font-mono font-bold">฿{formatCurrency(p.amount)}</span>
                   </div>
                 ))}
-                <div className="flex justify-between py-2 mt-2 text-sm font-black text-neutral-900 border-t border-neutral-200">
+                <div className={`flex justify-between ${totalPy} mt-1 ${totalSubtotalText} font-black text-neutral-900 border-t border-neutral-200`}>
                   <span>TOTAL PAID</span>
                   <span className="font-mono">฿{formatCurrency(totalPaid)}</span>
                 </div>
                 {!receiptData.isPaid && (
-                  <div className="flex justify-between py-2 text-base font-black text-rose-600">
+                  <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
                     <span>BALANCE DUE</span>
                     <span className="font-mono">฿{formatCurrency(receiptData.total - totalPaid)}</span>
                   </div>
@@ -519,7 +566,7 @@ export function A5ReceiptDialog({
           <div className="flex items-end justify-between">
             <div className="w-2/3">
               {cleanRemarkForDisplay(receiptData.remark) && (
-                <div className="p-3 bg-neutral-100 rounded-lg text-sm text-neutral-700 border border-neutral-200">
+                <div className="p-2 bg-neutral-100 rounded-lg text-xs text-neutral-700 border border-neutral-200">
                   <span className="font-bold text-neutral-900">{currentLanguage === "en" ? "REMARKS:" : "หมายเหตุ:"}</span><br/>
                   {cleanRemarkForDisplay(receiptData.remark)}
                 </div>
@@ -527,14 +574,14 @@ export function A5ReceiptDialog({
             </div>
             <div className="w-1/3 text-right">
               {receiptData.status === "cancel" && (
-                <div className="text-lg text-rose-600 font-black uppercase border-4 border-rose-600 px-4 py-2 inline-block transform -rotate-6 rounded-md opacity-80">
+                <div className="text-base text-rose-600 font-black uppercase border-3 border-rose-600 px-3 py-1.5 inline-block transform -rotate-6 rounded-md opacity-80">
                   {currentLanguage === "en" ? "VOIDED" : "ยกเลิกแล้ว"}
                 </div>
               )}
             </div>
           </div>
-          <div className="text-center mt-8 pt-4 border-t border-neutral-200">
-            <p className="text-xs text-neutral-500 font-medium">
+          <div className={`text-center ${footerMt} border-t border-neutral-200`}>
+            <p className="text-[11px] text-neutral-500 font-medium">
               {receiptData.isDraft 
                 ? (currentLanguage === "en" ? "This is a proforma invoice, not an official tax receipt." : "เอกสารใบแจ้งหนี้ชั่วคราว ไม่ใช่ใบเสร็จรับเงิน/ใบกำกับภาษีอย่างเป็นทางการ")
                 : (receiptData.status === "cancel" 
@@ -692,42 +739,89 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     + (receiptData.discount > 0 ? 1 : 0);
   const totalRows = receiptData.items.length + extraRows;
 
-  // Granular responsive sizing ONLY for items table and prices:
+  // Granular responsive sizing for Items Table AND Totals Section:
   let tableFontSize = "text-sm";
   let rowPy = "py-2.5";
   let thPy = "py-2";
   let tableMb = "mb-4";
   let sectionGap = "mb-4";
+
+  // Totals section responsive sizing:
+  let totalSubtotalText = "text-sm";
+  let totalGrandText = "text-lg font-black";
+  let totalVatText = "text-xs";
+  let totalPy = "py-1.5";
+  let grandPy = "py-2.5";
+  let totalsMb = "mb-6";
+  let totalsWidth = "w-1/2";
+  let footerMt = "mt-6 pt-3";
   let rowPx = 36;
 
   if (totalRows > 20) {
+    tableFontSize = "text-[8.5px] leading-tight";
+    rowPy = "py-[1px]";
+    thPy = "py-[1.5px]";
+    tableMb = "mb-1";
+    sectionGap = "mb-1.5";
+
+    totalSubtotalText = "text-[9px]";
+    totalGrandText = "text-xs font-black";
+    totalVatText = "text-[8px]";
+    totalPy = "py-[1px]";
+    grandPy = "py-0.5";
+    totalsMb = "mb-1.5";
+    totalsWidth = "w-5/12";
+    footerMt = "mt-1 pt-1";
+    rowPx = 15;
+  } else if (totalRows > 15) {
+    // e.g. Job 2026002710 with 17 items
     tableFontSize = "text-[9px] leading-tight";
     rowPy = "py-[2px]";
-    thPy = "py-[3px]";
+    thPy = "py-1";
     tableMb = "mb-1.5";
     sectionGap = "mb-2";
-    rowPx = 16;
-  } else if (totalRows > 15) {
-    tableFontSize = "text-[10px] leading-tight";
+
+    totalSubtotalText = "text-[10px]";
+    totalGrandText = "text-sm font-black";
+    totalVatText = "text-[8.5px]";
+    totalPy = "py-0.5";
+    grandPy = "py-1";
+    totalsMb = "mb-2.5";
+    totalsWidth = "w-5/12";
+    footerMt = "mt-2 pt-2";
+    rowPx = 18;
+  } else if (totalRows > 11) {
+    tableFontSize = "text-[10.5px] leading-snug";
     rowPy = "py-1";
     thPy = "py-1";
     tableMb = "mb-2";
     sectionGap = "mb-2.5";
-    rowPx = 19;
-  } else if (totalRows > 11) {
-    tableFontSize = "text-[11px] leading-snug";
+
+    totalSubtotalText = "text-xs";
+    totalGrandText = "text-base font-black";
+    totalVatText = "text-[9.5px]";
+    totalPy = "py-0.5";
+    grandPy = "py-1.5";
+    totalsMb = "mb-3.5";
+    totalsWidth = "w-1/2";
+    footerMt = "mt-3 pt-2";
+    rowPx = 22;
+  } else if (totalRows > 7) {
+    tableFontSize = "text-xs";
     rowPy = "py-1.5";
     thPy = "py-1.5";
     tableMb = "mb-2.5";
     sectionGap = "mb-3";
-    rowPx = 23;
-  } else if (totalRows > 7) {
-    tableFontSize = "text-xs";
-    rowPy = "py-2";
-    thPy = "py-1.5";
-    tableMb = "mb-3";
-    sectionGap = "mb-3.5";
-    rowPx = 28;
+
+    totalSubtotalText = "text-xs";
+    totalGrandText = "text-base font-black";
+    totalVatText = "text-[10px]";
+    totalPy = "py-1";
+    grandPy = "py-2";
+    totalsMb = "mb-4";
+    totalsWidth = "w-1/2";
+    footerMt = "mt-4 pt-2";
+    rowPx = 26;
   }
 
   // Scale factor to ensure content fits within A5 page height (793px)
@@ -859,37 +953,37 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       </table>
 
       {/* Totals */}
-      <div className="flex justify-end mb-6">
-        <div className="w-1/2">
-          <div className="flex justify-between py-1.5 text-sm text-neutral-700">
+      <div className={`flex justify-end ${totalsMb}`}>
+        <div className={totalsWidth}>
+          <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700`}>
             <span>SUBTOTAL</span>
             <span className="font-mono">฿{formatCurrency(receiptData.subtotal + receiptData.expressSurcharge + (receiptData.deliveryFee || 0) - receiptData.discount)}</span>
           </div>
           {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
-            <div className="flex justify-between py-1.5 text-sm text-neutral-700 border-b border-neutral-200">
+            <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700 border-b border-neutral-200`}>
               <span>VAT ({receiptData.vatRate}%)</span>
               <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
             </div>
           )}
-          <div className="flex justify-between py-3 text-lg font-black text-neutral-900 border-t-2 border-neutral-900">
+          <div className={`flex justify-between ${grandPy} ${totalGrandText} text-neutral-900 border-t-2 border-neutral-900`}>
             <span>GRAND TOTAL</span>
             <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
           </div>
           {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
-            <div className="flex justify-between py-1 text-xs text-neutral-500">
+            <div className={`flex justify-between ${totalPy} ${totalVatText} text-neutral-500`}>
               <span>Includes VAT {receiptData.vatRate}%</span>
               <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
             </div>
           )}
           {payments.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-dashed border-neutral-300">
+            <div className="mt-2 pt-2 border-t border-dashed border-neutral-300">
               {payments.map((p, pIdx) => (
-                <div key={pIdx} className="flex justify-between py-1 text-sm text-neutral-800">
-                  <span className="uppercase text-xs font-bold">{format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID ({p.method === "credit" ? "MEMBER" : p.method})</span>
+                <div key={pIdx} className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-800`}>
+                  <span className="uppercase text-[9px] font-bold">{format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID ({p.method === "credit" ? "MEMBER" : p.method})</span>
                   <span className="font-mono font-bold">฿{formatCurrency(p.amount)}</span>
                 </div>
               ))}
-              <div className="flex justify-between py-2 mt-2 text-sm font-black text-neutral-900 border-t border-neutral-200">
+              <div className={`flex justify-between ${totalPy} mt-1 ${totalSubtotalText} font-black text-neutral-900 border-t border-neutral-200`}>
                 <span>TOTAL PAID</span>
                 <span className="font-mono">฿{formatCurrency(totalPaid)}</span>
               </div>
@@ -899,11 +993,11 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       </div>
 
       {/* Footer */}
-      <div className="pt-4 border-t border-neutral-200">
+      <div className="pt-2 border-t border-neutral-200">
         <div className="flex items-end justify-between">
           <div className="w-2/3">
             {cleanRemark(receiptData.remark) && (
-              <div className="p-3 bg-neutral-100 rounded-lg text-sm text-neutral-700 border border-neutral-200">
+              <div className="p-2 bg-neutral-100 rounded-lg text-xs text-neutral-700 border border-neutral-200">
                 <span className="font-bold text-neutral-900">REMARKS:</span><br />
                 {cleanRemark(receiptData.remark)}
               </div>
@@ -915,8 +1009,8 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
             )}
           </div>
         </div>
-        <div className="text-center mt-8 pt-4 border-t border-neutral-200">
-          <p className="text-xs text-neutral-500 font-medium">
+        <div className={`text-center ${footerMt} border-t border-neutral-200`}>
+          <p className="text-[11px] text-neutral-500 font-medium">
             {receiptData.isDraft
               ? "This is a proforma invoice, not an official tax receipt."
               : (receiptData.status === "cancel" ? "This order has been cancelled" : "Thank you for your business!")}
