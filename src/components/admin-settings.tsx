@@ -1,4 +1,4 @@
-import { useState, useEffect, useSyncExternalStore } from "react";
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
 import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,8 @@ export function AdminSettings() {
   const [shopTaxId, setShopTaxId] = useState("");
   const [shopAddressFull, setShopAddressFull] = useState("");
   const [shopProformaQrUrl, setShopProformaQrUrl] = useState("");
+  const [isUploadingQr, setIsUploadingQr] = useState(false);
+  const qrFileInputRef = useRef<HTMLInputElement>(null);
 
   const [receiptPaperSize, setReceiptPaperSize] = useState("80mm");
   const [currentLanguage, setCurrentLanguage] = useState("th");
@@ -205,6 +207,57 @@ export function AdminSettings() {
       toast.error("Failed to update receipt settings: " + (err instanceof Error ? err.message : "Unknown error"));
     }
   };
+
+  const handleQrUpload = useCallback(async (file: File) => {
+    setIsUploadingQr(true);
+    try {
+      // Try GCS signed URL first, fall back to local upload
+      const shopId = editingShop?.id || "new-branch";
+      let publicUrl = "";
+      try {
+        const res = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entityType: "system",
+            entityId: shopId,
+            subType: "qr",
+            contentType: file.type,
+            fileName: file.name,
+          }),
+        });
+        if (res.ok) {
+          const { uploadUrl, publicUrl: gcsUrl } = await res.json();
+          await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+          publicUrl = gcsUrl;
+        }
+      } catch {
+        // GCS unavailable — use local upload
+      }
+
+      if (!publicUrl) {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("entityType", "system");
+        formData.append("entityId", shopId);
+        formData.append("subType", "qr");
+        const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+        const data = await res.json();
+        publicUrl = data.publicUrl || "";
+      }
+
+      if (publicUrl) {
+        setShopProformaQrUrl(publicUrl);
+        toast.success("QR Code uploaded successfully");
+      } else {
+        toast.error("Upload failed");
+      }
+    } catch (err) {
+      toast.error("Upload error: " + (err instanceof Error ? err.message : "Unknown error"));
+    } finally {
+      setIsUploadingQr(false);
+    }
+  }, [editingShop?.id]);
 
   const handleEditShop = (shop: ShopLocation) => {
     setEditingShop(shop);
@@ -863,22 +916,89 @@ export function AdminSettings() {
 
               <div className="space-y-2">
                 <Label className="text-sm font-semibold flex items-center gap-1.5">
-                  Proforma QR Image URL <span className="text-[11px] font-normal text-slate-400">(QR ชำระเงินบน Proforma)</span>
+                  <QrCode size={14} className="text-emerald-600" />
+                  Proforma QR Code <span className="text-[11px] font-normal text-slate-400">(แสดงบน Proforma Invoice เพื่อชำระเงิน)</span>
                 </Label>
-                <Input
-                  value={shopProformaQrUrl}
-                  onChange={(e) => setShopProformaQrUrl(e.target.value)}
-                  placeholder="https://storage.googleapis.com/.../qr.png"
-                  className="h-10 text-xs font-mono"
+
+                {/* Hidden file input */}
+                <input
+                  ref={qrFileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleQrUpload(file);
+                    e.target.value = "";
+                  }}
                 />
-                {shopProformaQrUrl && (
-                  <div className="flex items-center gap-3 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+
+                {shopProformaQrUrl ? (
+                  /* Preview mode — show QR image with replace/remove buttons */
+                  <div className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-xl">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={shopProformaQrUrl} alt="QR Preview" className="h-16 w-16 object-contain rounded border border-slate-200 bg-white" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-                    <p className="text-[11px] text-slate-500">Preview QR Code</p>
+                    <img
+                      src={shopProformaQrUrl}
+                      alt="QR Preview"
+                      className="h-24 w-24 object-contain rounded-lg border border-slate-200 bg-white p-1 shrink-0"
+                      onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                    />
+                    <div className="flex flex-col gap-2 flex-1">
+                      <p className="text-xs font-semibold text-slate-700">QR Code พร้อมใช้งานแล้ว ✅</p>
+                      <p className="text-[10px] text-slate-400 break-all font-mono leading-tight">{shopProformaQrUrl.split('/').pop()}</p>
+                      <div className="flex gap-2 mt-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={isUploadingQr}
+                          onClick={() => qrFileInputRef.current?.click()}
+                          className="h-7 text-[11px] px-3 border-slate-300"
+                        >
+                          {isUploadingQr ? "กำลัง Upload..." : "เปลี่ยนรูป"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setShopProformaQrUrl("")}
+                          className="h-7 text-[11px] px-3 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                        >
+                          ลบ QR
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* Upload zone — drag & drop or click */
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => !isUploadingQr && qrFileInputRef.current?.click()}
+                    onKeyDown={(e) => e.key === 'Enter' && !isUploadingQr && qrFileInputRef.current?.click()}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files?.[0];
+                      if (file && !isUploadingQr) handleQrUpload(file);
+                    }}
+                    className={`flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed rounded-xl cursor-pointer transition-colors select-none
+                      ${isUploadingQr ? 'border-emerald-300 bg-emerald-50' : 'border-slate-300 bg-slate-50 hover:border-emerald-400 hover:bg-emerald-50/50'}`}
+                  >
+                    {isUploadingQr ? (
+                      <>
+                        <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                        <p className="text-xs font-semibold text-emerald-600">กำลัง Upload...</p>
+                      </>
+                    ) : (
+                      <>
+                        <QrCode size={28} className="text-slate-400" />
+                        <p className="text-xs font-semibold text-slate-600">คลิกหรือลากไฟล์รูป QR มาวาง</p>
+                        <p className="text-[10px] text-slate-400">PNG, JPG, WEBP รองรับ</p>
+                      </>
+                    )}
                   </div>
                 )}
-                <p className="text-[11px] text-slate-400">ถ้าไม่กรอก จะไม่แสดง QR บน Proforma Invoice</p>
               </div>
 
               <div className="flex items-center gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl p-3">
