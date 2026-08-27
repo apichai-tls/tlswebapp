@@ -94,7 +94,7 @@ const getLastActiveText = (date?: Date) => {
   }
 };
 
-export function AdminCRM() {
+export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void } = {}) {
   const customers = useCustomers();
   const jobs = useJobs();
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
@@ -303,13 +303,22 @@ export function AdminCRM() {
             Customer Relationship Management ({customers.length} customers) - View history, LTV spent, and custom rates.
           </p>
         </div>
-        <Button 
-          onClick={() => openForm()} 
-          className="gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-md shadow-indigo-100 transition-all rounded-xl h-11 px-5"
-        >
-          <UserPlus size={18} />
-          Add New Customer
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button 
+            onClick={() => onTopUp ? onTopUp() : setTopUpOpen(true)} 
+            className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-md shadow-emerald-100 transition-all rounded-xl h-11 px-5"
+          >
+            <Wallet size={18} />
+            Top Up Wallet
+          </Button>
+          <Button 
+            onClick={() => openForm()} 
+            className="gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-md shadow-indigo-100 transition-all rounded-xl h-11 px-5"
+          >
+            <UserPlus size={18} />
+            Add New Customer
+          </Button>
+        </div>
       </div>
 
       {/* Modern Analytics Cards */}
@@ -648,9 +657,13 @@ export function AdminCRM() {
                               size="sm" 
                               className="h-8 border-emerald-250 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
                               onClick={() => {
-                                setTopUpCustomer(customer);
-                                setTopUpAmount("");
-                                setTopUpOpen(true);
+                                if (onTopUp) {
+                                  onTopUp(customer);
+                                } else {
+                                  setTopUpCustomer(customer);
+                                  setTopUpAmount("");
+                                  setTopUpOpen(true);
+                                }
                               }}
                             >
                               <Wallet size={12} />

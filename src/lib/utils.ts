@@ -39,3 +39,19 @@ export function generateReceiptNumber(jobId: string): string {
 export function generateProformaBaseNumber(jobId: string): string {
   return `PR-${jobId}`;
 }
+
+/**
+ * Global Top-Up sequence key stored in the Setting table.
+ */
+export const TOPUP_SEQ_KEY = "topUpSeq_global";
+
+/**
+ * Generate a Top-Up receipt number from a sequential counter.
+ * Format: TU-{YYMM}-{00001}  e.g. TU-2608-00001
+ */
+export function generateTopUpReceiptNumber(seq: number, date?: Date): string {
+  const d = date || new Date();
+  const yy = String(d.getFullYear()).slice(-2);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `TU-${yy}${mm}-${String(seq).padStart(5, "0")}`;
+}

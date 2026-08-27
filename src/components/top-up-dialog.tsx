@@ -12,16 +12,16 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import {
   customerStore,
-  jobStore,
   serviceStore,
   priceListStore,
   shopStore,
+  settingsStore,
   type Customer,
   type ServiceItem,
 } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
 import { useCustomers } from "@/lib/use-customers";
-import { generateProformaBaseNumber } from "@/lib/utils";
+import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber } from "@/lib/utils";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -176,42 +176,13 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       const now = new Date();
 
-      // Create Job with status "topup"
-      const job = await jobStore.addJob({
-        source: "pos",
-        customerId: selectedCustomer.id,
-        customerName: selectedCustomer.name,
-        customerPhone: selectedCustomer.phone || "-",
-        pickupLocation: activeShop?.name || "Top Up Counter",
-        dropoffLocation: activeShop?.name || "Top Up Counter",
-        pickupCoords: { lat: 0, lng: 0 },
-        dropoffCoords: { lat: 0, lng: 0 },
-        totalAmount: cartTotal,
-        discount: 0,
-        discountPercent: 0,
-        items: itemsPayload,
-        serviceType: (cart[0]?.service.id as any) || "wash_fold",
-        status: "topup",
-        fee: 0,
-        branchId: activeShop?.id || "",
-        isPaid: true,
-        isShopPaid: true,
-        paymentMethod: null,
-        paymentChannel: paymentChannel,
-        remark: `Package Top-Up | Paid via ${paymentChannel}`,
-        createdBy: user?.name || user?.email || "Admin",
-        deliveryScheduledAt: now,
-        completedAt: now,
-      } as any);
+      // Sequential counter for Top-Up Receipt (Option C: No Job created)
+      const systemSettings = settingsStore.getSnapshot();
+      const currentSeq = parseInt(systemSettings?.[TOPUP_SEQ_KEY] || "0", 10);
+      const nextSeq = currentSeq + 1;
+      settingsStore.updateSetting(TOPUP_SEQ_KEY, String(nextSeq)).catch(() => {});
 
-      const savedJobId = job.id;
-
-      // Generate proforma number
-      const proformaNum = generateProformaBaseNumber(savedJobId);
-      await jobStore.updateJobDetails(savedJobId, {
-        proformaNumber: proformaNum,
-        proformaRevision: 0,
-      } as any);
+      const topUpReceiptNo = generateTopUpReceiptNumber(nextSeq, now);
 
       // Update customer wallet
       const currentBalance = selectedCustomer.creditBalance || 0;
@@ -226,14 +197,13 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       }
 
       await customerStore.updateCustomer(selectedCustomer.id, walletUpdates);
-      await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: newBalance } as any);
 
       toast.success(`Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(newBalance)}`);
 
       // Build receipt data
-      const systemSettings = (await import("@/lib/store")).settingsStore.getSnapshot();
       const rdata: any = {
-        id: savedJobId,
+        id: topUpReceiptNo,
+        receiptNumber: topUpReceiptNo,
         isDraft: false,
         status: "completed",
         createdAt: now,
@@ -251,7 +221,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         vatRate: 0,
         paymentChannel,
         isPaid: true,
-        proformaId: proformaNum,
+        proformaId: undefined,
         proformaRevision: 0,
         adminNotesJson: null,
         deliveryScheduledAt: null,
@@ -259,9 +229,9 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       };
 
       setReceiptData(rdata);
-      setReceiptJobId(savedJobId);
+      setReceiptJobId(topUpReceiptNo);
       setShowReceipt(true);
-      onSuccess?.(savedJobId);
+      onSuccess?.(topUpReceiptNo);
     } catch (err: any) {
       console.error("[TopUpDialog] Pay failed:", err);
       toast.error("Top Up failed: " + (err?.message || "Unknown error"));
@@ -567,11 +537,6 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
           receiptData={receiptData}
           activeShop={activeShop as any}
           currentLanguage="en"
-          onBillImageUploaded={(url) => {
-            if (receiptJobId) {
-              jobStore.updateJobDetails(receiptJobId, { billImageUrl: JSON.stringify([url]) } as any).catch(() => {});
-            }
-          }}
           onCloseComplete={() => {
             setShowReceipt(false);
             onClose();

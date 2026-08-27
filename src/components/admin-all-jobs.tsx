@@ -398,16 +398,6 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 </button>
               </div>
             )}
-            {onTopUp && (
-              <button
-                onClick={onTopUp}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-md bg-emerald-500 text-white hover:bg-emerald-600 border border-emerald-500 transition-colors shadow-sm shrink-0 print:hidden"
-                title="Top Up Member Wallet"
-              >
-                <Wallet size={15} />
-                <span className="hidden sm:inline">Top Up</span>
-              </button>
-            )}
             <div className="flex rounded-md shadow-sm border border-slate-200 bg-slate-50 p-1 shrink-0">
               <button
                 onClick={() => setViewMode("list")}

@@ -222,6 +222,7 @@ export default function AdminPage() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
+  const [topUpCustomer, setTopUpCustomer] = useState<Customer | null>(null);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
@@ -5047,13 +5048,20 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} onTopUp={() => setShowTopUpDialog(true)} savingJobIds={savingJobIds} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} savingJobIds={savingJobIds} />}
           {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={stableHandleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
           {activeTab === "pos" && hasAccess("pos") && <AdminPOS />}
           {activeTab === "services" && hasAccess("services") && <AdminServiceMenu />}
-          {activeTab === "customers" && hasAccess("customers") && <AdminCRM />}
+          {activeTab === "customers" && hasAccess("customers") && (
+            <AdminCRM 
+              onTopUp={(customer) => {
+                setTopUpCustomer(customer || null);
+                setShowTopUpDialog(true);
+              }} 
+            />
+          )}
         {activeTab === "calculator" && <FeeCalculatorPage />}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
@@ -5195,9 +5203,13 @@ export default function AdminPage() {
       {/* Top Up Dialog — standalone member wallet top-up */}
       <TopUpDialog
         open={showTopUpDialog}
-        onClose={() => setShowTopUpDialog(false)}
-        onSuccess={(jobId) => {
-          console.log("[TopUp] Created job:", jobId);
+        preselectedCustomer={topUpCustomer}
+        onClose={() => {
+          setShowTopUpDialog(false);
+          setTopUpCustomer(null);
+        }}
+        onSuccess={(receiptNo) => {
+          console.log("[TopUp] Created receipt:", receiptNo);
         }}
       />
 

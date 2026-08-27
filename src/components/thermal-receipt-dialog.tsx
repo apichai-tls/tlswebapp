@@ -19,6 +19,7 @@ export interface ReceiptItem {
 
 export interface ReceiptData {
   id: string;
+  receiptNumber?: string;
   createdAt: Date;
   customerName: string;
   customerPhone: string;
@@ -536,7 +537,7 @@ export function ThermalReceiptDialog({
               {!receiptData.status?.includes("cancel") && (
                 <div className="flex justify-between font-bold text-neutral-900">
                   <span>{currentLanguage === "en" ? "RECEIPT NO:" : "เลขที่ใบเสร็จ:"}</span>
-                  <span>RE-{receiptData.id}</span>
+                  <span>{receiptData.receiptNumber || `RE-${receiptData.id}`}</span>
                 </div>
               )}
               {receiptData.proformaId && (
