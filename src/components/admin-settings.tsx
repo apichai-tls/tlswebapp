@@ -31,6 +31,7 @@ export function AdminSettings() {
   const [shopLogoUrl, setShopLogoUrl] = useState("");
   const [shopPhone, setShopPhone] = useState("");
   const [shopTaxId, setShopTaxId] = useState("");
+  const [shopAddressFull, setShopAddressFull] = useState("");
 
   const [receiptPaperSize, setReceiptPaperSize] = useState("80mm");
   const [currentLanguage, setCurrentLanguage] = useState("th");
@@ -215,6 +216,7 @@ export function AdminSettings() {
     setShopLogoUrl(shop.logoUrl || "");
     setShopPhone(shop.phone || "");
     setShopTaxId(shop.taxId || "");
+    setShopAddressFull(shop.addressFull || "");
     setIsShopModalOpen(true);
   };
 
@@ -229,6 +231,7 @@ export function AdminSettings() {
     setShopLogoUrl("");
     setShopPhone("");
     setShopTaxId("");
+    setShopAddressFull("");
     setIsShopModalOpen(true);
   };
 
@@ -255,6 +258,7 @@ export function AdminSettings() {
       logoUrl: shopLogoUrl.trim() || null,
       phone: shopPhone.trim() || null,
       taxId: shopTaxId.trim() || null,
+      addressFull: shopAddressFull.trim() || null,
     };
     if (editingShop) {
       shopStore.updateShopLocation(editingShop.id, payload);
@@ -837,6 +841,20 @@ export function AdminSettings() {
                     className="h-10 text-sm font-mono" 
                   />
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-semibold flex items-center gap-1.5">
+                  Full Address <span className="text-[11px] font-normal text-slate-400">(แสดงบนใบเสร็จ)</span>
+                </Label>
+                <textarea
+                  value={shopAddressFull}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setShopAddressFull(e.target.value)}
+                  placeholder={"เช่น 123/4 ถนนสุขุมวิท แขวงคลองเตย เขตคลองเตย กรุงเทพมหานคร 10110"}
+                  rows={3}
+                  className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent placeholder:text-slate-400"
+                />
+                <p className="text-[11px] text-slate-400">ถ้าไม่กรอก จะใช้ Address &amp; Map Location แทน</p>
               </div>
 
               <div className="flex items-center gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl p-3">

@@ -30,6 +30,7 @@ export interface ShopLocation {
   id: string;
   name: string;
   address: string;
+  addressFull?: string | null;
   coords: LatLng;
   noCommission?: boolean;
   isPosEnabled?: boolean;

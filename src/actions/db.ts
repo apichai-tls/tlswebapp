@@ -609,6 +609,7 @@ export async function addShopLocationAction(data: any) {
       id: data.id,
       name: data.name,
       address: data.address,
+      addressFull: data.addressFull || null,
       lat: data.coords.lat,
       lng: data.coords.lng,
       noCommission: data.noCommission || false,
@@ -624,6 +625,7 @@ export async function updateShopLocationAction(id: string, updates: any) {
   const data: any = {};
   if (updates.name) data.name = updates.name;
   if (updates.address) data.address = updates.address;
+  if (updates.addressFull !== undefined) data.addressFull = updates.addressFull;
   if (updates.coords) {
     data.lat = updates.coords.lat;
     data.lng = updates.coords.lng;
