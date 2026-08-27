@@ -24,18 +24,18 @@ export function formatProformaNumber(rawBase: string | null | undefined, revisio
 }
 
 /**
- * Global proforma sequence key — shared across all branches.
- * Stored in the Setting table under this key.
+ * Generate a receipt number from a job ID.
+ * Format: RE-{jobId}  e.g. RE-2026002711
  */
-export const PROFORMA_SEQ_KEY = "proformaSeq_global";
+export function generateReceiptNumber(jobId: string): string {
+  return `RE-${jobId}`;
+}
 
 /**
- * Generate a proforma number in the format: PR-TLS{YYMM}-{00001}
- * e.g. PR-TLS2608-00001
+ * Generate a proforma base number from a job ID.
+ * Format: PR-{jobId}  e.g. PR-2026002711
+ * Append -R{n} with formatProformaNumber() when revision > 0.
  */
-export function generateProformaBaseNumber(seq: number, date?: Date): string {
-  const d = date || new Date();
-  const yy = String(d.getFullYear()).slice(-2);
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `PR-TLS${yy}${mm}-${String(seq).padStart(5, "0")}`;
+export function generateProformaBaseNumber(jobId: string): string {
+  return `PR-${jobId}`;
 }

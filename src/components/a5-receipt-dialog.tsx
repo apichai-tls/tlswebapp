@@ -412,7 +412,7 @@ export function A5ReceiptDialog({
                 {!receiptData.status?.includes("cancel") && (
                   <div className="text-xs mb-1">
                     <span className="font-bold text-neutral-700 mr-1">{currentLanguage === "en" ? "RECEIPT NO:" : "เลขที่ใบเสร็จ:"}</span>
-                    <span className="font-mono font-medium text-neutral-900">#{receiptData.id}</span>
+                    <span className="font-mono font-medium text-neutral-900">RE-{receiptData.id}</span>
                   </div>
                 )}
                 {receiptData.proformaId && (
@@ -883,7 +883,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
               {!receiptData.status?.includes("cancel") && (
                 <div className="text-xs mb-1">
                   <span className="font-bold text-neutral-700 mr-1">RECEIPT NO:</span>
-                  <span className="font-mono font-medium text-neutral-900">#{receiptData.id}</span>
+                  <span className="font-mono font-medium text-neutral-900">RE-{receiptData.id}</span>
                 </div>
               )}
               {receiptData.proformaId && (

@@ -76,7 +76,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, PROFORMA_SEQ_KEY } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber } from "@/lib/utils";
 
 const cleanRemarkForDisplay = (rawRemark: string | null | undefined) => {
   if (!rawRemark) return "";
@@ -1649,18 +1649,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       let targetProformaNum = proformaReceiptNumber;
       let effectiveRevision = proformaRevision;
 
-      if (!targetProformaNum) {
-        const currentSeq = parseInt(settings?.[PROFORMA_SEQ_KEY] || "0", 10);
-        const nextSeq = currentSeq + 1;
-        setTimeout(() => {
-          settingsStore.updateSetting(PROFORMA_SEQ_KEY, String(nextSeq)).catch(() => {});
-        }, 500);
-
-        targetProformaNum = generateProformaBaseNumber(nextSeq);
+      if (!targetProformaNum && loadedJobId) {
+        // Existing job — generate proforma from job ID
+        targetProformaNum = generateProformaBaseNumber(loadedJobId);
         effectiveRevision = 0;
         setProformaReceiptNumber(targetProformaNum);
         setProformaRevision(0);
         setLastProformaCartHash(currentCartHash);
+      } else if (!targetProformaNum) {
+        // New job — proforma will be generated after addJob() using finalJob.id (see below)
       } else if (cartChangedAfterProforma) {
         effectiveRevision = proformaRevision + 1;
         setProformaRevision(effectiveRevision);
@@ -1903,6 +1900,20 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           proformaRevision: targetProformaNum ? effectiveRevision : undefined,
           proformaCartHash: targetProformaNum ? (currentCartHash || undefined) : undefined,
         });
+
+        // For new POS jobs: generate proforma from real job ID now that we have it
+        if (finalJob && !targetProformaNum) {
+          targetProformaNum = generateProformaBaseNumber(finalJob.id);
+          effectiveRevision = 0;
+          setProformaReceiptNumber(targetProformaNum);
+          setProformaRevision(0);
+          setLastProformaCartHash(currentCartHash);
+          await jobStore.updateJobDetails(finalJob.id, {
+            proformaNumber: targetProformaNum,
+            proformaRevision: 0,
+            proformaCartHash: currentCartHash,
+          } as any);
+        }
       }
 
       // Member balance adjustment
@@ -3987,17 +3998,18 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   let targetRevision = proformaRevision;
 
                   if (!targetProformaNum) {
-                    const currentSeq = parseInt(settings?.[PROFORMA_SEQ_KEY] || "0", 10);
-                    const nextSeq = currentSeq + 1;
-                    setTimeout(() => {
-                      settingsStore.updateSetting(PROFORMA_SEQ_KEY, String(nextSeq)).catch(() => {});
-                    }, 1000);
-                    
-                    targetProformaNum = generateProformaBaseNumber(nextSeq);
-                    targetRevision = 0;
-                    setProformaReceiptNumber(targetProformaNum);
-                    setProformaRevision(0);
-                    setLastProformaCartHash(cartHash);
+                    if (loadedJobId) {
+                      // Existing job — generate from job ID
+                      targetProformaNum = generateProformaBaseNumber(loadedJobId);
+                      targetRevision = 0;
+                      setProformaReceiptNumber(targetProformaNum);
+                      setProformaRevision(0);
+                      setLastProformaCartHash(cartHash);
+                    } else {
+                      // New POS job without ID yet — show DRAFT (will be PR-{jobId} after Pay)
+                      targetProformaNum = "DRAFT";
+                      targetRevision = 0;
+                    }
                   } else {
                     if (cartHash !== lastProformaCartHash) {
                       targetRevision = proformaRevision + 1;

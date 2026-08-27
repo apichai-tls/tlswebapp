@@ -536,7 +536,7 @@ export function ThermalReceiptDialog({
               {!receiptData.status?.includes("cancel") && (
                 <div className="flex justify-between font-bold text-neutral-900">
                   <span>{currentLanguage === "en" ? "RECEIPT NO:" : "เลขที่ใบเสร็จ:"}</span>
-                  <span>#{receiptData.id}</span>
+                  <span>RE-{receiptData.id}</span>
                 </div>
               )}
               {receiptData.proformaId && (

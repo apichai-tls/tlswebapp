@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, PROFORMA_SEQ_KEY } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhoneInput } from "@/components/ui/phone-input";
@@ -1533,18 +1533,16 @@ export default function AdminPage() {
     let effectiveProformaCartHash = lastProformaCartHash;
 
     if (!targetProformaNum && isPayment) {
-      const currentSeq = parseInt(systemSettings?.[PROFORMA_SEQ_KEY] || "0", 10);
-      const nextSeq = currentSeq + 1;
-      setTimeout(() => {
-        settingsStore.updateSetting(PROFORMA_SEQ_KEY, String(nextSeq)).catch(() => {});
-      }, 500);
-
-      targetProformaNum = generateProformaBaseNumber(nextSeq);
-      effectiveProformaRevision = 0;
-      effectiveProformaCartHash = currentCartHash;
-      setProformaReceiptNumber(targetProformaNum);
-      setProformaRevision(0);
-      setLastProformaCartHash(currentCartHash);
+      if (editingJobId) {
+        // Existing job — generate from job ID immediately
+        targetProformaNum = generateProformaBaseNumber(editingJobId);
+        effectiveProformaRevision = 0;
+        effectiveProformaCartHash = currentCartHash;
+        setProformaReceiptNumber(targetProformaNum);
+        setProformaRevision(0);
+        setLastProformaCartHash(currentCartHash);
+      }
+      // For NEW jobs: proforma will be generated after job creation using savedJobId (see below)
     } else if (targetProformaNum && (!lastProformaCartHash || currentCartHash !== lastProformaCartHash) && !proformaPressedSinceLastEdit) {
       effectiveProformaRevision = proformaRevision + 1;
       effectiveProformaCartHash = currentCartHash;
@@ -1927,7 +1925,29 @@ export default function AdminPage() {
 
         const job = await jobStore.addJob(jobDataWithWallet as any);
         savedJobId = job.id;
-        
+
+        // For NEW jobs: generate proforma from the real jobId now that we have it
+        if (isPayment && !targetProformaNum) {
+          targetProformaNum = generateProformaBaseNumber(savedJobId);
+          effectiveProformaRevision = 0;
+          effectiveProformaCartHash = currentCartHash;
+          setProformaReceiptNumber(targetProformaNum);
+          setProformaRevision(0);
+          setLastProformaCartHash(currentCartHash);
+          // Update job with proforma fields + remark
+          const proformaRemark = `Proforma: ${targetProformaNum}`;
+          const existingRemark = newJobData.remark || "";
+          const updatedRemark = existingRemark
+            ? (existingRemark.includes("Proforma:") ? existingRemark : `${proformaRemark} | ${existingRemark}`)
+            : proformaRemark;
+          await jobStore.updateJobDetails(savedJobId, {
+            proformaNumber: targetProformaNum,
+            proformaRevision: 0,
+            proformaCartHash: currentCartHash,
+            remark: updatedRemark,
+          } as any);
+        }
+
         // Close dialog immediately — UI updates in 0ms!
         setDialogOpen(false);
         if (isPayment) {
@@ -4323,31 +4343,30 @@ export default function AdminPage() {
                                 let targetRevision = proformaRevision;
 
                                 if (!targetProformaNum) {
-                                  const currentSeq = parseInt(systemSettings?.[PROFORMA_SEQ_KEY] || "0", 10);
-                                  const nextSeq = currentSeq + 1;
-                                  setTimeout(() => {
-                                    settingsStore.updateSetting(PROFORMA_SEQ_KEY, String(nextSeq)).catch(() => {});
-                                  }, 1000);
-                                  
-                                  targetProformaNum = generateProformaBaseNumber(nextSeq);
-                                  targetRevision = 0;
-                                  setProformaReceiptNumber(targetProformaNum);
-                                  setProformaRevision(0);
-                                  setLastProformaCartHash(cartHash);
-                                  // Persist to DB — no more localStorage
                                   if (editingJobId) {
+                                    // Existing job — generate from job ID
+                                    targetProformaNum = generateProformaBaseNumber(editingJobId);
+                                    targetRevision = 0;
+                                    setProformaReceiptNumber(targetProformaNum);
+                                    setProformaRevision(0);
+                                    setLastProformaCartHash(cartHash);
+                                    // Persist to DB
                                     jobStore.updateJobDetails(editingJobId, {
                                       proformaNumber: targetProformaNum,
                                       proformaRevision: 0,
                                       proformaCartHash: cartHash,
                                     } as any);
+                                  } else {
+                                    // New job without ID yet — use DRAFT placeholder (will become PR-{jobId} after Pay)
+                                    targetProformaNum = "DRAFT";
+                                    targetRevision = 0;
                                   }
                                 } else {
                                   if (cartHash !== lastProformaCartHash) {
                                     targetRevision = proformaRevision + 1;
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
-                                    // Persist to DB — no more localStorage
+                                    // Persist to DB
                                     if (editingJobId) {
                                       jobStore.updateJobDetails(editingJobId, {
                                         proformaNumber: targetProformaNum,
