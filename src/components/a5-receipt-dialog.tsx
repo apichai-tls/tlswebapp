@@ -521,7 +521,7 @@ export function A5ReceiptDialog({
           <div className={totalsWidth}>
             <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700`}>
               <span>{currentLanguage === "en" ? "SUBTOTAL" : "ยอดรวม"}</span>
-              <span className="font-mono">฿{formatCurrency(receiptData.subtotal + receiptData.expressSurcharge + (receiptData.deliveryFee || 0) - receiptData.discount)}</span>
+              <span className="font-mono">฿{formatCurrency((receiptData.subtotal != null ? receiptData.subtotal : (receiptData.total || 0)) + (receiptData.expressSurcharge || 0) + (receiptData.deliveryFee || 0) - (receiptData.discount || 0))}</span>
             </div>
             {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
               <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700 border-b border-neutral-200`}>
@@ -977,7 +977,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
         <div className={totalsWidth}>
           <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700`}>
             <span>SUBTOTAL</span>
-            <span className="font-mono">฿{formatCurrency(receiptData.subtotal + receiptData.expressSurcharge + (receiptData.deliveryFee || 0) - receiptData.discount)}</span>
+            <span className="font-mono">฿{formatCurrency((receiptData.subtotal != null ? receiptData.subtotal : (receiptData.total || 0)) + (receiptData.expressSurcharge || 0) + (receiptData.deliveryFee || 0) - (receiptData.discount || 0))}</span>
           </div>
           {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
             <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700 border-b border-neutral-200`}>

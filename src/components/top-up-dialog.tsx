@@ -210,6 +210,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         customerName: selectedCustomer.name,
         customerPhone: selectedCustomer.phone || "-",
         items: itemsPayload.map(i => ({ name: i.name, quantity: i.quantity, price: i.price })),
+        subtotal: cartTotal,
         total: cartTotal,
         grandTotal: cartTotal,
         discount: 0,
