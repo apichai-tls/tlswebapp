@@ -4420,7 +4420,7 @@ export default function AdminPage() {
 
                             <Button 
                               type="button"
-                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || paymentMethod !== 'paid' || isPaidJob || (paymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim()))}
+                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || shopPaymentMethod !== 'paid' || isPaidJob || (shopPaymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim()))}
                               onClick={() => handleCreate(true)}
                               className="flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                             >
