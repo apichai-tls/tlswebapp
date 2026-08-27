@@ -332,6 +332,7 @@ export default function AdminPage() {
   const [dialogVatType, setDialogVatType] = useState<"none" | "inclusive" | "exclusive">("none");
   const [dialogVatRate, setDialogVatRate] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
+  const [shopPaymentMethod, setShopPaymentMethod] = useState("unpaid");
   const [paymentChannel, setPaymentChannel] = useState("");
   const [cashPlaced, setCashPlaced] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -919,6 +920,7 @@ export default function AdminPage() {
     setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setPaymentMethod("unpaid");
+    setShopPaymentMethod("unpaid");
     setPaymentChannel("");
     setSelectedProfileCustomer(null);
     setCustomerName("");
@@ -956,6 +958,7 @@ export default function AdminPage() {
     setProformaReceiptNumber(null);
     setPaymentChannel("");
     setPaymentMethod("unpaid");
+    setShopPaymentMethod("unpaid");
     setSelectedProfileCustomer(null);
     setCustomerName("");
     setCustomerPhone("");
@@ -1220,6 +1223,7 @@ export default function AdminPage() {
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
+    setShopPaymentMethod(job.isShopPaid ? 'paid' : 'unpaid');
     setCashPlaced(job.cashPlaced || false);
     let fallbackChannel = job.paymentChannel || "";
     if (!fallbackChannel && job.paymentMethod) {
@@ -1610,6 +1614,7 @@ export default function AdminPage() {
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
+      isShopPaid: shopPaymentMethod === 'paid',
       fee,
       totalAmount: calculatedTotal,
       serviceType: dialogCart[0]?.id || "wash_fold",
@@ -1688,7 +1693,7 @@ export default function AdminPage() {
       proformaCartHash: targetProformaNum ? (effectiveProformaCartHash || null) : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
-      cashPlaced,
+      cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
       actorId: user?.id,
       actorName: user?.name || user?.email,
       actorRole: user?.role
@@ -1719,7 +1724,7 @@ export default function AdminPage() {
             'pickupDistance', 'deliveryDistance', 'pickupCommission', 'deliveryCommission',
             'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
-            'laundryTypes', 'items', 'paymentChannel',
+            'laundryTypes', 'items', 'paymentChannel', 'isShopPaid',
             'proformaNumber', 'proformaRevision', 'proformaCartHash'
           ];
           
@@ -4206,8 +4211,9 @@ export default function AdminPage() {
                             <span className="text-xl font-black text-indigo-400">฿{dialogTotal.toFixed(0)}</span>
                           </div>
 
-                          {/* Payment Channel / Status */}
-                          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 pb-1">
+                          {/* Payment Channel / CSO Status / Shop Status — 3-col grid */}
+                          <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800 pb-1">
+                            {/* Col 1: Payment Channel */}
                             <div className="space-y-0.5">
                               <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
                                 <CreditCard size={11} className="text-slate-500" />
@@ -4233,44 +4239,84 @@ export default function AdminPage() {
                               </select>
                             </div>
 
+                            {/* Col 2: CSO Status (isPaid) — hidden for Walk-in */}
+                            {!isWalkIn ? (
+                              <div className="space-y-0.5 flex flex-col">
+                                <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <CreditCard size={11} className="text-slate-500" />
+                                  CSO
+                                </Label>
+                                <div className="flex items-center gap-1.5 h-6 flex-wrap">
+                                  <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                    <input
+                                      type="radio"
+                                      name="payment-status"
+                                      disabled={isPaidJob}
+                                      checked={paymentMethod === 'unpaid'}
+                                      onChange={() => { if (isCsoOrAdmin) setPaymentMethod('unpaid'); }}
+                                      onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
+                                      className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                    />
+                                    <span className="font-medium text-slate-200">Unpaid</span>
+                                  </Label>
+                                  <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !(forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal) ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                    <input
+                                      type="radio"
+                                      name="payment-status"
+                                      disabled={isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal)}
+                                      checked={paymentMethod === 'paid'}
+                                      onChange={() => { if (isCsoOrAdmin) setPaymentMethod('paid'); }}
+                                      onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
+                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                    />
+                                    <span className="font-medium text-emerald-400">Paid</span>
+                                  </Label>
+                                  {/* cashPlaced checkbox: show when Cash/COD + CSO Unpaid */}
+                                  {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                                    <Label className={`flex items-center gap-1 text-[10px] animate-in fade-in duration-200 ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                      <input
+                                        type="checkbox"
+                                        checked={cashPlaced}
+                                        onChange={(e) => { if (isCsoOrAdmin) setCashPlaced(e.target.checked); }}
+                                        onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
+                                        className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-2.5 w-2.5 ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                      />
+                                      <span className="font-medium text-amber-400 whitespace-nowrap">วางเงิน</span>
+                                    </Label>
+                                  )}
+                                </div>
+                              </div>
+                            ) : <div />}
+
+                            {/* Col 3: Shop Status (isShopPaid) — always shown */}
                             <div className="space-y-0.5">
                               <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                Status
+                                <Store size={11} className="text-slate-500" />
+                                SHOP
                               </Label>
-                              <div className="flex items-center gap-2 h-6">
-                                <Label className={`flex items-center gap-1 text-[10px] ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input 
-                                    type="radio" 
-                                    name="payment-status"
-                                    disabled={isPaidJob}
-                                    checked={paymentMethod === 'unpaid'} 
-                                    onChange={() => setPaymentMethod('unpaid')} 
-                                    className="w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" 
+                              <div className="flex items-center gap-1.5 h-6">
+                                <Label className={`flex items-center gap-1 text-[10px] ${user?.role === 'admin' || user?.role === 'manager' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                  <input
+                                    type="radio"
+                                    name="shop-payment-status"
+                                    checked={shopPaymentMethod === 'unpaid'}
+                                    onChange={() => { if (user?.role === 'admin' || user?.role === 'manager') setShopPaymentMethod('unpaid'); }}
+                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager')) e.preventDefault(); }}
+                                    className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'manager') ? 'cursor-not-allowed' : ''}`}
                                   />
                                   <span className="font-medium text-slate-200">Unpaid</span>
                                 </Label>
-                                <Label className={`flex items-center gap-1 text-[10px] ${isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
-                                  <input 
-                                    type="radio" 
-                                    name="payment-status"
-                                    disabled={isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal)}
-                                    checked={paymentMethod === 'paid'} 
-                                    onChange={() => setPaymentMethod('paid')} 
-                                    className="w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" 
+                                <Label className={`flex items-center gap-1 text-[10px] ${user?.role === 'admin' || user?.role === 'manager' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                  <input
+                                    type="radio"
+                                    name="shop-payment-status"
+                                    checked={shopPaymentMethod === 'paid'}
+                                    onChange={() => { if (user?.role === 'admin' || user?.role === 'manager') setShopPaymentMethod('paid'); }}
+                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager')) e.preventDefault(); }}
+                                    className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'manager') ? 'cursor-not-allowed' : ''}`}
                                   />
                                   <span className="font-medium text-emerald-400">Paid</span>
                                 </Label>
-                                {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                  <Label className="flex items-center gap-1 cursor-pointer text-[10px] ml-0.5 animate-in fade-in duration-200">
-                                    <input 
-                                      type="checkbox" 
-                                      checked={cashPlaced} 
-                                      onChange={(e) => setCashPlaced(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-2.5 w-2.5"
-                                    />
-                                    <span className="font-medium text-amber-400">วางเงิน</span>
-                                  </Label>
-                                )}
                               </div>
                             </div>
                           </div>
