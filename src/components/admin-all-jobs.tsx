@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,11 +51,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   jobs, 
   onEditJob, 
   onCreateJob,
+  onTopUp,
   savingJobIds,
 }: { 
   jobs: Job[], 
   onEditJob?: (job: Job) => void, 
   onCreateJob?: () => void,
+  onTopUp?: () => void,
   savingJobIds?: Set<string>,
 }) {
   const riders = useRiders();
@@ -84,6 +86,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(true);
+  const [showTopup, setShowTopup] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null);
   const [filterArea, setFilterArea] = useState<string>("ALL");
@@ -272,6 +275,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     } else {
       if (job.status === 'completed' && !showCompleted && viewMode === "list") matchesStatus = false;
       if (job.status === 'cancel' && !showCancelled && viewMode === "list") matchesStatus = false;
+      // Hide topup jobs by default — only show when showTopup toggle is on
+      if (job.status === 'topup' && !showTopup) matchesStatus = false;
     }
 
     // Area Filter
@@ -393,6 +398,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 </button>
               </div>
             )}
+            {onTopUp && (
+              <button
+                onClick={onTopUp}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-md bg-emerald-500 text-white hover:bg-emerald-600 border border-emerald-500 transition-colors shadow-sm shrink-0 print:hidden"
+                title="Top Up Member Wallet"
+              >
+                <Wallet size={15} />
+                <span className="hidden sm:inline">Top Up</span>
+              </button>
+            )}
             <div className="flex rounded-md shadow-sm border border-slate-200 bg-slate-50 p-1 shrink-0">
               <button
                 onClick={() => setViewMode("list")}
@@ -455,6 +470,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             <Label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={showCancelled} onChange={e => setShowCancelled(e.target.checked)} className="rounded border-slate-300" />
               <span className="text-xs font-medium text-slate-700">Show Cancelled</span>
+            </Label>
+            <Label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={showTopup} onChange={e => setShowTopup(e.target.checked)} className="rounded border-slate-300" />
+              <span className="text-xs font-medium text-slate-700">Show Top-up</span>
             </Label>
             {isLoadingHistory && <span className="text-[10px] text-slate-400 ml-2 animate-pulse">Loading...</span>}
           </div>

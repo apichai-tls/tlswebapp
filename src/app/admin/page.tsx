@@ -47,6 +47,7 @@ import { AdminLogs } from "@/components/admin-logs";
 import { AdminReports } from "@/components/admin-reports";
 import { AdminTasks } from "@/components/admin-tasks";
 import { NotificationBell } from "@/components/notification-bell";
+import { TopUpDialog } from "@/components/top-up-dialog";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -220,6 +221,7 @@ export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "tasks" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [showTopUpDialog, setShowTopUpDialog] = useState(false);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
@@ -5045,7 +5047,7 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} savingJobIds={savingJobIds} />}
+          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} onTopUp={() => setShowTopUpDialog(true)} savingJobIds={savingJobIds} />}
           {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={stableHandleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
@@ -5190,6 +5192,14 @@ export default function AdminPage() {
           }}
         />
       )}
+      {/* Top Up Dialog — standalone member wallet top-up */}
+      <TopUpDialog
+        open={showTopUpDialog}
+        onClose={() => setShowTopUpDialog(false)}
+        onSuccess={(jobId) => {
+          console.log("[TopUp] Created job:", jobId);
+        }}
+      />
 
     </ProtectedRoute>
   );
