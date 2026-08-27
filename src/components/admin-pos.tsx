@@ -1850,6 +1850,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           discountPercent: discountPercent,
           items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
           isPaid: isPaidFlag,
+          isShopPaid: isPaidFlag, // POS payment always marks shop as paid
           paymentMethod: isPaidFlag ? finalMethod : undefined,
           paymentChannel: isPaidFlag ? finalChannel : undefined,
           remark: finalRemark,
@@ -1889,6 +1890,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           branchId: activeShop?.id || activeBranchId,
           shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || undefined) : undefined,
           isPaid: isPaidFlag,
+          isShopPaid: isPaidFlag, // POS payment always marks shop as paid
           paymentMethod: isPaidFlag ? finalMethod : undefined,
           paymentChannel: isPaidFlag ? finalChannel : undefined,
           remark: finalRemark,
