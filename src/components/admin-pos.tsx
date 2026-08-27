@@ -76,7 +76,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, PROFORMA_SEQ_KEY } from "@/lib/utils";
 
 const cleanRemarkForDisplay = (rawRemark: string | null | undefined) => {
   if (!rawRemark) return "";
@@ -1650,37 +1650,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       let effectiveRevision = proformaRevision;
 
       if (!targetProformaNum) {
-        const shopId = activeShop?.id || "default";
-        const proformaKey = `proformaSeq_${shopId}`;
-        const currentSeq = parseInt(settings?.[proformaKey] || "0", 10);
+        const currentSeq = parseInt(settings?.[PROFORMA_SEQ_KEY] || "0", 10);
         const nextSeq = currentSeq + 1;
         setTimeout(() => {
-          settingsStore.updateSetting(proformaKey, String(nextSeq)).catch(() => {});
+          settingsStore.updateSetting(PROFORMA_SEQ_KEY, String(nextSeq)).catch(() => {});
         }, 500);
 
-        let branchCode = "";
-        if (activeShop?.name) {
-          const getInitials = (name: string) => {
-            const words = name.trim().split(/\s+/);
-            if (words.length > 1) {
-              return words.map(w => w.charAt(0)).join("").toUpperCase();
-            }
-            return name.substring(0, 3).toUpperCase();
-          };
-          const myInitials = getInitials(activeShop.name);
-          const isDuplicate = shops.some((s: any) => s.id !== activeShop?.id && getInitials(s.name) === myInitials);
-          if (isDuplicate) {
-            const suffix = (activeShop.id || "").slice(-3).toUpperCase();
-            branchCode = `${myInitials}${suffix}`;
-          } else {
-            branchCode = myInitials;
-          }
-        }
-        if (!branchCode || branchCode.length < 2) {
-          branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase();
-        }
-
-        targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
+        targetProformaNum = generateProformaBaseNumber(nextSeq);
         effectiveRevision = 0;
         setProformaReceiptNumber(targetProformaNum);
         setProformaRevision(0);
@@ -4009,46 +3985,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   let targetRevision = proformaRevision;
 
                   if (!targetProformaNum) {
-                    const shopId = activeShop?.id || "default";
-                    const proformaKey = `proformaSeq_${shopId}`;
-                    const currentSeq = parseInt(settings?.[proformaKey] || "0", 10);
+                    const currentSeq = parseInt(settings?.[PROFORMA_SEQ_KEY] || "0", 10);
                     const nextSeq = currentSeq + 1;
                     setTimeout(() => {
-                      settingsStore.updateSetting(proformaKey, String(nextSeq)).catch(() => {});
+                      settingsStore.updateSetting(PROFORMA_SEQ_KEY, String(nextSeq)).catch(() => {});
                     }, 1000);
                     
-                    let branchCode = "";
-                    if (activeShop?.name) {
-                      // Only keep alphabetic chars from each word's first letter to avoid special chars like "(" in names
-                      const getInitials = (name: string) => {
-                        const words = name.trim().split(/\s+/);
-                        if (words.length > 1) {
-                          return words
-                            .map(w => w.replace(/[^A-Za-z]/g, "").charAt(0))
-                            .filter(Boolean)
-                            .join("")
-                            .toUpperCase();
-                        }
-                        return name.replace(/[^A-Za-z]/g, "").substring(0, 3).toUpperCase();
-                      };
-                      
-                      const myInitials = getInitials(activeShop.name);
-                      const isDuplicate = shops.some(s => s.id !== activeShop.id && getInitials(s.name) === myInitials);
-                      
-                      if (isDuplicate) {
-                        const suffix = (activeShop.id || "").slice(-3).toUpperCase();
-                        branchCode = `${myInitials}${suffix}`;
-                      } else {
-                        branchCode = myInitials;
-                      }
-                    }
-                    // Final sanitize: keep only A-Z, 0-9
-                    branchCode = branchCode.replace(/[^A-Z0-9]/g, "");
-                    if (!branchCode || branchCode.length < 2) {
-                      branchCode = (activeShop?.id || "PR").split("-")[0].toUpperCase().replace(/[^A-Z0-9]/g, "");
-                    }
-                    
-                    targetProformaNum = `PR-${branchCode}-${String(nextSeq).padStart(5, "0")}`;
+                    targetProformaNum = generateProformaBaseNumber(nextSeq);
                     targetRevision = 0;
                     setProformaReceiptNumber(targetProformaNum);
                     setProformaRevision(0);
