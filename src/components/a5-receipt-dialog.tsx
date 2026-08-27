@@ -386,12 +386,12 @@ export function A5ReceiptDialog({
                 />
               </div>
             )}
-            <h1 className="text-lg font-black text-neutral-900 uppercase tracking-tight leading-tight">{activeShop?.name || "That Laundry Shop"}</h1>
+            <h1 className="text-sm font-black text-neutral-900 uppercase tracking-tight leading-tight">{activeShop?.name || "That Laundry Shop"}</h1>
             <p className="text-xs text-neutral-600 max-w-[250px] mt-1 whitespace-pre-line">{activeShop?.addressFull || activeShop?.address || "123 Sukhumvit Road, Bangkok"}</p>
-            <p className="text-xs text-neutral-600">Tel: {activeShop?.phone || "081-111-2222"}</p>
-            {activeShop?.taxId && (
-              <p className="text-xs text-neutral-600"><span className="font-bold">TAX ID:</span> {activeShop.taxId}</p>
-            )}
+            <p className="text-xs text-neutral-600">
+              Tel: {activeShop?.phone || "081-111-2222"}
+              {activeShop?.taxId && <span className="ml-2"><span className="font-bold">TAX ID:</span> {activeShop.taxId}</span>}
+            </p>
           </div>
           <div className="text-right">
             <h2 className="text-lg font-black text-neutral-900 uppercase tracking-wider mb-2">
@@ -848,10 +848,12 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={activeShop?.logoUrl || "/logo.png"} alt="Shop Logo" className="h-10 object-contain filter grayscale contrast-125" />
           </div>
-          <h1 className="text-lg font-black text-neutral-900 uppercase tracking-tight leading-tight">{activeShop?.name || "That Laundry Shop"}</h1>
+          <h1 className="text-sm font-black text-neutral-900 uppercase tracking-tight leading-tight">{activeShop?.name || "That Laundry Shop"}</h1>
           <p className="text-xs text-neutral-600 max-w-[250px] mt-1 whitespace-pre-line">{activeShop?.addressFull || activeShop?.address || "123 Sukhumvit Road, Bangkok"}</p>
-          <p className="text-xs text-neutral-600">Tel: {activeShop?.phone || "081-111-2222"}</p>
-          {activeShop?.taxId && <p className="text-xs text-neutral-600"><span className="font-bold">TAX ID:</span> {activeShop.taxId}</p>}
+          <p className="text-xs text-neutral-600">
+            Tel: {activeShop?.phone || "081-111-2222"}
+            {activeShop?.taxId && <span className="ml-2"><span className="font-bold">TAX ID:</span> {activeShop.taxId}</span>}
+          </p>
         </div>
         <div className="text-right">
           <h2 className="text-lg font-black text-neutral-900 uppercase tracking-wider mb-2">
