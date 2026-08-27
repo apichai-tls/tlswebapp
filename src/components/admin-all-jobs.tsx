@@ -472,7 +472,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               <span className="text-xs font-medium text-slate-700">Show Cancelled</span>
             </Label>
             <Label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={showTopup} onChange={e => setShowTopup(e.target.checked)} className="rounded border-slate-300" />
+              <input
+                type="checkbox"
+                checked={showTopup}
+                onChange={e => {
+                  setShowTopup(e.target.checked);
+                  // Top-up jobs are not in Kanban columns — switch to list view automatically
+                  if (e.target.checked) setViewMode("list");
+                }}
+                className="rounded border-slate-300"
+              />
               <span className="text-xs font-medium text-slate-700">Show Top-up</span>
             </Label>
             {isLoadingHistory && <span className="text-[10px] text-slate-400 ml-2 animate-pulse">Loading...</span>}
