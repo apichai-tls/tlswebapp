@@ -369,10 +369,10 @@ export function A5ReceiptDialog({
         ref={printMode ? undefined : receiptRef}
         className={
           printMode 
-            ? `bg-white text-black font-sans leading-relaxed w-[148mm] min-h-[210mm] p-[10mm] relative box-border`
-            : `w-[148mm] min-h-[210mm] bg-white text-zinc-800 p-8 shadow-2xl rounded-sm border border-neutral-300 relative mx-auto my-4 font-sans`
+            ? `bg-white text-black font-sans leading-relaxed w-[148mm] h-[210mm] p-[10mm] flex flex-col box-border overflow-hidden`
+            : `w-[148mm] h-[210mm] bg-white text-zinc-800 px-8 pt-6 pb-4 shadow-2xl rounded-sm border border-neutral-300 flex flex-col mx-auto my-4 font-sans overflow-hidden`
         }
-        style={printMode ? { margin: "0 auto", overflow: "hidden" } : undefined}
+        style={printMode ? { margin: "0 auto" } : undefined}
       >
         {/* Header Section */}
         <div className={`flex justify-between items-start ${sectionGap}`}>
@@ -458,6 +458,9 @@ export function A5ReceiptDialog({
             </div>
           )}
         </div>
+
+        {/* Scrollable content area — items + totals, constrained to available space */}
+        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
 
         {/* Items Table */}
         <table className={`w-full text-left ${tableMb} border-collapse ${tableFontSize}`}>
@@ -563,8 +566,11 @@ export function A5ReceiptDialog({
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="mt-auto absolute bottom-[10mm] left-[10mm] right-[10mm]">
+        </div>
+        {/* ↑ end of constrained content area */}
+
+        {/* Footer — always visible at bottom, never overlapped */}
+        <div className="shrink-0 mt-auto pt-2">
           {/* QR Payment Section — only on Proforma */}
           {receiptData.isDraft && activeShop?.proformaQrUrl && (
             <div className="flex items-center gap-4 mb-3 p-3 border border-neutral-200 rounded-xl bg-neutral-50">
@@ -843,11 +849,11 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       <div
         style={{
           width: 559,
-          minHeight: A5_HEIGHT,
+          height: A5_HEIGHT,
           transformOrigin: "top left",
           transform: scale < 1 ? `scale(${scale})` : undefined,
         }}
-        className="bg-white text-zinc-800 p-8 box-border font-sans"
+        className="bg-white text-zinc-800 p-8 box-border font-sans flex flex-col overflow-hidden"
       >
       {/* Header */}
       <div className={`flex justify-between items-start ${sectionGap}`}>
@@ -916,6 +922,9 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
           </div>
         )}
       </div>
+
+      {/* Constrained content area */}
+      <div className="flex-1 overflow-hidden flex flex-col min-h-0">
 
       {/* Items Table */}
       <table className={`w-full text-left ${tableMb} border-collapse ${tableFontSize}`}>
@@ -1003,8 +1012,11 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="pt-2 border-t border-neutral-200">
+      </div>
+      {/* ↑ end constrained content area */}
+
+      {/* Footer — always at bottom, never overlapped */}
+      <div className="shrink-0 mt-auto pt-2 border-t border-neutral-200">
         {/* QR Payment Section — only on Proforma */}
         {receiptData.isDraft && activeShop?.proformaQrUrl && (
           <div className="flex items-center gap-4 mb-3 p-3 border border-neutral-200 rounded-xl bg-neutral-50">
