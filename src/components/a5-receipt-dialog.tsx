@@ -563,30 +563,31 @@ export function A5ReceiptDialog({
           </div>
         </div>
 
-        {/* Footer Remarks */}
+        {/* Footer */}
         <div className="mt-auto absolute bottom-[10mm] left-[10mm] right-[10mm]">
-          <div className="flex items-end justify-between">
-            <div className="w-2/3">
-              {receiptData.isDraft && activeShop?.proformaQrUrl && (
-                <div className="flex flex-col items-start gap-1">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={activeShop.proformaQrUrl}
-                    alt="Payment QR Code"
-                    className="h-28 w-28 object-contain"
-                    crossOrigin="anonymous"
-                  />
-                  <p className="text-[10px] text-neutral-500 font-medium">สแกนเพื่อชำระเงิน</p>
-                </div>
-              )}
+          {/* QR Payment Section — only on Proforma */}
+          {receiptData.isDraft && activeShop?.proformaQrUrl && (
+            <div className="flex items-center gap-4 mb-3 p-3 border border-neutral-200 rounded-xl bg-neutral-50">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={activeShop.proformaQrUrl}
+                alt="Payment QR Code"
+                className="h-24 w-24 object-contain shrink-0"
+                crossOrigin="anonymous"
+              />
+              <div className="flex flex-col gap-0.5">
+                <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">Scan to Pay</p>
+              <p className="text-sm font-black text-neutral-900">฿{receiptData.total?.toFixed(2) ?? "—"}</p>
+                <p className="text-[9px] text-neutral-400 leading-tight mt-0.5">Scan QR code to complete<br/>your payment via PromptPay</p>
+              </div>
             </div>
-            <div className="w-1/3 text-right">
-              {receiptData.status === "cancel" && (
-                <div className="text-base text-rose-600 font-black uppercase border-3 border-rose-600 px-3 py-1.5 inline-block transform -rotate-6 rounded-md opacity-80">
-                  {currentLanguage === "en" ? "VOIDED" : "ยกเลิกแล้ว"}
-                </div>
-              )}
-            </div>
+          )}
+          <div className="flex items-center justify-end">
+            {receiptData.status === "cancel" && (
+              <div className="text-base text-rose-600 font-black uppercase border-3 border-rose-600 px-3 py-1.5 inline-block transform -rotate-6 rounded-md opacity-80">
+                {currentLanguage === "en" ? "VOIDED" : "ยกเลิกแล้ว"}
+              </div>
+            )}
           </div>
           <div className={`text-center ${footerMt} border-t border-neutral-200`}>
             <p className="text-[11px] text-neutral-500 font-medium">
@@ -1004,26 +1005,27 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
 
       {/* Footer */}
       <div className="pt-2 border-t border-neutral-200">
-        <div className="flex items-end justify-between">
-          <div className="w-2/3">
-            {receiptData.isDraft && activeShop?.proformaQrUrl && (
-              <div className="flex flex-col items-start gap-1">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={activeShop.proformaQrUrl}
-                  alt="Payment QR Code"
-                  className="h-28 w-28 object-contain"
-                  crossOrigin="anonymous"
-                />
-                <p className="text-[10px] text-neutral-500 font-medium">สแกนเพื่อชำระเงิน</p>
-              </div>
-            )}
+        {/* QR Payment Section — only on Proforma */}
+        {receiptData.isDraft && activeShop?.proformaQrUrl && (
+          <div className="flex items-center gap-4 mb-3 p-3 border border-neutral-200 rounded-xl bg-neutral-50">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={activeShop.proformaQrUrl}
+              alt="Payment QR Code"
+              className="h-24 w-24 object-contain shrink-0"
+              crossOrigin="anonymous"
+            />
+            <div className="flex flex-col gap-0.5">
+              <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">Scan to Pay</p>
+              <p className="text-sm font-black text-neutral-900">฿{receiptData.total?.toFixed(2) ?? "—"}</p>
+              <p className="text-[9px] text-neutral-400 leading-tight mt-0.5">Scan QR code to complete<br/>your payment via PromptPay</p>
+            </div>
           </div>
-          <div className="w-1/3 text-right">
-            {receiptData.status === "cancel" && (
-              <div className="text-lg text-rose-600 font-black uppercase border-4 border-rose-600 px-4 py-2 inline-block transform -rotate-6 rounded-md opacity-80">VOIDED</div>
-            )}
-          </div>
+        )}
+        <div className="flex items-center justify-end">
+          {receiptData.status === "cancel" && (
+            <div className="text-lg text-rose-600 font-black uppercase border-4 border-rose-600 px-4 py-2 inline-block transform -rotate-6 rounded-md opacity-80">VOIDED</div>
+          )}
         </div>
         <div className={`text-center ${footerMt} border-t border-neutral-200`}>
           <p className="text-[11px] text-neutral-500 font-medium">
