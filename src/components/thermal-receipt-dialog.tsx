@@ -143,7 +143,9 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   const rawProformaId = (job as any).proformaReceiptNumber || (proformaMatch ? proformaMatch[1] : undefined);
   const cleanBaseProforma = cleanProformaNumber(rawProformaId);
   const revisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
-  const proformaRevision = (job as any).proformaRevision !== undefined ? (job as any).proformaRevision : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
+  const proformaRevision = ((job as any).proformaRevision != null && (job as any).proformaRevision !== "")
+    ? Number((job as any).proformaRevision)
+    : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
 
   const effectiveProformaNumber = cleanBaseProforma 
     ? formatProformaNumber(cleanBaseProforma, proformaRevision)
