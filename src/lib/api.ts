@@ -473,15 +473,22 @@ export const api = {
     
     const db = initDb();
     const jobIndex = db.jobs.findIndex(j => j.id === id);
-    if (jobIndex === -1) throw new Error("Job not found");
-    
-    const existingJob = db.jobs[jobIndex];
+
     const cleanUpdates: Partial<Job> = {};
     for (const key of Object.keys(updates) as (keyof Job)[]) {
       if (updates[key] !== undefined) {
         cleanUpdates[key] = updates[key] as any;
       }
     }
+
+    if (jobIndex === -1) {
+      // Job not in memory store yet (session reload, historical job etc.)
+      // Still persist to DB so the update is not lost
+      await dbActions.updateJobAction(id, cleanUpdates);
+      return { id, ...cleanUpdates } as Job;
+    }
+    
+    const existingJob = db.jobs[jobIndex];
     
     // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
     if (cleanUpdates.billNo !== undefined && (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
