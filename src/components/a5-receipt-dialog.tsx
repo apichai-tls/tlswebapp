@@ -566,12 +566,6 @@ export function A5ReceiptDialog({
         <div className="mt-auto absolute bottom-[10mm] left-[10mm] right-[10mm]">
           <div className="flex items-end justify-between">
             <div className="w-2/3">
-              {cleanRemarkForDisplay(receiptData.remark) && (
-                <div className="p-2 bg-neutral-100 rounded-lg text-xs text-neutral-700 border border-neutral-200">
-                  <span className="font-bold text-neutral-900">{currentLanguage === "en" ? "REMARKS:" : "หมายเหตุ:"}</span><br/>
-                  {cleanRemarkForDisplay(receiptData.remark)}
-                </div>
-              )}
             </div>
             <div className="w-1/3 text-right">
               {receiptData.status === "cancel" && (
@@ -999,12 +993,6 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       <div className="pt-2 border-t border-neutral-200">
         <div className="flex items-end justify-between">
           <div className="w-2/3">
-            {cleanRemark(receiptData.remark) && (
-              <div className="p-2 bg-neutral-100 rounded-lg text-xs text-neutral-700 border border-neutral-200">
-                <span className="font-bold text-neutral-900">REMARKS:</span><br />
-                {cleanRemark(receiptData.remark)}
-              </div>
-            )}
           </div>
           <div className="w-1/3 text-right">
             {receiptData.status === "cancel" && (
