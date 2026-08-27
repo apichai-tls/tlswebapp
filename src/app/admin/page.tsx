@@ -1859,9 +1859,10 @@ export default function AdminPage() {
         toast.success(`Job updated successfully!`);
 
         // Handle wallet adjustments for job updates (separate flow — job already exists)
-        const isPaidNow_update = paymentMethod === 'paid';
-        const wasPaidBefore_update = existingJob ? existingJob.isPaid : false;
-        if (isPaidNow_update && !wasPaidBefore_update && selectedProfileCustomer) {
+        // Trigger on SHOP payment status (shopPaymentMethod) — the Pay button gates on shop payment
+        const isShopPaidNow_update = shopPaymentMethod === 'paid';
+        const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
+        if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
           let balAdj = 0;
           if (paymentChannel === "Deduct Member") balAdj -= calculatedTotal;
           const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
@@ -1896,11 +1897,12 @@ export default function AdminPage() {
         newJobData.proofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
         // H2 Fix: For NEW jobs paid via "Deduct Member", deduct wallet BEFORE creating the job.
         // If deduction fails → job is never created → no money leak.
-        const isPaidNow_new = paymentMethod === 'paid';
+        // Use shopPaymentMethod — wallet actions are triggered by Shop payment, not CSO status
+        const isShopPaidNow_new = shopPaymentMethod === 'paid';
         let preDeductedBalance: number | null = null;
         let walletUpdates: Partial<Customer> | null = null;
 
-        if (isPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member") {
+        if (isShopPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member") {
           // Validate balance is sufficient before proceeding
           const currentBalance = selectedProfileCustomer.creditBalance || 0;
           if (currentBalance < calculatedTotal) {
@@ -1947,7 +1949,7 @@ export default function AdminPage() {
         }
 
         // Handle topup package wallet top-up (after job creation — low risk, topup adds money)
-        if (isPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
+        if (isShopPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
           const currentBal = preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0);
           const newBal = currentBal + packageTotal;
           const upd: Partial<Customer> = { creditBalance: newBal };
