@@ -31,6 +31,7 @@ export interface ShopLocation {
   name: string;
   address: string;
   addressFull?: string | null;
+  proformaQrUrl?: string | null;
   coords: LatLng;
   noCommission?: boolean;
   isPosEnabled?: boolean;

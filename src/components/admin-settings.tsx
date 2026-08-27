@@ -32,6 +32,7 @@ export function AdminSettings() {
   const [shopPhone, setShopPhone] = useState("");
   const [shopTaxId, setShopTaxId] = useState("");
   const [shopAddressFull, setShopAddressFull] = useState("");
+  const [shopProformaQrUrl, setShopProformaQrUrl] = useState("");
 
   const [receiptPaperSize, setReceiptPaperSize] = useState("80mm");
   const [currentLanguage, setCurrentLanguage] = useState("th");
@@ -217,6 +218,7 @@ export function AdminSettings() {
     setShopPhone(shop.phone || "");
     setShopTaxId(shop.taxId || "");
     setShopAddressFull(shop.addressFull || "");
+    setShopProformaQrUrl(shop.proformaQrUrl || "");
     setIsShopModalOpen(true);
   };
 
@@ -232,6 +234,7 @@ export function AdminSettings() {
     setShopPhone("");
     setShopTaxId("");
     setShopAddressFull("");
+    setShopProformaQrUrl("");
     setIsShopModalOpen(true);
   };
 
@@ -259,6 +262,7 @@ export function AdminSettings() {
       phone: shopPhone.trim() || null,
       taxId: shopTaxId.trim() || null,
       addressFull: shopAddressFull.trim() || null,
+      proformaQrUrl: shopProformaQrUrl.trim() || null,
     };
     if (editingShop) {
       shopStore.updateShopLocation(editingShop.id, payload);
@@ -855,6 +859,26 @@ export function AdminSettings() {
                   className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent placeholder:text-slate-400"
                 />
                 <p className="text-[11px] text-slate-400">ถ้าไม่กรอก จะใช้ Address &amp; Map Location แทน</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-semibold flex items-center gap-1.5">
+                  Proforma QR Image URL <span className="text-[11px] font-normal text-slate-400">(QR ชำระเงินบน Proforma)</span>
+                </Label>
+                <Input
+                  value={shopProformaQrUrl}
+                  onChange={(e) => setShopProformaQrUrl(e.target.value)}
+                  placeholder="https://storage.googleapis.com/.../qr.png"
+                  className="h-10 text-xs font-mono"
+                />
+                {shopProformaQrUrl && (
+                  <div className="flex items-center gap-3 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={shopProformaQrUrl} alt="QR Preview" className="h-16 w-16 object-contain rounded border border-slate-200 bg-white" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                    <p className="text-[11px] text-slate-500">Preview QR Code</p>
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-400">ถ้าไม่กรอก จะไม่แสดง QR บน Proforma Invoice</p>
               </div>
 
               <div className="flex items-center gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl p-3">

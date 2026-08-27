@@ -12,6 +12,7 @@ interface ShopInfo {
   name: string;
   address?: string | null;
   addressFull?: string | null;
+  proformaQrUrl?: string | null;
   phone?: string | null;
   taxId?: string | null;
   logoUrl?: string | null;
@@ -566,6 +567,18 @@ export function A5ReceiptDialog({
         <div className="mt-auto absolute bottom-[10mm] left-[10mm] right-[10mm]">
           <div className="flex items-end justify-between">
             <div className="w-2/3">
+              {receiptData.isDraft && activeShop?.proformaQrUrl && (
+                <div className="flex flex-col items-start gap-1">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={activeShop.proformaQrUrl}
+                    alt="Payment QR Code"
+                    className="h-28 w-28 object-contain"
+                    crossOrigin="anonymous"
+                  />
+                  <p className="text-[10px] text-neutral-500 font-medium">สแกนเพื่อชำระเงิน</p>
+                </div>
+              )}
             </div>
             <div className="w-1/3 text-right">
               {receiptData.status === "cancel" && (
@@ -993,6 +1006,18 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       <div className="pt-2 border-t border-neutral-200">
         <div className="flex items-end justify-between">
           <div className="w-2/3">
+            {receiptData.isDraft && activeShop?.proformaQrUrl && (
+              <div className="flex flex-col items-start gap-1">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={activeShop.proformaQrUrl}
+                  alt="Payment QR Code"
+                  className="h-28 w-28 object-contain"
+                  crossOrigin="anonymous"
+                />
+                <p className="text-[10px] text-neutral-500 font-medium">สแกนเพื่อชำระเงิน</p>
+              </div>
+            )}
           </div>
           <div className="w-1/3 text-right">
             {receiptData.status === "cancel" && (

@@ -175,6 +175,7 @@ model ShopLocation {
   name         String
   address      String
   addressFull  String?
+  proformaQrUrl String?
   lat          Float
   lng          Float
   noCommission Boolean        @default(false)
