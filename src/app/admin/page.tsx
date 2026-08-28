@@ -1591,7 +1591,7 @@ export default function AdminPage() {
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
       isPaid: paymentMethod === 'paid',
-      isShopPaid: shopPaymentMethod === 'paid',
+      isShopPaid: isPayment || shopPaymentMethod === 'paid',
       fee,
       totalAmount: calculatedTotal,
       serviceType: dialogCart[0]?.id || "wash_fold",
@@ -1629,7 +1629,7 @@ export default function AdminPage() {
           } catch (e) {}
         }
 
-        const isPaidNow = shopPaymentMethod === 'paid' || paymentMethod === 'paid';
+        const isPaidNow = isPayment || shopPaymentMethod === 'paid' || paymentMethod === 'paid';
         const alreadyPaidTotal = existingPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
         const remainingToPay = calculatedTotal - alreadyPaidTotal;
 
@@ -1861,7 +1861,7 @@ export default function AdminPage() {
 
         // Handle wallet adjustments for job updates (separate flow — job already exists)
         // Trigger on SHOP payment status (shopPaymentMethod) — the Pay button gates on shop payment
-        const isShopPaidNow_update = shopPaymentMethod === 'paid';
+        const isShopPaidNow_update = isPayment || shopPaymentMethod === 'paid';
         const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
         if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
           let balAdj = 0;
@@ -1899,7 +1899,7 @@ export default function AdminPage() {
         // H2 Fix: For NEW jobs paid via "Deduct Member", deduct wallet BEFORE creating the job.
         // If deduction fails → job is never created → no money leak.
         // Use shopPaymentMethod — wallet actions are triggered by Shop payment, not CSO status
-        const isShopPaidNow_new = shopPaymentMethod === 'paid';
+        const isShopPaidNow_new = isPayment || shopPaymentMethod === 'paid';
         let preDeductedBalance: number | null = null;
         let walletUpdates: Partial<Customer> | null = null;
 

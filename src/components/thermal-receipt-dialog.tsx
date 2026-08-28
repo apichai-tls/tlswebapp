@@ -158,11 +158,13 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     displayId = effectiveProformaNumber || "DRAFT";
   }
 
+  let totalPayments = 0;
   let paymentTime: Date | null = null;
   try {
     if (rawJob.adminNotesJson) {
       const parsed = JSON.parse(rawJob.adminNotesJson);
       if (parsed && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+        totalPayments = parsed.payments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
         const lastPay = parsed.payments[parsed.payments.length - 1];
         if (lastPay && lastPay.timestamp) {
           paymentTime = new Date(lastPay.timestamp);
@@ -171,7 +173,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     }
   } catch {}
 
-  const isJobPaid = Boolean((job as any).isShopPaid || rawJob.isShopPaid || job.isPaid);
+  const jobTotal = job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0);
+  const isJobPaid = Boolean((job as any).isShopPaid || rawJob.isShopPaid || job.isPaid || (totalPayments >= jobTotal && jobTotal > 0));
   const receiptDate = (isJobPaid && paymentTime && !isNaN(paymentTime.getTime()))
     ? paymentTime
     : (job.createdAt ? new Date(job.createdAt) : new Date());

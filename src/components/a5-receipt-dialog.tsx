@@ -372,6 +372,8 @@ export function A5ReceiptDialog({
       footerMt = "mt-4 pt-2";
     }
 
+    const isPaidEffective = Boolean(receiptData.isPaid || (totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0));
+
     return (
       <div 
         ref={printMode ? undefined : receiptRef}
@@ -383,7 +385,7 @@ export function A5ReceiptDialog({
         style={printMode ? { margin: "0 auto" } : undefined}
       >
         {/* PAID Watermark Stamp in center */}
-        {receiptData.isPaid && !receiptData.isDraft && receiptData.status !== "cancel" && (
+        {isPaidEffective && !receiptData.isDraft && receiptData.status !== "cancel" && (
           <div 
             className="absolute top-1/2 left-1/2 pointer-events-none select-none z-10"
             style={{ transform: "translate(-50%, -50%) rotate(-18deg)" }}
@@ -579,7 +581,7 @@ export function A5ReceiptDialog({
                   <span>TOTAL PAID</span>
                   <span className="font-mono">฿{formatCurrency(totalPaid)}</span>
                 </div>
-                {!receiptData.isPaid && (
+                {!isPaidEffective && (receiptData.total - totalPaid) > 0.01 && (
                   <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
                     <span>BALANCE DUE</span>
                     <span className="font-mono">฿{formatCurrency(receiptData.total - totalPaid)}</span>
@@ -587,7 +589,7 @@ export function A5ReceiptDialog({
                 )}
               </div>
             )}
-            {!receiptData.isPaid && payments.length === 0 && !receiptData.isDraft && (
+            {!isPaidEffective && payments.length === 0 && !receiptData.isDraft && (receiptData.total || 0) > 0 && (
               <div className="mt-2 pt-2 border-t border-dashed border-neutral-300">
                 <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
                   <span>BALANCE DUE (UNPAID)</span>
@@ -777,6 +779,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     return [];
   })();
   const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
+  const isPaidEffective = Boolean(receiptData.isPaid || (totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0));
 
   const safeDate = receiptData.createdAt
     ? (receiptData.createdAt instanceof Date ? receiptData.createdAt : new Date(receiptData.createdAt))
@@ -897,7 +900,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
         className="bg-white text-zinc-800 p-8 box-border font-sans flex flex-col overflow-hidden relative"
       >
         {/* PAID Watermark Stamp in center */}
-        {receiptData.isPaid && !receiptData.isDraft && receiptData.status !== "cancel" && (
+        {isPaidEffective && !receiptData.isDraft && receiptData.status !== "cancel" && (
           <div 
             className="absolute top-1/2 left-1/2 pointer-events-none select-none z-10"
             style={{ transform: "translate(-50%, -50%) rotate(-18deg)" }}
@@ -1064,7 +1067,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
                 <span>TOTAL PAID</span>
                 <span className="font-mono">฿{formatCurrency(totalPaid)}</span>
               </div>
-              {!receiptData.isPaid && (
+              {!isPaidEffective && (receiptData.total - totalPaid) > 0.01 && (
                 <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
                   <span>BALANCE DUE</span>
                   <span className="font-mono">฿{formatCurrency(receiptData.total - totalPaid)}</span>
@@ -1072,7 +1075,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
               )}
             </div>
           )}
-          {!receiptData.isPaid && payments.length === 0 && !receiptData.isDraft && (
+          {!isPaidEffective && payments.length === 0 && !receiptData.isDraft && (receiptData.total || 0) > 0 && (
             <div className="mt-2 pt-2 border-t border-dashed border-neutral-300">
               <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
                 <span>BALANCE DUE (UNPAID)</span>
