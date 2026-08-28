@@ -377,11 +377,27 @@ export function A5ReceiptDialog({
         ref={printMode ? undefined : receiptRef}
         className={
           printMode 
-            ? `bg-white text-black font-sans leading-relaxed w-[148mm] h-[210mm] p-[10mm] flex flex-col box-border overflow-hidden`
-            : `w-[148mm] h-[210mm] bg-white text-zinc-800 px-8 pt-6 pb-4 shadow-2xl rounded-sm border border-neutral-300 flex flex-col mx-auto my-4 font-sans overflow-hidden`
+            ? `bg-white text-black font-sans leading-relaxed w-[148mm] h-[210mm] p-[10mm] flex flex-col box-border overflow-hidden relative`
+            : `w-[148mm] h-[210mm] bg-white text-zinc-800 px-8 pt-6 pb-4 shadow-2xl rounded-sm border border-neutral-300 flex flex-col mx-auto my-4 font-sans overflow-hidden relative`
         }
         style={printMode ? { margin: "0 auto" } : undefined}
       >
+        {/* PAID Watermark Stamp in center */}
+        {receiptData.isPaid && !receiptData.isDraft && receiptData.status !== "cancel" && (
+          <div 
+            className="absolute top-1/2 left-1/2 pointer-events-none select-none z-10"
+            style={{ transform: "translate(-50%, -50%) rotate(-18deg)" }}
+          >
+            <div className="border-[3.5px] border-emerald-600/35 rounded-2xl px-6 py-2 text-center shadow-xs">
+              <div className="border-2 border-dashed border-emerald-600/30 rounded-lg px-6 py-1">
+                <span className="text-4xl font-black tracking-[0.25em] text-emerald-600/35 uppercase font-mono block">
+                  PAID
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Header Section */}
         <div className={`flex justify-between items-start ${sectionGap}`}>
           <div className="flex-1">
@@ -878,8 +894,24 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
           transformOrigin: "top left",
           transform: scale < 1 ? `scale(${scale})` : undefined,
         }}
-        className="bg-white text-zinc-800 p-8 box-border font-sans flex flex-col overflow-hidden"
+        className="bg-white text-zinc-800 p-8 box-border font-sans flex flex-col overflow-hidden relative"
       >
+        {/* PAID Watermark Stamp in center */}
+        {receiptData.isPaid && !receiptData.isDraft && receiptData.status !== "cancel" && (
+          <div 
+            className="absolute top-1/2 left-1/2 pointer-events-none select-none z-10"
+            style={{ transform: "translate(-50%, -50%) rotate(-18deg)" }}
+          >
+            <div className="border-[3.5px] border-emerald-600/35 rounded-2xl px-6 py-2 text-center shadow-xs">
+              <div className="border-2 border-dashed border-emerald-600/30 rounded-lg px-6 py-1">
+                <span className="text-4xl font-black tracking-[0.25em] text-emerald-600/35 uppercase font-mono block">
+                  PAID
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
       {/* Header */}
       <div className={`flex justify-between items-start ${sectionGap}`}>
         <div className="flex-1">
