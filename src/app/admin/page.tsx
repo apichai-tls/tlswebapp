@@ -1548,6 +1548,15 @@ export default function AdminPage() {
       return;
     }
 
+    if (paymentChannel === "Deduct Member" && (shopPaymentMethod === 'paid' || isPayment)) {
+      const currentBalance = selectedProfileCustomer?.creditBalance || 0;
+      if (currentBalance < calculatedTotal) {
+        toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
     const currentCartHash = JSON.stringify({
       items: dialogCart.map(item => ({ id: item.id, qty: item.quantity, price: item.price })),
       discount: dialogDiscountPercent,
@@ -4382,6 +4391,19 @@ export default function AdminPage() {
                             </div>
                           </div>
 
+                          {/* Wallet Insufficient Warning Banner */}
+                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
+                            <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold animate-pulse">
+                              <span className="flex items-center gap-1">
+                                <Wallet size={11} className="text-rose-400" />
+                                <span>ยอดเงินใน Wallet ไม่พอ</span>
+                              </span>
+                              <span className="font-mono text-rose-200">
+                                ขาดอีก ฿{(dialogTotal - (selectedProfileCustomer.creditBalance || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            </div>
+                          )}
+
                           {/* Consolidated Checkout Buttons under summary card */}
                           <div className="flex gap-2 mt-1 pt-1 border-t border-slate-800 select-none">
                             <Button 
@@ -4407,20 +4429,17 @@ export default function AdminPage() {
 
                                 if (!targetProformaNum) {
                                   if (editingJobId) {
-                                    // Existing job — generate from job ID
                                     targetProformaNum = generateProformaBaseNumber(editingJobId);
                                     targetRevision = 0;
                                     setProformaReceiptNumber(targetProformaNum);
                                     setProformaRevision(0);
                                     setLastProformaCartHash(cartHash);
-                                    // Persist to DB
                                     jobStore.updateJobDetails(editingJobId, {
                                       proformaNumber: targetProformaNum,
                                       proformaRevision: 0,
                                       proformaCartHash: cartHash,
                                     } as any);
                                   } else {
-                                    // New job without ID yet — use DRAFT placeholder (will become PR-{jobId} after Pay)
                                     targetProformaNum = "DRAFT";
                                     targetRevision = 0;
                                   }
@@ -4429,7 +4448,6 @@ export default function AdminPage() {
                                     targetRevision = proformaRevision + 1;
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
-                                    // Persist to DB
                                     if (editingJobId) {
                                       jobStore.updateJobDetails(editingJobId, {
                                         proformaNumber: targetProformaNum,
@@ -4445,22 +4463,33 @@ export default function AdminPage() {
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
                               }}
-                              className="flex-1 h-8 rounded-lg text-[10px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                              title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
-                            >
-                              <Eye size={11} />
-                              {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
-                            </Button>
+                                className="flex-1 h-8 rounded-lg text-[10px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
+                              >
+                                <Eye size={11} />
+                                {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
+                              </Button>
 
-                            <Button 
-                              type="button"
-                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || shopPaymentMethod !== 'paid' || isPaidJob || (shopPaymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim()))}
-                              onClick={() => handleCreate(true)}
-                              className="flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow bg-emerald-500 hover:bg-emerald-600 border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <Banknote size={12} />
-                              Pay ฿{dialogTotal.toFixed(2)}
-                            </Button>
+                              <Button 
+                                type="button"
+                                disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || shopPaymentMethod !== 'paid' || isPaidJob || (shopPaymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim())) || (paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal))}
+                                onClick={() => handleCreate(true)}
+                                className={`flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                                  paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal)
+                                    ? 'bg-rose-600/80 hover:bg-rose-600'
+                                    : 'bg-emerald-500 hover:bg-emerald-600'
+                                }`}
+                                title={
+                                  paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal)
+                                    ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
+                                    : undefined
+                                }
+                              >
+                                <Banknote size={12} />
+                                {paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal)
+                                  ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
+                                  : `Pay ฿${dialogTotal.toFixed(2)}`}
+                              </Button>
                           </div>
                         </div>
 
