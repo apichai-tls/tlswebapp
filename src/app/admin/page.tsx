@@ -762,7 +762,10 @@ export default function AdminPage() {
   }, [activeShift]);
 
   const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
-  const isPaidJob = editingJobId ? (jobStore.getSnapshot().find(j => j.id === editingJobId)?.status === 'completed' || jobStore.getSnapshot().find(j => j.id === editingJobId)?.isPaid) : false;
+  const isPaidJob = editingJobId ? (() => {
+    const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
+    return j?.status === 'completed' || Boolean(j?.isPaid) || Boolean(j?.isShopPaid);
+  })() : false;
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
   // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
   const isPricingLocked = isPaidJob;
@@ -830,6 +833,8 @@ export default function AdminPage() {
     const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
     return baseTotal + vat;
   }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate]);
+
+  const isWalletInsufficient = paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
 
   useEffect(() => {
     if (forceMemberPaymentDialog) {
@@ -1902,6 +1907,14 @@ export default function AdminPage() {
         const isShopPaidNow_update = isPayment || shopPaymentMethod === 'paid';
         const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
         if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
+          if (paymentChannel === "Deduct Member") {
+            const currentBalance = selectedProfileCustomer.creditBalance || 0;
+            if (currentBalance < calculatedTotal) {
+              toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
+              setIsSubmitting(false);
+              return;
+            }
+          }
           let balAdj = 0;
           if (paymentChannel === "Deduct Member") balAdj -= calculatedTotal;
           const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
@@ -4329,15 +4342,15 @@ export default function AdminPage() {
                                     />
                                     <span className="font-medium text-slate-200">Unpaid</span>
                                   </Label>
-                                  <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !(forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal) ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                  <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
                                     <input
                                       type="radio"
                                       name="payment-status"
-                                      disabled={isPaidJob || (forceMemberPaymentDialog && (selectedProfileCustomer?.creditBalance || 0) < dialogTotal)}
+                                      disabled={isPaidJob || isWalletInsufficient}
                                       checked={paymentMethod === 'paid'}
-                                      onChange={() => { if (isCsoOrAdmin) setPaymentMethod('paid'); }}
-                                      onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                      onChange={() => { if (isCsoOrAdmin && !isWalletInsufficient) setPaymentMethod('paid'); }}
+                                      onClick={(e) => { if (!isCsoOrAdmin || isWalletInsufficient) e.preventDefault(); }}
+                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
                                     />
                                     <span className="font-medium text-emerald-400">Paid</span>
                                   </Label>
@@ -4365,25 +4378,27 @@ export default function AdminPage() {
                                 SHOP
                               </Label>
                               <div className="flex items-center gap-1.5 h-6">
-                                <Label className={`flex items-center gap-1 text-[10px] ${user?.role === 'admin' || user?.role === 'manager' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                                   <input
                                     type="radio"
                                     name="shop-payment-status"
+                                    disabled={isPaidJob}
                                     checked={shopPaymentMethod === 'unpaid'}
-                                    onChange={() => { if (user?.role === 'admin' || user?.role === 'manager') setShopPaymentMethod('unpaid'); }}
-                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager')) e.preventDefault(); }}
-                                    className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'manager') ? 'cursor-not-allowed' : ''}`}
+                                    onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob) setShopPaymentMethod('unpaid'); }}
+                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob) e.preventDefault(); }}
+                                    className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob ? 'cursor-not-allowed' : ''}`}
                                   />
                                   <span className="font-medium text-slate-200">Unpaid</span>
                                 </Label>
-                                <Label className={`flex items-center gap-1 text-[10px] ${user?.role === 'admin' || user?.role === 'manager' ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
                                   <input
                                     type="radio"
                                     name="shop-payment-status"
+                                    disabled={isPaidJob || isWalletInsufficient}
                                     checked={shopPaymentMethod === 'paid'}
-                                    onChange={() => { if (user?.role === 'admin' || user?.role === 'manager') setShopPaymentMethod('paid'); }}
-                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager')) e.preventDefault(); }}
-                                    className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 ${!(user?.role === 'admin' || user?.role === 'manager') ? 'cursor-not-allowed' : ''}`}
+                                    onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isWalletInsufficient) setShopPaymentMethod('paid'); }}
+                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isWalletInsufficient) e.preventDefault(); }}
+                                    className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
                                   />
                                   <span className="font-medium text-emerald-400">Paid</span>
                                 </Label>
@@ -4472,23 +4487,29 @@ export default function AdminPage() {
 
                               <Button 
                                 type="button"
-                                disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || shopPaymentMethod !== 'paid' || isPaidJob || (shopPaymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim())) || (paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal))}
+                                disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || isPaidJob || shopPaymentMethod !== 'paid' || (!paymentChannel || !paymentChannel.trim()) || isWalletInsufficient}
                                 onClick={() => handleCreate(true)}
                                 className={`flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                                  paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal)
-                                    ? 'bg-rose-600/80 hover:bg-rose-600'
-                                    : 'bg-emerald-500 hover:bg-emerald-600'
+                                  isPaidJob
+                                    ? 'bg-slate-700 text-slate-300'
+                                    : isWalletInsufficient
+                                      ? 'bg-rose-600/80 hover:bg-rose-600'
+                                      : 'bg-emerald-500 hover:bg-emerald-600'
                                 }`}
                                 title={
-                                  paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal)
-                                    ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
-                                    : undefined
+                                  isPaidJob
+                                    ? 'บิลนี้ชำระเงินเรียบร้อยแล้ว'
+                                    : isWalletInsufficient
+                                      ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
+                                      : undefined
                                 }
                               >
                                 <Banknote size={12} />
-                                {paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal)
-                                  ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
-                                  : `Pay ฿${dialogTotal.toFixed(2)}`}
+                                {isPaidJob
+                                  ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
+                                  : isWalletInsufficient
+                                    ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
+                                    : `Pay ฿${dialogTotal.toFixed(2)}`}
                               </Button>
                           </div>
                         </div>
