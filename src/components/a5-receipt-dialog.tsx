@@ -291,25 +291,27 @@ export function A5ReceiptDialog({
       + (receiptData.expressSurcharge > 0 ? 1 : 0)
       + (receiptData.discount > 0 ? 1 : 0);
     const totalRows = receiptData.items.length + extraRows;
+    const hasQr = Boolean(receiptData.isDraft && activeShop?.proformaQrUrl);
+    const effectiveRows = totalRows + (hasQr ? 4 : 0);
 
     // Granular responsive sizing for Items Table AND Totals Section:
     let tableFontSize = "text-sm";
-    let rowPy = "py-2.5";
-    let thPy = "py-2";
-    let tableMb = "mb-4";
-    let sectionGap = "mb-4";
+    let rowPy = hasQr ? "py-1.5" : "py-2.5";
+    let thPy = hasQr ? "py-1.5" : "py-2";
+    let tableMb = hasQr ? "mb-2.5" : "mb-4";
+    let sectionGap = hasQr ? "mb-2.5" : "mb-4";
 
     // Totals section responsive sizing:
     let totalSubtotalText = "text-sm";
     let totalGrandText = "text-lg font-black";
     let totalVatText = "text-xs";
     let totalPy = "py-1.5";
-    let grandPy = "py-2.5";
-    let totalsMb = "mb-6";
+    let grandPy = hasQr ? "py-1.5" : "py-2.5";
+    let totalsMb = hasQr ? "mb-3" : "mb-6";
     let totalsWidth = "w-1/2";
-    let footerMt = "mt-6 pt-3";
+    let footerMt = hasQr ? "mt-2 pt-1.5" : "mt-6 pt-3";
 
-    if (totalRows > 20) {
+    if (effectiveRows > 20) {
       tableFontSize = "text-[8.5px] leading-tight";
       rowPy = "py-[1px]";
       thPy = "py-[1.5px]";
@@ -324,8 +326,7 @@ export function A5ReceiptDialog({
       totalsMb = "mb-1.5";
       totalsWidth = "w-5/12";
       footerMt = "mt-1 pt-1";
-    } else if (totalRows > 15) {
-      // e.g. Job 2026002710 with 17 items
+    } else if (effectiveRows > 15) {
       tableFontSize = "text-[9px] leading-tight";
       rowPy = "py-[2px]";
       thPy = "py-1";
@@ -340,7 +341,7 @@ export function A5ReceiptDialog({
       totalsMb = "mb-2.5";
       totalsWidth = "w-5/12";
       footerMt = "mt-2 pt-2";
-    } else if (totalRows > 11) {
+    } else if (effectiveRows > 11) {
       tableFontSize = "text-[10.5px] leading-snug";
       rowPy = "py-1";
       thPy = "py-1";
@@ -355,7 +356,7 @@ export function A5ReceiptDialog({
       totalsMb = "mb-3.5";
       totalsWidth = "w-1/2";
       footerMt = "mt-3 pt-2";
-    } else if (totalRows > 7) {
+    } else if (effectiveRows > 7) {
       tableFontSize = "text-xs";
       rowPy = "py-1.5";
       thPy = "py-1.5";
@@ -486,7 +487,7 @@ export function A5ReceiptDialog({
         </div>
 
         {/* Scrollable content area — items + totals, constrained to available space */}
-        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+        <div className="flex-1 flex flex-col min-h-0">
 
         {/* Items Table */}
         <table className={`w-full text-left ${tableMb} border-collapse ${tableFontSize}`}>
@@ -607,17 +608,17 @@ export function A5ReceiptDialog({
         <div className="shrink-0 mt-auto pt-2">
           {/* QR Payment Section — only on Proforma */}
           {receiptData.isDraft && activeShop?.proformaQrUrl && (
-            <div className="flex items-center gap-4 mb-3 p-3 border border-neutral-200 rounded-xl bg-neutral-50">
+            <div className="flex items-center gap-3 mb-2 p-2 border border-neutral-200 rounded-xl bg-neutral-50 shrink-0">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={activeShop.proformaQrUrl}
                 alt="Payment QR Code"
-                className="h-24 w-24 object-contain shrink-0"
+                className="h-20 w-20 object-contain shrink-0"
                 crossOrigin="anonymous"
               />
               <div className="flex flex-col gap-0.5">
                 <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">Scan to Pay</p>
-              <p className="text-sm font-black text-neutral-900">฿{receiptData.total?.toFixed(2) ?? "—"}</p>
+                <p className="text-sm font-black text-neutral-900">฿{receiptData.total?.toFixed(2) ?? "—"}</p>
                 <p className="text-[9px] text-neutral-400 leading-tight mt-0.5">Scan QR code to complete<br/>your payment via PromptPay</p>
               </div>
             </div>
@@ -797,26 +798,28 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     + (receiptData.expressSurcharge > 0 ? 1 : 0)
     + (receiptData.discount > 0 ? 1 : 0);
   const totalRows = receiptData.items.length + extraRows;
+  const hasQr = Boolean(receiptData.isDraft && activeShop?.proformaQrUrl);
+  const effectiveRows = totalRows + (hasQr ? 4 : 0);
 
   // Granular responsive sizing for Items Table AND Totals Section:
   let tableFontSize = "text-sm";
-  let rowPy = "py-2.5";
-  let thPy = "py-2";
-  let tableMb = "mb-4";
-  let sectionGap = "mb-4";
+  let rowPy = hasQr ? "py-1.5" : "py-2.5";
+  let thPy = hasQr ? "py-1.5" : "py-2";
+  let tableMb = hasQr ? "mb-2.5" : "mb-4";
+  let sectionGap = hasQr ? "mb-2.5" : "mb-4";
 
   // Totals section responsive sizing:
   let totalSubtotalText = "text-sm";
   let totalGrandText = "text-lg font-black";
   let totalVatText = "text-xs";
   let totalPy = "py-1.5";
-  let grandPy = "py-2.5";
-  let totalsMb = "mb-6";
+  let grandPy = hasQr ? "py-1.5" : "py-2.5";
+  let totalsMb = hasQr ? "mb-3" : "mb-6";
   let totalsWidth = "w-1/2";
-  let footerMt = "mt-6 pt-3";
-  let rowPx = 36;
+  let footerMt = hasQr ? "mt-2 pt-1.5" : "mt-6 pt-3";
+  let rowPx = 32;
 
-  if (totalRows > 20) {
+  if (effectiveRows > 20) {
     tableFontSize = "text-[8.5px] leading-tight";
     rowPy = "py-[1px]";
     thPy = "py-[1.5px]";
@@ -832,7 +835,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     totalsWidth = "w-5/12";
     footerMt = "mt-1 pt-1";
     rowPx = 15;
-  } else if (totalRows > 15) {
+  } else if (effectiveRows > 15) {
     // e.g. Job 2026002710 with 17 items
     tableFontSize = "text-[9px] leading-tight";
     rowPy = "py-[2px]";
@@ -849,7 +852,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     totalsWidth = "w-5/12";
     footerMt = "mt-2 pt-2";
     rowPx = 18;
-  } else if (totalRows > 11) {
+  } else if (effectiveRows > 11) {
     tableFontSize = "text-[10.5px] leading-snug";
     rowPy = "py-1";
     thPy = "py-1";
@@ -865,7 +868,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     totalsWidth = "w-1/2";
     footerMt = "mt-3 pt-2";
     rowPx = 22;
-  } else if (totalRows > 7) {
+  } else if (effectiveRows > 7) {
     tableFontSize = "text-xs";
     rowPy = "py-1.5";
     thPy = "py-1.5";
@@ -884,7 +887,8 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
   }
 
   // Scale factor to ensure content fits within A5 page height (793px)
-  const estimatedHeight = 64 + 110 + 50 + (totalRows * rowPx) + 80 + 70 + 35;
+  const qrHeight = hasQr ? 115 : 0;
+  const estimatedHeight = 64 + 110 + 50 + (totalRows * rowPx) + 80 + 70 + qrHeight + 35;
   const A5_HEIGHT = 793;
   const scale = estimatedHeight > A5_HEIGHT ? Math.max(0.60, A5_HEIGHT / estimatedHeight) : 1;
 
@@ -984,7 +988,7 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       </div>
 
       {/* Constrained content area */}
-      <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col min-h-0">
 
       {/* Items Table */}
       <table className={`w-full text-left ${tableMb} border-collapse ${tableFontSize}`}>
@@ -1093,12 +1097,12 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
       <div className="shrink-0 mt-auto pt-2 border-t border-neutral-200">
         {/* QR Payment Section — only on Proforma */}
         {receiptData.isDraft && activeShop?.proformaQrUrl && (
-          <div className="flex items-center gap-4 mb-3 p-3 border border-neutral-200 rounded-xl bg-neutral-50">
+          <div className="flex items-center gap-3 mb-2 p-2 border border-neutral-200 rounded-xl bg-neutral-50 shrink-0">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={activeShop.proformaQrUrl}
               alt="Payment QR Code"
-              className="h-24 w-24 object-contain shrink-0"
+              className="h-20 w-20 object-contain shrink-0"
               crossOrigin="anonymous"
             />
             <div className="flex flex-col gap-0.5">
