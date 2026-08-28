@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
 import { refreshDb } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
@@ -625,7 +625,23 @@ export default function AdminPage() {
 
   const [serviceWeight, setServiceWeight] = useState(2);
   
-  const handleServiceOrSpeedChange = (newServiceId: string, newSpeed: "standard" | "express_50" | "express_100", newWeight: number, priceListId: string | null = customerPriceListId) => {
+  const getServicePrice = useCallback((service: ServiceItem, customer: Customer | null = selectedProfileCustomer, plId: string | null = customerPriceListId) => {
+    const targetPlId = plId || customer?.priceListId;
+    if (targetPlId) {
+      const customPl = priceLists.find(pl => pl.id === targetPlId);
+      if (customPl && customPl.servicePrices && customPl.servicePrices[service.id] !== undefined) {
+        return customPl.servicePrices[service.id];
+      }
+    }
+    if (customer?.isMember) {
+      if (service.memberPrice !== undefined && service.memberPrice > 0 && service.category !== "PACKAGE") {
+        return service.memberPrice;
+      }
+    }
+    return service.price;
+  }, [selectedProfileCustomer, customerPriceListId, priceLists]);
+
+  const handleServiceOrSpeedChange = (newServiceId: string, newSpeed: "standard" | "express_50" | "express_100", newWeight: number, priceListId: string | null = customerPriceListId, customer: Customer | null = selectedProfileCustomer) => {
     setServiceType(newServiceId);
     setServiceSpeed(newSpeed);
     setServiceWeight(newWeight);
@@ -636,25 +652,13 @@ export default function AdminPage() {
     }
 
     const baseService = services.find(s => s.id === newServiceId);
-    let pricePerKg = baseService ? baseService.price : 110;
+    let pricePerKg = baseService ? getServicePrice(baseService, customer, priceListId) : 110;
 
     if (newServiceId === "other") {
       if (serviceType !== "other") {
         setLaundryPrice(0);
       }
       return;
-    }
-
-    if (priceListId) {
-      const customPl = priceLists.find(pl => pl.id === priceListId);
-      if (customPl && customPl.servicePrices[newServiceId] !== undefined) {
-        pricePerKg = customPl.servicePrices[newServiceId];
-      }
-    } else {
-      const defaultPl = priceLists.find(pl => pl.isDefault);
-      if (defaultPl && defaultPl.servicePrices[newServiceId] !== undefined) {
-        pricePerKg = defaultPl.servicePrices[newServiceId];
-      }
     }
 
     setLaundryPrice(Math.ceil(pricePerKg * newWeight));
@@ -845,6 +849,30 @@ export default function AdminPage() {
     }
     setDialogVatRate(parseFloat(systemSettings?.vatRate || "7") || 7);
   }, [systemSettings?.vatType, systemSettings?.vatRate, editingJobId]);
+
+  // Auto-recalculate dialogCart prices when selected customer or price list changes
+  useEffect(() => {
+    if (editingJobId) return; // Do not overwrite existing job custom prices when editing
+    setDialogCart(prev => {
+      if (prev.length === 0) return prev;
+      let hasChanges = false;
+      const updated = prev.map(item => {
+        if (item.category === "PACKAGE" || item.id === "other") return item;
+        const svc = services.find(s => s.id === item.id);
+        if (!svc) return item;
+        const newPrice = getServicePrice(svc, selectedProfileCustomer, customerPriceListId);
+        if (newPrice !== item.price) {
+          hasChanges = true;
+          return { ...item, price: newPrice, basePrice: newPrice };
+        }
+        return item;
+      });
+      if (!hasChanges) return prev;
+      const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+      setLaundryPrice(totalSum);
+      return updated;
+    });
+  }, [selectedProfileCustomer, customerPriceListId, services, getServicePrice, editingJobId]);
 
   const activeShop = useMemo(() => {
     return shopLocations[selectedStoreIndex] || shopLocations[0];
@@ -3789,13 +3817,14 @@ export default function AdminPage() {
                                                   toast(`⚠️ มีรายการที่ปรับราคาพิเศษอยู่ในตะกร้า — ราคาสินค้าใหม่จะใช้ราคาตามปกติ`, { duration: 3000 });
                                                 }
                                                 const defaultQty = isKiloService ? 2 : 1;
+                                                const resolvedPrice = getServicePrice(s, selectedProfileCustomer, customerPriceListId);
                                                 updated = [...prev, {
                                                   id: s.id,
                                                   name: s.name,
                                                   nameEn: s.nameEn || s.name,
                                                   quantity: defaultQty,
-                                                  price: s.price,
-                                                  basePrice: s.price,
+                                                  price: resolvedPrice,
+                                                  basePrice: resolvedPrice,
                                                   category: s.category || "",
                                                   unit: s.unit || "piece"
                                                 }];
