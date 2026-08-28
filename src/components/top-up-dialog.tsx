@@ -102,6 +102,17 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
     [cart]
   );
 
+  const bonusTotal = useMemo(() =>
+    cart.reduce((sum, item) => {
+      if (item.customPrice !== undefined) return sum;
+      const bonusPerItem = Math.max(0, (item.service.memberPrice || item.service.price) - item.service.price);
+      return sum + bonusPerItem * item.quantity;
+    }, 0),
+    [cart]
+  );
+
+  const totalCreditReceived = useMemo(() => cartTotal + bonusTotal, [cartTotal, bonusTotal]);
+
   const cartIsEmpty = cart.length === 0;
 
   // ── Effects ────────────────────────────────────────────────────────────────
@@ -185,9 +196,9 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       const topUpReceiptNo = generateTopUpReceiptNumber(nextSeq, now);
 
-      // Update customer wallet
+      // Update customer wallet (Paid amount + Bonus credit)
       const currentBalance = selectedCustomer.creditBalance || 0;
-      const newBalance = currentBalance + cartTotal;
+      const newBalance = currentBalance + totalCreditReceived;
       const walletUpdates: Partial<Customer> = { creditBalance: newBalance };
 
       if (!selectedCustomer.isMember) {
@@ -199,7 +210,11 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       await customerStore.updateCustomer(selectedCustomer.id, walletUpdates);
 
-      toast.success(`Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(newBalance)}`);
+      toast.success(
+        bonusTotal > 0
+          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ฿${formatCurrency(newBalance)}`
+          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(newBalance)}`
+      );
 
       // Build receipt data
       const rdata: any = {
@@ -213,9 +228,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         items: itemsPayload.map(i => ({ name: i.name, quantity: i.quantity, price: i.price })),
         subtotal: cartTotal,
         total: cartTotal,
-        grandTotal: cartTotal,
         discount: 0,
-        fee: 0,
         deliveryFee: 0,
         expressSurcharge: 0,
         vatAmount: 0,
@@ -224,23 +237,16 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         paymentChannel,
         isPaid: true,
         proformaId: undefined,
-        proformaRevision: 0,
         adminNotesJson: null,
         deliveryScheduledAt: null,
         serviceSpeed: "standard",
       };
 
-      // Persist transaction record to DB for audit history & receipt reprint
-      const bonusTotal = cart.reduce((sum, i) => {
-        const bonusPerItem = Math.max(0, (i.service.memberPrice || i.service.price) - i.service.price);
-        return sum + bonusPerItem * i.quantity;
-      }, 0);
-
       const txDescription = JSON.stringify({
         packageName: cart.map(i => `${i.service.name} x${i.quantity}`).join(", "),
         paymentChannel,
         bonusAmount: bonusTotal,
-        totalCredit: cartTotal + bonusTotal,
+        totalCredit: totalCreditReceived,
         balanceBefore: currentBalance,
         balanceAfter: newBalance,
         createdBy: user?.name || user?.email || "Admin",
@@ -251,9 +257,10 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         id: topUpReceiptNo,
         memberId: selectedCustomer.id,
         amount: cartTotal,
+        type: "TOPUP",
         description: txDescription,
-        type: "TOPUP"
-      }).catch(e => console.error("[TopUpDialog] Failed to persist transaction record:", e));
+        status: "COMPLETED",
+      }).catch(err => console.error("Failed to save top-up transaction:", err));
 
       setReceiptData(rdata);
       setReceiptJobId(topUpReceiptNo);
@@ -391,7 +398,14 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                               <Package size={14} className="text-emerald-600" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-semibold text-slate-800">{svc.nameEn || svc.name}</p>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-sm font-semibold text-slate-800">{svc.nameEn || svc.name}</p>
+                                {svc.memberPrice && svc.memberPrice > svc.price && (
+                                  <Badge className="bg-emerald-100 text-emerald-800 border-none text-[10px] font-bold px-1.5 py-0">
+                                    +฿{formatCurrency(svc.memberPrice - svc.price)} Bonus
+                                  </Badge>
+                                )}
+                              </div>
                               {isCustom ? (
                                 <div className="flex items-center gap-1.5 mt-1">
                                   <span className="text-[10px] text-slate-400">฿</span>
@@ -405,7 +419,14 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                                   />
                                 </div>
                               ) : (
-                                <p className="text-xs text-slate-500">฿{formatCurrency(svc.price)}</p>
+                                <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+                                  <span className="font-medium text-slate-700">Pay: ฿{formatCurrency(svc.price)}</span>
+                                  {svc.memberPrice && svc.memberPrice > svc.price && (
+                                    <span className="text-emerald-700 font-bold">
+                                      (Credit: ฿{formatCurrency(svc.memberPrice)})
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
                             <Button
@@ -452,9 +473,21 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                         <button onClick={() => removeFromCart(idx)} className="text-red-400 hover:text-red-600"><X size={12} /></button>
                       </div>
                     ))}
-                    <div className="pt-2 border-t border-slate-200 flex justify-between">
-                      <span className="text-xs font-bold text-slate-700">Total</span>
-                      <span className="text-sm font-bold text-emerald-600">฿{formatCurrency(cartTotal)}</span>
+                    <div className="pt-2 border-t border-slate-200 space-y-1">
+                      <div className="flex justify-between text-xs text-slate-600">
+                        <span>Amount to Pay</span>
+                        <span className="font-bold text-slate-800">฿{formatCurrency(cartTotal)}</span>
+                      </div>
+                      {bonusTotal > 0 && (
+                        <div className="flex justify-between text-xs text-emerald-600 font-semibold">
+                          <span>Bonus Added</span>
+                          <span>+ ฿{formatCurrency(bonusTotal)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between items-center pt-1 border-t border-slate-200">
+                        <span className="text-xs font-bold text-slate-700">Total Wallet Credit</span>
+                        <span className="text-sm font-black text-emerald-600">฿{formatCurrency(totalCreditReceived)}</span>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -477,14 +510,26 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                       <span className="text-xs font-semibold text-slate-700">฿{formatCurrency((item.customPrice ?? item.service.price) * item.quantity)}</span>
                     </div>
                   ))}
-                  <div className="pt-2 border-t border-emerald-200 flex justify-between items-center">
-                    <span className="text-sm font-bold text-slate-700">Top Up Amount</span>
-                    <span className="text-lg font-black text-emerald-600">฿{formatCurrency(cartTotal)}</span>
+                  <div className="pt-2 border-t border-emerald-200 space-y-1.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm font-bold text-slate-700">Payment Due</span>
+                      <span className="text-base font-bold text-slate-900">฿{formatCurrency(cartTotal)}</span>
+                    </div>
+                    {bonusTotal > 0 && (
+                      <div className="flex justify-between items-center text-xs text-emerald-700 font-semibold">
+                        <span>Free Bonus Credit</span>
+                        <span>+ ฿{formatCurrency(bonusTotal)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-center pt-1 border-t border-emerald-200/60">
+                      <span className="text-xs font-bold text-emerald-800 uppercase tracking-wide">Total Credit to Wallet</span>
+                      <span className="text-lg font-black text-emerald-600">฿{formatCurrency(totalCreditReceived)}</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between items-center text-xs text-slate-500">
+                  <div className="flex justify-between items-center text-xs text-slate-500 pt-1 border-t border-emerald-100">
                     <span>New wallet balance</span>
-                    <span className="font-semibold text-indigo-600">
-                      ฿{formatCurrency((selectedCustomer?.creditBalance || 0) + cartTotal)}
+                    <span className="font-black text-indigo-700 text-sm">
+                      ฿{formatCurrency((selectedCustomer?.creditBalance || 0) + totalCreditReceived)}
                     </span>
                   </div>
                 </div>

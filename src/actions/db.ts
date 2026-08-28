@@ -1265,6 +1265,7 @@ export async function createTopUpTransactionAction(data: {
   amount: number;
   description: string;
   type?: string;
+  status?: string;
 }) {
   const tx = await prisma.transaction.create({
     data: {
@@ -1273,7 +1274,7 @@ export async function createTopUpTransactionAction(data: {
       amount: data.amount,
       type: data.type || 'TOPUP',
       description: data.description,
-      status: 'COMPLETED',
+      status: data.status || 'COMPLETED',
       updatedAt: new Date(),
     }
   });
