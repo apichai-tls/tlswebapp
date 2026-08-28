@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   User,
   ShieldCheck,
@@ -14,9 +14,17 @@ import {
   Building2,
   Tag,
   Lock,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { getUsers, createUser, updateUser, deleteUser } from "@/actions/users";
 import {
@@ -79,6 +87,105 @@ const MENU_PERMISSIONS = [
   { id: "users", label: "Manage Users" },
 ];
 
+/**
+ * Department Priority Order:
+ * 1. Accounting
+ * 2. Branch Operations
+ * 3. Logistics Fleet / Drivers
+ * 4. Super Admin / Management
+ * 5+. Other departments
+ */
+export function getDepartmentRank(
+  deptKey?: string | null,
+  role?: string | null,
+  deptsList?: DepartmentItem[]
+): number {
+  let effectiveKey = deptKey;
+  if (!effectiveKey) {
+    if (role === "admin") effectiveKey = "management";
+    else if (role === "cso") effectiveKey = "accounting_cso";
+    else if (role === "rider") effectiveKey = "logistics";
+    else effectiveKey = "branch_ops";
+  }
+
+  const keyLower = (effectiveKey || "").toLowerCase();
+  const deptObj = deptsList?.find((d) => d.key === effectiveKey);
+  const nameLower = `${deptObj?.name || ""} ${deptObj?.nameTh || ""}`.toLowerCase();
+
+  // Priority 1: Accounting
+  if (
+    keyLower.includes("accounting") ||
+    keyLower.includes("cso") ||
+    nameLower.includes("accounting") ||
+    nameLower.includes("บัญชี") ||
+    nameLower.includes("cso")
+  ) {
+    return 1;
+  }
+
+  // Priority 2: Branch Operations
+  if (
+    keyLower.includes("branch") ||
+    keyLower.includes("ops") ||
+    keyLower.includes("operation") ||
+    nameLower.includes("branch") ||
+    nameLower.includes("ปฏิบัติการ") ||
+    nameLower.includes("สาขา")
+  ) {
+    return 2;
+  }
+
+  // Priority 3: Logistics Driver
+  if (
+    keyLower.includes("logistics") ||
+    keyLower.includes("driver") ||
+    keyLower.includes("rider") ||
+    keyLower.includes("fleet") ||
+    nameLower.includes("logistics") ||
+    nameLower.includes("ขนส่ง") ||
+    nameLower.includes("ไรเดอร์") ||
+    nameLower.includes("driver")
+  ) {
+    return 3;
+  }
+
+  // Priority 4: Super Admin / Management
+  if (
+    keyLower.includes("management") ||
+    keyLower.includes("admin") ||
+    keyLower.includes("super_admin") ||
+    nameLower.includes("management") ||
+    nameLower.includes("admin") ||
+    nameLower.includes("บริหาร") ||
+    nameLower.includes("ไอที")
+  ) {
+    return 4;
+  }
+
+  return 5 + (deptObj?.order || 99);
+}
+
+export function sortUsersByDeptAndHead(userList: AdminUser[], deptsList: DepartmentItem[]): AdminUser[] {
+  return [...userList].sort((a, b) => {
+    // 1. Department Order: Accounting -> Branch Oper -> Logistics Driver -> Super Admin
+    const rankA = getDepartmentRank(a.department, a.role, deptsList);
+    const rankB = getDepartmentRank(b.department, b.role, deptsList);
+    if (rankA !== rankB) {
+      return rankA - rankB;
+    }
+
+    // 2. Department Head First within the same department
+    const isHeadA = a.isDepartmentHead ? 1 : 0;
+    const isHeadB = b.isDepartmentHead ? 1 : 0;
+    if (isHeadA !== isHeadB) {
+      return isHeadB - isHeadA; // 1 (Head) comes before 0 (Staff)
+    }
+
+    // 3. Alphabetical order by Name
+    return (a.name || "").localeCompare(b.name || "", ["th", "en"]);
+  });
+}
+
 export function AdminUsers() {
   const { user } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -87,13 +194,20 @@ export function AdminUsers() {
   const [isLoading, setIsLoading] = useState(true);
   const [viewMode, setViewMode] = useState<"active" | "departments" | "roles" | "resigned">("active");
 
-  const activeUsers = users.filter((u) => u.isActive !== false);
-  const resignedUsers = users.filter((u) => u.isActive === false);
+  const activeUsers = useMemo(
+    () => sortUsersByDeptAndHead(users.filter((u) => u.isActive !== false), departments),
+    [users, departments]
+  );
+  const resignedUsers = useMemo(
+    () => sortUsersByDeptAndHead(users.filter((u) => u.isActive === false), departments),
+    [users, departments]
+  );
   const displayedUsers = viewMode === "active" ? activeUsers : resignedUsers;
 
   // User Form State
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [isSavingUser, setIsSavingUser] = useState(false);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -223,6 +337,7 @@ export function AdminUsers() {
     e.preventDefault();
     if (!email || !name) return toast.error("Email and Name are required");
 
+    setIsSavingUser(true);
     try {
       if (editingId) {
         const res = await updateUser(editingId, {
@@ -256,6 +371,8 @@ export function AdminUsers() {
       fetchData();
     } catch (error: any) {
       toast.error(error.message || "Operation failed");
+    } finally {
+      setIsSavingUser(false);
     }
   };
 
@@ -471,40 +588,55 @@ export function AdminUsers() {
         </div>
 
         {/* Action Button */}
-        {!isEditing && (
-          <div>
-            {viewMode === "departments" ? (
-              <Button onClick={openCreateDeptModal} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs">
-                <Plus size={16} className="mr-1.5" /> Add Department
-              </Button>
-            ) : viewMode === "roles" ? (
-              <Button onClick={openCreateRoleModal} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs">
-                <Plus size={16} className="mr-1.5" /> Add Role
-              </Button>
-            ) : (
-              <Button onClick={() => setIsEditing(true)} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs">
-                <Plus size={16} className="mr-1.5" /> Add User
-              </Button>
-            )}
-          </div>
-        )}
+        <div>
+          {viewMode === "departments" ? (
+            <Button onClick={openCreateDeptModal} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer">
+              <Plus size={16} className="mr-1.5" /> Add Department
+            </Button>
+          ) : viewMode === "roles" ? (
+            <Button onClick={openCreateRoleModal} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer">
+              <Plus size={16} className="mr-1.5" /> Add Role
+            </Button>
+          ) : (
+            <Button onClick={() => { resetForm(); setIsEditing(true); }} className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs cursor-pointer">
+              <Plus size={16} className="mr-1.5" /> Add User
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* User Create / Edit Form */}
-      {isEditing && (
-        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 sm:p-6 mb-8 animate-in fade-in duration-150">
-          <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-100">
-            <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
-              <User size={18} className="text-indigo-600" />
-              <span>{editingId ? "Edit User Account" : "Create New User"}</span>
-            </h2>
-            <button onClick={resetForm} className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer">
-              <X size={20} />
-            </button>
-          </div>
+      {/* ─── User Create / Edit Popup Modal ─────────────────────────────────── */}
+      <Dialog
+        open={isEditing}
+        onOpenChange={(open, eventDetails) => {
+          if (!open && eventDetails?.reason === "outside-press") {
+            return;
+          }
+          if (!open) resetForm();
+        }}
+        disablePointerDismissal={true}
+      >
+        <DialogContent className="sm:max-w-4xl max-h-[92vh] flex flex-col p-0 overflow-hidden bg-white rounded-3xl z-50">
+          <DialogHeader className="p-6 pb-4 border-b border-slate-100 shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shrink-0">
+                <User size={18} />
+              </div>
+              <div>
+                <DialogTitle className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <span>{editingId ? `Edit User: ${name || email}` : "Create New User Account"}</span>
+                </DialogTitle>
+                <p className="text-xs text-slate-500 mt-0.5 font-medium">
+                  {editingId
+                    ? "Update staff credentials, department, role, and granular menu permissions."
+                    : "Add a new staff member account and configure system access permissions."}
+                </p>
+              </div>
+            </div>
+          </DialogHeader>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+          <form id="user-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Name *</label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Somchai S." required />
@@ -517,7 +649,7 @@ export function AdminUsers() {
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
                   Password {editingId && <span className="text-slate-400 font-normal lowercase">(leave blank to keep)</span>}
                 </label>
-                <Input value={password} onChange={(e) => setPassword(e.target.value)} type="text" placeholder="Password" required={!editingId} />
+                <Input value={password} onChange={(e) => setPassword(e.target.value)} type="text" placeholder={editingId ? "••••••••" : "Password"} required={!editingId} />
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Department</label>
@@ -567,13 +699,13 @@ export function AdminUsers() {
                 <label className="text-xs font-bold text-amber-950 flex items-center gap-1.5 cursor-pointer">
                   <span>🌟 Department Head (หัวหน้าแผนก)</span>
                   {isDepartmentHead && (
-                    <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full border border-amber-300">
+                    <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full border border-amber-300">
                       👑 Active Head
                     </span>
                   )}
                 </label>
                 <p className="text-[11px] text-amber-800 mt-0.5">
-                  เปิดใช้งานหากต้องการให้พนักงานท่านนี้เป็นหัวหน้าแผนก สามารถมองเห็นและติดตาม Task ของลูกน้องทุกคนในแผนกเดียวกันได้ (1 แผนกมีหัวหน้าได้หลายคน หรือไม่มีก็ได้)
+                  เปิดใช้งานหากต้องการให้พนักงานท่านนี้เป็นหัวหน้าแผนก สามารถมองเห็นและติดตาม Task ของลูกน้องทุกคนในแผนกเดียวกันได้
                 </p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer shrink-0">
@@ -600,40 +732,47 @@ export function AdminUsers() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 bg-slate-50 p-4 rounded-2xl border border-slate-100">
                 {MENU_PERMISSIONS.map((perm) => (
                   <label
                     key={perm.id}
-                    className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${
-                      selectedPerms.includes(perm.id) ? "bg-indigo-100/80 shadow-2xs" : "hover:bg-slate-150"
+                    className={`flex items-center gap-2 p-2.5 rounded-xl cursor-pointer transition-all border ${
+                      selectedPerms.includes(perm.id)
+                        ? "bg-indigo-50/90 border-indigo-200 shadow-2xs text-indigo-950"
+                        : "bg-white border-slate-200/80 hover:bg-slate-100 text-slate-700"
                     }`}
                   >
                     <input
                       type="checkbox"
                       checked={selectedPerms.includes(perm.id)}
                       onChange={() => togglePermission(perm.id)}
-                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 h-4 w-4"
                     />
-                    <span className={`text-xs sm:text-sm font-bold ${selectedPerms.includes(perm.id) ? "text-indigo-900" : "text-slate-600"}`}>
+                    <span className="text-xs font-bold">
                       {perm.label}
                     </span>
                   </label>
                 ))}
               </div>
             </div>
-
-            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-              <Button type="button" variant="outline" onClick={resetForm} className="font-bold border-slate-200">
-                Cancel
-              </Button>
-              <Button type="submit" className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs">
-                <Save size={16} className="mr-2" />
-                {editingId ? "Save Changes" : "Create User"}
-              </Button>
-            </div>
           </form>
-        </div>
-      )}
+
+          <DialogFooter className="p-4 px-6 border-t border-slate-100 bg-slate-50/50 flex justify-end gap-2.5 shrink-0">
+            <Button type="button" variant="outline" onClick={resetForm} className="font-bold border-slate-200 cursor-pointer">
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="user-form"
+              disabled={isSavingUser}
+              className="bg-indigo-600 hover:bg-indigo-700 font-bold shadow-2xs text-white cursor-pointer"
+            >
+              {isSavingUser ? <Loader2 size={16} className="animate-spin mr-1.5" /> : <Save size={16} className="mr-1.5" />}
+              {editingId ? "Save Changes" : "Create User"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Main Tabs Container */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex-1 flex flex-col">

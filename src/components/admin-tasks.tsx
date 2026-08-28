@@ -2020,7 +2020,16 @@ export function TaskFormModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
+    <Dialog 
+      open={open} 
+      onOpenChange={(newOpen, eventDetails) => {
+        if (!newOpen && eventDetails?.reason === 'outside-press') {
+          return;
+        }
+        onClose();
+      }}
+      disablePointerDismissal={true}
+    >
       <DialogContent className={`max-h-[94vh] sm:max-h-[90vh] flex flex-col p-3.5 sm:p-6 overflow-hidden ${
         initialTask
           ? "h-[92vh] sm:h-[88vh] sm:max-w-6xl max-w-[96vw] lg:max-w-7xl"
