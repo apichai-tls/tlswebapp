@@ -105,6 +105,7 @@ import {
   Banknote,
   PackageOpen,
   ExternalLink,
+  Wallet,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -2945,9 +2946,15 @@ export default function AdminPage() {
                                   </Badge>
                                 )}
                                 {c.isMember && (
-                                  <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
-                                    Member
-                                  </Badge>
+                                  <div className="flex items-center gap-1">
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
+                                      Member
+                                    </Badge>
+                                    <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold flex items-center gap-0.5">
+                                      <Wallet size={9} />
+                                      ฿{(c.creditBalance || 0).toLocaleString()}
+                                    </Badge>
+                                  </div>
                                 )}
                               </div>
                             ))
@@ -3120,6 +3127,12 @@ export default function AdminPage() {
                                 {selectedMemberLabel && (
                                   <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0 select-text cursor-text" style={{ userSelect: 'text' }}>
                                     {selectedMemberId ? `ID: ${selectedMemberId}` : 'Member'}
+                                  </Badge>
+                                )}
+                                {selectedProfileCustomer?.isMember && (
+                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold shrink-0 flex items-center gap-0.5 shadow-xs" title="ยอดเงินคงเหลือใน Wallet">
+                                    <Wallet size={9} className="text-emerald-600" />
+                                    <span>฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                                   </Badge>
                                 )}
                               </Label>
@@ -4277,6 +4290,14 @@ export default function AdminPage() {
                                 )}
                                 <option value="HQ/Credit">HQ/Credit</option>
                               </select>
+                              {selectedProfileCustomer?.isMember && (
+                                <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
+                                  <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className="text-emerald-400" /> Wallet:</span>
+                                  <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
+                                    ฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                </div>
+                              )}
                             </div>
 
                             {/* Col 2: CSO Status (isPaid) — hidden for Walk-in */}
