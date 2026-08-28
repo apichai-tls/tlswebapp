@@ -857,8 +857,11 @@ export default function AdminPage() {
   }, [services]);
 
   const visibleCategories = useMemo(() => {
+    if (!activeShift && user?.role === 'cso') {
+      return [];
+    }
     return categories.filter(cat => cat !== 'PACKAGE');
-  }, [categories]);
+  }, [categories, activeShift, user?.role]);
   // Clean up isNew flags when the Edit Job dialog closes without saving
   useEffect(() => {
     if (!dialogOpen && editingJobId && !showReceipt && !isSubmitting) {
@@ -3688,46 +3691,56 @@ export default function AdminPage() {
                             </span>
 
                             {dialogSelectedCategory === null ? (
-                              <div className="grid grid-cols-2 grid-rows-[repeat(5,1fr)] gap-2.5 pt-2 flex-1">
-                                {visibleCategories.map((cat) => (
-                                  <Button
-                                    key={cat}
-                                    type="button"
-                                    variant="outline"
-                                    disabled={isPricingLocked}
-                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-indigo-50 hover:text-indigo-600 border-slate-200 rounded-lg shadow-sm"
-                                    onClick={() => setDialogSelectedCategory(cat)}
-                                  >
-                                    {cat}
-                                  </Button>
-                                ))}
-                                {user?.role !== 'cso' && (
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    disabled={isPricingLocked}
-                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
-                                    onClick={() => {
-                                      handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
-                                      setDialogCart(prev => {
-                                        if (prev.some(x => x.id === "other")) return prev;
-                                        return [...prev, {
-                                          id: "other",
-                                          name: "Other (Custom Price)",
-                                          nameEn: "Other (Custom Price)",
-                                          quantity: 1,
-                                          price: laundryPrice || 0,
-                                          basePrice: laundryPrice || 0,
-                                          category: "other",
-                                          unit: "piece"
-                                        }];
-                                      });
-                                    }}
-                                  >
-                                    Other (Custom Price)
-                                  </Button>
-                                )}
-                              </div>
+                              visibleCategories.length === 0 ? (
+                                <div className="flex-1 flex flex-col items-center justify-center p-6 text-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50 my-2">
+                                  <Package size={32} className="mb-2 text-slate-300" />
+                                  <p className="text-xs font-bold text-slate-600">CSO Booking Mode</p>
+                                  <p className="text-[11px] text-slate-400 mt-1 max-w-[220px]">
+                                    Only customer and delivery details are recorded by CSO. Item counting is handled at shop shift.
+                                  </p>
+                                </div>
+                              ) : (
+                                <div className="grid grid-cols-2 grid-rows-[repeat(5,1fr)] gap-2.5 pt-2 flex-1">
+                                  {visibleCategories.map((cat) => (
+                                    <Button
+                                      key={cat}
+                                      type="button"
+                                      variant="outline"
+                                      disabled={isPricingLocked}
+                                      className="h-full text-xs font-bold uppercase justify-center hover:bg-indigo-50 hover:text-indigo-600 border-slate-200 rounded-lg shadow-sm"
+                                      onClick={() => setDialogSelectedCategory(cat)}
+                                    >
+                                      {cat}
+                                    </Button>
+                                  ))}
+                                  {user?.role !== 'cso' && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      disabled={isPricingLocked}
+                                      className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
+                                      onClick={() => {
+                                        handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
+                                        setDialogCart(prev => {
+                                          if (prev.some(x => x.id === "other")) return prev;
+                                          return [...prev, {
+                                            id: "other",
+                                            name: "Other (Custom Price)",
+                                            nameEn: "Other (Custom Price)",
+                                            quantity: 1,
+                                            price: laundryPrice || 0,
+                                            basePrice: laundryPrice || 0,
+                                            category: "other",
+                                            unit: "piece"
+                                          }];
+                                        });
+                                      }}
+                                    >
+                                      Other (Custom Price)
+                                    </Button>
+                                  )}
+                                </div>
+                              )
                             ) : (
                               <div className="flex-1 flex flex-col gap-2 pt-2">
                                 <div className="grid grid-cols-3 auto-rows-max gap-2 overflow-y-auto flex-1 pr-0.5 animate-in fade-in duration-200">
