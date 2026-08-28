@@ -230,6 +230,14 @@ export function A5ReceiptDialog({
     console.warn("Failed to parse payments from adminNotesJson");
   }
 
+  if (payments.length === 0 && receiptData.isPaid && (receiptData.total || 0) > 0) {
+    payments = [{
+      amount: receiptData.total,
+      method: (receiptData.paymentChannel || "TRANSFER").toLowerCase(),
+      timestamp: (receiptData.createdAt instanceof Date ? receiptData.createdAt : new Date(receiptData.createdAt || Date.now())).toISOString(),
+    }];
+  }
+
   const totalPaid = payments.reduce((s: number, p: PaymentLog) => s + p.amount, 0);
 
   const handlePrint = async () => {
@@ -730,9 +738,18 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
     try {
       if (receiptData.adminNotesJson) {
         const parsed = JSON.parse(receiptData.adminNotesJson);
-        if (parsed && Array.isArray(parsed.payments)) return parsed.payments as PaymentLog[];
+        if (parsed && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+          return parsed.payments as PaymentLog[];
+        }
       }
     } catch { /* ignore */ }
+    if (receiptData.isPaid && (receiptData.total || 0) > 0) {
+      return [{
+        amount: receiptData.total,
+        method: (receiptData.paymentChannel || "TRANSFER").toLowerCase(),
+        timestamp: (receiptData.createdAt instanceof Date ? receiptData.createdAt : new Date(receiptData.createdAt || Date.now())).toISOString(),
+      }];
+    }
     return [];
   })();
   const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
