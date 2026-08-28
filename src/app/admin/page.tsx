@@ -850,18 +850,15 @@ export default function AdminPage() {
     return shopLocations[selectedStoreIndex] || shopLocations[0];
   }, [shopLocations, selectedStoreIndex]);
 
-  // Derived category list
+  // Derived category list (excluding PACKAGE since top-up has its own dialog)
   const categories = useMemo(() => {
-    const activeServices = services.filter(s => s.isActive !== false);
+    const activeServices = services.filter(s => s.isActive !== false && s.category !== 'PACKAGE');
     return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
   }, [services]);
 
   const visibleCategories = useMemo(() => {
-    if (!activeShift && user?.role === 'cso') {
-      return categories.filter(cat => cat === 'PACKAGE');
-    }
-    return categories;
-  }, [categories, activeShift, user?.role]);
+    return categories.filter(cat => cat !== 'PACKAGE');
+  }, [categories]);
   // Clean up isNew flags when the Edit Job dialog closes without saving
   useEffect(() => {
     if (!dialogOpen && editingJobId && !showReceipt && !isSubmitting) {
@@ -3735,7 +3732,7 @@ export default function AdminPage() {
                               <div className="flex-1 flex flex-col gap-2 pt-2">
                                 <div className="grid grid-cols-3 auto-rows-max gap-2 overflow-y-auto flex-1 pr-0.5 animate-in fade-in duration-200">
                                   {services
-                                    .filter((s) => s.category === dialogSelectedCategory)
+                                    .filter((s) => s.category === dialogSelectedCategory && s.category !== 'PACKAGE')
                                     .filter((s) => {
                                       const name = (s.name || "").toLowerCase();
                                       const en = (s.nameEn || "").toLowerCase();

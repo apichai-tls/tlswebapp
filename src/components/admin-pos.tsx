@@ -1244,9 +1244,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     );
   }, [customerSearch, customers]);
 
-  // Dynamically compute unique categories from active services
+  // Dynamically compute unique categories from active services (excluding PACKAGE)
   const categories = useMemo(() => {
-    const activeServices = services.filter(s => s.isActive !== false);
+    const activeServices = services.filter(s => s.isActive !== false && s.category !== "PACKAGE");
     const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
     return ["All", ...uniqueCats];
   }, [services]);
@@ -1278,9 +1278,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // SelectedCategory standard plan reset checks
 
-  // Filter products based on category and search (matching both Thai and English names)
+  // Filter products based on category and search (matching both Thai and English names, excluding PACKAGE)
   const filteredProducts = useMemo(() => {
-    const activeServices = services.filter(p => p.isActive !== false);
+    const activeServices = services.filter(p => p.isActive !== false && p.category !== "PACKAGE");
     return activeServices.filter(p => {
       const matchesCategory = selectedCategory === "All" || p.category === selectedCategory;
       const nameMatch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
