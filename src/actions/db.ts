@@ -1258,3 +1258,47 @@ function shouldPreserveExisting(newValue: any, existingValue: any): boolean {
   return false;
 }
 
+// TOP-UP TRANSACTIONS
+export async function createTopUpTransactionAction(data: {
+  id: string;
+  memberId: string;
+  amount: number;
+  description: string;
+  type?: string;
+}) {
+  const tx = await prisma.transaction.create({
+    data: {
+      id: data.id,
+      memberId: data.memberId,
+      amount: data.amount,
+      type: data.type || 'TOPUP',
+      description: data.description,
+      status: 'COMPLETED',
+      updatedAt: new Date(),
+    }
+  });
+  return tx;
+}
+
+export async function getTopUpTransactionsAction(customerId?: string) {
+  const where: any = { type: 'TOPUP' };
+  if (customerId) where.memberId = customerId;
+  const list = await prisma.transaction.findMany({
+    where,
+    include: {
+      Customer: {
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          memberId: true,
+          creditBalance: true,
+        }
+      }
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  return list;
+}
+
+

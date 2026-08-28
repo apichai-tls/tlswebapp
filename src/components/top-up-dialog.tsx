@@ -23,6 +23,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useCustomers } from "@/lib/use-customers";
 import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber } from "@/lib/utils";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { createTopUpTransactionAction } from "@/actions/db";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -228,6 +229,31 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         deliveryScheduledAt: null,
         serviceSpeed: "standard",
       };
+
+      // Persist transaction record to DB for audit history & receipt reprint
+      const bonusTotal = cart.reduce((sum, i) => {
+        const bonusPerItem = Math.max(0, (i.service.memberPrice || i.service.price) - i.service.price);
+        return sum + bonusPerItem * i.quantity;
+      }, 0);
+
+      const txDescription = JSON.stringify({
+        packageName: cart.map(i => `${i.service.name} x${i.quantity}`).join(", "),
+        paymentChannel,
+        bonusAmount: bonusTotal,
+        totalCredit: cartTotal + bonusTotal,
+        balanceBefore: currentBalance,
+        balanceAfter: newBalance,
+        createdBy: user?.name || user?.email || "Admin",
+        receiptData: rdata,
+      });
+
+      createTopUpTransactionAction({
+        id: topUpReceiptNo,
+        memberId: selectedCustomer.id,
+        amount: cartTotal,
+        description: txDescription,
+        type: "TOPUP"
+      }).catch(e => console.error("[TopUpDialog] Failed to persist transaction record:", e));
 
       setReceiptData(rdata);
       setReceiptJobId(topUpReceiptNo);

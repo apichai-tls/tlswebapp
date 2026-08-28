@@ -1,13 +1,16 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle } from "lucide-react";
+import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins } from "lucide-react";
 import { format } from "date-fns";
 import { type Customer, shopStore } from "@/lib/store";
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, useState, useEffect, useMemo } from "react";
 import { useJobs } from "@/lib/use-jobs";
-import { useMemo } from "react";
 import { motion } from "framer-motion";
+import { getTopUpTransactionsAction } from "@/actions/db";
+import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 
 // Helper to extract initials for avatar
 const getInitials = (name: string) => {
@@ -62,6 +65,25 @@ export function AdminCustomerProfileModal({
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const activeShop = shops[0];
   const isStandardPlan = activeShop?.plan === 'standard';
+
+  // History Tab: "orders" | "topup"
+  const [historyTab, setHistoryTab] = useState<"orders" | "topup">("orders");
+  const [topUpTxs, setTopUpTxs] = useState<any[]>([]);
+  const [isLoadingTopUps, setIsLoadingTopUps] = useState(false);
+
+  // Receipt Preview
+  const [previewReceipt, setPreviewReceipt] = useState<ReceiptData | null>(null);
+  const [previewReceiptOpen, setPreviewReceiptOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && customer?.id) {
+      setIsLoadingTopUps(true);
+      getTopUpTransactionsAction(customer.id)
+        .then(txs => setTopUpTxs(txs || []))
+        .catch(err => console.error("Failed to load customer top-up transactions:", err))
+        .finally(() => setIsLoadingTopUps(false));
+    }
+  }, [open, customer?.id]);
 
   const { jobsCount, ltv, customerJobs } = useMemo(() => {
     if (!customer) return { jobsCount: 0, ltv: 0, customerJobs: [] };
@@ -353,69 +375,237 @@ export function AdminCustomerProfileModal({
              </div>
           </div>
 
-          {/* Order History */}
+          {/* History Section: Segmented Control for Orders vs Top-ups */}
           <div className="space-y-2.5">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-              <Calendar size={14} className="text-indigo-500" />
-              Recent Order History
-            </h3>
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-              <div className="max-h-[220px] overflow-y-auto">
-                <Table>
-                  <TableHeader className="bg-slate-50 sticky top-0 z-10 shadow-sm">
-                    <TableRow>
-                      <TableHead className="w-[110px] text-xs font-bold py-3 text-slate-600 pl-4">Transaction Date</TableHead>
-                      <TableHead className="text-xs font-bold py-3 text-slate-600">Service Type & Package</TableHead>
-                      <TableHead className="text-xs font-bold py-3 text-slate-600">Payment</TableHead>
-                      <TableHead className="text-right text-xs font-bold py-3 text-slate-600 pr-4">Net Amount</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {customerJobs.length === 0 ? (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1 bg-slate-200/70 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setHistoryTab("orders")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                    historyTab === "orders" 
+                      ? "bg-white text-indigo-700 shadow-sm" 
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  <Calendar size={13} />
+                  <span>Order History</span>
+                  <span className="text-[10px] px-1.5 py-0.2 bg-slate-100 text-slate-700 rounded-full font-bold">
+                    {customerJobs.length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setHistoryTab("topup")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                    historyTab === "topup" 
+                      ? "bg-white text-emerald-700 shadow-sm" 
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  <Coins size={13} className="text-emerald-600" />
+                  <span>Top-up & Wallet</span>
+                  <span className="text-[10px] px-1.5 py-0.2 bg-emerald-50 text-emerald-700 rounded-full font-bold">
+                    {topUpTxs.length}
+                  </span>
+                </button>
+              </div>
+
+              {historyTab === "topup" && (
+                <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                  Current Balance: ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
+              )}
+            </div>
+
+            {/* TAB 1: ORDER HISTORY */}
+            {historyTab === "orders" && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <div className="max-h-[220px] overflow-y-auto">
+                  <Table>
+                    <TableHeader className="bg-slate-50 sticky top-0 z-10 shadow-sm">
                       <TableRow>
-                        <TableCell colSpan={4} className="text-center h-24 text-slate-400 text-xs font-semibold">
-                          No order history found in system
-                        </TableCell>
+                        <TableHead className="w-[110px] text-xs font-bold py-3 text-slate-600 pl-4">Transaction Date</TableHead>
+                        <TableHead className="text-xs font-bold py-3 text-slate-600">Service Type & Package</TableHead>
+                        <TableHead className="text-xs font-bold py-3 text-slate-600">Payment</TableHead>
+                        <TableHead className="text-right text-xs font-bold py-3 text-slate-600 pr-4">Net Amount</TableHead>
                       </TableRow>
-                    ) : (
-                      customerJobs.map(job => (
-                        <TableRow key={job.id} className="hover:bg-slate-50/50 transition-colors border-b border-slate-100">
-                          <TableCell className="text-[11px] font-bold text-slate-500 whitespace-nowrap pl-4 py-3">
-                            {format(new Date(job.createdAt), 'dd MMM yyyy')}
-                          </TableCell>
-                          <TableCell className="py-3">
-                            <div className="flex flex-col gap-0.5">
-                              <span className="text-xs font-bold text-slate-900 capitalize">
-                                {job.serviceType?.replace(/_/g, ' ') || 'General Service'}
-                              </span>
-                              <span className="text-[10px] text-slate-400">
-                                {job.type === "full_service" ? "Full Service" : job.type === "pickup" ? "Pickup Only" : "Delivery Only"}
-                              </span>
-                            </div>
-                          </TableCell>
-                          <TableCell className="py-3">
-                            {job.paymentMethod ? (
-                              <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600 uppercase bg-slate-100 px-2 py-0.5 rounded-full w-fit">
-                                <CreditCard size={10} className="text-slate-400" />
-                                {job.paymentMethod === "credit" ? "Credit Wallet" : job.paymentMethod}
-                              </div>
-                            ) : (
-                              <span className="text-[10px] text-slate-400 italic">N/A</span>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-right font-black text-slate-900 pr-4 py-3 text-xs">
-                            ฿{(job.totalAmount || job.fee || 0).toLocaleString()}
+                    </TableHeader>
+                    <TableBody>
+                      {customerJobs.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-center h-24 text-slate-400 text-xs font-semibold">
+                            No order history found in system
                           </TableCell>
                         </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
+                      ) : (
+                        customerJobs.map(job => (
+                          <TableRow key={job.id} className="hover:bg-slate-50/50 transition-colors border-b border-slate-100">
+                            <TableCell className="text-[11px] font-bold text-slate-500 whitespace-nowrap pl-4 py-3">
+                              {format(new Date(job.createdAt), 'dd MMM yyyy')}
+                            </TableCell>
+                            <TableCell className="py-3">
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-xs font-bold text-slate-900 capitalize">
+                                  {job.serviceType?.replace(/_/g, ' ') || 'General Service'}
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  {job.type === "full_service" ? "Full Service" : job.type === "pickup" ? "Pickup Only" : "Delivery Only"}
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell className="py-3">
+                              {job.paymentMethod ? (
+                                <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600 uppercase bg-slate-100 px-2 py-0.5 rounded-full w-fit">
+                                  <CreditCard size={10} className="text-slate-400" />
+                                  {job.paymentMethod === "credit" ? "Credit Wallet" : job.paymentMethod}
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-slate-400 italic">N/A</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right font-black text-slate-900 pr-4 py-3 text-xs">
+                              ฿{(job.totalAmount || job.fee || 0).toLocaleString()}
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* TAB 2: TOP-UP & WALLET HISTORY */}
+            {historyTab === "topup" && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <div className="max-h-[220px] overflow-y-auto">
+                  <Table>
+                    <TableHeader className="bg-emerald-50/70 sticky top-0 z-10 shadow-sm">
+                      <TableRow>
+                        <TableHead className="w-[120px] text-xs font-bold py-3 text-emerald-950 pl-4">Date & Time</TableHead>
+                        <TableHead className="text-xs font-bold py-3 text-emerald-950">Receipt No</TableHead>
+                        <TableHead className="text-xs font-bold py-3 text-emerald-950">Package Description</TableHead>
+                        <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Paid (฿)</TableHead>
+                        <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Credit (฿)</TableHead>
+                        <TableHead className="text-right text-xs font-bold py-3 text-emerald-950 pr-4">Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {isLoadingTopUps ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-center h-24 text-slate-400 text-xs font-semibold">
+                            Loading top-up history...
+                          </TableCell>
+                        </TableRow>
+                      ) : topUpTxs.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-center h-24 text-slate-400 text-xs font-semibold">
+                            No top-up transactions found for this customer
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        topUpTxs.map(tx => {
+                          let meta: any = {};
+                          try {
+                            meta = JSON.parse(tx.description || "{}");
+                          } catch {}
+
+                          return (
+                            <TableRow key={tx.id} className="hover:bg-emerald-50/30 transition-colors border-b border-slate-100">
+                              <TableCell className="text-[11px] font-bold text-slate-500 whitespace-nowrap pl-4 py-3">
+                                {format(new Date(tx.createdAt), 'dd/MM/yyyy HH:mm')}
+                              </TableCell>
+                              <TableCell className="py-3">
+                                <Badge variant="outline" className="font-mono font-bold text-emerald-700 bg-emerald-50 border-emerald-200 text-[10px]">
+                                  {tx.id}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="py-3">
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-xs font-bold text-slate-900">
+                                    {meta.packageName || "Member Top-Up"}
+                                  </span>
+                                  {meta.paymentChannel && (
+                                    <span className="text-[10px] text-slate-400 font-medium">
+                                      Via {meta.paymentChannel}
+                                    </span>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-right font-bold text-slate-700 py-3 text-xs">
+                                ฿{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-right font-black text-emerald-600 py-3 text-xs">
+                                ฿{(meta.totalCredit || tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-right pr-4 py-3">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2 text-[11px] font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1 rounded-lg"
+                                  onClick={() => {
+                                    if (meta.receiptData) {
+                                      setPreviewReceipt(meta.receiptData);
+                                    } else {
+                                      // Fallback construct receipt data
+                                      setPreviewReceipt({
+                                        id: tx.id,
+                                        receiptNumber: tx.id,
+                                        isDraft: false,
+                                        status: "completed",
+                                        createdAt: new Date(tx.createdAt),
+                                        customerName: customer.name,
+                                        customerPhone: customer.phone || "-",
+                                        items: [{ name: meta.packageName || "Member Top-Up", quantity: 1, price: tx.amount }],
+                                        subtotal: tx.amount,
+                                        total: tx.amount,
+                                        discount: 0,
+                                        deliveryFee: 0,
+                                        expressSurcharge: 0,
+                                        vatAmount: 0,
+                                        vatType: "none",
+                                        vatRate: 0,
+                                        paymentChannel: meta.paymentChannel || "Transfer",
+                                        isPaid: true,
+                                        proformaId: undefined,
+                                        adminNotesJson: null,
+                                        deliveryScheduledAt: null,
+                                        serviceSpeed: "standard",
+                                      });
+                                    }
+                                    setPreviewReceiptOpen(true);
+                                  }}
+                                >
+                                  <Receipt size={12} />
+                                  Receipt
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </DialogContent>
+
+      {/* A5 Receipt Reprint Dialog */}
+      {previewReceiptOpen && previewReceipt && (
+        <A5ReceiptDialog
+          open={previewReceiptOpen}
+          onOpenChange={setPreviewReceiptOpen}
+          receiptData={previewReceipt}
+          activeShop={activeShop as any}
+          currentLanguage="en"
+        />
+      )}
     </Dialog>
   );
 }

@@ -6,15 +6,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown } from "lucide-react";
 import { format } from "date-fns";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
-import { customerStore, priceListStore, poiStore, type Customer } from "@/lib/store";
+import { customerStore, priceListStore, poiStore, shopStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
+import { getTopUpTransactionsAction } from "@/actions/db";
+import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -99,15 +102,40 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
   const jobs = useJobs();
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
+  const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const activeShop = shops[0];
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+
+  // Top-Up History State
+  const [allTopUpTxs, setAllTopUpTxs] = useState<any[]>([]);
+  const [isLoadingTopUps, setIsLoadingTopUps] = useState(false);
+
+  // Receipt Preview
+  const [previewReceipt, setPreviewReceipt] = useState<ReceiptData | null>(null);
+  const [previewReceiptOpen, setPreviewReceiptOpen] = useState(false);
+
+  const fetchTopUps = () => {
+    setIsLoadingTopUps(true);
+    getTopUpTransactionsAction()
+      .then(txs => setAllTopUpTxs(txs || []))
+      .catch(e => console.error("Failed to load top-up transactions:", e))
+      .finally(() => setIsLoadingTopUps(false));
+  };
+
+  useEffect(() => {
+    fetchTopUps();
+  }, []);
 
   // Reset page to 1 when search or tab filters change
   useEffect(() => {
     setCurrentPage(1);
+    if (activeTab === "topup_history") {
+      fetchTopUps();
+    }
   }, [searchTerm, activeTab]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -254,7 +282,28 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
     return sortedCustomers.slice(startIndex, startIndex + pageSize);
   }, [sortedCustomers, currentPage, pageSize]);
 
-  const totalItems = sortedCustomers.length;
+  // Top-Up History Filter & Pagination
+  const filteredTopUpTxs = useMemo(() => {
+    if (!searchTerm.trim()) return allTopUpTxs;
+    const q = searchTerm.toLowerCase();
+    return allTopUpTxs.filter(tx => {
+      const custName = (tx.Customer?.name || "").toLowerCase();
+      const custPhone = (tx.Customer?.phone || "").toLowerCase();
+      const idMatch = (tx.id || "").toLowerCase().includes(q);
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      const pkgMatch = (meta.packageName || "").toLowerCase().includes(q);
+      const chanMatch = (meta.paymentChannel || "").toLowerCase().includes(q);
+      return custName.includes(q) || custPhone.includes(q) || idMatch || pkgMatch || chanMatch;
+    });
+  }, [allTopUpTxs, searchTerm]);
+
+  const paginatedTopUpTxs = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize;
+    return filteredTopUpTxs.slice(startIndex, startIndex + pageSize);
+  }, [filteredTopUpTxs, currentPage, pageSize]);
+
+  const totalItems = activeTab === "topup_history" ? filteredTopUpTxs.length : sortedCustomers.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 
   const getPageNumbers = () => {
@@ -445,6 +494,17 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
               <Wallet size={14} className="text-emerald-600" />
               Active Wallets ({statsCount.balance})
             </button>
+            <button
+              onClick={() => setActiveTab("topup_history")}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                activeTab === "topup_history"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Receipt size={14} className={activeTab === "topup_history" ? "text-white" : "text-emerald-600"} />
+              Top-up History ({allTopUpTxs.length})
+            </button>
           </div>
 
           {/* Search bar inside the bar */}
@@ -468,253 +528,400 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
         transition={{ delay: 0.2 }}
         className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
       >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-slate-50/70 hover:bg-slate-50/70 border-b-slate-200">
-                <TableHead className="font-bold text-slate-700 pl-6 py-4 text-xs uppercase tracking-wider">Profile & Contact Info</TableHead>
-                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Address & Building (Delivery)</TableHead>
-                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Wallet & Pricing</TableHead>
-                <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider text-center">Accumulated LTV Stats</TableHead>
-                <TableHead className="font-bold text-slate-700 pr-6 py-4 text-xs uppercase tracking-wider text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <AnimatePresence mode="popLayout">
-                {sortedCustomers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="h-44 text-center text-slate-400">
-                      <div className="flex flex-col items-center justify-center space-y-2">
-                        <Users size={32} className="text-slate-300" />
-                        <p className="font-semibold text-sm">No customers found matching the search criteria</p>
-                        <p className="text-xs text-slate-400">Please try different keywords or change filter tabs</p>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  paginatedCustomers.map((customer, index) => {
-                    const stats = customerAnalytics[customer.id] || { jobsCount: 0, ltv: 0 };
-                    const isNewCustomer = stats.jobsCount === 0;
-                    
-                    return (
-                      <motion.tr
-                        key={customer.id}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        transition={{ delay: index * 0.02 }}
-                        className="border-b border-slate-100 hover:bg-slate-50/30 transition-colors"
-                      >
-                        {/* 1. Profile Info & Avatar */}
-                        <TableCell className="pl-6 py-4.5">
-                          <div className="flex items-center gap-3">
-                            {/* Initials Avatar with dynamic tier badge */}
-                            <div className="relative shrink-0">
-                              <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold text-xs shadow-sm ${getAvatarStyles(customer)}`}>
-                                {getInitials(customer.name)}
-                              </div>
-                              {getAvatarBadge(customer)}
-                            </div>
-                            
-                            <div className="space-y-1">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <span className="font-bold text-slate-900 text-sm">{customer.name}</span>
-                                {customer.isVIP && (
-                                  <Badge className="bg-amber-50 text-amber-700 border border-amber-200/50 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
-                                    <Star size={8} className="text-amber-500 fill-amber-500" />
-                                    VIP
-                                  </Badge>
-                                )}
-                                {customer.isCorporate && (
-                                  <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/30 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
-                                    <Building size={8} className="text-indigo-500" /> 
-                                    B2B
-                                  </Badge>
-                                )}
-                                {isNewCustomer ? (
-                                  <Badge className="bg-sky-50 text-sky-700 border border-sky-200/40 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
-                                    NEW
-                                  </Badge>
-                                ) : null}
-                              </div>
+        {activeTab === "topup_history" ? (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-emerald-50/70 hover:bg-emerald-50/70 border-b-slate-200">
+                  <TableHead className="font-bold text-emerald-950 pl-6 py-4 text-xs uppercase tracking-wider">Date & Time</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider">Receipt No</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider">Customer Info</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider">Package / Details</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-right">Paid (฿)</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-right">Bonus (+฿)</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-right">Total Credit (฿)</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-center">Channel</TableHead>
+                  <TableHead className="font-bold text-emerald-950 pr-6 py-4 text-xs uppercase tracking-wider text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <AnimatePresence mode="popLayout">
+                  {isLoadingTopUps ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="h-44 text-center text-slate-400">
+                        <div className="flex flex-col items-center justify-center space-y-2">
+                          <Coins size={28} className="animate-spin text-emerald-500" />
+                          <p className="text-xs font-semibold">Loading top-up transaction history...</p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : filteredTopUpTxs.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="h-44 text-center text-slate-400">
+                        <div className="flex flex-col items-center justify-center space-y-2">
+                          <Receipt size={32} className="text-slate-300" />
+                          <p className="font-semibold text-sm">No top-up transactions found</p>
+                          <p className="text-xs text-slate-400">Top-up transactions recorded in the system will appear here.</p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    paginatedTopUpTxs.map((tx, index) => {
+                      let meta: any = {};
+                      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+                      const customerName = tx.Customer?.name || "Customer";
+                      const customerPhone = tx.Customer?.phone || "-";
 
-                              <div className="flex flex-col gap-0.5 text-slate-500 text-[11px] font-medium">
-                                <div className="flex items-center gap-1">
-                                  <Phone size={10} className="text-slate-400" />
-                                  <span>{customer.phone}</span>
+                      return (
+                        <motion.tr
+                          key={tx.id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={{ delay: index * 0.02 }}
+                          className="border-b border-slate-100 hover:bg-emerald-50/20 transition-colors"
+                        >
+                          <TableCell className="pl-6 py-4 text-xs font-bold text-slate-600 whitespace-nowrap">
+                            {format(new Date(tx.createdAt), 'dd/MM/yyyy HH:mm')}
+                          </TableCell>
+                          <TableCell className="py-4">
+                            <Badge variant="outline" className="font-mono font-bold text-emerald-700 bg-emerald-50 border-emerald-200 text-xs">
+                              {tx.id}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="py-4">
+                            <div className="flex flex-col">
+                              <span className="text-xs font-bold text-slate-900">{customerName}</span>
+                              <span className="text-[11px] font-medium text-slate-500">{customerPhone}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="py-4">
+                            <div className="flex flex-col">
+                              <span className="text-xs font-bold text-slate-900">{meta.packageName || "Member Top-Up"}</span>
+                              {meta.createdBy && (
+                                <span className="text-[10px] text-slate-400">By: {meta.createdBy}</span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="py-4 text-right font-bold text-slate-800 text-xs">
+                            ฿{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </TableCell>
+                          <TableCell className="py-4 text-right text-xs">
+                            {(meta.bonusAmount || 0) > 0 ? (
+                              <Badge className="bg-emerald-100 text-emerald-800 border-none font-bold text-[10px]">
+                                + ฿{meta.bonusAmount.toLocaleString()}
+                              </Badge>
+                            ) : (
+                              <span className="text-slate-400 text-xs">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-4 text-right font-black text-emerald-600 text-sm">
+                            ฿{(meta.totalCredit || tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </TableCell>
+                          <TableCell className="py-4 text-center">
+                            <Badge variant="secondary" className="bg-slate-100 text-slate-700 uppercase text-[10px] font-bold">
+                              {meta.paymentChannel || "Transfer"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="pr-6 py-4 text-right">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 px-3 text-xs font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1.5 rounded-xl shadow-sm cursor-pointer"
+                              onClick={() => {
+                                if (meta.receiptData) {
+                                  setPreviewReceipt(meta.receiptData);
+                                } else {
+                                  setPreviewReceipt({
+                                    id: tx.id,
+                                    receiptNumber: tx.id,
+                                    isDraft: false,
+                                    status: "completed",
+                                    createdAt: new Date(tx.createdAt),
+                                    customerName,
+                                    customerPhone,
+                                    items: [{ name: meta.packageName || "Member Top-Up", quantity: 1, price: tx.amount }],
+                                    subtotal: tx.amount,
+                                    total: tx.amount,
+                                    discount: 0,
+                                    deliveryFee: 0,
+                                    expressSurcharge: 0,
+                                    vatAmount: 0,
+                                    vatType: "none",
+                                    vatRate: 0,
+                                    paymentChannel: meta.paymentChannel || "Transfer",
+                                    isPaid: true,
+                                    proformaId: undefined,
+                                    adminNotesJson: null,
+                                    deliveryScheduledAt: null,
+                                    serviceSpeed: "standard",
+                                  });
+                                }
+                                setPreviewReceiptOpen(true);
+                              }}
+                            >
+                              <Receipt size={13} />
+                              View Receipt
+                            </Button>
+                          </TableCell>
+                        </motion.tr>
+                      );
+                    })
+                  )}
+                </AnimatePresence>
+              </TableBody>
+            </Table>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-slate-50/70 hover:bg-slate-50/70 border-b-slate-200">
+                  <TableHead className="font-bold text-slate-700 pl-6 py-4 text-xs uppercase tracking-wider">Profile & Contact Info</TableHead>
+                  <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Address & Building (Delivery)</TableHead>
+                  <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Wallet & Pricing</TableHead>
+                  <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider text-center">Accumulated LTV Stats</TableHead>
+                  <TableHead className="font-bold text-slate-700 pr-6 py-4 text-xs uppercase tracking-wider text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <AnimatePresence mode="popLayout">
+                  {sortedCustomers.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="h-44 text-center text-slate-400">
+                        <div className="flex flex-col items-center justify-center space-y-2">
+                          <Users size={32} className="text-slate-300" />
+                          <p className="font-semibold text-sm">No customers found matching the search criteria</p>
+                          <p className="text-xs text-slate-400">Please try different keywords or change filter tabs</p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    paginatedCustomers.map((customer, index) => {
+                      const stats = customerAnalytics[customer.id] || { jobsCount: 0, ltv: 0 };
+                      const isNewCustomer = stats.jobsCount === 0;
+                      
+                      return (
+                        <motion.tr
+                          key={customer.id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={{ delay: index * 0.02 }}
+                          className="border-b border-slate-100 hover:bg-slate-50/30 transition-colors"
+                        >
+                          {/* 1. Profile Info & Avatar */}
+                          <TableCell className="pl-6 py-4.5">
+                            <div className="flex items-center gap-3">
+                              {/* Initials Avatar with dynamic tier badge */}
+                              <div className="relative shrink-0">
+                                <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold text-xs shadow-sm ${getAvatarStyles(customer)}`}>
+                                  {getInitials(customer.name)}
                                 </div>
-                                {customer.email && (
+                                {getAvatarBadge(customer)}
+                              </div>
+                              
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-bold text-slate-900 text-sm">{customer.name}</span>
+                                  {customer.isVIP && (
+                                    <Badge className="bg-amber-50 text-amber-700 border border-amber-200/50 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                                      <Star size={8} className="text-amber-500 fill-amber-500" />
+                                      VIP
+                                    </Badge>
+                                  )}
+                                  {customer.isCorporate && (
+                                    <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/30 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                                      <Building size={8} className="text-indigo-500" /> 
+                                      B2B
+                                    </Badge>
+                                  )}
+                                  {isNewCustomer ? (
+                                    <Badge className="bg-sky-50 text-sky-700 border border-sky-200/40 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
+                                      NEW
+                                    </Badge>
+                                  ) : null}
+                                </div>
+
+                                <div className="flex flex-col gap-0.5 text-slate-500 text-[11px] font-medium">
                                   <div className="flex items-center gap-1">
-                                    <Mail size={10} className="text-slate-400" />
-                                    <span className="truncate max-w-[150px]">{customer.email}</span>
+                                    <Phone size={10} className="text-slate-400" />
+                                    <span>{customer.phone}</span>
                                   </div>
-                                )}
-                                {customer.lineId && (
-                                  <div className="flex items-center gap-1">
-                                    <MessageCircle size={10} className="text-indigo-400" />
-                                    <span>LINE: <span className="text-indigo-600 font-semibold">{customer.lineId}</span></span>
-                                  </div>
-                                )}
+                                  {customer.email && (
+                                    <div className="flex items-center gap-1">
+                                      <Mail size={10} className="text-slate-400" />
+                                      <span className="truncate max-w-[150px]">{customer.email}</span>
+                                    </div>
+                                  )}
+                                  {customer.lineId && (
+                                    <div className="flex items-center gap-1">
+                                      <MessageCircle size={10} className="text-indigo-400" />
+                                      <span>LINE: <span className="text-indigo-600 font-semibold">{customer.lineId}</span></span>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </TableCell>
+                          </TableCell>
 
-                        {/* 3. Address Column (Primary Address + secondary room details) */}
-                        <TableCell className="py-4.5">
-                          <div className="flex flex-col gap-1 max-w-[220px]">
-                            <div className="flex items-start gap-1">
-                              <MapPin size={12} className="text-indigo-500 shrink-0 mt-0.5" />
-                              <span className="text-xs font-semibold text-slate-700 leading-snug line-clamp-2" title={customer.defaultAddress}>
-                                {customer.defaultAddress}
-                              </span>
-                            </div>
-                            {customer.secondaryAddress ? (
-                              <div className="flex items-center gap-1 ml-3.5 bg-slate-100 px-2 py-0.5 rounded-md w-fit">
-                                <Building size={10} className="text-slate-500 shrink-0" />
-                                <span className="text-[10px] font-black text-slate-600">
-                                  {customer.secondaryAddress}
+                          {/* 3. Address Column (Primary Address + secondary room details) */}
+                          <TableCell className="py-4.5">
+                            <div className="flex flex-col gap-1 max-w-[220px]">
+                              <div className="flex items-start gap-1">
+                                <MapPin size={12} className="text-indigo-500 shrink-0 mt-0.5" />
+                                <span className="text-xs font-semibold text-slate-700 leading-snug line-clamp-2" title={customer.defaultAddress}>
+                                  {customer.defaultAddress}
                                 </span>
                               </div>
-                            ) : (
-                              <span className="text-[10px] text-amber-500 font-bold ml-3.5 italic">⚠️ No building/room</span>
-                            )}
-                          </div>
-                        </TableCell>
+                              {customer.secondaryAddress ? (
+                                <div className="flex items-center gap-1 ml-3.5 bg-slate-100 px-2 py-0.5 rounded-md w-fit">
+                                  <Building size={10} className="text-slate-500 shrink-0" />
+                                  <span className="text-[10px] font-black text-slate-600">
+                                    {customer.secondaryAddress}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-amber-500 font-bold ml-3.5 italic">⚠️ No building/room</span>
+                              )}
+                            </div>
+                          </TableCell>
 
-                        {/* 4. Financial Wallet & Pricing Tier */}
-                        <TableCell className="py-4.5">
-                          <div className="space-y-1.5">
-                            {/* Wallet Balance */}
-                            <div className="flex items-center gap-1">
-                              <Wallet size={12} className="text-slate-400" />
-                              <span className={`text-xs font-bold ${
-                                (customer.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"
-                              }`}>
-                                ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          {/* 4. Financial Wallet & Pricing Tier */}
+                          <TableCell className="py-4.5">
+                            <div className="space-y-1.5">
+                              {/* Wallet Balance */}
+                              <div className="flex items-center gap-1">
+                                <Wallet size={12} className="text-slate-400" />
+                                <span className={`text-xs font-bold ${
+                                  (customer.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"
+                                }`}>
+                                  ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                              
+                              {/* Price tier badge */}
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                {customer.isMember && customer.memberId && (
+                                  <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/50 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5">
+                                    ID: {customer.memberId}
+                                  </Badge>
+                                )}
+                                
+                                {customer.isMember && customer.memberExpiryDate && (
+                                  <Badge className={`border shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5 ${
+                                    new Date(customer.memberExpiryDate).getTime() < Date.now()
+                                      ? "bg-rose-50 text-rose-700 border-rose-200/50"
+                                      : "bg-emerald-50 text-emerald-700 border-emerald-200/50"
+                                  }`}>
+                                    <Clock size={8} />
+                                    {new Date(customer.memberExpiryDate).getTime() < Date.now()
+                                      ? `Expired: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
+                                      : `Expires: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
+                                    }
+                                  </Badge>
+                                )}
+                                
+                                {customer.priceListId && customer.priceListId !== "regular" ? (
+                                  <Badge className="bg-purple-50 text-purple-700 border border-purple-200/30 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
+                                    <Crown size={8} className="text-purple-600" /> 
+                                    {priceLists.find(p => p.id === customer.priceListId)?.name || "Special Rate"}
+                                  </Badge>
+                                ) : (
+                                  <Badge className="bg-slate-50 text-slate-500 border border-slate-200/60 shadow-none font-medium text-[9px] h-4.5 py-0 px-1.5">
+                                    Standard Rate
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+
+                          {/* 5. LTV & Activity stats */}
+                          <TableCell className="py-4.5 text-center">
+                            <div className="flex flex-col items-center gap-1">
+                              <span className="text-sm font-black text-slate-900">
+                                ฿{stats.ltv.toLocaleString()}
+                              </span>
+                              <span className="text-[10px] text-slate-500 bg-slate-100 font-semibold px-2 py-0.5 rounded-full">
+                                {stats.jobsCount} orders
+                              </span>
+                              <span className="text-[9px] text-slate-400 flex items-center gap-0.5 mt-0.5">
+                                <Clock size={8} />
+                                {getLastActiveText(stats.lastActiveDate)}
                               </span>
                             </div>
-                            
-                            {/* Price tier badge */}
-                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                              {customer.isMember && customer.memberId && (
-                                <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/50 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5">
-                                  ID: {customer.memberId}
-                                </Badge>
-                              )}
+                          </TableCell>
+
+                          {/* 6. Action buttons */}
+                          <TableCell className="py-4.5 pr-6 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
                               
-                              {customer.isMember && customer.memberExpiryDate && (
-                                <Badge className={`border shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5 ${
-                                  new Date(customer.memberExpiryDate).getTime() < Date.now()
-                                    ? "bg-rose-50 text-rose-700 border-rose-200/50"
-                                    : "bg-emerald-50 text-emerald-700 border-emerald-200/50"
-                                }`}>
-                                  <Clock size={8} />
-                                  {new Date(customer.memberExpiryDate).getTime() < Date.now()
-                                    ? `Expired: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
-                                    : `Expires: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
+                              {/* Top Up button */}
+                              <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="h-8 border-emerald-250 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
+                                onClick={() => {
+                                  if (onTopUp) {
+                                    onTopUp(customer);
+                                  } else {
+                                    setTopUpCustomer(customer);
+                                    setTopUpAmount("");
+                                    setTopUpOpen(true);
                                   }
-                                </Badge>
-                              )}
-                              
-                              {customer.priceListId && customer.priceListId !== "regular" ? (
-                                <Badge className="bg-purple-50 text-purple-700 border border-purple-200/30 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
-                                  <Crown size={8} className="text-purple-600" /> 
-                                  {priceLists.find(p => p.id === customer.priceListId)?.name || "Special Rate"}
-                                </Badge>
-                              ) : (
-                                <Badge className="bg-slate-50 text-slate-500 border border-slate-200/60 shadow-none font-medium text-[9px] h-4.5 py-0 px-1.5">
-                                  Standard Rate
-                                </Badge>
-                              )}
+                                }}
+                              >
+                                <Wallet size={12} />
+                                Top Up
+                              </Button>
+
+                              {/* View detail button */}
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                className="h-8 w-8 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors rounded-lg"
+                                title="View Profile"
+                                onClick={() => {
+                                  setSelectedProfileCustomer(customer);
+                                  setProfileOpen(true);
+                                }}
+                              >
+                                <Eye size={15} />
+                              </Button>
+
+                              {/* Edit button */}
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                className="h-8 w-8 text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors rounded-lg"
+                                title="Edit"
+                                onClick={() => openForm(customer)}
+                              >
+                                <Edit size={15} />
+                              </Button>
+
+                              {/* Delete button */}
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                className="h-8 w-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors rounded-lg"
+                                title="Delete"
+                                onClick={() => handleDelete(customer.id, customer.name)}
+                              >
+                                <Trash2 size={15} />
+                              </Button>
                             </div>
-                          </div>
-                        </TableCell>
-
-                        {/* 5. LTV & Activity stats */}
-                        <TableCell className="py-4.5 text-center">
-                          <div className="flex flex-col items-center gap-1">
-                            <span className="text-sm font-black text-slate-900">
-                              ฿{stats.ltv.toLocaleString()}
-                            </span>
-                            <span className="text-[10px] text-slate-500 bg-slate-100 font-semibold px-2 py-0.5 rounded-full">
-                              {stats.jobsCount} orders
-                            </span>
-                            <span className="text-[9px] text-slate-400 flex items-center gap-0.5 mt-0.5">
-                              <Clock size={8} />
-                              {getLastActiveText(stats.lastActiveDate)}
-                            </span>
-                          </div>
-                        </TableCell>
-
-                        {/* 6. Action buttons */}
-                        <TableCell className="py-4.5 pr-6 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
-                            
-                            {/* Top Up button */}
-                            <Button 
-                              variant="outline" 
-                              size="sm" 
-                              className="h-8 border-emerald-250 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
-                              onClick={() => {
-                                if (onTopUp) {
-                                  onTopUp(customer);
-                                } else {
-                                  setTopUpCustomer(customer);
-                                  setTopUpAmount("");
-                                  setTopUpOpen(true);
-                                }
-                              }}
-                            >
-                              <Wallet size={12} />
-                              Top Up
-                            </Button>
-
-                            {/* View detail button */}
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              className="h-8 w-8 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors rounded-lg"
-                              title="View Profile"
-                              onClick={() => {
-                                setSelectedProfileCustomer(customer);
-                                setProfileOpen(true);
-                              }}
-                            >
-                              <Eye size={15} />
-                            </Button>
-
-                            {/* Edit button */}
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              className="h-8 w-8 text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors rounded-lg"
-                              title="Edit"
-                              onClick={() => openForm(customer)}
-                            >
-                              <Edit size={15} />
-                            </Button>
-
-                            {/* Delete button */}
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              className="h-8 w-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors rounded-lg"
-                              title="Delete"
-                              onClick={() => handleDelete(customer.id, customer.name)}
-                            >
-                              <Trash2 size={15} />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </motion.tr>
-                    );
-                  })
-                )}
-              </AnimatePresence>
-            </TableBody>
-          </Table>
-        </div>
+                          </TableCell>
+                        </motion.tr>
+                      );
+                    })
+                  )}
+                </AnimatePresence>
+              </TableBody>
+            </Table>
+          </div>
+        )}
 
         {/* Pagination Controls */}
         {totalItems > 0 && (
@@ -861,6 +1068,17 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
         onOpenChange={setProfileOpen}
         customer={selectedProfileCustomer}
       />
+
+      {/* A5 Receipt Reprint Dialog */}
+      {previewReceiptOpen && previewReceipt && (
+        <A5ReceiptDialog
+          open={previewReceiptOpen}
+          onOpenChange={setPreviewReceiptOpen}
+          receiptData={previewReceipt}
+          activeShop={activeShop as any}
+          currentLanguage="en"
+        />
+      )}
     </div>
   );
 }
