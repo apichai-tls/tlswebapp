@@ -571,6 +571,14 @@ export function A5ReceiptDialog({
                 )}
               </div>
             )}
+            {!receiptData.isPaid && payments.length === 0 && !receiptData.isDraft && (
+              <div className="mt-2 pt-2 border-t border-dashed border-neutral-300">
+                <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
+                  <span>BALANCE DUE (UNPAID)</span>
+                  <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1023,6 +1031,20 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
               <div className={`flex justify-between ${totalPy} mt-1 ${totalSubtotalText} font-black text-neutral-900 border-t border-neutral-200`}>
                 <span>TOTAL PAID</span>
                 <span className="font-mono">฿{formatCurrency(totalPaid)}</span>
+              </div>
+              {!receiptData.isPaid && (
+                <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
+                  <span>BALANCE DUE</span>
+                  <span className="font-mono">฿{formatCurrency(receiptData.total - totalPaid)}</span>
+                </div>
+              )}
+            </div>
+          )}
+          {!receiptData.isPaid && payments.length === 0 && !receiptData.isDraft && (
+            <div className="mt-2 pt-2 border-t border-dashed border-neutral-300">
+              <div className={`flex justify-between ${totalPy} ${totalSubtotalText} font-black text-rose-600`}>
+                <span>BALANCE DUE (UNPAID)</span>
+                <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
               </div>
             </div>
           )}

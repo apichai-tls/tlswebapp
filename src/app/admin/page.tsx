@@ -1629,7 +1629,7 @@ export default function AdminPage() {
           } catch (e) {}
         }
 
-        const isPaidNow = paymentMethod === 'paid';
+        const isPaidNow = shopPaymentMethod === 'paid' || paymentMethod === 'paid';
         const alreadyPaidTotal = existingPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
         const remainingToPay = calculatedTotal - alreadyPaidTotal;
 
@@ -2102,7 +2102,7 @@ export default function AdminPage() {
         discount: discountVal,
         discountPercent: dialogDiscountPercent,
         fee,
-        isPaid: paymentMethod === 'paid',
+        isPaid: shopPaymentMethod === 'paid' || paymentMethod === 'paid',
         paymentChannel: paymentChannel || null,
         remark: remarkParts.join(" | ") || null,
         status: editingSubStatus || "billing",

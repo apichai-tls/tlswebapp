@@ -102,6 +102,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     totalAmount?: number; 
     total?: number; 
     isPaid?: boolean; 
+    isShopPaid?: boolean;
     paymentChannel?: string; 
     remark?: string; 
     deliveryScheduledAt?: Date | string | null; 
@@ -170,7 +171,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     }
   } catch {}
 
-  const receiptDate = (rawJob.isPaid && paymentTime && !isNaN(paymentTime.getTime()))
+  const isJobPaid = Boolean((job as any).isShopPaid || rawJob.isShopPaid || job.isPaid);
+  const receiptDate = (isJobPaid && paymentTime && !isNaN(paymentTime.getTime()))
     ? paymentTime
     : (job.createdAt ? new Date(job.createdAt) : new Date());
 
@@ -191,7 +193,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     discount: job.discount || 0,
     discountPercent: job.discountPercent || 0,
     total: job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0),
-    isPaid: !!job.isPaid,
+    isPaid: isJobPaid,
     paymentChannel: job.paymentChannel,
     remark: job.remark,
     isDraft: false,
