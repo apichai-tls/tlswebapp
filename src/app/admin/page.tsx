@@ -100,6 +100,7 @@ import {
   Paperclip,
   Maximize2,
   Trash2,
+  Lock,
   Menu,
   Printer,
   Banknote,
@@ -2922,7 +2923,8 @@ export default function AdminPage() {
                                   setCustomerPhone(c.phone);
                                   setSelectedProfileCustomer(c);
                                   
-                                  setPickupLoc(c.defaultAddress);
+                                   // Always sync address from CRM when customer is selected
+                                   setPickupLoc(c.defaultAddress);
                                   setPickupRoom(c.secondaryAddress || "");
                                   setPickupCoords(c.defaultCoords);
                                   
@@ -5213,6 +5215,7 @@ export default function AdminPage() {
             setCustomerPhone(c.phone);
             setSelectedProfileCustomer(c);
             
+            // Always sync address from CRM when customer is selected
             setPickupLoc(c.defaultAddress);
             setPickupRoom(c.secondaryAddress || "");
             setPickupCoords(c.defaultCoords);

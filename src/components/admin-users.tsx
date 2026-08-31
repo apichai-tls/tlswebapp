@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   User,
   ShieldCheck,
@@ -87,6 +87,105 @@ const MENU_PERMISSIONS = [
   { id: "users", label: "Manage Users" },
 ];
 
+/**
+ * Department Priority Order:
+ * 1. Accounting
+ * 2. Branch Operations
+ * 3. Logistics Fleet / Drivers
+ * 4. Super Admin / Management
+ * 5+. Other departments
+ */
+export function getDepartmentRank(
+  deptKey?: string | null,
+  role?: string | null,
+  deptsList?: DepartmentItem[]
+): number {
+  let effectiveKey = deptKey;
+  if (!effectiveKey) {
+    if (role === "admin") effectiveKey = "management";
+    else if (role === "cso") effectiveKey = "accounting_cso";
+    else if (role === "rider") effectiveKey = "logistics";
+    else effectiveKey = "branch_ops";
+  }
+
+  const keyLower = (effectiveKey || "").toLowerCase();
+  const deptObj = deptsList?.find((d) => d.key === effectiveKey);
+  const nameLower = `${deptObj?.name || ""} ${deptObj?.nameTh || ""}`.toLowerCase();
+
+  // Priority 1: Accounting
+  if (
+    keyLower.includes("accounting") ||
+    keyLower.includes("cso") ||
+    nameLower.includes("accounting") ||
+    nameLower.includes("บัญชี") ||
+    nameLower.includes("cso")
+  ) {
+    return 1;
+  }
+
+  // Priority 2: Branch Operations
+  if (
+    keyLower.includes("branch") ||
+    keyLower.includes("ops") ||
+    keyLower.includes("operation") ||
+    nameLower.includes("branch") ||
+    nameLower.includes("ปฏิบัติการ") ||
+    nameLower.includes("สาขา")
+  ) {
+    return 2;
+  }
+
+  // Priority 3: Logistics Driver
+  if (
+    keyLower.includes("logistics") ||
+    keyLower.includes("driver") ||
+    keyLower.includes("rider") ||
+    keyLower.includes("fleet") ||
+    nameLower.includes("logistics") ||
+    nameLower.includes("ขนส่ง") ||
+    nameLower.includes("ไรเดอร์") ||
+    nameLower.includes("driver")
+  ) {
+    return 3;
+  }
+
+  // Priority 4: Super Admin / Management
+  if (
+    keyLower.includes("management") ||
+    keyLower.includes("admin") ||
+    keyLower.includes("super_admin") ||
+    nameLower.includes("management") ||
+    nameLower.includes("admin") ||
+    nameLower.includes("บริหาร") ||
+    nameLower.includes("ไอที")
+  ) {
+    return 4;
+  }
+
+  return 5 + (deptObj?.order || 99);
+}
+
+export function sortUsersByDeptAndHead(userList: AdminUser[], deptsList: DepartmentItem[]): AdminUser[] {
+  return [...userList].sort((a, b) => {
+    // 1. Department Order: Accounting -> Branch Oper -> Logistics Driver -> Super Admin
+    const rankA = getDepartmentRank(a.department, a.role, deptsList);
+    const rankB = getDepartmentRank(b.department, b.role, deptsList);
+    if (rankA !== rankB) {
+      return rankA - rankB;
+    }
+
+    // 2. Department Head First within the same department
+    const isHeadA = a.isDepartmentHead ? 1 : 0;
+    const isHeadB = b.isDepartmentHead ? 1 : 0;
+    if (isHeadA !== isHeadB) {
+      return isHeadB - isHeadA; // 1 (Head) comes before 0 (Staff)
+    }
+
+    // 3. Alphabetical order by Name
+    return (a.name || "").localeCompare(b.name || "", ["th", "en"]);
+  });
+}
+
 export function AdminUsers() {
   const { user } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -95,8 +194,14 @@ export function AdminUsers() {
   const [isLoading, setIsLoading] = useState(true);
   const [viewMode, setViewMode] = useState<"active" | "departments" | "roles" | "resigned">("active");
 
-  const activeUsers = users.filter((u) => u.isActive !== false);
-  const resignedUsers = users.filter((u) => u.isActive === false);
+  const activeUsers = useMemo(
+    () => sortUsersByDeptAndHead(users.filter((u) => u.isActive !== false), departments),
+    [users, departments]
+  );
+  const resignedUsers = useMemo(
+    () => sortUsersByDeptAndHead(users.filter((u) => u.isActive === false), departments),
+    [users, departments]
+  );
   const displayedUsers = viewMode === "active" ? activeUsers : resignedUsers;
 
   // User Form State
