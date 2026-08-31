@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -6,13 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal } from "lucide-react";
 import { format } from "date-fns";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
 import { customerStore, priceListStore, poiStore, shopStore, type Customer } from "@/lib/store";
-import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
+import { useAuth } from "@/providers/auth-provider";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
 import { getTopUpTransactionsAction } from "@/actions/db";
@@ -98,12 +98,18 @@ const getLastActiveText = (date?: Date) => {
 };
 
 export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void } = {}) {
+  const { user } = useAuth();
   const customers = useCustomers();
   const jobs = useJobs();
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const activeShop = shops[0];
+
+  // Only Accounting and Admin can see Adjust Balance button (CSO excluded)
+  const canAdjustBalance = user?.role === 'admin' || user?.role === 'accounting';
+  // Everyone except Rider can see Top Up button
+  const canTopUp = user?.role !== 'rider';
 
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history">("all");
@@ -857,24 +863,45 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                           <TableCell className="py-4.5 pr-6 text-right">
                             <div className="flex items-center justify-end gap-1.5">
                               
-                              {/* Top Up button */}
-                              <Button 
-                                variant="outline" 
-                                size="sm" 
-                                className="h-8 border-emerald-250 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
-                                onClick={() => {
-                                  if (onTopUp) {
-                                    onTopUp(customer);
-                                  } else {
+
+                              {/* Top Up button — Package flow, visible to all non-rider roles */}
+                              {canTopUp && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-8 border-emerald-250 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
+                                  onClick={() => {
+                                    if (onTopUp) {
+                                      onTopUp(customer);
+                                    } else {
+                                      setTopUpCustomer(customer);
+                                      setTopUpAmount("");
+                                      setTopUpOpen(true);
+                                    }
+                                  }}
+                                >
+                                  <Wallet size={12} />
+                                  Top Up
+                                </Button>
+                              )}
+
+                              {/* Adjust Balance button — Admin & Accounting only (CSO excluded) */}
+                              {canAdjustBalance && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-8 border-amber-300 bg-amber-50/50 text-amber-700 hover:bg-amber-500 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
+                                  title="Adjust Balance (Manual)"
+                                  onClick={() => {
                                     setTopUpCustomer(customer);
                                     setTopUpAmount("");
                                     setTopUpOpen(true);
-                                  }
-                                }}
-                              >
-                                <Wallet size={12} />
-                                Top Up
-                              </Button>
+                                  }}
+                                >
+                                  <SlidersHorizontal size={12} />
+                                  Adjust
+                                </Button>
+                              )}
 
                               {/* View detail button */}
                               <Button 
@@ -1009,19 +1036,19 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
         customer={editingCustomer} 
       />
 
-      {/* dialog for top-up */}
+      {/* dialog for manual balance adjustment (legacy / migration) */}
       <Dialog open={topUpOpen} onOpenChange={setTopUpOpen}>
         <DialogContent className="sm:max-w-md p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl">
           <form onSubmit={handleTopUpSubmit}>
-            <DialogHeader className="p-6 pb-4 bg-emerald-50 border-b border-emerald-100">
-              <DialogTitle className="flex items-center gap-2 text-xl font-bold text-emerald-950">
-                <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
-                  <Wallet size={24} />
+            <DialogHeader className="p-6 pb-4 bg-amber-50 border-b border-amber-100">
+              <DialogTitle className="flex items-center gap-2 text-xl font-bold text-amber-950">
+                <div className="p-2 bg-amber-100 text-amber-600 rounded-lg">
+                  <SlidersHorizontal size={24} />
                 </div>
-                Credit Wallet Top-Up / Deduction
+                Adjust Balance (Manual)
               </DialogTitle>
-              <DialogDescription className="text-emerald-800/80 mt-1">
-                Manage credit balance for customer **{topUpCustomer?.name}**
+              <DialogDescription className="text-amber-800/80 mt-1">
+                ปรับยอด Wallet โดยตรงสำหรับ <strong>{topUpCustomer?.name}</strong> — ใช้สำหรับ Update ยอดจากระบบเก่า
               </DialogDescription>
             </DialogHeader>
 
