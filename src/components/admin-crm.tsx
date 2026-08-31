@@ -864,8 +864,8 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                             <div className="flex items-center justify-end gap-1.5">
                               
 
-                              {/* Top Up button — Package flow, visible to all non-rider roles */}
-                              {canTopUp && (
+                              {/* Top Up button — Package flow, visible to all non-rider roles (Member customers only) */}
+                              {canTopUp && customer.isMember && (
                                 <Button
                                   variant="outline"
                                   size="sm"
@@ -885,8 +885,8 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                                 </Button>
                               )}
 
-                              {/* Adjust Balance button — Admin & Accounting only (CSO excluded) */}
-                              {canAdjustBalance && (
+                              {/* Adjust Balance button — Admin & Accounting only (CSO excluded, Member customers only) */}
+                              {canAdjustBalance && customer.isMember && (
                                 <Button
                                   variant="outline"
                                   size="sm"

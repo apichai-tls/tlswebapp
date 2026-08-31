@@ -498,6 +498,11 @@ export const api = {
     if (cleanUpdates.status === undefined && existingJob.status === 'tba' && (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)) {
       cleanUpdates.status = 'pending';
     }
+
+    // Omit stale updatedAt timestamp from DB updates unless concurrency check is explicitly requested
+    if (!(cleanUpdates as any).expectedUpdatedAt && !(cleanUpdates as any).checkConflict) {
+      delete cleanUpdates.updatedAt;
+    }
     
     const updatedJob = { ...existingJob, ...cleanUpdates, updatedAt: new Date() };
     const newJobs = [...db.jobs];

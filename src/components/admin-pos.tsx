@@ -735,6 +735,24 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isMemberRate, setIsMemberRate] = useState(false);
+
+  // Auto-sync selectedCustomer with latest customerStore state when credit balance or member status changes
+  useEffect(() => {
+    if (selectedCustomer && customers.length > 0) {
+      const fresh = customers.find(c => c.id === selectedCustomer.id || (c.phone && c.phone === selectedCustomer.phone));
+      if (fresh) {
+        if (
+          fresh.creditBalance !== selectedCustomer.creditBalance ||
+          fresh.isMember !== selectedCustomer.isMember ||
+          fresh.isVIP !== selectedCustomer.isVIP ||
+          fresh.name !== selectedCustomer.name ||
+          fresh.memberId !== selectedCustomer.memberId
+        ) {
+          setSelectedCustomer(fresh);
+        }
+      }
+    }
+  }, [customers, selectedCustomer]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [manualAdjustment, setManualAdjustment] = useState(0);
   const [serviceSpeed, setServiceSpeed] = useState<string>("standard");
@@ -3306,28 +3324,25 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         </motion.button>
                         <input 
                           type="number" 
-                          step={isKiloItem ? "0.01" : "1"}
-                          min={isKiloItem ? "0.5" : "1"}
+                          step="0.01"
+                          min="0.01"
                           disabled={isPaidJob}
-                          className={`h-7.5 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground disabled:opacity-50 disabled:cursor-not-allowed ${isKiloItem ? 'w-11' : 'w-7'}`}
+                          className="h-7.5 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground disabled:opacity-50 disabled:cursor-not-allowed w-11"
                           defaultValue={item.quantity}
                           key={`qty-${item.id}-${item.quantity}`}
                           onChange={(e) => {
-                            // M1 Fix: Allow empty/in-progress typing without bouncing the value back
-                            // Only commit if the user has typed a valid positive number
                             const raw = parseFloat(e.target.value);
                             if (!isNaN(raw) && raw > 0) {
-                              const rounded = isKiloItem ? Math.round(raw * 100) / 100 : Math.max(1, Math.round(raw));
+                              const rounded = Math.round(raw * 100) / 100;
                               updateCartItem(item.id, { quantity: rounded });
                             }
                           }}
                           onBlur={(e) => {
-                            // On blur: enforce minimum and fallback for empty/invalid input
                             const raw = parseFloat(e.target.value);
                             if (isNaN(raw) || raw <= 0) {
                               updateCartItem(item.id, { quantity: isKiloItem ? 0.5 : 1 });
                             } else {
-                              const rounded = isKiloItem ? Math.round(raw * 100) / 100 : Math.max(1, Math.round(raw));
+                              const rounded = Math.round(raw * 100) / 100;
                               updateCartItem(item.id, { quantity: rounded });
                             }
                           }}
@@ -3352,10 +3367,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[9px] text-muted-foreground font-bold">฿</span>
                           <input 
                             type="number" 
-                            step="0.1" 
+                            step="0.01" 
                             className="h-7 w-full text-[11.5px] font-bold bg-card pl-3.5 pr-1 border border-primary rounded-lg outline-none text-right focus:ring-1 focus:ring-primary text-foreground"
                             value={item.price}
-                            onChange={(e) => updateCartItem(item.id, { price: parseFloat(e.target.value) || 0 })}
+                            onChange={(e) => {
+                              const valStr = e.target.value;
+                              const raw = parseFloat(valStr);
+                              updateCartItem(item.id, { price: !isNaN(raw) ? raw : (valStr === "" ? 0 : item.price) });
+                            }}
                             onBlur={() => setEditingPriceItemId(null)}
                             onKeyDown={(e) => {
                               if (e.key === "Enter" || e.key === "Escape") {

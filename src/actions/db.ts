@@ -330,8 +330,9 @@ export async function updateJobAction(id: string, updates: any) {
     ['billImageUrl', 'bagImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl', 'proformaNumber', 'proformaRevision', 'proformaCartHash', 'adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt'].includes(k)
   );
 
-  if (existingJob && updates.updatedAt && !isMediaOrProformaOnlyUpdate) {
-    const incomingTime = new Date(updates.updatedAt).getTime();
+  if (existingJob && (updates.expectedUpdatedAt || (updates.checkConflict && updates.updatedAt)) && !isMediaOrProformaOnlyUpdate) {
+    const checkTime = updates.expectedUpdatedAt || updates.updatedAt;
+    const incomingTime = new Date(checkTime).getTime();
     const dbTime = new Date(existingJob.updatedAt).getTime();
     if (dbTime > incomingTime + 1000) {
       throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");

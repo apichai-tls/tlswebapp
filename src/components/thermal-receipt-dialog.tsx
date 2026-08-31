@@ -6,9 +6,9 @@ import { format } from "date-fns";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
-import { type Job } from "@/lib/store";
+import { type Job, customerStore } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { cleanProformaNumber, formatProformaNumber } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, getTransportFeeBreakdown } from "@/lib/utils";
 
 export interface ReceiptItem {
   name: string;
@@ -23,6 +23,7 @@ export interface ReceiptData {
   createdAt: Date;
   customerName: string;
   customerPhone: string;
+  customerId?: string;
   items: ReceiptItem[];
   subtotal: number;
   expressSurcharge: number;
@@ -41,6 +42,9 @@ export interface ReceiptData {
   status?: string | null;
   adminNotesJson?: string | null;
   deliveryFee?: number;
+  jobType?: string;
+  isMember?: boolean;
+  walletBalance?: number;
   proformaId?: string;
   jobId?: string;
   proformaRevision?: number;
@@ -142,8 +146,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   }
 
   const proformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
-  const rawProformaId = (job as any).proformaReceiptNumber || (proformaMatch ? proformaMatch[1] : undefined);
-  const cleanBaseProforma = cleanProformaNumber(rawProformaId);
+  const rawProformaId = (job as any).proformaReceiptNumber || (job as any).proformaNumber || (proformaMatch ? proformaMatch[1] : undefined) || (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : undefined);
+  const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : "");
   const revisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
   const proformaRevision = ((job as any).proformaRevision != null && (job as any).proformaRevision !== "")
     ? Number((job as any).proformaRevision)
@@ -151,7 +155,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
 
   const effectiveProformaNumber = cleanBaseProforma 
     ? formatProformaNumber(cleanBaseProforma, proformaRevision)
-    : undefined;
+    : (job.id && job.id !== "DRAFT" ? formatProformaNumber(generateProformaBaseNumber(job.id), proformaRevision) : undefined);
 
   let displayId = job.id && job.id !== "DRAFT" ? job.id.split('-')[0].toUpperCase() : "";
   if (!displayId || displayId === "DRAFT") {
@@ -174,6 +178,20 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   } catch {}
 
   const jobTotal = job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0);
+  const targetCustId = job.customerId || (rawJob as any).customerId;
+  const cust = customerStore.getSnapshot().find(c =>
+    (targetCustId && c.id === targetCustId) ||
+    (job.customerPhone && job.customerPhone !== "-" && c.phone === job.customerPhone) ||
+    (job.customerName && job.customerName !== "Walk-In" && c.name.trim().toUpperCase() === job.customerName.trim().toUpperCase())
+  );
+  const isMember = (job as any).isMember !== undefined 
+    ? Boolean((job as any).isMember) 
+    : Boolean(cust?.isMember);
+  const walletBalance = (job as any).walletBalance !== undefined 
+    ? (job as any).walletBalance 
+    : ((job as any).creditBalance !== undefined 
+      ? (job as any).creditBalance 
+      : (cust?.creditBalance || 0));
   const isJobPaid = Boolean((job as any).isShopPaid || rawJob.isShopPaid || job.isPaid || (totalPayments >= jobTotal && jobTotal > 0));
   const receiptDate = (isJobPaid && paymentTime && !isNaN(paymentTime.getTime()))
     ? paymentTime
@@ -207,6 +225,10 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     status: job.status,
     adminNotesJson: job.adminNotesJson,
     deliveryFee: rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0),
+    jobType: job.type || (rawJob as any).type || "full_service",
+    customerId: job.customerId || (rawJob as any).customerId || cust?.id,
+    isMember,
+    walletBalance,
     proformaId: cleanBaseProforma || rawProformaId,  // base number only — display layers append -R{n}
     proformaRevision: proformaRevision,
     jobId: job.id
@@ -254,16 +276,18 @@ export function ThermalReceiptDialog({
     
     // For proforma drafts: prefer jobId (real job id) then proformaId, skip "DRAFT" string
     const rawJobId = snapshotData.jobId && snapshotData.jobId !== "DRAFT" ? snapshotData.jobId : null;
-    const targetJobId = rawJobId || (snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : null) || (snapshotData.id && snapshotData.id !== "DRAFT" ? snapshotData.id : null);
-    if (!targetJobId) return;
+    const targetJobId = rawJobId || (snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : null) || (snapshotData.id && snapshotData.id !== "DRAFT" ? snapshotData.id : null) || "DRAFT";
 
-    const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
+    const captureKey = targetJobId === "DRAFT"
+      ? `DRAFT_draft_rev${snapshotData.proformaRevision || 0}_${Date.now()}`
+      : `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
+
     if (capturedKeysRef.current.has(captureKey)) return;
     capturedKeysRef.current.add(captureKey); // Lock immediately to prevent duplicate runs on re-render
 
     const runCapture = async () => {
       const filename = snapshotData.isDraft 
-        ? `proforma-${snapshotData.proformaId || targetJobId}-rev${snapshotData.proformaRevision || 0}.png`
+        ? `proforma-${snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJobId}-rev${snapshotData.proformaRevision || 0}.png`
         : `receipt-${targetJobId}.png`;
 
       const { jobStore } = await import("@/lib/store");
@@ -348,6 +372,7 @@ export function ThermalReceiptDialog({
                 filename
               })
             });
+            if (!signRes.ok) throw new Error("Failed to get signed upload URL");
             const signData = await signRes.json();
             if (signData.uploadUrl && signData.publicUrl) {
               const putRes = await fetch(signData.uploadUrl, {
@@ -357,7 +382,11 @@ export function ThermalReceiptDialog({
               });
               if (putRes.ok) {
                 uploadResult = { success: true, publicUrl: signData.publicUrl };
+              } else {
+                throw new Error(`GCS PUT failed: ${putRes.status}`);
               }
+            } else {
+              throw new Error("Invalid signed URL response");
             }
           } catch (gcsErr) {
             console.warn("GCS upload failed, falling back to local:", gcsErr);
@@ -607,20 +636,21 @@ export function ThermalReceiptDialog({
               </div>
             );
           })}
-          {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
-            <div className={`flex ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} leading-tight text-neutral-900 font-medium`}>
-              <span className="flex-1 min-w-0 truncate pr-3 text-left">
-                {currentLanguage === "en" ? "Delivery Fee" : "ค่าบริการรับ-ส่ง"}
-              </span>
-              <span className="w-12 text-center">1</span>
-              <span className="w-20 text-right">฿{formatCurrency(receiptData.deliveryFee)}</span>
-            </div>
-          )}
           <div className="border-t border-dashed border-neutral-400/50 my-2" />
         </div>
 
         {/* Totals Calculation */}
         <div className="space-y-1 text-neutral-800">
+          <div className="flex justify-between text-neutral-800 font-bold border-b border-dashed border-neutral-300 pb-1 mb-1">
+            <span>{currentLanguage === "en" ? "SUBTOTAL:" : "ยอดรวม:"}</span>
+            <span>฿{formatCurrency(receiptData.subtotal != null ? receiptData.subtotal : (receiptData.total || 0))}</span>
+          </div>
+          {getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType).map((feeItem, idx) => (
+            <div key={`fee-${idx}`} className="flex justify-between text-neutral-800 font-medium">
+              <span>{currentLanguage === "en" ? feeItem.name : feeItem.nameTh}:</span>
+              <span>฿{formatCurrency(feeItem.total)}</span>
+            </div>
+          ))}
           {receiptData.expressSurcharge > 0 && (
             <div className="flex justify-between text-neutral-900 font-bold">
               <span>EXPRESS ({receiptData.serviceSpeed && receiptData.serviceSpeed.startsWith("express_") ? `${receiptData.serviceSpeed.split("_")[1]}%` : ""}):</span>
@@ -629,7 +659,7 @@ export function ThermalReceiptDialog({
           )}
           {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
             <div className="flex justify-between text-neutral-900 font-bold">
-              <span>VAT ({receiptData.vatRate}%)</span>
+              <span>VAT ({receiptData.vatRate}%):</span>
               <span>+฿{formatCurrency(receiptData.vatAmount)}</span>
             </div>
           )}
@@ -644,16 +674,16 @@ export function ThermalReceiptDialog({
               <span>-฿{formatCurrency(receiptData.discount)}</span>
             </div>
           )}
-          <div className={`flex justify-between font-black text-neutral-900 ${isA5 ? "text-lg" : (isSmall ? "text-[11px]" : "text-xs")} pt-1 border-t border-neutral-450/40`}>
-            <span>GRAND TOTAL:</span>
-            <span>฿{formatCurrency(receiptData.total)}</span>
-          </div>
           {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
             <div className={`flex justify-between text-neutral-600 ${isA5 ? "text-sm" : (isSmall ? "text-[8.5px]" : "text-[9.5px]")} font-medium`}>
               <span>{currentLanguage === "en" ? `Incl. VAT ${receiptData.vatRate}%` : `รวม VAT ${receiptData.vatRate}%`}</span>
               <span>฿{formatCurrency(receiptData.vatAmount)}</span>
             </div>
           )}
+          <div className={`flex justify-between font-black text-neutral-900 ${isA5 ? "text-lg" : (isSmall ? "text-[11px]" : "text-xs")} pt-1 border-t border-neutral-450/40`}>
+            <span>GRAND TOTAL:</span>
+            <span>฿{formatCurrency(receiptData.total)}</span>
+          </div>
 
           {/* Payments List Breakdown on Receipt */}
           {payments.length > 0 && (

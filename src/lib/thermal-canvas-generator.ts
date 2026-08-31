@@ -1,6 +1,7 @@
 import { format } from "date-fns";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
 import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
+import { getTransportFeeBreakdown } from "@/lib/utils";
 
 function formatCurrency(val: number): string {
   return (val || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -58,13 +59,14 @@ export async function generateThermalReceiptImage(
     </div>
   `).join("");
 
-  const deliveryFeeHtml = (receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0) ? `
+  const feeItems = getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType);
+  const deliveryFeeHtml = feeItems.map(item => `
     <div style="display: flex; font-size: 10px; line-height: 1.25; margin-bottom: 4px; font-weight: 500;">
-      <span style="flex: 1; min-width: 0; padding-right: 8px; text-align: left;">Delivery Fee</span>
-      <span style="width: 32px; text-align: center; font-family: monospace;">1</span>
-      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(receiptData.deliveryFee)}</span>
+      <span style="flex: 1; min-width: 0; padding-right: 8px; text-align: left;">${item.name}</span>
+      <span style="width: 32px; text-align: center; font-family: monospace;">${item.qty}</span>
+      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(item.total)}</span>
     </div>
-  ` : "";
+  `).join("");
 
   container.innerHTML = `
     <div style="width: 280px; background-color: #ffffff; color: #27272a; padding: 20px; font-family: 'Inter', system-ui, -apple-system, sans-serif; position: relative; box-sizing: border-box; text-align: left; font-size: 10px;">
@@ -111,25 +113,25 @@ export async function generateThermalReceiptImage(
           <span style="width: 60px; text-align: right;">TOTAL</span>
         </div>
         ${itemsHtml}
-        ${deliveryFeeHtml}
         <div style="border-top: 1px dashed #a3a3a3; margin: 8px 0;"></div>
       </div>
 
       <div style="line-height: 1.5; margin-bottom: 12px;">
-        <div style="display: flex; justify-content: space-between;">
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #a3a3a3; padding-bottom: 4px; margin-bottom: 4px;">
           <span>SUBTOTAL</span>
-          <span style="font-family: monospace;">฿${formatCurrency(subtotalVal)}</span>
+          <span style="font-family: monospace;">฿${formatCurrency(receiptData.subtotal != null ? receiptData.subtotal : receiptData.total)}</span>
         </div>
-        <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 900; color: #171717; border-top: 1px solid #171717; padding-top: 4px; margin-top: 4px;">
-          <span>GRAND TOTAL</span>
-          <span style="font-family: monospace;">฿${formatCurrency(receiptData.total)}</span>
-        </div>
+        ${deliveryFeeHtml}
         ${receiptData.vatType === "inclusive" && receiptData.vatRate > 0 ? `
           <div style="display: flex; justify-content: space-between; font-size: 8px; color: #737373;">
             <span>Includes VAT ${receiptData.vatRate}%</span>
             <span style="font-family: monospace;">฿${formatCurrency(receiptData.vatAmount)}</span>
           </div>
         ` : ""}
+        <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 900; color: #171717; border-top: 1px solid #171717; padding-top: 4px; margin-top: 4px;">
+          <span>GRAND TOTAL</span>
+          <span style="font-family: monospace;">฿${formatCurrency(receiptData.total)}</span>
+        </div>
       </div>
 
       ${cleanRemark ? `

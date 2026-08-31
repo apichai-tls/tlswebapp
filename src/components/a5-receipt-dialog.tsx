@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useSyncExternalStore } from "react";
 import { format } from "date-fns";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Printer, X, Loader2 } from "lucide-react";
+import { Printer, X, Loader2, Wallet } from "lucide-react";
 import { ReceiptData } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
+import { getTransportFeeBreakdown } from "@/lib/utils";
+import { customerStore } from "@/lib/store";
 
 interface ShopInfo {
   id?: string;
@@ -64,6 +66,7 @@ export function A5ReceiptDialog({
   const capturedKeysRef = React.useRef<Set<string>>(new Set());
   const receiptRef = React.useRef<HTMLDivElement>(null);
   const captureRef = React.useRef<HTMLDivElement>(null);
+  const customers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
 
   if (receiptData) {
     activeCaptureDataRef.current = receiptData;
@@ -79,10 +82,11 @@ export function A5ReceiptDialog({
     const snapshotData = JSON.parse(JSON.stringify(receiptData));
     
     const rawJobId = snapshotData.jobId && snapshotData.jobId !== "DRAFT" ? snapshotData.jobId : null;
-    const targetJobId = rawJobId || (snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : null) || (snapshotData.id && snapshotData.id !== "DRAFT" ? snapshotData.id : null);
-    if (!targetJobId) return;
+    const targetJobId = rawJobId || (snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : null) || (snapshotData.id && snapshotData.id !== "DRAFT" ? snapshotData.id : null) || "DRAFT";
 
-    const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
+    const captureKey = targetJobId === "DRAFT"
+      ? `DRAFT_draft_rev${snapshotData.proformaRevision || 0}_${Date.now()}`
+      : `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
 
     // Reset preview when receipt data changes
     setCapturedPreviewUrl(prev => {
@@ -97,7 +101,7 @@ export function A5ReceiptDialog({
     }
 
     const filename = snapshotData.isDraft 
-      ? `proforma-${snapshotData.proformaId || targetJobId}-rev${snapshotData.proformaRevision || 0}.png`
+      ? `proforma-${snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJobId}-rev${snapshotData.proformaRevision || 0}.png`
       : `receipt-${targetJobId}.png`;
 
     // Upload the blob to GCS and update billImageUrl in DB
@@ -118,6 +122,7 @@ export function A5ReceiptDialog({
             filename
           })
         });
+        if (!signRes.ok) throw new Error("Failed to get signed upload URL");
         const signData = await signRes.json();
         if (signData.uploadUrl && signData.publicUrl) {
           const putRes = await fetch(signData.uploadUrl, {
@@ -125,7 +130,13 @@ export function A5ReceiptDialog({
             headers: { "Content-Type": "image/png" },
             body: blob
           });
-          if (putRes.ok) uploadResult = { success: true, publicUrl: signData.publicUrl };
+          if (putRes.ok) {
+            uploadResult = { success: true, publicUrl: signData.publicUrl };
+          } else {
+            throw new Error(`GCS PUT failed: ${putRes.status}`);
+          }
+        } else {
+          throw new Error("Invalid signed URL response");
         }
       } catch (gcsErr) {
         console.warn("GCS upload failed, falling back to local:", gcsErr);
@@ -143,18 +154,20 @@ export function A5ReceiptDialog({
         capturedKeysRef.current.add(captureKey);
         if (onBillImageUploaded) onBillImageUploaded(uploadResult.publicUrl);
 
-        if (currentJob) {
+        const targetId = rawJobId || targetJobId;
+        const targetJob = (targetId && targetId !== "DRAFT") ? jobStore.getSnapshot().find((j: any) => j.id === targetId) : null;
+        if (targetJob) {
           let existingBills: string[] = [];
           try {
-            if (currentJob.billImageUrl) {
-              const parsed = JSON.parse(currentJob.billImageUrl);
+            if (targetJob.billImageUrl) {
+              const parsed = JSON.parse(targetJob.billImageUrl);
               if (Array.isArray(parsed)) existingBills = parsed;
               else if (typeof parsed === "string") existingBills = [parsed];
             }
           } catch {}
           if (!existingBills.includes(uploadResult.publicUrl)) {
             const newBills = [...existingBills, uploadResult.publicUrl];
-            await jobStore.updateJobDetails(currentJob.id, { billImageUrl: JSON.stringify(newBills) });
+            await jobStore.updateJobDetails(targetJob.id, { billImageUrl: JSON.stringify(newBills) });
           }
         }
       }
@@ -287,11 +300,29 @@ export function A5ReceiptDialog({
   };
 
   const renderReceiptContent = (printMode: boolean = false) => {
-    const extraRows = (receiptData.deliveryFee && receiptData.deliveryFee > 0 ? 1 : 0)
+    const targetCustomer = customers.find(c =>
+      (receiptData.customerId && c.id === receiptData.customerId) ||
+      (receiptData.customerPhone && receiptData.customerPhone !== "-" && c.phone === receiptData.customerPhone) ||
+      (receiptData.customerName && receiptData.customerName !== "Walk-In" && c.name.trim().toUpperCase() === receiptData.customerName.trim().toUpperCase())
+    );
+
+    const isMember = receiptData.isMember !== undefined 
+      ? receiptData.isMember 
+      : Boolean(targetCustomer?.isMember);
+
+    const walletBalance = receiptData.walletBalance !== undefined 
+      ? receiptData.walletBalance 
+      : (targetCustomer?.creditBalance || 0);
+
+    const totalAmount = receiptData.total || 0;
+    const isWalletSufficient = walletBalance >= totalAmount;
+
+    const transportFeeItems = getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType);
+    const extraRows = transportFeeItems.length
       + (receiptData.expressSurcharge > 0 ? 1 : 0)
       + (receiptData.discount > 0 ? 1 : 0);
     const totalRows = receiptData.items.length + extraRows;
-    const hasQr = Boolean(receiptData.isDraft && activeShop?.proformaQrUrl);
+    const hasQr = Boolean(receiptData.isDraft && (isMember || activeShop?.proformaQrUrl));
     const effectiveRows = totalRows + (hasQr ? 4 : 0);
 
     // Granular responsive sizing for Items Table AND Totals Section:
@@ -510,49 +541,49 @@ export function A5ReceiptDialog({
                 <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price * item.quantity)}</td>
               </tr>
             ))}
-            {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (
-              <tr className="border-b border-neutral-200">
-                <td className={`${rowPy} px-1`}>{currentLanguage === "en" ? "Delivery Fee" : "ค่าจัดส่ง"}</td>
-                <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.deliveryFee)}</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.deliveryFee)}</td>
-              </tr>
-            )}
-            {receiptData.expressSurcharge > 0 && (
-              <tr className="border-b border-neutral-200 text-rose-700">
-                <td className={`${rowPy} px-1`}>
-                  {currentLanguage === "en" ? "Express Surcharge" : "ค่าบริการด่วนพิเศษ"}
-                  {receiptData.serviceSpeed === "express_50" ? " (+50%)" : " (+100%)"}
-                </td>
-                <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.expressSurcharge)}</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(receiptData.expressSurcharge)}</td>
-              </tr>
-            )}
-            {receiptData.discount > 0 && (
-              <tr className="border-b border-neutral-200 text-emerald-600">
-                <td className={`${rowPy} px-1`}>
-                  {currentLanguage === "en" ? "Discount" : "ส่วนลด"}
-                  {receiptData.discountPercent && receiptData.discountPercent > 0 ? ` (${receiptData.discountPercent}%)` : ""}
-                </td>
-                <td className={`${rowPy} px-1 text-center font-mono`}>1</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>-{formatCurrency(receiptData.discount)}</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>-{formatCurrency(receiptData.discount)}</td>
-              </tr>
-            )}
           </tbody>
         </table>
 
         {/* Totals Section */}
         <div className={`flex justify-end ${totalsMb}`}>
           <div className={totalsWidth}>
-            <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700`}>
+            <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700 border-b border-neutral-300 pb-1 mb-1`}>
               <span>{currentLanguage === "en" ? "SUBTOTAL" : "ยอดรวม"}</span>
-              <span className="font-mono">฿{formatCurrency((receiptData.subtotal != null ? receiptData.subtotal : (receiptData.total || 0)) + (receiptData.expressSurcharge || 0) + (receiptData.deliveryFee || 0) - (receiptData.discount || 0))}</span>
+              <span className="font-mono">฿{formatCurrency(receiptData.subtotal != null ? receiptData.subtotal : (receiptData.total || 0))}</span>
             </div>
+            {transportFeeItems.map((feeItem, idx) => (
+              <div key={`fee-${idx}`} className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700`}>
+                <span>{currentLanguage === "en" ? feeItem.name : feeItem.nameTh}</span>
+                <span className="font-mono">฿{formatCurrency(feeItem.total)}</span>
+              </div>
+            ))}
+            {receiptData.expressSurcharge > 0 && (
+              <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-rose-700`}>
+                <span>
+                  {currentLanguage === "en" ? "Express Surcharge" : "ค่าบริการด่วนพิเศษ"}
+                  {receiptData.serviceSpeed === "express_50" ? " (+50%)" : " (+100%)"}
+                </span>
+                <span className="font-mono">+฿{formatCurrency(receiptData.expressSurcharge)}</span>
+              </div>
+            )}
+            {receiptData.discount > 0 && (
+              <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-emerald-600`}>
+                <span>
+                  {currentLanguage === "en" ? "Discount" : "ส่วนลด"}
+                  {receiptData.discountPercent && receiptData.discountPercent > 0 ? ` (${receiptData.discountPercent}%)` : ""}
+                </span>
+                <span className="font-mono">-{formatCurrency(receiptData.discount)}</span>
+              </div>
+            )}
             {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
               <div className={`flex justify-between ${totalPy} ${totalSubtotalText} text-neutral-700 border-b border-neutral-200`}>
                 <span>{currentLanguage === "en" ? `VAT (${receiptData.vatRate}%)` : `ภาษีมูลค่าเพิ่ม (${receiptData.vatRate}%)`}</span>
+                <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
+              </div>
+            )}
+            {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
+              <div className={`flex justify-between ${totalPy} ${totalVatText} text-neutral-500`}>
+                <span>{currentLanguage === "en" ? `Includes VAT ${receiptData.vatRate}%` : `รวมภาษีมูลค่าเพิ่ม ${receiptData.vatRate}%`}</span>
                 <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
               </div>
             )}
@@ -560,12 +591,6 @@ export function A5ReceiptDialog({
               <span>{currentLanguage === "en" ? "GRAND TOTAL" : "ยอดสุทธิ"}</span>
               <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
             </div>
-            {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
-              <div className={`flex justify-between ${totalPy} ${totalVatText} text-neutral-500`}>
-                <span>{currentLanguage === "en" ? `Includes VAT ${receiptData.vatRate}%` : `รวมภาษีมูลค่าเพิ่ม ${receiptData.vatRate}%`}</span>
-                <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
-              </div>
-            )}
 
             {/* Payments */}
             {payments.length > 0 && (
@@ -606,22 +631,69 @@ export function A5ReceiptDialog({
 
         {/* Footer — always visible at bottom, never overlapped */}
         <div className="shrink-0 mt-auto pt-2">
-          {/* QR Payment Section — only on Proforma */}
-          {receiptData.isDraft && activeShop?.proformaQrUrl && (
-            <div className="flex items-center gap-3 mb-2 p-2 border border-neutral-200 rounded-xl bg-neutral-50 shrink-0">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={activeShop.proformaQrUrl}
-                alt="Payment QR Code"
-                className="h-20 w-20 object-contain shrink-0"
-                crossOrigin="anonymous"
-              />
-              <div className="flex flex-col gap-0.5">
-                <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">Scan to Pay</p>
-                <p className="text-sm font-black text-neutral-900">฿{receiptData.total?.toFixed(2) ?? "—"}</p>
-                <p className="text-[9px] text-neutral-400 leading-tight mt-0.5">Scan QR code to complete<br/>your payment via PromptPay</p>
-              </div>
-            </div>
+          {/* QR / Payment Section — only on Proforma */}
+          {receiptData.isDraft && (
+            <>
+              {isMember ? (
+                isWalletSufficient ? (
+                  /* Member + Sufficient Wallet Balance: No QR Code */
+                  <div className="flex items-center gap-3 mb-2 p-2.5 border border-indigo-200/80 rounded-xl bg-indigo-50/40 shrink-0">
+                    <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg shrink-0">
+                      <Wallet size={20} />
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      <p className="text-[9px] font-bold text-indigo-800 uppercase tracking-widest">Member Wallet Payment</p>
+                      <p className="text-xs font-bold text-neutral-800">
+                        Your wallet balance is <span className="font-mono text-emerald-700 font-black">฿{formatCurrency(walletBalance)}</span>.
+                      </p>
+                      <p className="text-[9.5px] text-neutral-500 font-medium leading-tight">
+                        Payment will be automatically deducted from your member wallet.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  /* Member + Insufficient Wallet Balance: Shows QR Code + Top Up English notice */
+                  activeShop?.proformaQrUrl ? (
+                    <div className="flex items-center gap-3 mb-2 p-2 border border-amber-200/80 rounded-xl bg-amber-50/60 shrink-0">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={activeShop.proformaQrUrl}
+                        alt="Payment QR Code"
+                        className="h-20 w-20 object-contain shrink-0"
+                        crossOrigin="anonymous"
+                      />
+                      <div className="flex flex-col gap-0.5">
+                        <p className="text-[9px] font-bold text-amber-800 uppercase tracking-widest">Scan to Pay & Top Up</p>
+                        <p className="text-xs font-bold text-neutral-900">
+                          Your wallet balance is <span className="font-mono text-rose-600 font-black">฿{formatCurrency(walletBalance)}</span>.
+                        </p>
+                        <p className="text-[9.5px] text-neutral-600 leading-tight mt-0.5 font-medium">
+                          Please top up your wallet or scan QR code to proceed.
+                        </p>
+                      </div>
+                    </div>
+                  ) : null
+                )
+              ) : (
+                /* Non-Member / Standard Retail Customer: Standard PromptPay QR Code */
+                activeShop?.proformaQrUrl ? (
+                  <div className="flex items-center gap-3 mb-2 p-2 border border-neutral-200 rounded-xl bg-neutral-50 shrink-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={activeShop.proformaQrUrl}
+                      alt="Payment QR Code"
+                      className="h-20 w-20 object-contain shrink-0"
+                      crossOrigin="anonymous"
+                    />
+                    <div className="flex flex-col gap-0.5">
+                      <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">Scan to Pay</p>
+                      <p className="text-sm font-black text-neutral-900">฿{formatCurrency(receiptData.total)}</p>
+                      <p className="text-[9px] text-neutral-400 leading-tight mt-0.5">Scan QR code to complete<br/>your payment via PromptPay</p>
+                    </div>
+                  </div>
+                ) : null
+              )}
+            </>
           )}
           <div className="flex items-center justify-end">
             {receiptData.status === "cancel" && (

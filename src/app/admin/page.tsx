@@ -376,6 +376,24 @@ export default function AdminPage() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [selectedProfileCustomer, setSelectedProfileCustomer] = useState<Customer | null>(null);
   
+  // Auto-sync selectedProfileCustomer with latest customerStore state when credit balance or member status changes
+  useEffect(() => {
+    if (selectedProfileCustomer && customers.length > 0) {
+      const fresh = customers.find(c => c.id === selectedProfileCustomer.id || (c.phone && c.phone === selectedProfileCustomer.phone));
+      if (fresh) {
+        if (
+          fresh.creditBalance !== selectedProfileCustomer.creditBalance ||
+          fresh.isMember !== selectedProfileCustomer.isMember ||
+          fresh.isVIP !== selectedProfileCustomer.isVIP ||
+          fresh.name !== selectedProfileCustomer.name ||
+          fresh.memberId !== selectedProfileCustomer.memberId
+        ) {
+          setSelectedProfileCustomer(fresh);
+        }
+      }
+    }
+  }, [customers, selectedProfileCustomer]);
+
   const [isPickup, setIsPickup] = useState(true);
   const [isDelivery, setIsDelivery] = useState(true);
   const [isWalkIn, setIsWalkIn] = useState(false);
@@ -864,7 +882,7 @@ export default function AdminPage() {
       if (prev.length === 0) return prev;
       let hasChanges = false;
       const updated = prev.map(item => {
-        if (item.category === "PACKAGE" || item.id === "other") return item;
+        if (item.category === "PACKAGE" || item.id === "other" || (item as any).isCustomPrice || (item.basePrice !== undefined && item.price !== item.basePrice)) return item;
         const svc = services.find(s => s.id === item.id);
         if (!svc) return item;
         const newPrice = getServicePrice(svc, selectedProfileCustomer, customerPriceListId);
@@ -1575,21 +1593,17 @@ export default function AdminPage() {
       deliveryAt: deliveryScheduledTime || "",
     });
 
-    let targetProformaNum = proformaReceiptNumber;
+    let targetProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT") ? proformaReceiptNumber : (editingJobId ? generateProformaBaseNumber(editingJobId) : "");
     let effectiveProformaRevision = proformaRevision;
     let effectiveProformaCartHash = lastProformaCartHash;
 
-    if (!targetProformaNum && isPayment) {
-      if (editingJobId) {
-        // Existing job — generate from job ID immediately
-        targetProformaNum = generateProformaBaseNumber(editingJobId);
-        effectiveProformaRevision = 0;
-        effectiveProformaCartHash = currentCartHash;
-        setProformaReceiptNumber(targetProformaNum);
-        setProformaRevision(0);
-        setLastProformaCartHash(currentCartHash);
-      }
-      // For NEW jobs: proforma will be generated after job creation using savedJobId (see below)
+    if (!targetProformaNum && editingJobId) {
+      targetProformaNum = generateProformaBaseNumber(editingJobId);
+      effectiveProformaRevision = 0;
+      effectiveProformaCartHash = currentCartHash;
+      setProformaReceiptNumber(targetProformaNum);
+      setProformaRevision(0);
+      setLastProformaCartHash(currentCartHash);
     } else if (targetProformaNum && (!lastProformaCartHash || currentCartHash !== lastProformaCartHash) && !proformaPressedSinceLastEdit) {
       effectiveProformaRevision = proformaRevision + 1;
       effectiveProformaCartHash = currentCartHash;
@@ -1708,10 +1722,10 @@ export default function AdminPage() {
 
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
-      proformaReceiptNumber: targetProformaNum || null,
-      proformaNumber: targetProformaNum || null,
-      proformaRevision: targetProformaNum ? effectiveProformaRevision : null,
-      proformaCartHash: targetProformaNum ? (effectiveProformaCartHash || null) : null,
+      proformaReceiptNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null),
+      proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null),
+      proformaRevision: effectiveProformaRevision || 0,
+      proformaCartHash: effectiveProformaCartHash || currentCartHash,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
@@ -1828,12 +1842,13 @@ export default function AdminPage() {
         }
 
         // Auto-generate and upload Proforma image in background if targetProformaNum exists and image not yet captured
-        const targetCleanProforma = cleanProformaNumber(targetProformaNum);
-        if (targetCleanProforma && targetEditingJobId) {
+        const finalJobIdForImage = targetEditingJobId || savedJobId;
+        const targetCleanProforma = cleanProformaNumber(targetProformaNum) || (finalJobIdForImage ? generateProformaBaseNumber(finalJobIdForImage) : "");
+        if (targetCleanProforma && finalJobIdForImage) {
           (async () => {
             try {
               const pFilename = `proforma-${targetCleanProforma}-rev${effectiveProformaRevision || 0}.png`;
-              const currJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
+              const currJob = jobStore.getSnapshot().find(j => j.id === finalJobIdForImage);
               let bills: string[] = [];
               try {
                 if (currJob?.billImageUrl) {
@@ -1849,10 +1864,13 @@ export default function AdminPage() {
                   : (dialogVatType === "exclusive" && dialogVatRate > 0 ? (baseTotal * (dialogVatRate / 100)) : 0);
 
                 const proformaReceiptData: any = {
-                  id: targetEditingJobId,
+                  id: finalJobIdForImage,
                   createdAt: effectiveCreatedAt,
                   customerName: customerName.trim() || "Walk-In",
                   customerPhone: customerPhone.trim() || "-",
+                  customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
+                  isMember: selectedProfileCustomer?.isMember || false,
+                  walletBalance: selectedProfileCustomer?.creditBalance || 0,
                   items: itemsPayload,
                   subtotal,
                   expressSurcharge: surcharge,
@@ -1870,16 +1888,16 @@ export default function AdminPage() {
                   deliveryFee: fee,
                   proformaId: targetCleanProforma,
                   proformaRevision: effectiveProformaRevision || 0,
-                  jobId: targetEditingJobId
+                  jobId: finalJobIdForImage
                 };
                 const blob = receiptPaperSize === "A5"
                   ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaReceiptData, activeShop)
                   : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaReceiptData, activeShop);
                 if (blob) {
                   const { uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
-                  const uploadedUrl = await uploadReceiptImage(blob, targetEditingJobId, pFilename);
+                  const uploadedUrl = await uploadReceiptImage(blob, finalJobIdForImage, pFilename);
                   if (uploadedUrl) {
-                    const freshJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
+                    const freshJob = jobStore.getSnapshot().find(j => j.id === finalJobIdForImage);
                     let freshBills: string[] = [];
                     try {
                       if (freshJob?.billImageUrl) {
@@ -1888,7 +1906,7 @@ export default function AdminPage() {
                       }
                     } catch {}
                     if (!freshBills.includes(uploadedUrl)) {
-                      await jobStore.updateJobDetails(targetEditingJobId, {
+                      await jobStore.updateJobDetails(finalJobIdForImage, {
                         billImageUrl: JSON.stringify([...freshBills, uploadedUrl])
                       });
                     }
@@ -3974,44 +3992,32 @@ export default function AdminPage() {
                                       >
                                         -
                                       </button>
-                                      {(() => {
-                                        const isKiloQty = item.unit === 'kg' || item.category?.toUpperCase().includes('KILO');
-                                        return isKiloQty ? (
-                                          <input
-                                            type="number"
-                                            step="0.01"
-                                            min="0.5"
-                                            disabled={isCartLocked}
-                                            value={item.quantity}
-                                            className="w-10 text-center text-[10px] font-black text-slate-300 bg-transparent border-none outline-none focus:ring-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                                            onChange={(e) => {
-                                              const raw = parseFloat(e.target.value);
-                                              if (!isNaN(raw) && raw > 0) {
-                                                const rounded = Math.round(raw * 100) / 100;
-                                                setDialogCart(prev => {
-                                                  const updated = prev.map(it => it.id === item.id ? { ...it, quantity: rounded } : it);
-                                                  setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
-                                                  return updated;
-                                                });
-                                              }
-                                            }}
-                                            onBlur={(e) => {
-                                              const raw = parseFloat(e.target.value);
-                                              if (isNaN(raw) || raw <= 0) {
-                                                setDialogCart(prev => {
-                                                  const updated = prev.map(it => it.id === item.id ? { ...it, quantity: 0.5 } : it);
-                                                  setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
-                                                  return updated;
-                                                });
-                                              }
-                                            }}
-                                          />
-                                        ) : (
-                                          <span className="w-5 text-center text-[10px] font-black text-slate-300">
-                                            {item.quantity}
-                                          </span>
-                                        );
-                                      })()}
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0.01"
+                                        disabled={isCartLocked}
+                                        value={item.quantity}
+                                        className="w-12 text-center text-[10px] font-black text-slate-200 bg-transparent border-none outline-none p-0 focus:ring-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onChange={(e) => {
+                                          const valStr = e.target.value;
+                                          const raw = parseFloat(valStr);
+                                          setDialogCart(prev => {
+                                            const updated = prev.map(it => it.id === item.id ? { ...it, quantity: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.quantity) } : it);
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + ((it.price || 0) * (it.quantity || 0)), 0));
+                                            return updated;
+                                          });
+                                        }}
+                                        onBlur={(e) => {
+                                          const raw = parseFloat(e.target.value);
+                                          const rounded = (!isNaN(raw) && raw > 0) ? Math.round(raw * 100) / 100 : 1;
+                                          setDialogCart(prev => {
+                                            const updated = prev.map(it => it.id === item.id ? { ...it, quantity: rounded } : it);
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
+                                            return updated;
+                                          });
+                                        }}
+                                      />
                                       <button
                                         type="button"
                                         disabled={isCartLocked}
@@ -4033,22 +4039,33 @@ export default function AdminPage() {
                                         +
                                       </button>
                                     </div>
-                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1.5 py-0.5 w-14" title="Unit price (ราคาต่อหน่วย)">
+                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1.5 py-0.5 w-16" title="Unit price (ราคาต่อหน่วย)">
                                       <input 
                                         type="number"
+                                        step="0.01"
                                         disabled={isCartLocked}
                                         value={item.price}
                                         className="w-full text-right text-[10px] font-black text-slate-200 bg-transparent border-none p-0 focus:ring-0 focus:outline-none"
                                         onChange={e => {
-                                          const val = parseFloat(e.target.value) || 0;
+                                          const valStr = e.target.value;
+                                          const raw = parseFloat(valStr);
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => 
                                               it.id === item.id 
-                                                ? { ...it, price: val }
+                                                ? { ...it, price: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.price), isCustomPrice: true }
                                                 : it
                                             );
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + ((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
+                                            return updated;
+                                          });
+                                        }}
+                                        onBlur={e => {
+                                          const raw = parseFloat(e.target.value);
+                                          const finalPrice = (!isNaN(raw) && raw >= 0) ? Math.round(raw * 100) / 100 : 0;
+                                          setDialogCart(prev => {
+                                            const updated = prev.map(it => it.id === item.id ? { ...it, price: finalPrice, isCustomPrice: true } : it);
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
                                             return updated;
                                           });
                                         }}

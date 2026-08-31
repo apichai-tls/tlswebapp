@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PhoneInput } from "@/components/ui/phone-input";
@@ -152,7 +152,7 @@ export function AdminCustomerDialog({
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
-                {canTopUp && (
+                {canTopUp && customer?.isMember && (
                   <Button type="button" variant="outline" size="sm"
                     className="h-7 border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[10px] font-bold px-2 rounded-md"
                     onClick={() => { onOpenChange(false); setTimeout(() => setShowTopUpDialog(true), 150); }}>
@@ -160,7 +160,7 @@ export function AdminCustomerDialog({
                     Top Up
                   </Button>
                 )}
-                {canAdjustBalance && (
+                {canAdjustBalance && customer?.isMember && (
                   <Button type="button" variant="outline" size="sm"
                     className="h-7 border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-500 hover:text-white transition-all gap-1 text-[10px] font-bold px-2 rounded-md"
                     onClick={() => { setAdjustAmount(""); setAdjustOpen(true); }}>
