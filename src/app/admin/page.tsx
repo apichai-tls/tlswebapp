@@ -807,8 +807,9 @@ export default function AdminPage() {
   const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
   const isPaidJob = editingJobId ? (() => {
     const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
-    return j?.status === 'completed' || (Boolean(j?.isPaid) && Boolean(j?.isShopPaid));
+    return Boolean(j?.isPaid) && Boolean(j?.isShopPaid);
   })() : false;
+
 
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
   // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
