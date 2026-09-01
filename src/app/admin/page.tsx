@@ -107,7 +107,9 @@ import {
   PackageOpen,
   ExternalLink,
   Wallet,
+  Save,
 } from "lucide-react";
+
 import Link from "next/link";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
@@ -4363,7 +4365,7 @@ export default function AdminPage() {
                                 </div>
                               </div>
                             </div>
-                          </div>
+</div>
 
 
                           {/* Wallet Insufficient Warning Banner */}
@@ -4380,7 +4382,7 @@ export default function AdminPage() {
                           )}
 
                           {/* Consolidated Checkout Buttons under summary card */}
-                          <div className="flex gap-2 mt-1 pt-1 border-t border-slate-800 select-none">
+                          <div className="flex gap-1.5 mt-1 pt-1 border-t border-slate-800 select-none">
                             <Button 
                               type="button"
                               variant="outline"
@@ -4433,45 +4435,63 @@ export default function AdminPage() {
                                   }
                                 }
 
-                                setProformaPressedSinceLastEdit(true); // user has reviewed proforma — Save won't auto-gen
+                                setProformaPressedSinceLastEdit(true);
                                 setDraftCreatedAt(new Date());
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
                               }}
-                                className="flex-1 h-8 rounded-lg text-[10px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                                title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
-                              >
-                                <Eye size={11} />
-                                {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
-                              </Button>
+                              className="flex-1 h-8 rounded-lg text-[9.5px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                              title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
+                            >
+                              <Eye size={11} />
+                              <span>{currentLanguage === "en" ? "Proforma" : "ใบรับเงิน"}</span>
+                            </Button>
 
-                              <Button 
-                                type="button"
-                                disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || isPaidJob || shopPaymentMethod !== 'paid' || (!paymentChannel || !paymentChannel.trim()) || isWalletInsufficient}
-                                onClick={() => handleCreate(true)}
-                                className={`flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                                  isPaidJob
-                                    ? 'bg-slate-700 text-slate-300'
-                                    : isWalletInsufficient
-                                      ? 'bg-rose-600/80 hover:bg-rose-600'
-                                      : 'bg-emerald-500 hover:bg-emerald-600'
-                                }`}
-                                title={
-                                  isPaidJob
-                                    ? 'บิลนี้ชำระเงินเรียบร้อยแล้ว'
-                                    : isWalletInsufficient
-                                      ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
-                                      : undefined
-                                }
-                              >
-                                <Banknote size={12} />
-                                {isPaidJob
-                                  ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
+                            <Button 
+                              type="button"
+                              disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
+                              onClick={() => handleCreate(false)}
+                              className="flex-1 h-8 rounded-lg text-[9.5px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow transition-all"
+                              title={editingJobId ? "บันทึกการเปลี่ยนแปลงรายการผ้าและข้อมูลงาน (ยังไม่ชำระเงิน)" : "สร้างงานใหม่ (ยังไม่ชำระเงิน)"}
+                            >
+                              {isSubmitting ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : (
+                                <Save size={11} />
+                              )}
+                              <span>{editingJobId ? (currentLanguage === "en" ? "Save" : "บันทึก") : (currentLanguage === "en" ? "Create" : "เปิดงาน")}</span>
+                            </Button>
+
+                            <Button 
+                              type="button"
+                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || isPaidJob || shopPaymentMethod !== 'paid' || (!paymentChannel || !paymentChannel.trim()) || isWalletInsufficient}
+                              onClick={() => handleCreate(true)}
+                              className={`flex-[1.2] h-8 rounded-lg text-[9.5px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                                isPaidJob
+                                  ? 'bg-slate-700 text-slate-300'
                                   : isWalletInsufficient
-                                    ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
-                                    : `Pay ฿${dialogTotal.toFixed(2)}`}
-                              </Button>
+                                    ? 'bg-rose-600/80 hover:bg-rose-600'
+                                    : 'bg-emerald-500 hover:bg-emerald-600'
+                              }`}
+                              title={
+                                isPaidJob
+                                  ? 'บิลนี้ชำระเงินเรียบร้อยแล้ว'
+                                  : isWalletInsufficient
+                                    ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
+                                    : undefined
+                              }
+                            >
+                              <Banknote size={11} />
+                              <span>
+                                {isPaidJob
+                                  ? (currentLanguage === "en" ? "Paid" : "ชำระแล้ว")
+                                  : isWalletInsufficient
+                                    ? `Wallet ไม่พอ`
+                                    : `Pay ฿${dialogTotal.toFixed(0)}`}
+                              </span>
+                            </Button>
                           </div>
+
                         </div>
 
                       </div>
