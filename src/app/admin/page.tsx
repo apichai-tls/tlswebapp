@@ -1593,25 +1593,19 @@ export default function AdminPage() {
       deliveryAt: deliveryScheduledTime || "",
     });
 
-    let targetProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT") ? proformaReceiptNumber : (editingJobId ? generateProformaBaseNumber(editingJobId) : "");
-    let effectiveProformaRevision = proformaRevision;
-    let effectiveProformaCartHash = lastProformaCartHash;
+    // Proforma should only be preserved/used if it was explicitly generated/exists
+    const existingProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT")
+      ? proformaReceiptNumber
+      : (existingJob ? (cleanProformaNumber((existingJob as any).proformaNumber) || null) : null);
 
-    if (!targetProformaNum && editingJobId) {
-      targetProformaNum = generateProformaBaseNumber(editingJobId);
-      effectiveProformaRevision = 0;
-      effectiveProformaCartHash = currentCartHash;
-      setProformaReceiptNumber(targetProformaNum);
-      setProformaRevision(0);
-      setLastProformaCartHash(currentCartHash);
-    } else if (targetProformaNum && (!lastProformaCartHash || currentCartHash !== lastProformaCartHash) && !proformaPressedSinceLastEdit) {
-      effectiveProformaRevision = proformaRevision + 1;
-      effectiveProformaCartHash = currentCartHash;
-      setProformaRevision(effectiveProformaRevision);
-      setLastProformaCartHash(currentCartHash);
-    }
+    const isNewJobProformaRequested = !editingJobId && (proformaReceiptNumber === "DRAFT" || proformaPressedSinceLastEdit);
+
+    let targetProformaNum: string | null = existingProformaNum || null;
+    let effectiveProformaRevision = targetProformaNum ? proformaRevision : 0;
+    let effectiveProformaCartHash = targetProformaNum ? lastProformaCartHash : null;
 
     const newJobData: any = {
+
       isStuck,
       createdAt: effectiveCreatedAt,
       discount: discountVal,
@@ -1631,9 +1625,11 @@ export default function AdminPage() {
         if (!isAlreadyCompleted && editingSubStatus === 'ready') {
           return (isWalkIn && !isDelivery) ? 'completed' : 'delivery';
         }
-        return (editingJobId && existingJob) ? existingJob.status : 'pending';
+        // For existing jobs, keep current status. For new jobs, let api.ts decide (tba vs pending based on creatorRole)
+        return (editingJobId && existingJob) ? existingJob.status : undefined;
       })(),
       laundryTypes: derivedLaundryTypes,
+
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       pickupLocation: isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shop.address,
@@ -1722,10 +1718,10 @@ export default function AdminPage() {
 
       branchId: shop.id,
       paymentChannel: paymentChannel || null,
-      proformaReceiptNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null),
-      proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null),
-      proformaRevision: effectiveProformaRevision || 0,
-      proformaCartHash: effectiveProformaCartHash || currentCartHash,
+      proformaReceiptNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
+      proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
+      proformaRevision: targetProformaNum ? (effectiveProformaRevision || 0) : null,
+      proformaCartHash: targetProformaNum ? effectiveProformaCartHash : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
@@ -1841,85 +1837,8 @@ export default function AdminPage() {
           await jobStore.updateJobDetails(targetEditingJobId, imageUpdates);
         }
 
-        // Auto-generate and upload Proforma image in background if targetProformaNum exists and image not yet captured
-        const finalJobIdForImage = targetEditingJobId || savedJobId;
-        const targetCleanProforma = cleanProformaNumber(targetProformaNum) || (finalJobIdForImage ? generateProformaBaseNumber(finalJobIdForImage) : "");
-        if (targetCleanProforma && finalJobIdForImage) {
-          (async () => {
-            try {
-              const pFilename = `proforma-${targetCleanProforma}-rev${effectiveProformaRevision || 0}.png`;
-              const currJob = jobStore.getSnapshot().find(j => j.id === finalJobIdForImage);
-              let bills: string[] = [];
-              try {
-                if (currJob?.billImageUrl) {
-                  const p = JSON.parse(currJob.billImageUrl);
-                  bills = Array.isArray(p) ? p : [p];
-                }
-              } catch {}
-
-              const alreadyHasProforma = bills.some(b => b.includes(pFilename));
-              if (!alreadyHasProforma) {
-                const calculatedVatAmount = dialogVatType === "inclusive" && dialogVatRate > 0
-                  ? (baseTotal * (dialogVatRate / (100 + dialogVatRate)))
-                  : (dialogVatType === "exclusive" && dialogVatRate > 0 ? (baseTotal * (dialogVatRate / 100)) : 0);
-
-                const proformaReceiptData: any = {
-                  id: finalJobIdForImage,
-                  createdAt: effectiveCreatedAt,
-                  customerName: customerName.trim() || "Walk-In",
-                  customerPhone: customerPhone.trim() || "-",
-                  customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
-                  isMember: selectedProfileCustomer?.isMember || false,
-                  walletBalance: selectedProfileCustomer?.creditBalance || 0,
-                  items: itemsPayload,
-                  subtotal,
-                  expressSurcharge: surcharge,
-                  serviceSpeed,
-                  discount: discountVal,
-                  discountPercent: dialogDiscountPercent,
-                  total: calculatedTotal,
-                  isPaid: false,
-                  paymentChannel: paymentChannel || null,
-                  remark: newJobData.remark,
-                  isDraft: true,
-                  vatType: dialogVatType,
-                  vatRate: dialogVatRate,
-                  vatAmount: calculatedVatAmount,
-                  deliveryFee: fee,
-                  proformaId: targetCleanProforma,
-                  proformaRevision: effectiveProformaRevision || 0,
-                  jobId: finalJobIdForImage
-                };
-                const blob = receiptPaperSize === "A5"
-                  ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaReceiptData, activeShop)
-                  : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaReceiptData, activeShop);
-                if (blob) {
-                  const { uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
-                  const uploadedUrl = await uploadReceiptImage(blob, finalJobIdForImage, pFilename);
-                  if (uploadedUrl) {
-                    const freshJob = jobStore.getSnapshot().find(j => j.id === finalJobIdForImage);
-                    let freshBills: string[] = [];
-                    try {
-                      if (freshJob?.billImageUrl) {
-                        const p = JSON.parse(freshJob.billImageUrl);
-                        freshBills = Array.isArray(p) ? p : [p];
-                      }
-                    } catch {}
-                    if (!freshBills.includes(uploadedUrl)) {
-                      await jobStore.updateJobDetails(finalJobIdForImage, {
-                        billImageUrl: JSON.stringify([...freshBills, uploadedUrl])
-                      });
-                    }
-                  }
-                }
-              }
-            } catch (err) {
-              console.error("Background auto-proforma image generation failed:", err);
-            }
-          })();
-        }
-
         toast.success(`Job updated successfully!`);
+
 
         // Handle wallet adjustments for job updates (separate flow — job already exists)
         // Trigger on SHOP payment status (shopPaymentMethod) — the Pay button gates on shop payment
@@ -1999,22 +1918,16 @@ export default function AdminPage() {
         const job = await jobStore.addJob(jobDataWithWallet as any);
         savedJobId = job.id;
 
-        // For NEW jobs: generate proforma from the real jobId now that we have it
-        if (isPayment && !targetProformaNum) {
-          targetProformaNum = generateProformaBaseNumber(savedJobId);
-          effectiveProformaRevision = 0;
-          effectiveProformaCartHash = currentCartHash;
-          setProformaReceiptNumber(targetProformaNum);
-          setProformaRevision(0);
-          setLastProformaCartHash(currentCartHash);
-          // Update job with proforma fields + remark
-          const proformaRemark = `Proforma: ${targetProformaNum}`;
+        // If user explicitly previewed proforma before creating this new job, assign the real proforma number now
+        if (isNewJobProformaRequested && savedJobId) {
+          const newProformaNum = generateProformaBaseNumber(savedJobId);
+          const proformaRemark = `Proforma: ${newProformaNum}`;
           const existingRemark = newJobData.remark || "";
           const updatedRemark = existingRemark
             ? (existingRemark.includes("Proforma:") ? existingRemark : `${proformaRemark} | ${existingRemark}`)
             : proformaRemark;
           await jobStore.updateJobDetails(savedJobId, {
-            proformaNumber: targetProformaNum,
+            proformaNumber: newProformaNum,
             proformaRevision: 0,
             proformaCartHash: currentCartHash,
             remark: updatedRemark,
@@ -2057,69 +1970,9 @@ export default function AdminPage() {
           setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
           toast.success(`Member wallet topped up. New balance: ฿${newBal.toLocaleString()}`);
         }
-
-        // Auto-generate Proforma PNG image in background for newly created job
-        if (targetProformaNum && savedJobId) {
-          (async () => {
-            try {
-              const calculatedVatAmount = dialogVatType === "inclusive" && dialogVatRate > 0
-                ? (baseTotal * (dialogVatRate / (100 + dialogVatRate)))
-                : (dialogVatType === "exclusive" && dialogVatRate > 0 ? (baseTotal * (dialogVatRate / 100)) : 0);
-
-              const proformaReceiptData: any = {
-                id: savedJobId,
-                createdAt: effectiveCreatedAt,
-                customerName: customerName.trim() || "Walk-In",
-                customerPhone: customerPhone.trim() || "-",
-                items: itemsPayload,
-                subtotal,
-                expressSurcharge: surcharge,
-                serviceSpeed,
-                discount: discountVal,
-                discountPercent: dialogDiscountPercent,
-                total: calculatedTotal,
-                isPaid: false,
-                paymentChannel: paymentChannel || null,
-                remark: newJobData.remark,
-                isDraft: true,
-                vatType: dialogVatType,
-                vatRate: dialogVatRate,
-                vatAmount: calculatedVatAmount,
-                deliveryFee: fee,
-                proformaId: cleanProformaNumber(targetProformaNum),
-                proformaRevision: 0,
-                jobId: savedJobId
-              };
-              const blob = receiptPaperSize === "A5"
-                ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaReceiptData, activeShop)
-                : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaReceiptData, activeShop);
-              if (blob) {
-                const { uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
-                const pFilename = `proforma-${cleanProformaNumber(targetProformaNum)}-rev0.png`;
-                const uploadedUrl = await uploadReceiptImage(blob, savedJobId, pFilename);
-                if (uploadedUrl) {
-                  const currJob = jobStore.getSnapshot().find(j => j.id === savedJobId);
-                  let bills: string[] = [];
-                  try {
-                    if (currJob?.billImageUrl) {
-                      const p = JSON.parse(currJob.billImageUrl);
-                      bills = Array.isArray(p) ? p : [p];
-                    }
-                  } catch {}
-                  if (!bills.includes(uploadedUrl)) {
-                    await jobStore.updateJobDetails(savedJobId, {
-                      billImageUrl: JSON.stringify([...bills, uploadedUrl])
-                    });
-                  }
-                }
-              }
-            } catch (err) {
-              console.error("Background auto-proforma image generation failed for new job:", err);
-            }
-          })();
-        }
       }
     } catch (err: any) {
+
       console.error("Job Save Error:", err);
       toast.error(`Failed to save job: ${err.message || 'Unknown error'}`);
     } finally {

@@ -381,13 +381,13 @@ export const api = {
     const dRider = jobDetails.deliveryRiderId;
 
     const isPOS = (jobDetails.source || jobDetails.source) === "pos";
-    // CSO creates as TBA (hidden from Manager), Manager/Admin creates as Pending.
-    // If a rider is assigned during creation, initialize as Pending.
+    // CSO creates as TBA (hidden from Manager). All other roles create as Pending.
+    // If a rider is already assigned during creation, always initialize as Pending.
     const creatorRole = (jobDetails as any).creatorRole;
     const initialStatus = jobDetails.status || (isPOS ? "billing" : (
-      (creatorRole === 'manager' || creatorRole === 'admin' || jobDetails.pickupRiderId || jobDetails.deliveryRiderId) 
-        ? 'pending' 
-        : 'tba'
+      (creatorRole === 'cso' && !jobDetails.pickupRiderId && !jobDetails.deliveryRiderId)
+        ? 'tba'
+        : 'pending'
     ));
     const legStatus = (leg: "pickup" | "delivery") => {
       if (isPOS && leg === "pickup") return "completed";

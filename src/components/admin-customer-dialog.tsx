@@ -1,3 +1,5 @@
+"use client";
+
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,21 +32,30 @@ export function AdminCustomerDialog({
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [adjustAmount, setAdjustAmount] = useState("");
+  const [adjustLoading, setAdjustLoading] = useState(false);
 
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
 
-  const handleAdjustSubmit = (e: React.FormEvent) => {
+  const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customer) return;
     const amount = parseFloat(adjustAmount);
     if (isNaN(amount) || amount === 0) { toast.error("Please enter a valid amount"); return; }
     const newBalance = (customer.creditBalance || 0) + amount;
-    customerStore.updateCustomer(customer.id, { creditBalance: newBalance });
-    toast.success(`${amount > 0 ? "เพิ่ม" : "หัก"} ฿${Math.abs(amount).toLocaleString(undefined, {minimumFractionDigits: 2})} — ยอดใหม่: ฿${newBalance.toLocaleString(undefined, {minimumFractionDigits: 2})}`);
-    setAdjustOpen(false);
-    setAdjustAmount("");
+    setAdjustLoading(true);
+    try {
+      await customerStore.updateCustomer(customer.id, { creditBalance: newBalance });
+      toast.success(`${amount > 0 ? "เพิ่ม" : "หัก"} ฿${Math.abs(amount).toLocaleString(undefined, {minimumFractionDigits: 2})} — ยอดใหม่: ฿${newBalance.toLocaleString(undefined, {minimumFractionDigits: 2})}`);
+      setAdjustOpen(false);
+      setAdjustAmount("");
+    } catch (err: any) {
+      toast.error(err?.message || "เกิดข้อผิดพลาด กรุณาลองใหม่");
+    } finally {
+      setAdjustLoading(false);
+    }
   };
+
 
   const localDataForSearch = useMemo(() => pois.map(p => ({ name: p.name, address: p.address, lat: p.coords.lat, lng: p.coords.lng, placeId: p.placeId || p.id, isLocal: true })), [pois]);
 
@@ -302,8 +313,8 @@ export function AdminCustomerDialog({
                 </div>
               </div>
               <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100">
-                <Button type="button" variant="ghost" onClick={() => setAdjustOpen(false)} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
-                <Button type="submit" className="h-12 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl px-8 shadow-lg shadow-amber-100">Confirm Adjustment</Button>
+                <Button type="button" variant="ghost" onClick={() => setAdjustOpen(false)} disabled={adjustLoading} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
+                <Button type="submit" disabled={adjustLoading} className="h-12 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl px-8 shadow-lg shadow-amber-100">{adjustLoading ? "Saving..." : "Confirm Adjustment"}</Button>
               </DialogFooter>
             </form>
           </DialogContent>
