@@ -55,7 +55,8 @@ export async function generateThermalReceiptImage(
     <div style="display: flex; font-size: 10px; line-height: 1.25; margin-bottom: 4px;">
       <span style="flex: 1; min-width: 0; padding-right: 8px; text-align: left;">${item.nameEn || item.name}</span>
       <span style="width: 32px; text-align: center; font-family: monospace;">${item.quantity}</span>
-      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(item.price * item.quantity)}</span>
+      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</span>
+
     </div>
   `).join("");
 

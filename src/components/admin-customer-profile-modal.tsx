@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins } from "lucide-react";
+import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import { type Customer, shopStore } from "@/lib/store";
 import { useSyncExternalStore, useState, useEffect, useMemo } from "react";
@@ -74,6 +74,12 @@ export function AdminCustomerProfileModal({
   // Receipt Preview
   const [previewReceipt, setPreviewReceipt] = useState<ReceiptData | null>(null);
   const [previewReceiptOpen, setPreviewReceiptOpen] = useState(false);
+
+  // Slip Image Preview
+  const [previewSlipModalOpen, setPreviewSlipModalOpen] = useState(false);
+  const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
+  const [previewSlipTitle, setPreviewSlipTitle] = useState("");
+
 
   useEffect(() => {
     if (open && customer?.id) {
@@ -160,8 +166,10 @@ export function AdminCustomerProfileModal({
   if (!customer) return null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl p-0 bg-white overflow-hidden rounded-2xl z-[999] border-none shadow-2xl">
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-2xl p-0 bg-white overflow-hidden rounded-2xl z-[999] border-none shadow-2xl">
+
         
         {/* Header Section with dynamic avatar and info */}
         <DialogHeader className="p-6 pb-5 bg-slate-50 border-b border-slate-200/60">
@@ -511,6 +519,7 @@ export function AdminCustomerProfileModal({
                           try {
                             meta = JSON.parse(tx.description || "{}");
                           } catch {}
+                          const slipUrl = meta.slipImageUrl || meta.receiptData?.slipImageUrl || null;
 
                           return (
                             <TableRow key={tx.id} className="hover:bg-emerald-50/30 transition-colors border-b border-slate-100">
@@ -541,47 +550,66 @@ export function AdminCustomerProfileModal({
                                 ฿{(meta.totalCredit || tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                               </TableCell>
                               <TableCell className="text-right pr-4 py-3">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 px-2 text-[11px] font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1 rounded-lg"
-                                  onClick={() => {
-                                    if (meta.receiptData) {
-                                      setPreviewReceipt(meta.receiptData);
-                                    } else {
-                                      // Fallback construct receipt data
-                                      setPreviewReceipt({
-                                        id: tx.id,
-                                        receiptNumber: tx.id,
-                                        isDraft: false,
-                                        status: "completed",
-                                        createdAt: new Date(tx.createdAt),
-                                        customerName: customer.name,
-                                        customerPhone: customer.phone || "-",
-                                        items: [{ name: meta.packageName || "Member Top-Up", quantity: 1, price: tx.amount }],
-                                        subtotal: tx.amount,
-                                        total: tx.amount,
-                                        discount: 0,
-                                        deliveryFee: 0,
-                                        expressSurcharge: 0,
-                                        vatAmount: 0,
-                                        vatType: "none",
-                                        vatRate: 0,
-                                        paymentChannel: meta.paymentChannel || "Transfer",
-                                        isPaid: true,
-                                        proformaId: undefined,
-                                        adminNotesJson: null,
-                                        deliveryScheduledAt: null,
-                                        serviceSpeed: "standard",
-                                      });
-                                    }
-                                    setPreviewReceiptOpen(true);
-                                  }}
-                                >
-                                  <Receipt size={12} />
-                                  Receipt
-                                </Button>
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {slipUrl && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px] font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1 rounded-lg"
+                                      onClick={() => {
+                                        setPreviewSlipUrl(slipUrl);
+                                        setPreviewSlipTitle(`${customer?.name || "Customer"} — Receipt ${tx.id}`);
+                                        setPreviewSlipModalOpen(true);
+                                      }}
+                                      title="ดูรูปสลิปหลักฐานการโอน"
+                                    >
+                                      <ImageIcon size={12} />
+                                      Slip
+                                    </Button>
+                                  )}
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-[11px] font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1 rounded-lg"
+                                    onClick={() => {
+                                      if (meta.receiptData) {
+                                        setPreviewReceipt(meta.receiptData);
+                                      } else {
+                                        // Fallback construct receipt data
+                                        setPreviewReceipt({
+                                          id: tx.id,
+                                          receiptNumber: tx.id,
+                                          isDraft: false,
+                                          status: "completed",
+                                          createdAt: new Date(tx.createdAt),
+                                          customerName: customer?.name || "Customer",
+                                          customerPhone: customer?.phone || "-",
+                                          items: [{ name: meta.packageName || "Member Top-Up", quantity: 1, price: tx.amount }],
+                                          subtotal: tx.amount,
+                                          total: tx.amount,
+                                          discount: 0,
+                                          deliveryFee: 0,
+                                          expressSurcharge: 0,
+                                          vatAmount: 0,
+                                          vatType: "none",
+                                          vatRate: 0,
+                                          paymentChannel: meta.paymentChannel || "Transfer",
+                                          isPaid: true,
+                                          proformaId: undefined,
+                                          adminNotesJson: null,
+                                          deliveryScheduledAt: null,
+                                          serviceSpeed: "standard",
+                                        });
+                                      }
+                                      setPreviewReceiptOpen(true);
+                                    }}
+                                  >
+                                    <Receipt size={12} />
+                                    Receipt
+                                  </Button>
+                                </div>
                               </TableCell>
                             </TableRow>
                           );
@@ -595,6 +623,8 @@ export function AdminCustomerProfileModal({
           </div>
         </div>
       </DialogContent>
+    </Dialog>
+
 
       {/* A5 Receipt Reprint Dialog */}
       {previewReceiptOpen && previewReceipt && (
@@ -606,6 +636,43 @@ export function AdminCustomerProfileModal({
           currentLanguage="en"
         />
       )}
-    </Dialog>
+
+      {/* Payment Slip Lightbox Dialog */}
+      <Dialog open={previewSlipModalOpen} onOpenChange={setPreviewSlipModalOpen}>
+        <DialogContent className="max-w-lg p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl z-[80]">
+          <DialogHeader className="p-4 bg-slate-900 text-white flex flex-row items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ImageIcon size={18} className="text-emerald-400" />
+              <DialogTitle className="text-sm font-bold text-white">
+                หลักฐานการชำระเงิน — {previewSlipTitle}
+              </DialogTitle>
+            </div>
+            {previewSlipUrl && (
+              <a
+                href={previewSlipUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-slate-300 hover:text-white flex items-center gap-1 bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg transition-colors mr-6"
+              >
+                <ExternalLink size={12} />
+                <span>เปิดรูปเต็ม</span>
+              </a>
+            )}
+          </DialogHeader>
+          <div className="p-4 bg-slate-950 flex items-center justify-center max-h-[75vh] overflow-auto">
+            {previewSlipUrl ? (
+              <img
+                src={previewSlipUrl}
+                alt="Payment Slip"
+                className="max-w-full max-h-[68vh] object-contain rounded-lg shadow-lg border border-slate-800"
+              />
+            ) : (
+              <div className="py-12 text-slate-500 text-xs">ไม่มีรูปภาพสลิป</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
+

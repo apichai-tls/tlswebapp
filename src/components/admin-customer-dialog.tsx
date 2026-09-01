@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal } from "lucide-react";
+import { Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, Plus, Minus } from "lucide-react";
 import { customerStore, priceListStore, poiStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { LocationInput } from "@/components/location-input";
@@ -31,6 +31,7 @@ export function AdminCustomerDialog({
 
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [adjustMode, setAdjustMode] = useState<"add" | "deduct">("add");
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustLoading, setAdjustLoading] = useState(false);
 
@@ -40,21 +41,38 @@ export function AdminCustomerDialog({
   const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customer) return;
-    const amount = parseFloat(adjustAmount);
-    if (isNaN(amount) || amount === 0) { toast.error("Please enter a valid amount"); return; }
-    const newBalance = (customer.creditBalance || 0) + amount;
+    const rawAmount = parseFloat(adjustAmount);
+    if (isNaN(rawAmount) || rawAmount <= 0) {
+      toast.error("Please enter a valid positive amount");
+      return;
+    }
+
+    const currentBalance = customer.creditBalance || 0;
+    const delta = adjustMode === "add" ? Math.abs(rawAmount) : -Math.abs(rawAmount);
+    const newBalance = Math.max(0, currentBalance + delta);
+
     setAdjustLoading(true);
     try {
-      await customerStore.updateCustomer(customer.id, { creditBalance: newBalance });
-      toast.success(`${amount > 0 ? "เพิ่ม" : "หัก"} ฿${Math.abs(amount).toLocaleString(undefined, {minimumFractionDigits: 2})} — ยอดใหม่: ฿${newBalance.toLocaleString(undefined, {minimumFractionDigits: 2})}`);
+      await customerStore.updateCustomer(customer.id, {
+        creditBalance: newBalance,
+        actorId: user?.id,
+        actorName: user?.name || user?.email || "Admin",
+        actorRole: user?.role
+      } as any);
+
+      toast.success(
+        `${adjustMode === "add" ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(rawAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+      );
       setAdjustOpen(false);
       setAdjustAmount("");
+      setAdjustMode("add");
     } catch (err: any) {
       toast.error(err?.message || "เกิดข้อผิดพลาด กรุณาลองใหม่");
     } finally {
       setAdjustLoading(false);
     }
   };
+
 
 
   const localDataForSearch = useMemo(() => pois.map(p => ({ name: p.name, address: p.address, lat: p.coords.lat, lng: p.coords.lng, placeId: p.placeId || p.id, isLocal: true })), [pois]);
@@ -298,27 +316,108 @@ export function AdminCustomerDialog({
                   ปรับยอด Wallet โดยตรงสำหรับ <strong>{customer.name}</strong> — ใช้สำหรับ Update ยอดจากระบบเก่า
                 </DialogDescription>
               </DialogHeader>
-              <div className="p-6 space-y-6">
+              <div className="p-6 space-y-5">
+                {/* Current Balance */}
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
-                  <span className="text-sm font-semibold text-slate-500">Current Credit Balance</span>
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Balance</span>
                   <span className="text-2xl font-black text-slate-900">฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                 </div>
-                <div className="space-y-3">
-                  <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Transaction Amount (฿)</Label>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">฿</span>
-                    <Input type="number" step="0.01" required autoFocus placeholder="e.g. 1000" value={adjustAmount} onChange={e => setAdjustAmount(e.target.value)} className="h-14 pl-10 border-slate-200 text-xl font-bold rounded-xl focus-visible:ring-amber-500 bg-white" />
+
+                {/* Adjustment Mode (+ / - Buttons) */}
+                <div className="space-y-2">
+                  <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Adjustment Action</Label>
+                  <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => setAdjustMode("add")}
+                      className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                        adjustMode === "add"
+                          ? "bg-emerald-500 text-white shadow-md shadow-emerald-200"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      <Plus size={15} />
+                      <span>เพิ่มเงิน (+ Add)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdjustMode("deduct")}
+                      className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                        adjustMode === "deduct"
+                          ? "bg-rose-500 text-white shadow-md shadow-rose-200"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      <Minus size={15} />
+                      <span>หักเงิน (- Deduct)</span>
+                    </button>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium">Use negative numbers (e.g. -500) to deduct credits from wallet.</p>
                 </div>
+
+                {/* Amount Input */}
+                <div className="space-y-2">
+                  <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Amount (฿)</Label>
+                  <div className="relative">
+                    <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black text-lg ${adjustMode === "add" ? "text-emerald-600" : "text-rose-600"}`}>
+                      {adjustMode === "add" ? "+" : "-"} ฿
+                    </span>
+                    <Input 
+                      type="number" 
+                      step="0.01" 
+                      min="0.01"
+                      required 
+                      autoFocus 
+                      placeholder="e.g. 500" 
+                      value={adjustAmount} 
+                      onChange={e => setAdjustAmount(e.target.value)} 
+                      className={`h-14 pl-14 border-slate-200 text-xl font-bold rounded-xl bg-white ${
+                        adjustMode === "add" ? "focus-visible:ring-emerald-500 text-emerald-950" : "focus-visible:ring-rose-500 text-rose-950"
+                      }`} 
+                    />
+                  </div>
+                </div>
+
+                {/* Live Preview Box */}
+                {(() => {
+                  const raw = parseFloat(adjustAmount);
+                  const valid = !isNaN(raw) && raw > 0;
+                  const delta = valid ? (adjustMode === "add" ? raw : -raw) : 0;
+                  const cur = customer.creditBalance || 0;
+                  const projected = Math.max(0, cur + delta);
+                  return (
+                    <div className={`p-3.5 rounded-xl border transition-all ${
+                      adjustMode === "add" ? "bg-emerald-50/60 border-emerald-200 text-emerald-900" : "bg-rose-50/60 border-rose-200 text-rose-900"
+                    }`}>
+                      <div className="flex justify-between items-center text-xs font-semibold">
+                        <span>ยอดหลังปรับปรุง (New Balance):</span>
+                        <span className="text-base font-black">฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100">
                 <Button type="button" variant="ghost" onClick={() => setAdjustOpen(false)} disabled={adjustLoading} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
-                <Button type="submit" disabled={adjustLoading} className="h-12 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl px-8 shadow-lg shadow-amber-100">{adjustLoading ? "Saving..." : "Confirm Adjustment"}</Button>
+                <Button 
+                  type="submit" 
+                  disabled={adjustLoading || !adjustAmount || parseFloat(adjustAmount) <= 0} 
+                  className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
+                    adjustMode === "add"
+                      ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
+                      : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
+                  }`}
+                >
+                  {adjustLoading
+                    ? "Saving..."
+                    : adjustMode === "add"
+                      ? `Confirm Add +฿${parseFloat(adjustAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                      : `Confirm Deduct -฿${parseFloat(adjustAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
         </Dialog>
+
       )}
 
       {/* Top Up Dialog — opens after Edit Profile closes to avoid z-index conflict */}

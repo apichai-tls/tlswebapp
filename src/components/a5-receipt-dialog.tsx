@@ -538,7 +538,8 @@ export function A5ReceiptDialog({
                 </td>
                 <td className={`${rowPy} px-1 text-center font-mono`}>{item.quantity}</td>
                 <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price)}</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price * item.quantity)}</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</td>
+
               </tr>
             ))}
           </tbody>
@@ -1078,7 +1079,8 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
               <td className={`${rowPy} px-1`}>{item.nameEn || item.name}</td>
               <td className={`${rowPy} px-1 text-center font-mono`}>{item.quantity}</td>
               <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price)}</td>
-              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price * item.quantity)}</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</td>
+
             </tr>
           ))}
           {receiptData.deliveryFee !== undefined && receiptData.deliveryFee > 0 && (

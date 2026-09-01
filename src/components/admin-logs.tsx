@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, Fragment } from "react";
 import { format } from "date-fns";
 import { Loader2, Search, ChevronDown, Wrench, ShieldAlert, AlertTriangle, Check, FileImage, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -165,6 +165,50 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
           </div>
         );
       }
+      if (action === 'TOPUP') {
+
+        return (
+          <div className="flex flex-col gap-2 text-sm">
+            <div className="flex items-center gap-2 text-emerald-700 font-bold">
+              <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+              Member Wallet Top-Up Successful
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-2 mt-1 text-xs text-slate-700 max-w-2xl bg-emerald-50/50 p-3.5 rounded-xl border border-emerald-200/60">
+              <div>
+                <span className="text-slate-400 font-medium">Receipt No:</span>{" "}
+                <span className="font-mono font-bold text-emerald-800">{parsed.receiptNo || '-'}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-medium">Package:</span>{" "}
+                <span className="font-bold text-slate-900">{parsed.packageName || 'Member Package'}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-medium">Payment Channel:</span>{" "}
+                <Badge variant="outline" className="text-[10px] font-bold bg-white text-slate-700 border-slate-200">
+                  {parsed.paymentChannel || 'Transfer'}
+                </Badge>
+              </div>
+              <div>
+                <span className="text-slate-400 font-medium">Paid Amount:</span>{" "}
+                <span className="font-bold text-slate-900">฿{Number(parsed.amount || 0).toLocaleString()}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-medium">Bonus Added:</span>{" "}
+                <span className="font-bold text-emerald-600">+฿{Number(parsed.bonusAmount || 0).toLocaleString()}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-medium">Total Credit:</span>{" "}
+                <span className="font-black text-emerald-700">฿{Number(parsed.totalCredit || 0).toLocaleString()}</span>
+              </div>
+              {parsed.balanceBefore !== undefined && parsed.balanceAfter !== undefined && (
+                <div className="col-span-full pt-1.5 border-t border-emerald-200/50 text-[11px] text-slate-600">
+                  Balance: ฿{Number(parsed.balanceBefore).toLocaleString()} → <strong className="text-emerald-800 font-bold">฿{Number(parsed.balanceAfter).toLocaleString()}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
 
       const cleaned = { ...parsed };
       const ignoredKeys = ['updatedAt', 'actorId', 'actorName', 'actorRole', 'createdAt', 'completedAt', 'id'];
@@ -173,6 +217,7 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
       if (Object.keys(cleaned).length === 0) {
         return <span className="text-xs text-slate-400 italic">No specific changes recorded</span>;
       }
+
 
       const mapKeyToLabel = (key: string) => {
         const labels: Record<string, string> = {
@@ -443,7 +488,7 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
             <TableHeader className="bg-slate-50">
               <TableRow>
                 <TableHead className="w-[180px]">Timestamp</TableHead>
-                <TableHead className="w-[130px]">Order ID</TableHead>
+                <TableHead className="w-[140px]">Target / ID</TableHead>
                 <TableHead className="w-[220px]">Customer</TableHead>
                 <TableHead className="w-[100px]">Action</TableHead>
                 <TableHead className="w-[150px]">Actor</TableHead>
@@ -477,10 +522,11 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                     return null;
                   })() || '-';
 
+                  const entityPrefix = log.entityType === 'customer' ? '👤 Cust' : log.entityType === 'transaction' ? '🧾 TopUp' : '#';
+
                   return (
-                    <>
+                    <Fragment key={log.id}>
                       <TableRow 
-                        key={log.id} 
                         className="cursor-pointer hover:bg-slate-50/80 transition-colors select-none"
                         onClick={() => toggleRow(log.id)}
                       >
@@ -488,18 +534,21 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                           {format(new Date(log.createdAt), "dd MMM yyyy, HH:mm:ss")}
                         </TableCell>
                         <TableCell className="font-mono text-xs font-semibold text-indigo-600">
-                          #{log.entityId.split('-')[0].toUpperCase()}
+                          {entityPrefix} {log.entityId.split('-')[0].toUpperCase()}
                         </TableCell>
+
                         <TableCell className="font-medium text-slate-800">
                           {displayCustomer}
                         </TableCell>
                         <TableCell>
                           <Badge 
-                            variant={log.action === 'create' ? 'default' : 'secondary'} 
-                            className={`uppercase text-[10px] ${
-                              log.action === 'create' 
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50' 
-                                : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-50'
+                            variant="secondary"
+                            className={`uppercase text-[10px] font-bold ${
+                              log.action === 'TOPUP'
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                : log.action === 'create' 
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                                  : 'bg-indigo-50 text-indigo-700 border-indigo-200'
                             }`}
                           >
                             {log.action}
@@ -525,8 +574,9 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                           </TableCell>
                         </TableRow>
                       )}
-                    </>
+                    </Fragment>
                   );
+
                 })
               )}
             </TableBody>

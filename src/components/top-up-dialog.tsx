@@ -1,8 +1,8 @@
 /* eslint-disable */
 "use client";
 
-import { useState, useMemo, useEffect, useSyncExternalStore } from "react";
-import { Search, Wallet, Package, Banknote, CreditCard, QrCode, CheckCircle2, X, Plus, Minus, Crown, Star } from "lucide-react";
+import { useState, useMemo, useEffect, useSyncExternalStore, useRef } from "react";
+import { Search, Wallet, Package, Banknote, CreditCard, QrCode, Globe, CheckCircle2, X, Plus, Minus, Crown, Star, UploadCloud, Loader2, Image as ImageIcon, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,7 +42,61 @@ interface TopUpDialogProps {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PAYMENT_CHANNELS = ["Transfer", "Cash / COD", "QR Code", "Credit Card"];
+const PAYMENT_CHANNELS = [
+  { id: "Transfer", label: "Transfer", icon: Banknote },
+  { id: "Cash / COD", label: "Cash / COD", icon: Banknote },
+  { id: "QR Code", label: "QR Code", icon: QrCode },
+  { id: "Credit Card", label: "Credit Card", icon: CreditCard },
+  { id: "Gateway", label: "Payment Gateway", icon: Globe },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith("image/")) {
+      return resolve(file);
+    }
+    const img = new Image();
+    img.src = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      let width = img.width;
+      let height = img.height;
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return resolve(file);
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return resolve(file);
+          const compressedFile = new File([blob], file.name, {
+            type: "image/jpeg",
+            lastModified: Date.now(),
+          });
+          resolve(compressedFile);
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => resolve(file);
+  });
+}
+
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -72,7 +126,11 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customAmounts, setCustomAmounts] = useState<Record<string, string>>({}); // serviceId → input value
   const [paymentChannel, setPaymentChannel] = useState("Transfer");
+  const [slipImageUrl, setSlipImageUrl] = useState<string | null>(null);
+  const [isUploadingSlip, setIsUploadingSlip] = useState(false);
+  const [slipUploadProgress, setSlipUploadProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
+  const slipInputRef = useRef<HTMLInputElement>(null);
 
   // Receipt state
   const [showReceipt, setShowReceipt] = useState(false);
@@ -128,6 +186,9 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       setCart([]);
       setCustomAmounts({});
       setPaymentChannel("Transfer");
+      setSlipImageUrl(null);
+      setIsUploadingSlip(false);
+      setSlipUploadProgress(0);
       setCustomerSearch("");
       setIsProcessing(false);
       setShowReceipt(false);
@@ -135,6 +196,90 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       setReceiptData(null);
     }
   }, [open, preselectedCustomer]);
+
+  // ── Slip Upload Helper ─────────────────────────────────────────────────────
+  const handleSlipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("กรุณาเลือกไฟล์รูปภาพเท่านั้น");
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("ขนาดไฟล์ต้องไม่เกิน 10MB");
+      return;
+    }
+
+    setIsUploadingSlip(true);
+    setSlipUploadProgress(15);
+
+    try {
+      const compressedFile = await compressImage(file, 1600, 1600, 0.85);
+      let finalUrl = "";
+      const tempEntityId = selectedCustomer?.id ? `customer-${selectedCustomer.id}` : `topup-${Date.now()}`;
+
+      try {
+        const signRes = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entityType: "job",
+            entityId: tempEntityId,
+            subType: "proofs",
+            contentType: compressedFile.type,
+          }),
+        });
+
+        if (!signRes.ok) throw new Error("Failed to get upload authorization");
+        const { uploadUrl, publicUrl, filePath } = await signRes.json();
+        setSlipUploadProgress(50);
+
+        const putRes = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": compressedFile.type },
+          body: compressedFile,
+        });
+
+        if (!putRes.ok) throw new Error("Cloud upload failed");
+        finalUrl = publicUrl || filePath;
+      } catch (gcsErr: any) {
+        console.warn("GCS Upload fallback to local:", gcsErr?.message);
+        setSlipUploadProgress(60);
+
+        const formData = new FormData();
+        formData.append("file", compressedFile);
+        formData.append("entityType", "job");
+        formData.append("entityId", tempEntityId);
+        formData.append("subType", "proofs");
+
+        const localRes = await fetch("/api/upload-local", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!localRes.ok) {
+          const errData = await localRes.json().catch(() => ({}));
+          throw new Error(errData.error || "Upload failed");
+        }
+
+        const localData = await localRes.json();
+        finalUrl = localData.publicUrl;
+      }
+
+      setSlipUploadProgress(100);
+      setSlipImageUrl(finalUrl);
+      toast.success("แนบหลักฐานการชำระเงินเรียบร้อยแล้ว");
+    } catch (err: any) {
+      console.error("Slip upload error:", err);
+      toast.error(`อัปโหลดรูปไม่สำเร็จ: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsUploadingSlip(false);
+      setSlipUploadProgress(0);
+      if (slipInputRef.current) slipInputRef.current.value = "";
+    }
+  };
 
   // ── Cart helpers ───────────────────────────────────────────────────────────
   const addToCart = (service: ServiceItem, customPrice?: number) => {
@@ -235,6 +380,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         vatType: "none",
         vatRate: 0,
         paymentChannel,
+        slipImageUrl: slipImageUrl || null,
         isPaid: true,
         proformaId: undefined,
         adminNotesJson: null,
@@ -245,6 +391,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       const txDescription = JSON.stringify({
         packageName: cart.map(i => `${i.service.name} x${i.quantity}`).join(", "),
         paymentChannel,
+        slipImageUrl: slipImageUrl || null,
         bonusAmount: bonusTotal,
         totalCredit: totalCreditReceived,
         balanceBefore: currentBalance,
@@ -260,7 +407,10 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         type: "TOPUP",
         description: txDescription,
         status: "COMPLETED",
+        userId: user?.id || null,
+        userName: user?.name || user?.email || "Admin",
       }).catch(err => console.error("Failed to save top-up transaction:", err));
+
 
       setReceiptData(rdata);
       setReceiptJobId(topUpReceiptNo);
@@ -273,6 +423,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       setIsProcessing(false);
     }
   };
+
 
   // ── Render ─────────────────────────────────────────────────────────────────
   const tier = selectedCustomer ? getTierBadge(selectedCustomer) : null;
@@ -538,24 +689,102 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                 <div className="space-y-2">
                   <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Payment Channel</Label>
                   <div className="grid grid-cols-2 gap-2">
-                    {PAYMENT_CHANNELS.map(ch => (
-                      <button
-                        key={ch}
-                        onClick={() => setPaymentChannel(ch)}
-                        className={`flex items-center gap-2 p-2.5 rounded-lg border text-xs font-semibold transition-all ${
-                          paymentChannel === ch
-                            ? "border-emerald-400 bg-emerald-50 text-emerald-700"
-                            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                    {PAYMENT_CHANNELS.map((ch, idx) => {
+                      const Icon = ch.icon;
+                      const isSelected = paymentChannel === ch.id;
+                      const isLastSingle = idx === PAYMENT_CHANNELS.length - 1 && PAYMENT_CHANNELS.length % 2 !== 0;
+                      return (
+                        <button
+                          key={ch.id}
+                          type="button"
+                          onClick={() => setPaymentChannel(ch.id)}
+                          className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-semibold transition-all ${
+                            isLastSingle ? "col-span-2 justify-center py-2.5" : ""
+                          } ${
+                            isSelected
+                              ? "border-emerald-400 bg-emerald-50 text-emerald-700 shadow-sm ring-1 ring-emerald-400/30"
+                              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50/50"
+                          }`}
+                        >
+                          <Icon size={14} className={isSelected ? "text-emerald-600" : "text-slate-400"} />
+                          <span>{ch.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Payment Slip / Proof Upload */}
+                <div className="space-y-2 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wide flex items-center gap-1.5">
+                      <UploadCloud size={13} className="text-slate-400" />
+                      Payment Slip / หลักฐานการจ่ายเงิน
+                    </Label>
+                    {slipImageUrl && (
+                      <span className="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
+                        <CheckCircle2 size={11} /> Attached
+                      </span>
+                    )}
+                  </div>
+
+                  {slipImageUrl ? (
+                    <div className="relative group rounded-xl border border-emerald-200 bg-emerald-50/40 p-2.5 flex items-center gap-3">
+                      <div className="relative w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-white shrink-0 shadow-sm">
+                        <img src={slipImageUrl} alt="Slip" className="w-full h-full object-cover" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-slate-800 truncate">Payment Slip Attached</p>
+                        <p className="text-[10px] text-slate-500 truncate">แนบหลักฐานการชำระเงินเรียบร้อยแล้ว</p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setSlipImageUrl(null)}
+                        className="h-7 w-7 p-0 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-full shrink-0"
+                        title="Remove slip"
+                      >
+                        <Trash2 size={13} />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div>
+                      <input
+                        type="file"
+                        ref={slipInputRef}
+                        accept="image/*"
+                        onChange={handleSlipUpload}
+                        className="hidden"
+                        id="topup-slip-file-input"
+                        disabled={isUploadingSlip}
+                      />
+                      <label
+                        htmlFor="topup-slip-file-input"
+                        className={`w-full flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed text-xs font-medium cursor-pointer transition-all ${
+                          isUploadingSlip
+                            ? "border-slate-300 bg-slate-50 text-slate-400 cursor-not-allowed"
+                            : "border-slate-300 bg-slate-50/60 hover:bg-emerald-50/50 hover:border-emerald-300 text-slate-600 hover:text-emerald-700"
                         }`}
                       >
-                        {ch === "Cash / COD" ? <Banknote size={13} /> : ch === "QR Code" ? <QrCode size={13} /> : <CreditCard size={13} />}
-                        {ch}
-                      </button>
-                    ))}
-                  </div>
+                        {isUploadingSlip ? (
+                          <div className="flex items-center gap-2">
+                            <Loader2 size={14} className="animate-spin text-emerald-600" />
+                            <span>กำลังอัปโหลดสลิป ({slipUploadProgress}%)…</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <ImageIcon size={14} className="text-slate-400" />
+                            <span>คลิกเพื่อแนบสลิป / Upload Slip Image (Optional)</span>
+                          </div>
+                        )}
+                      </label>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
+
           </div>
 
           {/* Footer */}
@@ -585,10 +814,10 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                 <Button variant="outline" className="h-9 text-sm px-4" onClick={() => setStep("package")}>Back</Button>
                 <Button
                   className="flex-1 h-9 text-sm bg-emerald-500 hover:bg-emerald-600 text-white font-bold"
-                  disabled={isProcessing || !paymentChannel}
+                  disabled={isProcessing || isUploadingSlip || !paymentChannel}
                   onClick={handlePay}
                 >
-                  {isProcessing ? "Processing…" : `Confirm & Pay ฿${formatCurrency(cartTotal)}`}
+                  {isProcessing ? "Processing…" : isUploadingSlip ? "Uploading Slip…" : `Confirm & Pay ฿${formatCurrency(cartTotal)}`}
                 </Button>
               </>
             )}

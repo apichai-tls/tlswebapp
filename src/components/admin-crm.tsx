@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
@@ -124,6 +124,12 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
   const [previewReceipt, setPreviewReceipt] = useState<ReceiptData | null>(null);
   const [previewReceiptOpen, setPreviewReceiptOpen] = useState(false);
 
+  // Slip Image Preview
+  const [previewSlipModalOpen, setPreviewSlipModalOpen] = useState(false);
+  const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
+  const [previewSlipTitle, setPreviewSlipTitle] = useState("");
+
+
   const fetchTopUps = () => {
     setIsLoadingTopUps(true);
     getTopUpTransactionsAction()
@@ -150,27 +156,47 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
   const [profileOpen, setProfileOpen] = useState(false);
   const [selectedProfileCustomer, setSelectedProfileCustomer] = useState<Customer | null>(null);
 
-  // Top Up State
+  // Top Up / Adjust State
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [topUpCustomer, setTopUpCustomer] = useState<Customer | null>(null);
+  const [adjustMode, setAdjustMode] = useState<"add" | "deduct">("add");
   const [topUpAmount, setTopUpAmount] = useState("");
+  const [adjustLoading, setAdjustLoading] = useState(false);
 
-  const handleTopUpSubmit = (e: React.FormEvent) => {
+  const handleTopUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topUpCustomer) return;
-    const amount = parseFloat(topUpAmount);
-    if (isNaN(amount) || amount === 0) {
-      toast.error("Please enter a valid amount");
+    const rawAmount = parseFloat(topUpAmount);
+    if (isNaN(rawAmount) || rawAmount <= 0) {
+      toast.error("Please enter a valid positive amount");
       return;
     }
     const currentBalance = topUpCustomer.creditBalance || 0;
-    const newBalance = currentBalance + amount;
+    const delta = adjustMode === "add" ? Math.abs(rawAmount) : -Math.abs(rawAmount);
+    const newBalance = Math.max(0, currentBalance + delta);
     
-    customerStore.updateCustomer(topUpCustomer.id, { creditBalance: newBalance });
-    toast.success(`Successfully ${amount > 0 ? 'added' : 'deducted'} ฿${Math.abs(amount)}. New balance: ฿${newBalance}`);
-    setTopUpOpen(false);
-    setTopUpAmount("");
+    setAdjustLoading(true);
+    try {
+      await customerStore.updateCustomer(topUpCustomer.id, {
+        creditBalance: newBalance,
+        actorId: user?.id,
+        actorName: user?.name || user?.email || "Admin",
+        actorRole: user?.role
+      } as any);
+
+      toast.success(
+        `${adjustMode === "add" ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(rawAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+      );
+      setTopUpOpen(false);
+      setTopUpAmount("");
+      setAdjustMode("add");
+    } catch (err: any) {
+      toast.error(err?.message || "เกิดข้อผิดพลาด กรุณาลองใหม่");
+    } finally {
+      setAdjustLoading(false);
+    }
   };
+
 
   const openForm = (customer?: Customer) => {
     setEditingCustomer(customer || null);
@@ -547,6 +573,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                   <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-right">Bonus (+฿)</TableHead>
                   <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-right">Total Credit (฿)</TableHead>
                   <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-center">Channel</TableHead>
+                  <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider text-center">Slip</TableHead>
                   <TableHead className="font-bold text-emerald-950 pr-6 py-4 text-xs uppercase tracking-wider text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -554,7 +581,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                 <AnimatePresence mode="popLayout">
                   {isLoadingTopUps ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="h-44 text-center text-slate-400">
+                      <TableCell colSpan={10} className="h-44 text-center text-slate-400">
                         <div className="flex flex-col items-center justify-center space-y-2">
                           <Coins size={28} className="animate-spin text-emerald-500" />
                           <p className="text-xs font-semibold">Loading top-up transaction history...</p>
@@ -563,7 +590,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                     </TableRow>
                   ) : filteredTopUpTxs.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="h-44 text-center text-slate-400">
+                      <TableCell colSpan={10} className="h-44 text-center text-slate-400">
                         <div className="flex flex-col items-center justify-center space-y-2">
                           <Receipt size={32} className="text-slate-300" />
                           <p className="font-semibold text-sm">No top-up transactions found</p>
@@ -577,6 +604,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                       try { meta = JSON.parse(tx.description || "{}"); } catch {}
                       const customerName = tx.Customer?.name || "Customer";
                       const customerPhone = tx.Customer?.phone || "-";
+                      const slipUrl = meta.slipImageUrl || meta.receiptData?.slipImageUrl || null;
 
                       return (
                         <motion.tr
@@ -629,6 +657,27 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                               {meta.paymentChannel || "Transfer"}
                             </Badge>
                           </TableCell>
+                          <TableCell className="py-4 text-center">
+                            {slipUrl ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPreviewSlipUrl(slipUrl);
+                                  setPreviewSlipTitle(`${customerName} — Receipt ${tx.id}`);
+                                  setPreviewSlipModalOpen(true);
+                                }}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-[11px] font-bold transition-all shadow-sm hover:scale-105 cursor-pointer"
+                                title="คลิกเพื่อดูรูปสลิปหลักฐานการโอน"
+                              >
+                                <div className="w-4 h-4 rounded overflow-hidden bg-white shrink-0 border border-emerald-200">
+                                  <img src={slipUrl} alt="Slip" className="w-full h-full object-cover" />
+                                </div>
+                                <span>Slip</span>
+                              </button>
+                            ) : (
+                              <span className="text-slate-300 text-xs">-</span>
+                            )}
+                          </TableCell>
                           <TableCell className="pr-6 py-4 text-right">
                             <Button
                               type="button"
@@ -677,6 +726,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                   )}
                 </AnimatePresence>
               </TableBody>
+
             </Table>
           </div>
         ) : (
@@ -1052,37 +1102,105 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
               </DialogDescription>
             </DialogHeader>
 
-            <div className="p-6 space-y-6">
+            <div className="p-6 space-y-5">
+              {/* Current Balance */}
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
-                <span className="text-sm font-semibold text-slate-500">Current Credit Balance</span>
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Balance</span>
                 <span className="text-2xl font-black text-slate-900">
                   ฿{(topUpCustomer?.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </span>
               </div>
 
-              <div className="space-y-3">
-                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Transaction Amount (฿)</Label>
+              {/* Adjustment Mode (+ / - Buttons) */}
+              <div className="space-y-2">
+                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Adjustment Action</Label>
+                <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setAdjustMode("add")}
+                    className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                      adjustMode === "add"
+                        ? "bg-emerald-500 text-white shadow-md shadow-emerald-200"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Plus size={15} />
+                    <span>เพิ่มเงิน (+ Add)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdjustMode("deduct")}
+                    className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                      adjustMode === "deduct"
+                        ? "bg-rose-500 text-white shadow-md shadow-rose-200"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Minus size={15} />
+                    <span>หักเงิน (- Deduct)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Amount Input */}
+              <div className="space-y-2">
+                <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Amount (฿)</Label>
                 <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">฿</span>
+                  <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black text-lg ${adjustMode === "add" ? "text-emerald-600" : "text-rose-600"}`}>
+                    {adjustMode === "add" ? "+" : "-"} ฿
+                  </span>
                   <Input 
                     type="number" 
-                    step="0.01"
-                    required
-                    autoFocus
-                    placeholder="e.g. 1000" 
+                    step="0.01" 
+                    min="0.01"
+                    required 
+                    autoFocus 
+                    placeholder="e.g. 500" 
                     value={topUpAmount} 
                     onChange={e => setTopUpAmount(e.target.value)} 
-                    className="h-14 pl-10 border-slate-200 text-xl font-bold rounded-xl focus-visible:ring-emerald-500 bg-white" 
+                    className={`h-14 pl-14 border-slate-200 text-xl font-bold rounded-xl bg-white ${
+                      adjustMode === "add" ? "focus-visible:ring-emerald-500 text-emerald-950" : "focus-visible:ring-rose-500 text-rose-950"
+                    }`} 
                   />
                 </div>
-                <p className="text-[11px] text-slate-500 font-medium">Use negative numbers (e.g. -500) to deduct credits from wallet.</p>
               </div>
+
+              {/* Live Preview Box */}
+              {(() => {
+                const raw = parseFloat(topUpAmount);
+                const valid = !isNaN(raw) && raw > 0;
+                const delta = valid ? (adjustMode === "add" ? raw : -raw) : 0;
+                const cur = topUpCustomer?.creditBalance || 0;
+                const projected = Math.max(0, cur + delta);
+                return (
+                  <div className={`p-3.5 rounded-xl border transition-all ${
+                    adjustMode === "add" ? "bg-emerald-50/60 border-emerald-200 text-emerald-900" : "bg-rose-50/60 border-rose-200 text-rose-900"
+                  }`}>
+                    <div className="flex justify-between items-center text-xs font-semibold">
+                      <span>ยอดหลังปรับปรุง (New Balance):</span>
+                      <span className="text-base font-black">฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100">
-              <Button type="button" variant="ghost" onClick={() => setTopUpOpen(false)} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
-              <Button type="submit" className="h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl px-8 shadow-lg shadow-emerald-100">
-                Confirm Transaction
+              <Button type="button" variant="ghost" onClick={() => setTopUpOpen(false)} disabled={adjustLoading} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
+              <Button 
+                type="submit" 
+                disabled={adjustLoading || !topUpAmount || parseFloat(topUpAmount) <= 0}
+                className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
+                  adjustMode === "add"
+                    ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
+                    : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
+                }`}
+              >
+                {adjustLoading
+                  ? "Saving..."
+                  : adjustMode === "add"
+                    ? `Confirm Add +฿${parseFloat(topUpAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                    : `Confirm Deduct -฿${parseFloat(topUpAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
               </Button>
             </DialogFooter>
           </form>
@@ -1106,6 +1224,43 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
           currentLanguage="en"
         />
       )}
+
+      {/* Payment Slip Lightbox Dialog */}
+      <Dialog open={previewSlipModalOpen} onOpenChange={setPreviewSlipModalOpen}>
+        <DialogContent className="max-w-lg p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl z-[80]">
+          <DialogHeader className="p-4 bg-slate-900 text-white flex flex-row items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ImageIcon size={18} className="text-emerald-400" />
+              <DialogTitle className="text-sm font-bold text-white">
+                หลักฐานการชำระเงิน — {previewSlipTitle}
+              </DialogTitle>
+            </div>
+            {previewSlipUrl && (
+              <a
+                href={previewSlipUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-slate-300 hover:text-white flex items-center gap-1 bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg transition-colors mr-6"
+              >
+                <ExternalLink size={12} />
+                <span>เปิดรูปเต็ม</span>
+              </a>
+            )}
+          </DialogHeader>
+          <div className="p-4 bg-slate-950 flex items-center justify-center max-h-[75vh] overflow-auto">
+            {previewSlipUrl ? (
+              <img
+                src={previewSlipUrl}
+                alt="Payment Slip"
+                className="max-w-full max-h-[68vh] object-contain rounded-lg shadow-lg border border-slate-800"
+              />
+            ) : (
+              <div className="py-12 text-slate-500 text-xs">ไม่มีรูปภาพสลิป</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+

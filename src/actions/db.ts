@@ -137,7 +137,7 @@ export async function updateCustomerAction(id: string, updates: any) {
 
   const updatedCustomer = await prisma.customer.update({ where: { id }, data });
 
-  const changes: Record<string, { from: any, to: any }> = {};
+  const changes: Record<string, { from: any, to: any } | any> = {};
   for (const key of Object.keys(data)) {
     if (currentCustomer[key as keyof typeof currentCustomer] !== data[key]) {
       changes[key] = {
@@ -149,6 +149,7 @@ export async function updateCustomerAction(id: string, updates: any) {
 
   if (Object.keys(changes).length > 0) {
     try {
+      changes.customerName = currentCustomer.name;
       await prisma.activityLog.create({
         data: {
           entityId: id,
@@ -159,11 +160,12 @@ export async function updateCustomerAction(id: string, updates: any) {
           userName: updates.actorName || null,
         }
       });
-      console.log(`[ActivityLog] Updated customer ${id}:`, JSON.stringify(changes));
+      console.log(`[ActivityLog] Updated customer ${id} (${currentCustomer.name}):`, JSON.stringify(changes));
     } catch (err: any) {
       console.error("Failed to write ActivityLog on customer update:", err.message);
     }
   }
+
 
   // CRM Remark Sync Logic from main branch
   if (updates.remark !== undefined) {
@@ -1267,6 +1269,8 @@ export async function createTopUpTransactionAction(data: {
   description: string;
   type?: string;
   status?: string;
+  userId?: string | null;
+  userName?: string | null;
 }) {
   const tx = await prisma.transaction.create({
     data: {
@@ -1279,8 +1283,48 @@ export async function createTopUpTransactionAction(data: {
       updatedAt: new Date(),
     }
   });
+
+  // Also record in ActivityLog for comprehensive top-up audit trail
+  try {
+    let parsedDesc: any = {};
+    try { parsedDesc = JSON.parse(data.description); } catch {}
+
+    const cust = await prisma.customer.findUnique({
+      where: { id: data.memberId },
+      select: { name: true, phone: true }
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityId: data.memberId,
+        entityType: 'customer',
+        action: 'TOPUP',
+        details: JSON.stringify({
+          customerName: cust?.name || parsedDesc.customerName || 'Customer',
+          receiptNo: data.id,
+          amount: data.amount,
+          type: data.type || 'TOPUP',
+          bonusAmount: parsedDesc.bonusAmount || 0,
+          totalCredit: parsedDesc.totalCredit || data.amount,
+          balanceBefore: parsedDesc.balanceBefore,
+          balanceAfter: parsedDesc.balanceAfter,
+          paymentChannel: parsedDesc.paymentChannel,
+          slipImageUrl: parsedDesc.slipImageUrl || null,
+          packageName: parsedDesc.packageName,
+        }),
+        userId: data.userId || parsedDesc.actorId || null,
+        userName: data.userName || parsedDesc.createdBy || parsedDesc.actorName || null,
+      }
+    });
+    console.log(`[ActivityLog] Top-up recorded for customer ${data.memberId} (${cust?.name}): ฿${data.amount}`);
+
+  } catch (err: any) {
+    console.error("Failed to write ActivityLog on top-up transaction:", err.message);
+  }
+
   return tx;
 }
+
 
 export async function getTopUpTransactionsAction(customerId?: string) {
   const where: any = { type: 'TOPUP' };

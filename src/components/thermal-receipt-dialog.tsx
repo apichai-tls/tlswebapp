@@ -119,7 +119,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ? job.items 
     : (rawJob.itemsJson ? JSON.parse(rawJob.itemsJson) : []);
   
-  const jobSubtotal = jobItems.reduce((sum: number, item: { price: number; quantity: number }) => sum + (item.price * item.quantity), 0);
+  const jobSubtotal = jobItems.reduce((sum: number, item: { price: number; quantity: number }) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+
   const jobSurcharge = expressPercent > 0 ? Math.ceil(jobSubtotal * (expressPercent / 100)) : 0;
 
   const vatMatch = job.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
@@ -632,7 +633,8 @@ export function ThermalReceiptDialog({
               <div key={idx} className={`flex ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} leading-tight`}>
                 <span className="flex-1 min-w-0 truncate pr-3 text-left">{displayItemName}</span>
                 <span className="w-12 text-center">{item.quantity}</span>
-                <span className="w-20 text-right">฿{formatCurrency(item.price * item.quantity)}</span>
+                <span className="w-20 text-right">฿{formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</span>
+
               </div>
             );
           })}

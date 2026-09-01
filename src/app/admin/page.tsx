@@ -506,34 +506,58 @@ export default function AdminPage() {
     }
   }, [noteLogsModalOpen, adminLogs]);
 
+  const prevJobIdForNotesRef = useRef<string | null>(null);
+
   // Sync adminLogs with database updates in the background (real-time chat/notes sync)
   useEffect(() => {
-    if (editingJobId) {
-      const freshJob = jobs.find(j => j.id === editingJobId);
-      if (freshJob) {
-        let freshNotes: AdminNoteLog[] = [];
-        try {
-          if (freshJob.adminNotesJson) {
-            const parsed = JSON.parse(freshJob.adminNotesJson);
-            if (Array.isArray(parsed)) {
-              freshNotes = parsed;
-            }
-          }
-        } catch {}
+    if (!editingJobId) {
+      if (prevJobIdForNotesRef.current !== null) {
+        prevJobIdForNotesRef.current = null;
+        setAdminLogs(prev => prev.length > 0 ? [] : prev);
+        setAdminNoteInput(prev => prev ? "" : prev);
+      }
+      return;
+    }
 
-        // Check if there is a pending local note that hasn't synced to server yet
-        const hasPendingLocalNote = Array.isArray(adminLogs) && adminLogs.length > 0 &&
-          adminLogs[adminLogs.length - 1].userId === (user?.id || "unknown") &&
-          !freshNotes.some(fn => fn.id === adminLogs[adminLogs.length - 1].id);
+    const freshJob = jobs.find(j => j.id === editingJobId);
+    if (!freshJob) return;
 
-        if (!hasPendingLocalNote || freshNotes.length > (Array.isArray(adminLogs) ? adminLogs.length : 0)) {
-          if (JSON.stringify(freshNotes) !== JSON.stringify(adminLogs)) {
-            setAdminLogs(freshNotes);
-          }
+    let freshNotes: AdminNoteLog[] = [];
+    try {
+      if (freshJob.adminNotesJson) {
+        const parsed = JSON.parse(freshJob.adminNotesJson);
+        if (Array.isArray(parsed)) {
+          freshNotes = parsed;
+        } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.notes)) {
+          freshNotes = parsed.notes;
         }
       }
+    } catch {}
+
+    // When switching to a different job, ALWAYS load fresh notes from the target job and clear input
+    if (prevJobIdForNotesRef.current !== editingJobId) {
+      prevJobIdForNotesRef.current = editingJobId;
+      setAdminLogs(freshNotes.map((log: any) => ({ ...log, isNew: false })));
+      setAdminNoteInput("");
+      return;
     }
-  }, [jobs, editingJobId, user?.id, adminLogs]);
+
+    // While on the SAME job: Check if there is a pending local note that hasn't synced to server yet
+    setAdminLogs(currentLogs => {
+      const hasPendingLocalNote = Array.isArray(currentLogs) && currentLogs.length > 0 &&
+        currentLogs[currentLogs.length - 1].userId === (user?.id || "unknown") &&
+        !freshNotes.some(fn => fn.id === currentLogs[currentLogs.length - 1].id);
+
+      if (!hasPendingLocalNote || freshNotes.length > (Array.isArray(currentLogs) ? currentLogs.length : 0)) {
+        if (JSON.stringify(freshNotes) !== JSON.stringify(currentLogs)) {
+          return freshNotes;
+        }
+      }
+      return currentLogs;
+    });
+  }, [jobs, editingJobId, user?.id]);
+
+
 
 
   const handleAddAdminLog = async (text: string, isSystem = false, imageUrls?: string[]) => {
@@ -783,8 +807,9 @@ export default function AdminPage() {
   const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
   const isPaidJob = editingJobId ? (() => {
     const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
-    return j?.status === 'completed' || Boolean(j?.isPaid) || Boolean(j?.isShopPaid);
+    return j?.status === 'completed' || (Boolean(j?.isPaid) && Boolean(j?.isShopPaid));
   })() : false;
+
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
   // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
   const isPricingLocked = isPaidJob;
@@ -819,10 +844,11 @@ export default function AdminPage() {
 
   const currentLaundryPrice = useMemo(() => {
     if (isPosEnabled && dialogCart.length > 0) {
-      return dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      return dialogCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
     }
-    return laundryPrice;
+    return Math.ceil(laundryPrice || 0);
   }, [dialogCart, laundryPrice, isPosEnabled]);
+
 
   const dialogDiscountAmount = useMemo(() => {
     // Discount applies after express surcharge is added
@@ -892,9 +918,9 @@ export default function AdminPage() {
         }
         return item;
       });
-      if (!hasChanges) return prev;
-      const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+      const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
       setLaundryPrice(totalSum);
+
       return updated;
     });
   }, [selectedProfileCustomer, customerPriceListId, services, getServicePrice, editingJobId]);
@@ -997,6 +1023,7 @@ export default function AdminPage() {
     setSelectedVIPLabel("");
     setSelectedMemberLabel("");
     setSelectedMemberId("");
+    setBillNo("");
     setAdminNote("");
     setAdminNoteInput("");
     setShowAdminNote(false);
@@ -1009,8 +1036,10 @@ export default function AdminPage() {
   const handleCreateNewJob = () => {
     originalJobRef.current = null;
     setEditingJobId(null);
+    setBillNo("");
     setDialogSelectedCategory(null);
     setDialogCart([]);
+
     setProformaReceiptNumber(null);
     setPaymentChannel("");
     setPaymentMethod("unpaid");
@@ -1274,8 +1303,9 @@ export default function AdminPage() {
       basePrice = Math.round(totalMinusFee / multiplier);
     }
     if (mappedCart.length > 0) {
-      basePrice = mappedCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      basePrice = mappedCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
     }
+
     
     setLaundryPrice(basePrice);
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
@@ -1439,11 +1469,19 @@ export default function AdminPage() {
     setSelectedStoreIndex(branchIndex >= 0 ? branchIndex : 0);
 
     setEditingJobId(job.id);
+    setBillNo(job.billNo || "");
+    setAdminNoteInput("");
+
+    setShowNoteUploader(false);
+    if (noteUploaderRef.current) {
+      noteUploaderRef.current.reset();
+    }
     setShowJobLogs(false);
     setDialogOpen(true);
     setNoteLogsModalOpen(false);
     setPreviewAdminNoteImage(null);
   };
+
 
   async function handleCreate(isPayment: boolean = false) {
     if (isPickup && !pickupLoc.trim()) {
@@ -1533,7 +1571,8 @@ export default function AdminPage() {
     const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
     const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
 
-    const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const subtotal = dialogCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+
     const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
     const surcharge = expressRate > 0 ? Math.ceil(subtotal * expressRate) : 0;
     // Discount on (subtotal + surcharge), then add fee and VAT
@@ -1648,7 +1687,9 @@ export default function AdminPage() {
       isShopPaid: isPayment || shopPaymentMethod === 'paid',
       fee,
       totalAmount: calculatedTotal,
+      billNo: billNo?.trim() || null,
       serviceType: dialogCart[0]?.id || "wash_fold",
+
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
       shiftId: targetShiftId,
@@ -1755,8 +1796,9 @@ export default function AdminPage() {
             'pickupDistance', 'deliveryDistance', 'pickupCommission', 'deliveryCommission',
             'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
-            'laundryTypes', 'items', 'paymentChannel', 'isShopPaid',
+            'laundryTypes', 'items', 'paymentChannel', 'isShopPaid', 'billNo',
             'proformaNumber', 'proformaRevision', 'proformaCartHash'
+
           ];
           
           fieldsToCompare.forEach(f => {
@@ -1800,6 +1842,7 @@ export default function AdminPage() {
 
         // 2. Close dialog immediately — Kanban & UI reflect change in 0ms!
         setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
+        setAdminNoteInput("");
         setDialogOpen(false);
         if (isPayment) {
           setIsDraftPreview(false);
@@ -1809,6 +1852,7 @@ export default function AdminPage() {
           setEditingJobId(null);
           setAdminLogs([]);
         }
+
 
         // 3. Complete uploads in background
         const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
@@ -1935,6 +1979,7 @@ export default function AdminPage() {
         }
 
         // Close dialog immediately — UI updates in 0ms!
+        setAdminNoteInput("");
         setDialogOpen(false);
         if (isPayment) {
           setEditingJobId(savedJobId);
@@ -1945,6 +1990,7 @@ export default function AdminPage() {
           setEditingJobId(null);
           setAdminLogs([]);
         }
+
 
         toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
 
@@ -1989,7 +2035,8 @@ export default function AdminPage() {
 
   const dialogReceiptData = useMemo(() => {
     if (showReceipt && isDraftPreview) {
-      const subtotal = dialogCart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const subtotal = dialogCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+
       const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
       const surcharge = expressRate > 0 ? Math.ceil(subtotal * expressRate) : 0;
       // Discount on (subtotal + surcharge)
@@ -2692,9 +2739,14 @@ export default function AdminPage() {
                     if (!open && eventDetails?.reason === 'outside-press') {
                       return;
                     }
+                    if (!open) {
+                      setAdminNoteInput("");
+                      setAdminLogs([]);
+                    }
                     setDialogOpen(open);
                   }} 
                   disablePointerDismissal={true}
+
                 >
                   <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
                     <Button 
@@ -3837,7 +3889,7 @@ export default function AdminPage() {
                                               const step = isKilo ? 0.5 : 1;
                                               return { ...it, quantity: Math.round(Math.max(0, it.quantity - step) * 100) / 100 };
                                             }).filter(it => it.quantity > 0);
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -3857,7 +3909,7 @@ export default function AdminPage() {
                                           const raw = parseFloat(valStr);
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => it.id === item.id ? { ...it, quantity: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.quantity) } : it);
-                                            setLaundryPrice(updated.reduce((acc, it) => acc + ((it.price || 0) * (it.quantity || 0)), 0));
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0));
                                             return updated;
                                           });
                                         }}
@@ -3866,7 +3918,7 @@ export default function AdminPage() {
                                           const rounded = (!isNaN(raw) && raw > 0) ? Math.round(raw * 100) / 100 : 1;
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => it.id === item.id ? { ...it, quantity: rounded } : it);
-                                            setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0));
                                             return updated;
                                           });
                                         }}
@@ -3883,7 +3935,7 @@ export default function AdminPage() {
                                               const step = isKilo ? 0.5 : 1;
                                               return { ...it, quantity: Math.round((it.quantity + step) * 100) / 100 };
                                             });
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -3908,7 +3960,7 @@ export default function AdminPage() {
                                                 ? { ...it, price: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.price), isCustomPrice: true }
                                                 : it
                                             );
-                                            const totalSum = updated.reduce((acc, it) => acc + ((it.price || 0) * (it.quantity || 0)), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -3918,7 +3970,7 @@ export default function AdminPage() {
                                           const finalPrice = (!isNaN(raw) && raw >= 0) ? Math.round(raw * 100) / 100 : 0;
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => it.id === item.id ? { ...it, price: finalPrice, isCustomPrice: true } : it);
-                                            setLaundryPrice(updated.reduce((acc, it) => acc + (it.price * it.quantity), 0));
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0));
                                             return updated;
                                           });
                                         }}
@@ -3926,7 +3978,7 @@ export default function AdminPage() {
                                     </div>
                                     <div className="min-w-[42px] text-right" title="Total for this item (ราคารวมรายการนี้)">
                                       <span className="text-[11px] font-black text-amber-400">
-                                        ฿{Math.round(item.price * item.quantity).toLocaleString()}
+                                        ฿{Math.ceil((item.price || 0) * (item.quantity || 0)).toLocaleString()}
                                       </span>
                                     </div>
                                     {!isCartLocked && (
@@ -3936,7 +3988,7 @@ export default function AdminPage() {
                                         onClick={() => {
                                           setDialogCart(prev => {
                                             const updated = prev.filter(it => it.id !== item.id);
-                                            const totalSum = updated.reduce((acc, it) => acc + (it.price * it.quantity), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -4158,125 +4210,159 @@ export default function AdminPage() {
                             <span className="text-xl font-black text-indigo-400">฿{dialogTotal.toFixed(0)}</span>
                           </div>
 
-                          {/* Payment Channel / CSO Status / Shop Status — 3-col grid */}
-                          <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800 pb-1">
-                            {/* Col 1: Payment Channel */}
-                            <div className="space-y-0.5">
-                              <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                <CreditCard size={11} className="text-slate-500" />
-                                Payment Channel
-                              </Label>
-                              <select
-                                id="payment-channel"
-                                disabled={forceMemberPaymentDialog || isPaidJob}
-                                className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
-                                value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
-                                onChange={(e) => setPaymentChannel(e.target.value)}
-                              >
-                                <option value="">Select Channel</option>
-                                <option value="Cash / COD">Cash / COD</option>
-                                <option value="Transfer">Transfer</option>
-                                <option value="Credit Card">Credit Card</option>
-                                <option value="Gateway">Gateway</option>
-                                <option value="PromptPay">PromptPay</option>
+                          {/* Payment Section: Row 1 (Channel & Bill No), Row 2 (CSO & SHOP Statuses) */}
+                          <div className="space-y-1.5 pt-1.5 border-t border-slate-800 pb-1">
+                            {/* Row 1: Payment Channel + Bill No. */}
+                            <div className="grid grid-cols-2 gap-2">
+                              {/* Col 1: Payment Channel */}
+                              <div className="space-y-0.5">
+                                <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <CreditCard size={11} className="text-slate-500" />
+                                  Payment Channel
+                                </Label>
+                                <select
+                                  id="payment-channel"
+                                  disabled={forceMemberPaymentDialog || isPaidJob}
+                                  className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+                                  value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
+                                  onChange={(e) => setPaymentChannel(e.target.value)}
+                                >
+                                  <option value="">Select Channel</option>
+                                  <option value="Cash / COD">Cash / COD</option>
+                                  <option value="Transfer">Transfer</option>
+                                  <option value="Credit Card">Credit Card</option>
+                                  <option value="Gateway">Gateway</option>
+                                  <option value="PromptPay">PromptPay</option>
+                                  {selectedProfileCustomer?.isMember && (
+                                    <option value="Deduct Member">Deduct Member</option>
+                                  )}
+                                  <option value="HQ/Credit">HQ/Credit</option>
+                                </select>
                                 {selectedProfileCustomer?.isMember && (
-                                  <option value="Deduct Member">Deduct Member</option>
+                                  <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
+                                    <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className="text-emerald-400" /> Wallet:</span>
+                                    <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
+                                      ฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </span>
+                                  </div>
                                 )}
-                                <option value="HQ/Credit">HQ/Credit</option>
-                              </select>
-                              {selectedProfileCustomer?.isMember && (
-                                <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
-                                  <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className="text-emerald-400" /> Wallet:</span>
-                                  <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
-                                    ฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </div>
+
+                              {/* Col 2: Bill No. */}
+                              <div className="space-y-0.5">
+                                <Label htmlFor="pos-bill-no" className="flex items-center justify-between text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <span className="flex items-center gap-1">
+                                    <Receipt size={11} className="text-amber-400" />
+                                    Bill No.
                                   </span>
-                                </div>
-                              )}
+                                  {!(user?.role === 'admin' || user?.role === 'cso') && (
+                                    <span className="flex items-center gap-0.5 text-[8px] text-amber-400 font-medium">
+                                      <LockIcon size={8} /> View
+                                    </span>
+                                  )}
+                                </Label>
+                                <Input
+                                  id="pos-bill-no"
+                                  value={billNo}
+                                  readOnly={!(user?.role === 'admin' || user?.role === 'cso')}
+                                  onChange={(e) => {
+                                    if (user?.role === 'admin' || user?.role === 'cso') {
+                                      setBillNo(e.target.value);
+                                    }
+                                  }}
+                                  placeholder="e.g. B-1024"
+                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') ? 'cursor-not-allowed opacity-60' : ''}`}
+                                />
+                              </div>
                             </div>
 
-                            {/* Col 2: CSO Status (isPaid) — hidden for Walk-in */}
-                            {!isWalkIn ? (
-                              <div className="space-y-0.5 flex flex-col">
+                            {/* Row 2: CSO Status & SHOP Status */}
+                            <div className="grid grid-cols-2 gap-2 pt-0.5">
+                              {/* Col 1: CSO Status (isPaid) */}
+                              {!isWalkIn ? (
+                                <div className="space-y-0.5 flex flex-col">
+                                  <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                    <CreditCard size={11} className="text-slate-500" />
+                                    CSO
+                                  </Label>
+                                  <div className="flex items-center gap-1.5 h-6 flex-wrap">
+                                    <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                      <input
+                                        type="radio"
+                                        name="payment-status"
+                                        disabled={isPaidJob}
+                                        checked={paymentMethod === 'unpaid'}
+                                        onChange={() => { if (isCsoOrAdmin) setPaymentMethod('unpaid'); }}
+                                        onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
+                                        className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                      />
+                                      <span className="font-medium text-slate-200">Unpaid</span>
+                                    </Label>
+                                    <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                                      <input
+                                        type="radio"
+                                        name="payment-status"
+                                        disabled={isPaidJob || isWalletInsufficient}
+                                        checked={paymentMethod === 'paid'}
+                                        onChange={() => { if (isCsoOrAdmin && !isWalletInsufficient) setPaymentMethod('paid'); }}
+                                        onClick={(e) => { if (!isCsoOrAdmin || isWalletInsufficient) e.preventDefault(); }}
+                                        className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
+                                      />
+                                      <span className="font-medium text-emerald-400">Paid</span>
+                                    </Label>
+                                    {/* cashPlaced checkbox: show when Cash/COD + CSO Unpaid */}
+                                    {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
+                                      <Label className={`flex items-center gap-1 text-[10px] animate-in fade-in duration-200 ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                        <input
+                                          type="checkbox"
+                                          checked={cashPlaced}
+                                          onChange={(e) => { if (isCsoOrAdmin) setCashPlaced(e.target.checked); }}
+                                          onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
+                                          className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-2.5 w-2.5 ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                        />
+                                        <span className="font-medium text-amber-400 whitespace-nowrap">วางเงิน</span>
+                                      </Label>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : <div />}
+
+                              {/* Col 2: Shop Status (isShopPaid) */}
+                              <div className="space-y-0.5">
                                 <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <CreditCard size={11} className="text-slate-500" />
-                                  CSO
+                                  <Store size={11} className="text-slate-500" />
+                                  SHOP
                                 </Label>
-                                <div className="flex items-center gap-1.5 h-6 flex-wrap">
-                                  <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                <div className="flex items-center gap-1.5 h-6">
+                                  <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                                     <input
                                       type="radio"
-                                      name="payment-status"
+                                      name="shop-payment-status"
                                       disabled={isPaidJob}
-                                      checked={paymentMethod === 'unpaid'}
-                                      onChange={() => { if (isCsoOrAdmin) setPaymentMethod('unpaid'); }}
-                                      onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                      checked={shopPaymentMethod === 'unpaid'}
+                                      onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob) setShopPaymentMethod('unpaid'); }}
+                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob) e.preventDefault(); }}
+                                      className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob ? 'cursor-not-allowed' : ''}`}
                                     />
                                     <span className="font-medium text-slate-200">Unpaid</span>
                                   </Label>
-                                  <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                                  <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
                                     <input
                                       type="radio"
-                                      name="payment-status"
+                                      name="shop-payment-status"
                                       disabled={isPaidJob || isWalletInsufficient}
-                                      checked={paymentMethod === 'paid'}
-                                      onChange={() => { if (isCsoOrAdmin && !isWalletInsufficient) setPaymentMethod('paid'); }}
-                                      onClick={(e) => { if (!isCsoOrAdmin || isWalletInsufficient) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
+                                      checked={shopPaymentMethod === 'paid'}
+                                      onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isWalletInsufficient) setShopPaymentMethod('paid'); }}
+                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isWalletInsufficient) e.preventDefault(); }}
+                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
                                     />
                                     <span className="font-medium text-emerald-400">Paid</span>
                                   </Label>
-                                  {/* cashPlaced checkbox: show when Cash/COD + CSO Unpaid */}
-                                  {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                    <Label className={`flex items-center gap-1 text-[10px] animate-in fade-in duration-200 ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                                      <input
-                                        type="checkbox"
-                                        checked={cashPlaced}
-                                        onChange={(e) => { if (isCsoOrAdmin) setCashPlaced(e.target.checked); }}
-                                        onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
-                                        className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-2.5 w-2.5 ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
-                                      />
-                                      <span className="font-medium text-amber-400 whitespace-nowrap">วางเงิน</span>
-                                    </Label>
-                                  )}
                                 </div>
-                              </div>
-                            ) : <div />}
-
-                            {/* Col 3: Shop Status (isShopPaid) — always shown */}
-                            <div className="space-y-0.5">
-                              <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                <Store size={11} className="text-slate-500" />
-                                SHOP
-                              </Label>
-                              <div className="flex items-center gap-1.5 h-6">
-                                <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                                  <input
-                                    type="radio"
-                                    name="shop-payment-status"
-                                    disabled={isPaidJob}
-                                    checked={shopPaymentMethod === 'unpaid'}
-                                    onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob) setShopPaymentMethod('unpaid'); }}
-                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob) e.preventDefault(); }}
-                                    className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob ? 'cursor-not-allowed' : ''}`}
-                                  />
-                                  <span className="font-medium text-slate-200">Unpaid</span>
-                                </Label>
-                                <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                                  <input
-                                    type="radio"
-                                    name="shop-payment-status"
-                                    disabled={isPaidJob || isWalletInsufficient}
-                                    checked={shopPaymentMethod === 'paid'}
-                                    onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isWalletInsufficient) setShopPaymentMethod('paid'); }}
-                                    onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isWalletInsufficient) e.preventDefault(); }}
-                                    className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
-                                  />
-                                  <span className="font-medium text-emerald-400">Paid</span>
-                                </Label>
                               </div>
                             </div>
                           </div>
+
 
                           {/* Wallet Insufficient Warning Banner */}
                           {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
