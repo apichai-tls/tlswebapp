@@ -885,12 +885,20 @@ export default function AdminPage() {
   const isWalletInsufficient = paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
 
   useEffect(() => {
+    if (isWalletInsufficient) {
+      if (paymentMethod === 'paid') setPaymentMethod('unpaid');
+      if (shopPaymentMethod === 'paid') setShopPaymentMethod('unpaid');
+    }
+  }, [isWalletInsufficient, paymentMethod, shopPaymentMethod]);
+
+  useEffect(() => {
     if (forceMemberPaymentDialog) {
       // Auto-select "Deduct Member" as payment channel for Member customers
       // But do NOT auto-set isPaid=true — user must confirm by pressing Paid themselves
       setPaymentChannel("Deduct Member");
     }
   }, [forceMemberPaymentDialog, dialogTotal, selectedProfileCustomer?.creditBalance]);
+
 
   useEffect(() => {
     // Only apply global VAT settings when NOT editing an existing job.
@@ -1645,8 +1653,10 @@ export default function AdminPage() {
     let targetProformaNum: string | null = existingProformaNum || null;
     let effectiveProformaRevision = targetProformaNum ? proformaRevision : 0;
     let effectiveProformaCartHash = targetProformaNum ? lastProformaCartHash : null;
+    const cannotDeduct = paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal);
 
     const newJobData: any = {
+
 
       isStuck,
       createdAt: effectiveCreatedAt,
@@ -1686,8 +1696,9 @@ export default function AdminPage() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: paymentMethod === 'paid',
-      isShopPaid: isPayment || shopPaymentMethod === 'paid',
+      isPaid: cannotDeduct ? false : paymentMethod === 'paid',
+      isShopPaid: cannotDeduct ? false : (isPayment || shopPaymentMethod === 'paid'),
+
       fee,
       totalAmount: calculatedTotal,
       billNo: billNo?.trim() || null,
