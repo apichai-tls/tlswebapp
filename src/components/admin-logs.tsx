@@ -166,14 +166,20 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
         );
       }
       if (action === 'TOPUP') {
+        const balBefore = parsed.balanceBefore !== undefined ? Number(parsed.balanceBefore) : undefined;
+        const balAfter = parsed.balanceAfter !== undefined ? Number(parsed.balanceAfter) : undefined;
 
         return (
           <div className="flex flex-col gap-2 text-sm">
             <div className="flex items-center gap-2 text-emerald-700 font-bold">
               <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-              Member Wallet Top-Up Successful
+              Member Wallet Top-Up Successful (เติมเงินสมาชิก)
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-2 mt-1 text-xs text-slate-700 max-w-2xl bg-emerald-50/50 p-3.5 rounded-xl border border-emerald-200/60">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-2 mt-1 text-xs text-slate-700 max-w-2xl bg-emerald-50/50 p-3.5 rounded-xl border border-emerald-200/60 shadow-xs">
+              <div>
+                <span className="text-slate-400 font-medium">Customer:</span>{" "}
+                <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
+              </div>
               <div>
                 <span className="text-slate-400 font-medium">Receipt No:</span>{" "}
                 <span className="font-mono font-bold text-emerald-800">{parsed.receiptNo || '-'}</span>
@@ -183,32 +189,73 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                 <span className="font-bold text-slate-900">{parsed.packageName || 'Member Package'}</span>
               </div>
               <div>
-                <span className="text-slate-400 font-medium">Payment Channel:</span>{" "}
-                <Badge variant="outline" className="text-[10px] font-bold bg-white text-slate-700 border-slate-200">
-                  {parsed.paymentChannel || 'Transfer'}
-                </Badge>
+                <span className="text-slate-400 font-medium">Paid Amount (ยอดที่ชำระ):</span>{" "}
+                <span className="font-black text-slate-900">฿{Number(parsed.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
               <div>
-                <span className="text-slate-400 font-medium">Paid Amount:</span>{" "}
-                <span className="font-bold text-slate-900">฿{Number(parsed.amount || 0).toLocaleString()}</span>
+                <span className="text-slate-400 font-medium">Bonus Added (โบนัส):</span>{" "}
+                <span className="font-bold text-emerald-600">+฿{Number(parsed.bonusAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
               <div>
-                <span className="text-slate-400 font-medium">Bonus Added:</span>{" "}
-                <span className="font-bold text-emerald-600">+฿{Number(parsed.bonusAmount || 0).toLocaleString()}</span>
+                <span className="text-slate-400 font-medium">Total Credit (เครดิตที่ได้):</span>{" "}
+                <span className="font-black text-emerald-700">฿{Number(parsed.totalCredit || parsed.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
-              <div>
-                <span className="text-slate-400 font-medium">Total Credit:</span>{" "}
-                <span className="font-black text-emerald-700">฿{Number(parsed.totalCredit || 0).toLocaleString()}</span>
-              </div>
-              {parsed.balanceBefore !== undefined && parsed.balanceAfter !== undefined && (
-                <div className="col-span-full pt-1.5 border-t border-emerald-200/50 text-[11px] text-slate-600">
-                  Balance: ฿{Number(parsed.balanceBefore).toLocaleString()} → <strong className="text-emerald-800 font-bold">฿{Number(parsed.balanceAfter).toLocaleString()}</strong>
+              {balBefore !== undefined && balAfter !== undefined && (
+                <div className="col-span-full pt-2 mt-1 border-t border-emerald-200/60 text-xs text-slate-700 flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    ยอดก่อนเติม: <strong className="font-mono text-slate-600">฿{balBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> → <strong className="font-mono text-emerald-800 font-bold">ยอดคงเหลือใหม่: ฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+                  </span>
+                  <span className="text-slate-500 font-medium text-[11px]">
+                    ช่องทาง: {parsed.paymentChannel || 'Transfer'}
+                  </span>
                 </div>
               )}
             </div>
           </div>
         );
       }
+
+      if (action === 'ADJUST' || (action === 'update' && parsed.creditBalance)) {
+        const balBefore = parsed.balanceBefore !== undefined ? Number(parsed.balanceBefore) : (parsed.creditBalance?.from !== undefined ? Number(parsed.creditBalance.from) : 0);
+        const balAfter = parsed.balanceAfter !== undefined ? Number(parsed.balanceAfter) : (parsed.creditBalance?.to !== undefined ? Number(parsed.creditBalance.to) : 0);
+        const diff = balAfter - balBefore;
+        const isAdd = diff >= 0;
+        const absAmount = parsed.adjustAmount !== undefined ? Number(parsed.adjustAmount) : Math.abs(diff);
+
+        return (
+          <div className="flex flex-col gap-2 text-sm">
+            <div className={`flex items-center gap-2 font-bold ${isAdd ? 'text-emerald-700' : 'text-rose-700'}`}>
+              <span className={`flex h-2.5 w-2.5 rounded-full ${isAdd ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+              {isAdd ? 'Credit Wallet Adjusted (+ เพิ่มยอดเงิน)' : 'Credit Wallet Adjusted (- หักยอดเงิน)'}
+            </div>
+            <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-2 mt-1 text-xs text-slate-700 max-w-2xl p-3.5 rounded-xl border shadow-xs ${isAdd ? 'bg-emerald-50/50 border-emerald-200/60' : 'bg-rose-50/50 border-rose-200/60'}`}>
+              <div>
+                <span className="text-slate-400 font-medium">Customer:</span>{" "}
+                <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-medium">Adjustment (ปรับยอด):</span>{" "}
+                <span className={`font-black ${isAdd ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  {isAdd ? `+฿${absAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `-฿${absAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 font-medium">New Balance (ยอดคงเหลือใหม่):</span>{" "}
+                <span className="font-black text-slate-900 font-mono">฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="col-span-full pt-2 mt-1 border-t border-slate-200/60 text-xs text-slate-700 flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  ยอดเดิม: <strong className="font-mono text-slate-600">฿{balBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> → <strong className={`font-mono font-bold ${isAdd ? 'text-emerald-700' : 'text-rose-700'}`}>ยอดคงเหลือใหม่: ฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+                </span>
+                {parsed.reason && (
+                  <span className="text-slate-500 italic text-[11px]">เหตุผล: {parsed.reason}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
 
       const cleaned = { ...parsed };
       const ignoredKeys = ['updatedAt', 'actorId', 'actorName', 'actorRole', 'createdAt', 'completedAt', 'id'];

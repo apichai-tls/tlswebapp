@@ -8,7 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { type Job, customerStore } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, getTransportFeeBreakdown } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, getTransportFeeBreakdown, safeCeil } from "@/lib/utils";
+
+
+
 
 export interface ReceiptItem {
   name: string;
@@ -119,9 +122,10 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ? job.items 
     : (rawJob.itemsJson ? JSON.parse(rawJob.itemsJson) : []);
   
-  const jobSubtotal = jobItems.reduce((sum: number, item: { price: number; quantity: number }) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+  const jobSubtotal = jobItems.reduce((sum: number, item: { price: number; quantity: number }) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
 
-  const jobSurcharge = expressPercent > 0 ? Math.ceil(jobSubtotal * (expressPercent / 100)) : 0;
+  const jobSurcharge = expressPercent > 0 ? safeCeil(jobSubtotal * (expressPercent / 100)) : 0;
+
 
   const vatMatch = job.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
   let jobVatType = (job as any).vatType || (vatMatch ? vatMatch[1].toLowerCase() : "none");
@@ -636,7 +640,8 @@ export function ThermalReceiptDialog({
               <div key={idx} className={`flex ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} leading-tight`}>
                 <span className="flex-1 min-w-0 truncate pr-3 text-left">{displayItemName}</span>
                 <span className="w-12 text-center">{item.quantity}</span>
-                <span className="w-20 text-right">฿{formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</span>
+                <span className="w-20 text-right">฿{formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}</span>
+
 
               </div>
             );

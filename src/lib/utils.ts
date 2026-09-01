@@ -96,3 +96,13 @@ export function getTransportFeeBreakdown(deliveryFee?: number, jobType?: string)
     { name: "Delivery Fee", nameTh: "ค่าบริการจัดส่งผ้า", price: deliveryAmount, qty: 1, total: deliveryAmount },
   ];
 }
+
+/**
+ * Clean floating point arithmetic noise (e.g. 11.3 * 90 = 1017.0000000000001)
+ * before rounding up with Math.ceil.
+ */
+export function safeCeil(val: number): number {
+  if (isNaN(val) || !val) return 0;
+  return Math.ceil(Math.round(val * 10000) / 10000);
+}
+

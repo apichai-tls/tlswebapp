@@ -150,21 +150,54 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (Object.keys(changes).length > 0) {
     try {
       changes.customerName = currentCustomer.name;
-      await prisma.activityLog.create({
-        data: {
-          entityId: id,
-          entityType: 'customer',
-          action: 'update',
-          details: JSON.stringify(changes),
-          userId: updates.actorId || null,
-          userName: updates.actorName || null,
-        }
-      });
-      console.log(`[ActivityLog] Updated customer ${id} (${currentCustomer.name}):`, JSON.stringify(changes));
+
+      // If creditBalance changed, also write a dedicated ADJUST log with clear before/after/diff details
+      if (changes.creditBalance) {
+        const balBefore = Number(currentCustomer.creditBalance || 0);
+        const balAfter = Number(data.creditBalance || 0);
+        const diff = balAfter - balBefore;
+        const isAdd = diff >= 0;
+
+        await prisma.activityLog.create({
+          data: {
+            entityId: id,
+            entityType: 'customer',
+            action: 'ADJUST',
+            details: JSON.stringify({
+              customerName: currentCustomer.name,
+              adjustMode: isAdd ? 'add' : 'deduct',
+              adjustAmount: Math.abs(diff),
+              balanceBefore: balBefore,
+              balanceAfter: balAfter,
+              reason: updates.adjustReason || updates.reason || null,
+            }),
+            userId: updates.actorId || null,
+            userName: updates.actorName || null,
+          }
+        });
+        console.log(`[ActivityLog] Adjusted wallet for customer ${id} (${currentCustomer.name}): ฿${balBefore} → ฿${balAfter}`);
+      }
+
+      // If other profile fields changed besides creditBalance, write the general update log
+      const otherKeys = Object.keys(changes).filter(k => k !== 'creditBalance' && k !== 'customerName');
+      if (otherKeys.length > 0) {
+        await prisma.activityLog.create({
+          data: {
+            entityId: id,
+            entityType: 'customer',
+            action: 'update',
+            details: JSON.stringify(changes),
+            userId: updates.actorId || null,
+            userName: updates.actorName || null,
+          }
+        });
+        console.log(`[ActivityLog] Updated customer ${id} (${currentCustomer.name}):`, JSON.stringify(changes));
+      }
     } catch (err: any) {
       console.error("Failed to write ActivityLog on customer update:", err.message);
     }
   }
+
 
 
   // CRM Remark Sync Logic from main branch
@@ -1346,5 +1379,50 @@ export async function getTopUpTransactionsAction(customerId?: string) {
   });
   return list;
 }
+
+export async function getCustomerTodayTopUpAction(customerId: string) {
+  try {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const todayTx = await prisma.transaction.findFirst({
+      where: {
+        memberId: customerId,
+        type: 'TOPUP',
+        createdAt: {
+          gte: startOfDay,
+          lte: endOfDay,
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!todayTx) return null;
+
+    let parsedDesc: any = {};
+    try { parsedDesc = JSON.parse(todayTx.description); } catch {}
+
+    return {
+      id: todayTx.id,
+      amount: todayTx.amount,
+      bonusAmount: parsedDesc.bonusAmount || 0,
+      totalCredit: parsedDesc.totalCredit || todayTx.amount,
+      balanceBefore: parsedDesc.balanceBefore,
+      balanceAfter: parsedDesc.balanceAfter,
+      paymentChannel: parsedDesc.paymentChannel,
+      packageName: parsedDesc.packageName,
+      createdBy: parsedDesc.createdBy || 'Staff',
+      createdAt: todayTx.createdAt.toISOString(),
+
+    };
+  } catch (err: any) {
+    console.error("Failed to check today's top-up transaction:", err.message);
+    return null;
+  }
+}
+
 
 

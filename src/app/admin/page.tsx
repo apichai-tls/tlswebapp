@@ -24,7 +24,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil } from "@/lib/utils";
+
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhoneInput } from "@/components/ui/phone-input";
@@ -707,7 +708,8 @@ export default function AdminPage() {
       return;
     }
 
-    setLaundryPrice(Math.ceil(pricePerKg * newWeight));
+    setLaundryPrice(safeCeil(pricePerKg * newWeight));
+
   };
   const [editingFeeLock, setEditingFeeLock] = useState<number | null>(null);
   const uploaderRef = useRef<MultiImageUploaderRef>(null);
@@ -847,23 +849,23 @@ export default function AdminPage() {
 
   const currentLaundryPrice = useMemo(() => {
     if (isPosEnabled && dialogCart.length > 0) {
-      return dialogCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+      return dialogCart.reduce((sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
     }
-    return Math.ceil(laundryPrice || 0);
+    return safeCeil(laundryPrice || 0);
   }, [dialogCart, laundryPrice, isPosEnabled]);
 
 
   const dialogDiscountAmount = useMemo(() => {
     // Discount applies after express surcharge is added
     const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
-    const surcharge = expressRate > 0 ? Math.ceil(currentLaundryPrice * expressRate) : 0;
+    const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
     return (currentLaundryPrice + surcharge) * (dialogDiscountPercent / 100);
   }, [currentLaundryPrice, dialogDiscountPercent, serviceSpeed]);
 
   const dialogVatAmount = useMemo(() => {
     if (dialogVatType === "none" || dialogVatRate <= 0) return 0;
     const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
-    const surcharge = expressRate > 0 ? Math.ceil(currentLaundryPrice * expressRate) : 0;
+    const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
     // VAT base = (subtotal + surcharge) - discount
     const baseForVat = currentLaundryPrice + surcharge - dialogDiscountAmount + fee;
     if (dialogVatType === "inclusive") {
@@ -875,12 +877,13 @@ export default function AdminPage() {
 
   const dialogTotal = useMemo(() => {
     const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
-    const surcharge = expressRate > 0 ? Math.ceil(currentLaundryPrice * expressRate) : 0;
+    const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
     // Formula: (subtotal + surcharge) - discount + fee + VAT
     const baseTotal = currentLaundryPrice + surcharge - dialogDiscountAmount + fee;
     const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
     return baseTotal + vat;
   }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate]);
+
 
   const isWalletInsufficient = paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
 
@@ -1582,10 +1585,11 @@ export default function AdminPage() {
     const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
     const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
 
-    const subtotal = dialogCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+    const subtotal = dialogCart.reduce((sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
 
     const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
-    const surcharge = expressRate > 0 ? Math.ceil(subtotal * expressRate) : 0;
+    const surcharge = expressRate > 0 ? safeCeil(subtotal * expressRate) : 0;
+
     // Discount on (subtotal + surcharge), then add fee and VAT
     const discountVal = (subtotal + surcharge) * (dialogDiscountPercent / 100);
     const baseTotal = subtotal + surcharge - discountVal + fee;
@@ -2050,10 +2054,11 @@ export default function AdminPage() {
 
   const dialogReceiptData = useMemo(() => {
     if (showReceipt && isDraftPreview) {
-      const subtotal = dialogCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+      const subtotal = dialogCart.reduce((sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
 
       const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
-      const surcharge = expressRate > 0 ? Math.ceil(subtotal * expressRate) : 0;
+      const surcharge = expressRate > 0 ? safeCeil(subtotal * expressRate) : 0;
+
       // Discount on (subtotal + surcharge)
       const discountVal = (subtotal + surcharge) * (dialogDiscountPercent / 100);
       const baseTotal = subtotal + surcharge - discountVal + fee;
@@ -3075,54 +3080,60 @@ export default function AdminPage() {
                     >
                       {/* Customer Info & Logistics Card */}
                       <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2 shrink-0">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pb-1 border-b border-slate-100">
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                              <Label htmlFor="custName" className="flex items-center gap-1 text-xs font-medium text-slate-500 whitespace-nowrap">
+                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 pb-1 border-b border-slate-100">
+                          {/* Col 1: Customer Name & Badges (7 cols) */}
+                          <div className="space-y-1 sm:col-span-7 min-w-0">
+                            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                              <Label htmlFor="custName" className="flex items-center gap-1 text-xs font-medium text-slate-500 shrink-0">
                                 <User size={12} className="shrink-0" />
                                 <span>Name <span className="text-red-500">*</span></span>
+                              </Label>
+
+                              <div className="flex items-center gap-1 shrink-0 flex-wrap">
                                 {selectedVIPLabel && (
-                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold shrink-0">
+                                  <Badge variant="outline" className="text-[9px] py-0 px-1 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold shrink-0">
                                     VIP
                                   </Badge>
                                 )}
                                 {selectedMemberLabel && (
-                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0 select-text cursor-text" style={{ userSelect: 'text' }}>
+                                  <Badge variant="outline" className="text-[9px] py-0 px-1 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0 select-text cursor-text" style={{ userSelect: 'text' }}>
                                     {selectedMemberId ? `ID: ${selectedMemberId}` : 'Member'}
                                   </Badge>
                                 )}
                                 {selectedProfileCustomer?.isMember && (
-                                  <Badge variant="outline" className="ml-1 text-[9px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold shrink-0 flex items-center gap-0.5 shadow-xs" title="ยอดเงินคงเหลือใน Wallet">
+                                  <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold shrink-0 flex items-center gap-0.5 shadow-xs" title="ยอดเงินคงเหลือใน Wallet">
                                     <Wallet size={9} className="text-emerald-600" />
-                                    <span>฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                    <span>฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}</span>
                                   </Badge>
                                 )}
-                              </Label>
+                              </div>
+                            </div>
+                            <div className="relative flex items-center">
+                              <Input
+                                id="custName"
+                                placeholder="Name"
+                                value={customerName}
+                                readOnly={true}
+                                className={`h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all ${selectedProfileCustomer ? 'pr-8' : ''}`}
+                              />
                               {selectedProfileCustomer && (
-                                <Button
+                                <button
                                   type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-5 w-5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded shadow-sm border border-indigo-100 shrink-0 ml-1 flex items-center justify-center"
+                                  className="absolute right-1 h-6 w-6 flex items-center justify-center bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded border border-indigo-200 transition-colors shadow-2xs cursor-pointer"
                                   onClick={(e) => {
                                     e.preventDefault();
                                     setCustomerDialogOpen(true);
                                   }}
                                   title="Edit Customer CRM"
                                 >
-                                  <Edit size={10} />
-                                </Button>
+                                  <Edit size={12} />
+                                </button>
                               )}
                             </div>
-                            <Input
-                              id="custName"
-                              placeholder="Name"
-                              value={customerName}
-                              readOnly={true}
-                              className="h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all"
-                            />
                           </div>
-                          <div className="space-y-1">
+
+                          {/* Col 2: Customer Phone (5 cols) */}
+                          <div className="space-y-1 sm:col-span-5 min-w-0">
                             <Label htmlFor="custPhone" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
                               <Phone size={12} />
                               Phone
@@ -3136,6 +3147,8 @@ export default function AdminPage() {
                             />
                           </div>
                         </div>
+
+
                         
                         <div className="flex flex-col sm:flex-row sm:items-end gap-2.5 mb-1 pb-2 border-b border-slate-100 shrink-0">
                           <div className="space-y-1 w-full sm:flex-1">
@@ -3904,7 +3917,7 @@ export default function AdminPage() {
                                               const step = isKilo ? 0.5 : 1;
                                               return { ...it, quantity: Math.round(Math.max(0, it.quantity - step) * 100) / 100 };
                                             }).filter(it => it.quantity > 0);
-                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -3924,7 +3937,7 @@ export default function AdminPage() {
                                           const raw = parseFloat(valStr);
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => it.id === item.id ? { ...it, quantity: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.quantity) } : it);
-                                            setLaundryPrice(updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0));
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0));
                                             return updated;
                                           });
                                         }}
@@ -3933,7 +3946,7 @@ export default function AdminPage() {
                                           const rounded = (!isNaN(raw) && raw > 0) ? Math.round(raw * 100) / 100 : 1;
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => it.id === item.id ? { ...it, quantity: rounded } : it);
-                                            setLaundryPrice(updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0));
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0));
                                             return updated;
                                           });
                                         }}
@@ -3950,7 +3963,7 @@ export default function AdminPage() {
                                               const step = isKilo ? 0.5 : 1;
                                               return { ...it, quantity: Math.round((it.quantity + step) * 100) / 100 };
                                             });
-                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -3975,7 +3988,7 @@ export default function AdminPage() {
                                                 ? { ...it, price: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.price), isCustomPrice: true }
                                                 : it
                                             );
-                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -3985,7 +3998,7 @@ export default function AdminPage() {
                                           const finalPrice = (!isNaN(raw) && raw >= 0) ? Math.round(raw * 100) / 100 : 0;
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => it.id === item.id ? { ...it, price: finalPrice, isCustomPrice: true } : it);
-                                            setLaundryPrice(updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0));
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0));
                                             return updated;
                                           });
                                         }}
@@ -3993,7 +4006,7 @@ export default function AdminPage() {
                                     </div>
                                     <div className="min-w-[42px] text-right" title="Total for this item (ราคารวมรายการนี้)">
                                       <span className="text-[11px] font-black text-amber-400">
-                                        ฿{Math.ceil((item.price || 0) * (item.quantity || 0)).toLocaleString()}
+                                        ฿{safeCeil((item.price || 0) * (item.quantity || 0)).toLocaleString()}
                                       </span>
                                     </div>
                                     {!isCartLocked && (
@@ -4003,11 +4016,12 @@ export default function AdminPage() {
                                         onClick={() => {
                                           setDialogCart(prev => {
                                             const updated = prev.filter(it => it.id !== item.id);
-                                            const totalSum = updated.reduce((acc, it) => acc + Math.ceil((it.price || 0) * (it.quantity || 0)), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
                                         }}
+
                                       >
                                         <Trash2 size={11} />
                                       </button>

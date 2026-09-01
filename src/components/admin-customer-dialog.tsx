@@ -27,7 +27,8 @@ export function AdminCustomerDialog({
 }) {
   const { user } = useAuth();
   const canAdjustBalance = user?.role === "admin" || user?.role === "accounting";
-  const canTopUp = user?.role === "admin" || user?.role === "accounting";
+  const canTopUp = user?.role !== "rider";
+
 
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);

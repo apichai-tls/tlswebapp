@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useSyncExternalStore, useRef } from "react";
-import { Search, Wallet, Package, Banknote, CreditCard, QrCode, Globe, CheckCircle2, X, Plus, Minus, Crown, Star, UploadCloud, Loader2, Image as ImageIcon, Trash2 } from "lucide-react";
+import { Search, Wallet, Package, Banknote, CreditCard, QrCode, Globe, CheckCircle2, X, Plus, Minus, Crown, Star, UploadCloud, Loader2, Image as ImageIcon, Trash2, AlertTriangle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,8 @@ import { useAuth } from "@/providers/auth-provider";
 import { useCustomers } from "@/lib/use-customers";
 import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber } from "@/lib/utils";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
-import { createTopUpTransactionAction } from "@/actions/db";
+import { createTopUpTransactionAction, getCustomerTodayTopUpAction } from "@/actions/db";
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -137,7 +138,48 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   const [receiptJobId, setReceiptJobId] = useState<string | null>(null);
   const [receiptData, setReceiptData] = useState<any>(null);
 
+  // Duplicate top-up check for same day
+  const [todayTopUpInfo, setTodayTopUpInfo] = useState<{
+    id: string;
+    amount: number;
+    bonusAmount: number;
+    totalCredit: number;
+    balanceBefore?: number;
+    balanceAfter?: number;
+    paymentChannel?: string;
+    packageName?: string;
+    createdBy: string;
+    createdAt: string;
+  } | null>(null);
+  const [isCheckingTodayTopUp, setIsCheckingTodayTopUp] = useState(false);
+  const [confirmDuplicateTopUp, setConfirmDuplicateTopUp] = useState(false);
+
+  useEffect(() => {
+    if (!selectedCustomer) {
+      setTodayTopUpInfo(null);
+      setConfirmDuplicateTopUp(false);
+      return;
+    }
+
+    let isMounted = true;
+    setIsCheckingTodayTopUp(true);
+    getCustomerTodayTopUpAction(selectedCustomer.id)
+      .then(info => {
+        if (isMounted) {
+          setTodayTopUpInfo(info);
+          setConfirmDuplicateTopUp(false);
+        }
+      })
+      .catch(err => console.error("Failed to check today's topup:", err))
+      .finally(() => {
+        if (isMounted) setIsCheckingTodayTopUp(false);
+      });
+
+    return () => { isMounted = false; };
+  }, [selectedCustomer?.id]);
+
   // ── Derived ────────────────────────────────────────────────────────────────
+
   const packageServices = useMemo(() =>
     services.filter(s => s.category === "PACKAGE" && s.isActive !== false),
     [services]
@@ -533,8 +575,43 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                   </div>
                 )}
 
+                {/* Warning Banner if customer already topped up today */}
+                {todayTopUpInfo && (
+                  <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3.5 space-y-2.5 shadow-sm">
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-black text-amber-950 uppercase tracking-wide">
+                          ⚠️ แจ้งเตือน: ลูกค้ารายนี้เพิ่งเติมเงินไปแล้วในวันนี้!
+                        </p>
+                        <p className="text-xs text-amber-900 mt-1 font-medium leading-relaxed">
+                          ทำรายการเมื่อเวลา <strong className="font-bold text-amber-950">{format(new Date(todayTopUpInfo.createdAt), "HH:mm น.")}</strong> ยอดเงิน <strong className="font-bold text-amber-950">฿{Number(todayTopUpInfo.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> {todayTopUpInfo.bonusAmount > 0 ? `(+฿${Number(todayTopUpInfo.bonusAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} โบนัส)` : ""} (โดย {todayTopUpInfo.createdBy || "Staff"})
+                        </p>
+                        <p className="text-[11px] text-amber-800/90 mt-0.5">
+                          กรุณาตรวจสอบสลิป/หลักฐาน เพื่อป้องกันการทำรายการซ้ำซ้อน
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-amber-200/80">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={confirmDuplicateTopUp}
+                          onChange={(e) => setConfirmDuplicateTopUp(e.target.checked)}
+                          className="w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-amber-950">
+                          ยืนยันว่าลูกค้าต้องการเติมเงินเพิ่มอีกครั้งในวันนี้จริง
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
                 {/* Package catalog */}
                 <div>
+
                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Select Package</p>
                   {packageServices.length === 0 ? (
                     <p className="text-xs text-slate-400 text-center py-6">No packages available.<br />Add packages in Service Menu with category PACKAGE.</p>
@@ -648,6 +725,40 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
             {/* ── Step 3: Payment ── */}
             {step === "payment" && (
               <div className="space-y-4">
+                {/* Warning Banner if customer already topped up today */}
+                {todayTopUpInfo && (
+                  <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3.5 space-y-2.5 shadow-sm">
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-black text-amber-950 uppercase tracking-wide">
+                          ⚠️ แจ้งเตือน: ลูกค้ารายนี้เพิ่งเติมเงินไปแล้วในวันนี้!
+                        </p>
+                        <p className="text-xs text-amber-900 mt-1 font-medium leading-relaxed">
+                          ทำรายการเมื่อเวลา <strong className="font-bold text-amber-950">{format(new Date(todayTopUpInfo.createdAt), "HH:mm น.")}</strong> ยอดเงิน <strong className="font-bold text-amber-950">฿{Number(todayTopUpInfo.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> {todayTopUpInfo.bonusAmount > 0 ? `(+฿${Number(todayTopUpInfo.bonusAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} โบนัส)` : ""} (โดย {todayTopUpInfo.createdBy || "Staff"})
+                        </p>
+                        <p className="text-[11px] text-amber-800/90 mt-0.5">
+                          กรุณาตรวจสอบสลิป/หลักฐาน เพื่อป้องกันการทำรายการซ้ำซ้อน
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-amber-200/80">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={confirmDuplicateTopUp}
+                          onChange={(e) => setConfirmDuplicateTopUp(e.target.checked)}
+                          className="w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-amber-950">
+                          ยืนยันว่าลูกค้าต้องการเติมเงินเพิ่มอีกครั้งในวันนี้จริง
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
                 {/* Summary card */}
                 <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-4 space-y-2">
                   <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Summary</p>
@@ -801,7 +912,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                   Back
                 </Button>
                 <Button
-                  className="flex-1 h-9 text-sm bg-emerald-500 hover:bg-emerald-600 text-white"
+                  className="flex-1 h-9 text-sm bg-emerald-500 hover:bg-emerald-600 text-white font-bold"
                   disabled={cartIsEmpty}
                   onClick={() => setStep("payment")}
                 >
@@ -813,15 +924,27 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
               <>
                 <Button variant="outline" className="h-9 text-sm px-4" onClick={() => setStep("package")}>Back</Button>
                 <Button
-                  className="flex-1 h-9 text-sm bg-emerald-500 hover:bg-emerald-600 text-white font-bold"
-                  disabled={isProcessing || isUploadingSlip || !paymentChannel}
+                  className={`flex-1 h-9 text-sm text-white font-bold transition-all shadow-sm ${
+                    todayTopUpInfo && !confirmDuplicateTopUp
+                      ? "bg-amber-600 hover:bg-amber-700 opacity-90 cursor-not-allowed"
+                      : "bg-emerald-500 hover:bg-emerald-600"
+                  }`}
+                  disabled={isProcessing || isUploadingSlip || !paymentChannel || (Boolean(todayTopUpInfo) && !confirmDuplicateTopUp)}
                   onClick={handlePay}
+                  title={todayTopUpInfo && !confirmDuplicateTopUp ? "กรุณาติ๊กยืนยันการเติมเงินซ้ำในวันนี้" : undefined}
                 >
-                  {isProcessing ? "Processing…" : isUploadingSlip ? "Uploading Slip…" : `Confirm & Pay ฿${formatCurrency(cartTotal)}`}
+                  {isProcessing
+                    ? "Processing…"
+                    : isUploadingSlip
+                      ? "Uploading Slip…"
+                      : todayTopUpInfo && !confirmDuplicateTopUp
+                        ? "กรุณาติ๊กยืนยันการเติมเงินซ้ำ"
+                        : `Confirm & Pay ฿${formatCurrency(cartTotal)}`}
                 </Button>
               </>
             )}
           </div>
+
         </DialogContent>
       </Dialog>
 

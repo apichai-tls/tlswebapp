@@ -1,7 +1,10 @@
 import { format } from "date-fns";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
 import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
-import { getTransportFeeBreakdown } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil } from "@/lib/utils";
+
+
+
 
 function formatCurrency(val: number): string {
   return (val || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -55,7 +58,8 @@ export async function generateThermalReceiptImage(
     <div style="display: flex; font-size: 10px; line-height: 1.25; margin-bottom: 4px;">
       <span style="flex: 1; min-width: 0; padding-right: 8px; text-align: left;">${item.nameEn || item.name}</span>
       <span style="width: 32px; text-align: center; font-family: monospace;">${item.quantity}</span>
-      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</span>
+      <span style="width: 60px; text-align: right; font-family: monospace;">฿${formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}</span>
+
 
     </div>
   `).join("");

@@ -6,7 +6,8 @@ import { Printer, X, Loader2, Wallet } from "lucide-react";
 import { ReceiptData } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { getTransportFeeBreakdown } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil } from "@/lib/utils";
+
 import { customerStore } from "@/lib/store";
 
 interface ShopInfo {
@@ -538,7 +539,8 @@ export function A5ReceiptDialog({
                 </td>
                 <td className={`${rowPy} px-1 text-center font-mono`}>{item.quantity}</td>
                 <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price)}</td>
-                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</td>
+                <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}</td>
+
 
               </tr>
             ))}
@@ -1079,7 +1081,8 @@ export function A5ReceiptContent({ receiptData, activeShop, currentLanguage = "e
               <td className={`${rowPy} px-1`}>{item.nameEn || item.name}</td>
               <td className={`${rowPy} px-1 text-center font-mono`}>{item.quantity}</td>
               <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(item.price)}</td>
-              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(Math.ceil((item.price || 0) * (item.quantity || 0)))}</td>
+              <td className={`${rowPy} px-1 text-right font-mono`}>{formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}</td>
+
 
             </tr>
           ))}
