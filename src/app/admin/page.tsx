@@ -4451,33 +4451,18 @@ export default function AdminPage() {
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
                               }}
-                              className="flex-1 h-8 rounded-lg text-[9.5px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="flex-1 h-8 rounded-lg text-[10px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                               title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
                             >
                               <Eye size={11} />
-                              <span>{currentLanguage === "en" ? "Proforma" : "ใบรับเงิน"}</span>
-                            </Button>
-
-                            <Button 
-                              type="button"
-                              disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
-                              onClick={() => handleCreate(false)}
-                              className="flex-1 h-8 rounded-lg text-[9.5px] font-bold bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow transition-all"
-                              title={editingJobId ? "บันทึกการเปลี่ยนแปลงรายการผ้าและข้อมูลงาน (ยังไม่ชำระเงิน)" : "สร้างงานใหม่ (ยังไม่ชำระเงิน)"}
-                            >
-                              {isSubmitting ? (
-                                <Loader2 size={11} className="animate-spin" />
-                              ) : (
-                                <Save size={11} />
-                              )}
-                              <span>{editingJobId ? (currentLanguage === "en" ? "Save" : "บันทึก") : (currentLanguage === "en" ? "Create" : "เปิดงาน")}</span>
+                              {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
                             </Button>
 
                             <Button 
                               type="button"
                               disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || isPaidJob || shopPaymentMethod !== 'paid' || (!paymentChannel || !paymentChannel.trim()) || isWalletInsufficient}
                               onClick={() => handleCreate(true)}
-                              className={`flex-[1.2] h-8 rounded-lg text-[9.5px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                              className={`flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                                 isPaidJob
                                   ? 'bg-slate-700 text-slate-300'
                                   : isWalletInsufficient
@@ -4492,16 +4477,15 @@ export default function AdminPage() {
                                     : undefined
                               }
                             >
-                              <Banknote size={11} />
-                              <span>
-                                {isPaidJob
-                                  ? (currentLanguage === "en" ? "Paid" : "ชำระแล้ว")
-                                  : isWalletInsufficient
-                                    ? `Wallet ไม่พอ`
-                                    : `Pay ฿${dialogTotal.toFixed(0)}`}
-                              </span>
+                              <Banknote size={12} />
+                              {isPaidJob
+                                ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
+                                : isWalletInsufficient
+                                  ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
+                                  : `Pay ฿${dialogTotal.toFixed(2)}`}
                             </Button>
                           </div>
+
 
                         </div>
 
