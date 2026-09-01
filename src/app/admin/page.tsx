@@ -1725,8 +1725,9 @@ export default function AdminPage() {
           } catch (e) {}
         }
 
-        const isPaidNow = isPayment || shopPaymentMethod === 'paid' || paymentMethod === 'paid';
+        const isPaidNow = isPayment;
         const alreadyPaidTotal = existingPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+
         const remainingToPay = calculatedTotal - alreadyPaidTotal;
 
         const finalPayments = [...existingPayments];
