@@ -106,3 +106,57 @@ export function safeCeil(val: number): number {
   return Math.ceil(Math.round(val * 10000) / 10000);
 }
 
+/**
+ * Calculate Wallet Expiration Date (6 months from given date, set to 23:59:59.999).
+ */
+export function calculateWalletExpiryDate(fromDate: Date = new Date()): Date {
+  const expiry = new Date(fromDate);
+  expiry.setMonth(expiry.getMonth() + 6);
+  expiry.setHours(23, 59, 59, 999);
+  return expiry;
+}
+
+/**
+ * Check if customer's member wallet is expired.
+ */
+export function isWalletExpired(customer?: { memberExpiryDate?: Date | string | null; isMember?: boolean } | null): boolean {
+  if (!customer || !customer.isMember) return false;
+  if (!customer.memberExpiryDate) return false;
+  const expiryTime = new Date(customer.memberExpiryDate).getTime();
+  return expiryTime < Date.now();
+}
+
+export type WalletStatusType = 'active' | 'expiring_soon' | 'expired' | 'non_member';
+
+/**
+ * Get comprehensive wallet status and remaining days.
+ */
+export function getWalletStatus(customer?: { memberExpiryDate?: Date | string | null; isMember?: boolean; creditBalance?: number } | null): {
+  status: WalletStatusType;
+  daysRemaining: number;
+  expiryDate: Date | null;
+  isExpired: boolean;
+} {
+  if (!customer || !customer.isMember) {
+    return { status: 'non_member', daysRemaining: 0, expiryDate: null, isExpired: false };
+  }
+  if (!customer.memberExpiryDate) {
+    return { status: 'active', daysRemaining: 180, expiryDate: null, isExpired: false };
+  }
+
+  const expiry = new Date(customer.memberExpiryDate);
+  const now = new Date();
+  const diffMs = expiry.getTime() - now.getTime();
+  const daysRemaining = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+  const isExpired = diffMs < 0;
+
+  if (isExpired) {
+    return { status: 'expired', daysRemaining: 0, expiryDate: expiry, isExpired: true };
+  }
+  if (daysRemaining <= 15) {
+    return { status: 'expiring_soon', daysRemaining, expiryDate: expiry, isExpired: false };
+  }
+  return { status: 'active', daysRemaining, expiryDate: expiry, isExpired: false };
+}
+
+

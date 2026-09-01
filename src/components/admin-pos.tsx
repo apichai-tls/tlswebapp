@@ -76,7 +76,9 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate } from "@/lib/utils";
+
+
 
 const cleanRemarkForDisplay = (rawRemark: string | null | undefined) => {
   if (!rawRemark) return "";
@@ -763,7 +765,22 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [sessionCapturedReceiptUrls, setSessionCapturedReceiptUrls] = useState<string[]>([]);
   const [deliveryScheduledTime, setDeliveryScheduledTime] = useState<string>(() => getTomorrowDateTimeString());
 
-  const isPaidJob = loadedJobId ? (jobs.find(j => j.id === loadedJobId)?.isPaid || false) : false;
+  const isPaidJob = loadedJobId ? (() => {
+    const j = jobs.find(job => job.id === loadedJobId);
+    if (!j) return false;
+    if (j.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(j.adminNotesJson);
+        if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+          const totalPaid = parsed.payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
+          if (totalPaid >= (j.totalAmount || 0)) {
+            return true;
+          }
+        }
+      } catch (e) {}
+    }
+    return false;
+  })() : false;
 
   // Calculate valid shop hours and minutes based on settings
   const posHourPart = deliveryScheduledTime && deliveryScheduledTime.includes('T') ? deliveryScheduledTime.split('T')[1].split(':')[0] : "00";
@@ -1449,7 +1466,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   // Force member payment method (credit) for member customers adding non-package items
   useEffect(() => {
     if (forceMemberPayment) {
-      const hasSufficient = (selectedCustomer?.creditBalance || 0) >= total;
+      const isExpired = isWalletExpired(selectedCustomer);
+      const hasSufficient = !isExpired && (selectedCustomer?.creditBalance || 0) >= total;
       if (hasSufficient) {
         setIsPaid(true);
         setPaymentMethod("credit");
@@ -1459,7 +1477,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         setPosPaymentChannel("");
       }
     }
-  }, [forceMemberPayment, total, selectedCustomer?.creditBalance]);
+  }, [forceMemberPayment, total, selectedCustomer?.creditBalance, selectedCustomer?.memberExpiryDate]);
+
 
 
   const promptpayConfig = useMemo(() => {
@@ -1630,12 +1649,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         toast.error("Please select a customer for Member wallet payment");
         return;
       }
+      if (isWalletExpired(selectedCustomer)) {
+        toast.error("Wallet ของลูกค้าหมดอายุการใช้งานแล้ว ไม่สามารถตัดเงินได้ กรุณาให้ลูกค้า Top Up เพื่อต่ออายุ");
+        return;
+      }
       const balance = selectedCustomer.creditBalance || 0;
       if (balance < finalCreditAlloc) {
         toast.error(`Insufficient Member balance. Available: ฿${balance.toLocaleString()}. Required: ฿${finalCreditAlloc.toLocaleString()}`);
         return;
       }
     }
+
 
     let topUpTotal = 0;
     cart.forEach(item => {
@@ -1948,8 +1972,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const newBalance = (selectedCustomer.creditBalance || 0) + balanceAdjustment;
         const updates: Partial<Customer> = { creditBalance: newBalance };
         
-        if (balanceAdjustment > 0 && !selectedCustomer.isMember) {
+        if (balanceAdjustment > 0) {
           updates.isMember = true;
+          updates.memberExpiryDate = calculateWalletExpiryDate(new Date());
+          updates.memberStartDate = selectedCustomer.memberStartDate || new Date();
           const priceLists = priceListStore.getSnapshot();
           const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
           if (memberList) {
@@ -1964,9 +1990,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           ...prev, 
           creditBalance: newBalance,
           isMember: updates.isMember !== undefined ? updates.isMember : prev.isMember,
+          memberExpiryDate: updates.memberExpiryDate !== undefined ? updates.memberExpiryDate : prev.memberExpiryDate,
           priceListId: updates.priceListId !== undefined ? updates.priceListId : prev.priceListId
         } : null);
       }
+
 
       setLatestJob(finalJob);
       setShowReceipt(true);
@@ -3817,11 +3845,19 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       initial={{ opacity: 0, y: -10 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -10 }}
-                      className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 p-2.5 rounded-xl border border-emerald-500/20 font-bold"
+                      className={`text-[10px] p-2.5 rounded-xl border font-bold ${
+                        isWalletExpired(selectedCustomer)
+                          ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30"
+                          : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                      }`}
                     >
                       {currentLanguage === "en" ? "Current Balance" : "ยอดเงินปัจจุบัน"}: ฿{(selectedCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       <br />
-                      {(selectedCustomer.creditBalance || 0) >= total ? (
+                      {isWalletExpired(selectedCustomer) ? (
+                        <span className="text-rose-500 dark:text-rose-400 font-extrabold flex items-center gap-1 mt-0.5">
+                          ⚠️ {currentLanguage === "en" ? "Wallet Expired (Top Up to re-activate)" : "Wallet หมดอายุแล้ว (กรุณา Top Up เพื่อต่ออายุ)"}
+                        </span>
+                      ) : (selectedCustomer.creditBalance || 0) >= total ? (
                         <span>
                           {currentLanguage === "en" ? "Remaining Balance" : "ยอดคงเหลือหลังชำระ"}: ฿{((selectedCustomer.creditBalance || 0) - total).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </span>
@@ -3834,6 +3870,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       )}
                     </motion.div>
                   )}
+
 
                   {isPaid && paymentMethod === "transfer" && false && (
                     <motion.div
@@ -4053,9 +4090,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 disabled={
                   isProcessing || 
                   !!(isPaid && (!effectivePaymentChannel || effectivePaymentChannel === "")) ||
-                  !!(isPaid && paymentMethod === "credit" && selectedCustomer && (selectedCustomer.creditBalance || 0) < total) ||
+                  !!(isPaid && paymentMethod === "credit" && selectedCustomer && (((selectedCustomer.creditBalance || 0) < total) || isWalletExpired(selectedCustomer))) ||
                   !!(isPaid && paymentMethod === "cash" && (!receivedCash || isNaN(parseFloat(receivedCash)) || parseFloat(receivedCash) < total))
                 }
+
 
 
                 onClick={handleCheckout}

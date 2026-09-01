@@ -24,7 +24,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus } from "@/lib/utils";
+
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -62,6 +63,8 @@ import {
   Package,
   Clock,
   CheckCircle2,
+  AlertTriangle,
+
   LayoutDashboard,
   ArrowLeft,
   Map,
@@ -811,7 +814,19 @@ export default function AdminPage() {
   const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
   const isPaidJob = editingJobId ? (() => {
     const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
-    return Boolean(j?.isPaid) && Boolean(j?.isShopPaid);
+    if (!j) return false;
+    if (j.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(j.adminNotesJson);
+        if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+          const totalPaid = parsed.payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
+          if (totalPaid >= (j.totalAmount || 0)) {
+            return true;
+          }
+        }
+      } catch (e) {}
+    }
+    return false;
   })() : false;
 
 
@@ -885,14 +900,17 @@ export default function AdminPage() {
   }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate]);
 
 
+  const isCustomerWalletExpired = isWalletExpired(selectedProfileCustomer);
   const isWalletInsufficient = paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
+  const isWalletBlocked = paymentChannel === "Deduct Member" && (isWalletInsufficient || isCustomerWalletExpired);
 
   useEffect(() => {
-    if (isWalletInsufficient) {
+    if (isWalletBlocked) {
       if (paymentMethod === 'paid') setPaymentMethod('unpaid');
       if (shopPaymentMethod === 'paid') setShopPaymentMethod('unpaid');
     }
-  }, [isWalletInsufficient, paymentMethod, shopPaymentMethod]);
+  }, [isWalletBlocked, paymentMethod, shopPaymentMethod]);
+
 
   useEffect(() => {
     if (forceMemberPaymentDialog) {
@@ -1627,6 +1645,11 @@ export default function AdminPage() {
     }
 
     if (paymentChannel === "Deduct Member" && (shopPaymentMethod === 'paid' || isPayment)) {
+      if (isWalletExpired(selectedProfileCustomer)) {
+        toast.error("Wallet ของลูกค้ารายนี้หมดอายุการใช้งานแล้ว ไม่สามารถตัดเงินได้ กรุณาให้ลูกค้า Top Up เพื่อต่ออายุ");
+        setIsSubmitting(false);
+        return;
+      }
       const currentBalance = selectedProfileCustomer?.creditBalance || 0;
       if (currentBalance < calculatedTotal) {
         toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
@@ -1657,7 +1680,8 @@ export default function AdminPage() {
     let targetProformaNum: string | null = existingProformaNum || null;
     let effectiveProformaRevision = targetProformaNum ? proformaRevision : 0;
     let effectiveProformaCartHash = targetProformaNum ? lastProformaCartHash : null;
-    const cannotDeduct = paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal);
+    const cannotDeduct = paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal) || isWalletExpired(selectedProfileCustomer));
+
 
     const newJobData: any = {
 
@@ -4327,15 +4351,15 @@ export default function AdminPage() {
                                       />
                                       <span className="font-medium text-slate-200">Unpaid</span>
                                     </Label>
-                                    <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                                    <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !isWalletBlocked ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
                                       <input
                                         type="radio"
                                         name="payment-status"
-                                        disabled={isPaidJob || isWalletInsufficient}
+                                        disabled={isPaidJob || isWalletBlocked}
                                         checked={paymentMethod === 'paid'}
-                                        onChange={() => { if (isCsoOrAdmin && !isWalletInsufficient) setPaymentMethod('paid'); }}
-                                        onClick={(e) => { if (!isCsoOrAdmin || isWalletInsufficient) e.preventDefault(); }}
-                                        className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
+                                        onChange={() => { if (isCsoOrAdmin && !isWalletBlocked) setPaymentMethod('paid'); }}
+                                        onClick={(e) => { if (!isCsoOrAdmin || isWalletBlocked) e.preventDefault(); }}
+                                        className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin || isWalletBlocked ? 'cursor-not-allowed' : ''}`}
                                       />
                                       <span className="font-medium text-emerald-400">Paid</span>
                                     </Label>
@@ -4375,15 +4399,15 @@ export default function AdminPage() {
                                     />
                                     <span className="font-medium text-slate-200">Unpaid</span>
                                   </Label>
-                                  <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletInsufficient ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                                  <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletBlocked ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
                                     <input
                                       type="radio"
                                       name="shop-payment-status"
-                                      disabled={isPaidJob || isWalletInsufficient}
+                                      disabled={isPaidJob || isWalletBlocked}
                                       checked={shopPaymentMethod === 'paid'}
-                                      onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isWalletInsufficient) setShopPaymentMethod('paid'); }}
-                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isWalletInsufficient) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob || isWalletInsufficient ? 'cursor-not-allowed' : ''}`}
+                                      onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isWalletBlocked) setShopPaymentMethod('paid'); }}
+                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isWalletBlocked) e.preventDefault(); }}
+                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob || isWalletBlocked ? 'cursor-not-allowed' : ''}`}
                                     />
                                     <span className="font-medium text-emerald-400">Paid</span>
                                   </Label>
@@ -4393,8 +4417,37 @@ export default function AdminPage() {
 </div>
 
 
-                          {/* Wallet Insufficient Warning Banner */}
-                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
+                          {/* Wallet Expired Warning Banner */}
+                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && isCustomerWalletExpired && (
+                            <div className="mt-1 p-2 rounded-lg bg-rose-950/90 border border-rose-700 text-[10px] flex items-center justify-between gap-2 text-rose-200 font-bold shadow-md">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <AlertTriangle size={13} className="text-rose-400 shrink-0" />
+                                <div className="min-w-0">
+                                  <p className="truncate text-rose-300">
+                                    ⚠️ Wallet หมดอายุแล้ว {selectedProfileCustomer.memberExpiryDate ? `(${format(new Date(selectedProfileCustomer.memberExpiryDate), "dd/MM/yyyy")})` : ""}
+                                  </p>
+                                  <p className="text-[9px] text-rose-400 font-normal truncate">
+                                    ยอดคงเหลือ ฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} ถูกระงับชั่วคราว
+                                  </p>
+                                </div>
+                              </div>
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => {
+                                  setTopUpCustomer(selectedProfileCustomer);
+                                  setShowTopUpDialog(true);
+                                }}
+                                className="h-6 px-2 text-[9px] bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold shrink-0 gap-1 shadow cursor-pointer"
+                              >
+                                <Wallet size={10} />
+                                Top Up ต่ออายุ
+                              </Button>
+                            </div>
+                          )}
+
+                          {/* Wallet Insufficient Warning Banner (Only when not expired) */}
+                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isCustomerWalletExpired && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
                             <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold animate-pulse">
                               <span className="flex items-center gap-1">
                                 <Wallet size={11} className="text-rose-400" />
@@ -4405,6 +4458,7 @@ export default function AdminPage() {
                               </span>
                             </div>
                           )}
+
 
                           {/* Consolidated Checkout Buttons under summary card */}
                           <div className="flex gap-1.5 mt-1 pt-1 border-t border-slate-800 select-none">
@@ -4474,29 +4528,52 @@ export default function AdminPage() {
 
                             <Button 
                               type="button"
-                              disabled={isSubmitting || isDetailLoading || dialogCart.length === 0 || isCartLocked || isPaidJob || shopPaymentMethod !== 'paid' || (!paymentChannel || !paymentChannel.trim()) || isWalletInsufficient}
+                              disabled={
+                                isSubmitting || 
+                                isDetailLoading || 
+                                dialogCart.length === 0 || 
+                                isCartLocked || 
+                                isPaidJob || 
+                                (!isWalkIn && paymentMethod !== 'paid') || 
+                                shopPaymentMethod !== 'paid' || 
+                                (!paymentChannel || !paymentChannel.trim()) || 
+                                isWalletInsufficient || 
+                                (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                              }
                               onClick={() => handleCreate(true)}
                               className={`flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                                 isPaidJob
                                   ? 'bg-slate-700 text-slate-300'
-                                  : isWalletInsufficient
+                                  : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
                                     ? 'bg-rose-600/80 hover:bg-rose-600'
-                                    : 'bg-emerald-500 hover:bg-emerald-600'
+                                    : (!isWalkIn && paymentMethod !== 'paid') || shopPaymentMethod !== 'paid'
+                                      ? 'bg-slate-700 text-slate-400'
+                                      : 'bg-emerald-500 hover:bg-emerald-600'
                               }`}
                               title={
                                 isPaidJob
-                                  ? 'บิลนี้ชำระเงินเรียบร้อยแล้ว'
-                                  : isWalletInsufficient
-                                    ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
-                                    : undefined
+                                  ? (currentLanguage === "en" ? "Payment Completed" : "บิลนี้ชำระเงินเรียบร้อยแล้ว")
+                                  : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                                    ? "Wallet หมดอายุแล้ว"
+                                    : isWalletInsufficient
+                                      ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
+                                      : (!isWalkIn && paymentMethod !== 'paid')
+                                        ? (currentLanguage === "en" ? "Waiting for CSO verification (CSO Paid)" : "รอ CSO ยืนยันสถานะชำระเงิน (CSO Paid)")
+                                        : shopPaymentMethod !== 'paid'
+                                          ? (currentLanguage === "en" ? "Waiting for SHOP verification (SHOP Paid)" : "รอ SHOP ยืนยันสถานะชำระเงิน (SHOP Paid)")
+                                          : (!paymentChannel || !paymentChannel.trim())
+                                            ? (currentLanguage === "en" ? "Please select payment channel" : "กรุณาเลือกช่องทางการชำระเงิน")
+                                            : undefined
                               }
                             >
                               <Banknote size={12} />
                               {isPaidJob
                                 ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
-                                : isWalletInsufficient
-                                  ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
-                                  : `Pay ฿${dialogTotal.toFixed(2)}`}
+                                : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                                  ? "Wallet หมดอายุ"
+                                  : isWalletInsufficient
+                                    ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
+                                    : `Pay ฿${dialogTotal.toFixed(2)}`}
                             </Button>
                           </div>
 
@@ -5181,11 +5258,13 @@ export default function AdminPage() {
         
         <AdminCustomerDialog
           open={customerDialogOpen}
-          onOpenChange={(open) => {
-            setCustomerDialogOpen(open);
-            if (!open) setSelectedProfileCustomer(null);
-          }}
+          onOpenChange={setCustomerDialogOpen}
           customer={selectedProfileCustomer}
+          onTopUpCustomer={(c) => {
+            setTopUpCustomer(c);
+            setShowTopUpDialog(true);
+          }}
+
           onSaved={(c) => {
             setServiceWeight(2);
             setOtherClothingName("");

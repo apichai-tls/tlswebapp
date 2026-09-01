@@ -21,7 +21,8 @@ import {
 } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
 import { useCustomers } from "@/lib/use-customers";
-import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber } from "@/lib/utils";
+import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate } from "@/lib/utils";
+
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { createTopUpTransactionAction, getCustomerTodayTopUpAction } from "@/actions/db";
 
@@ -240,8 +241,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   }, [open, preselectedCustomer]);
 
   // ── Slip Upload Helper ─────────────────────────────────────────────────────
-  const handleSlipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const uploadSlipFile = async (file: File) => {
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
@@ -323,6 +323,43 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
     }
   };
 
+  const handleSlipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      await uploadSlipFile(file);
+    }
+  };
+
+  // ── Support Ctrl+V Paste from Clipboard ────────────────────────────────────
+  useEffect(() => {
+    if (!open || step !== "payment" || showReceipt) return;
+
+    const handleWindowPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA") && (target as HTMLInputElement).type === "text") {
+        return;
+      }
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith("image/")) {
+          const file = items[i].getAsFile();
+          if (file) {
+            e.preventDefault();
+            uploadSlipFile(file);
+            return;
+          }
+        }
+      }
+    };
+
+    window.addEventListener("paste", handleWindowPaste);
+    return () => window.removeEventListener("paste", handleWindowPaste);
+  }, [open, step, showReceipt, selectedCustomer?.id]);
+
+
   // ── Cart helpers ───────────────────────────────────────────────────────────
   const addToCart = (service: ServiceItem, customPrice?: number) => {
     const price = customPrice ?? service.price;
@@ -383,13 +420,19 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       const topUpReceiptNo = generateTopUpReceiptNumber(nextSeq, now);
 
-      // Update customer wallet (Paid amount + Bonus credit)
+      // Update customer wallet (Paid amount + Bonus credit) & Set 6-Month Expiry (Option A: from today)
       const currentBalance = selectedCustomer.creditBalance || 0;
       const newBalance = currentBalance + totalCreditReceived;
-      const walletUpdates: Partial<Customer> = { creditBalance: newBalance };
+      const newExpiryDate = calculateWalletExpiryDate(now);
+
+      const walletUpdates: Partial<Customer> = { 
+        creditBalance: newBalance,
+        isMember: true,
+        memberExpiryDate: newExpiryDate,
+        memberStartDate: selectedCustomer.memberStartDate || now,
+      };
 
       if (!selectedCustomer.isMember) {
-        walletUpdates.isMember = true;
         const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
         if (memberList) walletUpdates.priceListId = memberList.id;
         toast.success(`${selectedCustomer.name} has been upgraded to Member! 🎉`);
@@ -399,9 +442,10 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       toast.success(
         bonusTotal > 0
-          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ฿${formatCurrency(newBalance)}`
-          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(newBalance)}`
+          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ฿${formatCurrency(newBalance)} (ใช้ได้ถึง ${format(newExpiryDate, "dd/MM/yyyy")})`
+          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(newBalance)} (ใช้ได้ถึง ${format(newExpiryDate, "dd/MM/yyyy")})`
       );
+
 
       // Build receipt data
       const rdata: any = {
@@ -872,11 +916,22 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                       />
                       <label
                         htmlFor="topup-slip-file-input"
-                        className={`w-full flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed text-xs font-medium cursor-pointer transition-all ${
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const file = e.dataTransfer?.files?.[0];
+                          if (file) uploadSlipFile(file);
+                        }}
+                        className={`w-full flex items-center justify-center gap-2 p-3.5 rounded-xl border-2 border-dashed text-xs font-medium cursor-pointer transition-all ${
                           isUploadingSlip
                             ? "border-slate-300 bg-slate-50 text-slate-400 cursor-not-allowed"
-                            : "border-slate-300 bg-slate-50/60 hover:bg-emerald-50/50 hover:border-emerald-300 text-slate-600 hover:text-emerald-700"
+                            : "border-slate-300 bg-slate-50/60 hover:bg-emerald-50/60 hover:border-emerald-400 text-slate-600 hover:text-emerald-700 shadow-2xs"
                         }`}
+                        title="คลิกเพื่อเลือกไฟล์ หรือกด Ctrl+V เพื่อวางรูปภาพจาก Clipboard"
                       >
                         {isUploadingSlip ? (
                           <div className="flex items-center gap-2">
@@ -884,13 +939,14 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                             <span>กำลังอัปโหลดสลิป ({slipUploadProgress}%)…</span>
                           </div>
                         ) : (
-                          <div className="flex items-center gap-2">
-                            <ImageIcon size={14} className="text-slate-400" />
-                            <span>คลิกเพื่อแนบสลิป / Upload Slip Image (Optional)</span>
+                          <div className="flex items-center gap-2 text-center flex-wrap justify-center">
+                            <ImageIcon size={15} className="text-slate-400" />
+                            <span>คลิกเพื่อแนบสลิป หรือกด <kbd className="px-1.5 py-0.5 text-[10px] font-mono bg-white border border-slate-300 rounded shadow-2xs text-slate-700">Ctrl+V</kbd> เพื่อวางรูป</span>
                           </div>
                         )}
                       </label>
                     </div>
+
                   )}
                 </div>
               </div>

@@ -243,12 +243,15 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                 <span className="text-slate-400 font-medium">New Balance (ยอดคงเหลือใหม่):</span>{" "}
                 <span className="font-black text-slate-900 font-mono">฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
-              <div className="col-span-full pt-2 mt-1 border-t border-slate-200/60 text-xs text-slate-700 flex flex-wrap items-center justify-between gap-2">
+              <div className="col-span-full pt-2 mt-1 border-t border-slate-200/60 text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <span>
                   ยอดเดิม: <strong className="font-mono text-slate-600">฿{balBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> → <strong className={`font-mono font-bold ${isAdd ? 'text-emerald-700' : 'text-rose-700'}`}>ยอดคงเหลือใหม่: ฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
                 </span>
                 {parsed.reason && (
-                  <span className="text-slate-500 italic text-[11px]">เหตุผล: {parsed.reason}</span>
+                  <div className="flex items-center gap-1.5 bg-white/90 border border-slate-300/80 px-2.5 py-1 rounded-lg text-slate-800 text-[11px] shadow-xs">
+                    <span className="text-slate-500 font-bold">เหตุผล:</span>
+                    <span className="text-slate-900 font-extrabold">{parsed.reason}</span>
+                  </div>
                 )}
               </div>
             </div>

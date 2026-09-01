@@ -18,8 +18,11 @@ import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-m
 import { getTopUpTransactionsAction } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
+import { isWalletExpired } from "@/lib/utils";
+
 
 const containerVariants = {
+
   hidden: { opacity: 0 },
   visible: {
     opacity: 1,
@@ -161,34 +164,42 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
   const [topUpCustomer, setTopUpCustomer] = useState<Customer | null>(null);
   const [adjustMode, setAdjustMode] = useState<"add" | "deduct">("add");
   const [topUpAmount, setTopUpAmount] = useState("");
+  const [adjustReason, setAdjustReason] = useState("");
   const [adjustLoading, setAdjustLoading] = useState(false);
 
   const handleTopUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topUpCustomer) return;
     const rawAmount = parseFloat(topUpAmount);
-    if (isNaN(rawAmount) || rawAmount <= 0) {
-      toast.error("Please enter a valid positive amount");
+    if (isNaN(rawAmount) || rawAmount === 0) {
+      toast.error("กรุณาระบุจำนวนเงินที่ต้องการปรับยอด");
       return;
     }
     const currentBalance = topUpCustomer.creditBalance || 0;
-    const delta = adjustMode === "add" ? Math.abs(rawAmount) : -Math.abs(rawAmount);
-    const newBalance = Math.max(0, currentBalance + delta);
+    // If user explicitly typed a negative number, treat as deduction
+    const delta = rawAmount < 0 
+      ? rawAmount 
+      : (adjustMode === "add" ? rawAmount : -rawAmount);
+    const newBalance = Math.round((currentBalance + delta) * 100) / 100;
+    const isAdd = delta >= 0;
     
     setAdjustLoading(true);
     try {
       await customerStore.updateCustomer(topUpCustomer.id, {
         creditBalance: newBalance,
+        adjustReason: adjustReason.trim() || undefined,
+        reason: adjustReason.trim() || undefined,
         actorId: user?.id,
         actorName: user?.name || user?.email || "Admin",
         actorRole: user?.role
       } as any);
 
       toast.success(
-        `${adjustMode === "add" ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(rawAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
       );
       setTopUpOpen(false);
       setTopUpAmount("");
+      setAdjustReason("");
       setAdjustMode("add");
     } catch (err: any) {
       toast.error(err?.message || "เกิดข้อผิดพลาด กรุณาลองใหม่");
@@ -196,6 +207,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
       setAdjustLoading(false);
     }
   };
+
 
 
   const openForm = (customer?: Customer) => {
@@ -849,12 +861,19 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                             <div className="space-y-1.5">
                               {/* Wallet Balance */}
                               <div className="flex items-center gap-1">
-                                <Wallet size={12} className="text-slate-400" />
+                                <Wallet size={12} className={customer.isMember && isWalletExpired(customer) ? "text-rose-400" : "text-slate-400"} />
                                 <span className={`text-xs font-bold ${
-                                  (customer.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"
+                                  customer.isMember && isWalletExpired(customer)
+                                    ? "text-rose-600"
+                                    : (customer.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"
                                 }`}>
                                   ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                 </span>
+                                {customer.isMember && isWalletExpired(customer) && (
+                                  <span className="text-[9px] text-rose-500 font-bold bg-rose-50 px-1 rounded border border-rose-200">
+                                    หมดอายุ
+                                  </span>
+                                )}
                               </div>
                               
                               {/* Price tier badge */}
@@ -867,17 +886,18 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                                 
                                 {customer.isMember && customer.memberExpiryDate && (
                                   <Badge className={`border shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5 ${
-                                    new Date(customer.memberExpiryDate).getTime() < Date.now()
+                                    isWalletExpired(customer)
                                       ? "bg-rose-50 text-rose-700 border-rose-200/50"
                                       : "bg-emerald-50 text-emerald-700 border-emerald-200/50"
                                   }`}>
                                     <Clock size={8} />
-                                    {new Date(customer.memberExpiryDate).getTime() < Date.now()
+                                    {isWalletExpired(customer)
                                       ? `Expired: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
                                       : `Expires: ${format(new Date(customer.memberExpiryDate), "dd MMM yyyy")}`
                                     }
                                   </Badge>
                                 )}
+
                                 
                                 {customer.priceListId && customer.priceListId !== "regular" ? (
                                   <Badge className="bg-purple-50 text-purple-700 border border-purple-200/30 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
@@ -1146,39 +1166,68 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
               <div className="space-y-2">
                 <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Amount (฿)</Label>
                 <div className="relative">
-                  <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black text-lg ${adjustMode === "add" ? "text-emerald-600" : "text-rose-600"}`}>
-                    {adjustMode === "add" ? "+" : "-"} ฿
+                  <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black text-lg ${
+                    (topUpAmount.startsWith("-") || adjustMode === "deduct") ? "text-rose-600" : "text-emerald-600"
+                  }`}>
+                    {(topUpAmount.startsWith("-") || adjustMode === "deduct") ? "-" : "+"} ฿
                   </span>
                   <Input 
                     type="number" 
-                    step="0.01" 
-                    min="0.01"
+                    step="any"
                     required 
                     autoFocus 
-                    placeholder="e.g. 500" 
+                    placeholder="e.g. 500 หรือ -500" 
                     value={topUpAmount} 
-                    onChange={e => setTopUpAmount(e.target.value)} 
+                    onChange={e => {
+                      const val = e.target.value;
+                      setTopUpAmount(val);
+                      if (val.startsWith("-")) {
+                        setAdjustMode("deduct");
+                      } else if (val.startsWith("+")) {
+                        setAdjustMode("add");
+                      }
+                    }} 
                     className={`h-14 pl-14 border-slate-200 text-xl font-bold rounded-xl bg-white ${
-                      adjustMode === "add" ? "focus-visible:ring-emerald-500 text-emerald-950" : "focus-visible:ring-rose-500 text-rose-950"
+                      (topUpAmount.startsWith("-") || adjustMode === "deduct") 
+                        ? "focus-visible:ring-rose-500 text-rose-950" 
+                        : "focus-visible:ring-emerald-500 text-emerald-950"
                     }`} 
                   />
                 </div>
               </div>
 
+              {/* Adjustment Reason Input */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
+                  <span>เหตุผลในการปรับยอด (Reason)</span>
+                  <span className="text-[10px] text-slate-400 font-normal">บันทึกลง Log</span>
+                </Label>
+                <Input 
+                  type="text"
+                  placeholder="e.g. ยกยอดจากระบบเดิม, ชดเชยผ้าเสียหาย, ปรับปรุงยอดผิดพลาด"
+                  value={adjustReason}
+                  onChange={e => setAdjustReason(e.target.value)}
+                  className="h-11 border-slate-200 text-xs rounded-xl bg-white text-slate-800 placeholder:text-slate-400"
+                />
+              </div>
+
               {/* Live Preview Box */}
               {(() => {
                 const raw = parseFloat(topUpAmount);
-                const valid = !isNaN(raw) && raw > 0;
-                const delta = valid ? (adjustMode === "add" ? raw : -raw) : 0;
+                const valid = !isNaN(raw) && raw !== 0;
+                const delta = valid ? (raw < 0 ? raw : (adjustMode === "add" ? raw : -raw)) : 0;
                 const cur = topUpCustomer?.creditBalance || 0;
-                const projected = Math.max(0, cur + delta);
+                const projected = Math.round((cur + delta) * 100) / 100;
+                const isAdd = delta >= 0;
                 return (
                   <div className={`p-3.5 rounded-xl border transition-all ${
-                    adjustMode === "add" ? "bg-emerald-50/60 border-emerald-200 text-emerald-900" : "bg-rose-50/60 border-rose-200 text-rose-900"
+                    isAdd ? "bg-emerald-50/60 border-emerald-200 text-emerald-900" : "bg-rose-50/60 border-rose-200 text-rose-900"
                   }`}>
                     <div className="flex justify-between items-center text-xs font-semibold">
                       <span>ยอดหลังปรับปรุง (New Balance):</span>
-                      <span className="text-base font-black">฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      <span className={`text-base font-black ${projected < 0 ? "text-rose-600" : ""}`}>
+                        ฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
                     </div>
                   </div>
                 );
@@ -1187,22 +1236,31 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
 
             <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100">
               <Button type="button" variant="ghost" onClick={() => setTopUpOpen(false)} disabled={adjustLoading} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
-              <Button 
-                type="submit" 
-                disabled={adjustLoading || !topUpAmount || parseFloat(topUpAmount) <= 0}
-                className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
-                  adjustMode === "add"
-                    ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
-                    : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
-                }`}
-              >
-                {adjustLoading
-                  ? "Saving..."
-                  : adjustMode === "add"
-                    ? `Confirm Add +฿${parseFloat(topUpAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`
-                    : `Confirm Deduct -฿${parseFloat(topUpAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-              </Button>
+              {(() => {
+                const raw = parseFloat(topUpAmount);
+                const valid = !isNaN(raw) && raw !== 0;
+                const delta = valid ? (raw < 0 ? raw : (adjustMode === "add" ? raw : -raw)) : 0;
+                const isAdd = delta >= 0;
+                return (
+                  <Button 
+                    type="submit" 
+                    disabled={adjustLoading || !valid}
+                    className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
+                      isAdd
+                        ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
+                        : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
+                    }`}
+                  >
+                    {adjustLoading
+                      ? "Saving..."
+                      : isAdd
+                        ? `Confirm Add +฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                        : `Confirm Deduct -฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                  </Button>
+                );
+              })()}
             </DialogFooter>
+
           </form>
         </DialogContent>
       </Dialog>

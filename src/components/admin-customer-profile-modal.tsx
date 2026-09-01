@@ -2,7 +2,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink } from "lucide-react";
+import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X } from "lucide-react";
+
 import { format } from "date-fns";
 import { type Customer, shopStore } from "@/lib/store";
 import { useSyncExternalStore, useState, useEffect, useMemo } from "react";
@@ -11,8 +12,11 @@ import { motion } from "framer-motion";
 import { getTopUpTransactionsAction } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
+import { isWalletExpired } from "@/lib/utils";
+
 
 // Helper to extract initials for avatar
+
 const getInitials = (name: string) => {
   if (!name) return "??";
   const parts = name.trim().split(/\s+/);
@@ -138,12 +142,35 @@ export function AdminCustomerProfileModal({
     };
   }, [ltv]);
 
+  // Dynamic fallback: If customer.memberExpiryDate is null but topUpTxs has records, derive expiry from latest topup
+  const resolvedExpiryDate = useMemo(() => {
+    if (customer?.memberExpiryDate) return new Date(customer.memberExpiryDate);
+    if (topUpTxs && topUpTxs.length > 0 && topUpTxs[0]?.createdAt) {
+      const d = new Date(topUpTxs[0].createdAt);
+      d.setMonth(d.getMonth() + 6);
+      d.setHours(23, 59, 59, 999);
+      return d;
+    }
+    return null;
+  }, [customer?.memberExpiryDate, topUpTxs]);
+
+  const resolvedStartDate = useMemo(() => {
+    if (customer?.memberStartDate) return new Date(customer.memberStartDate);
+    if (topUpTxs && topUpTxs.length > 0 && topUpTxs[0]?.createdAt) {
+      return new Date(topUpTxs[0].createdAt);
+    }
+    if (resolvedExpiryDate) {
+      return new Date(resolvedExpiryDate.getTime() - 180 * 24 * 60 * 60 * 1000);
+    }
+    return null;
+  }, [customer?.memberStartDate, topUpTxs, resolvedExpiryDate]);
+
   const memberProgress = useMemo(() => {
-    if (!customer || !customer.isMember || !customer.memberStartDate || !customer.memberExpiryDate) {
+    if (!customer || !customer.isMember || !resolvedExpiryDate) {
       return null;
     }
-    const start = new Date(customer.memberStartDate);
-    const expiry = new Date(customer.memberExpiryDate);
+    const expiry = resolvedExpiryDate;
+    const start = resolvedStartDate || new Date(expiry.getTime() - 180 * 24 * 60 * 60 * 1000);
     const today = new Date();
     
     const totalDays = Math.max(1, Math.ceil((expiry.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
@@ -161,9 +188,11 @@ export function AdminCustomerProfileModal({
       percent,
       isExpired
     };
-  }, [customer]);
+  }, [customer, resolvedExpiryDate, resolvedStartDate]);
 
   if (!customer) return null;
+
+  const isCustomerExpired = resolvedExpiryDate ? (resolvedExpiryDate.getTime() < Date.now()) : isWalletExpired(customer);
 
   return (
     <>
@@ -218,15 +247,27 @@ export function AdminCustomerProfileModal({
             {!isStandardPlan && (
               <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm text-right shrink-0 min-w-[140px]">
                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-end gap-1 mb-0.5">
-                  <Wallet size={10} className="text-emerald-500" /> Credit Wallet
+                  <Wallet size={10} className={customer.isMember && isCustomerExpired ? "text-rose-500" : "text-emerald-500"} /> Credit Wallet
                 </div>
-                <div className="text-xl font-black text-emerald-600">
+                <div className={`text-xl font-black ${customer.isMember && isCustomerExpired ? "text-rose-600" : "text-emerald-600"}`}>
                   ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </div>
+                {customer.isMember && (
+                  <div className={`text-[9px] font-bold mt-0.5 ${
+                    resolvedExpiryDate 
+                      ? (isCustomerExpired ? "text-rose-500" : "text-slate-400")
+                      : "text-amber-500"
+                  }`}>
+                    {resolvedExpiryDate 
+                      ? (isCustomerExpired ? "หมดอายุ (ระงับชั่วคราว)" : `ใช้ได้ถึง ${format(resolvedExpiryDate, "dd/MM/yyyy")}`)
+                      : "รอเริ่มนับเมื่อ Top Up"}
+                  </div>
+                )}
               </div>
             )}
           </div>
         </DialogHeader>
+
 
         {/* Main Body */}
         <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
@@ -253,34 +294,44 @@ export function AdminCustomerProfileModal({
           </div>
 
           {/* Member Validity Details */}
-          {customer.isMember && memberProgress && (
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2.5 shadow-sm">
-              <div className="flex justify-between items-center text-xs font-bold">
-                <span className="text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                  <Crown size={12} className="text-indigo-500" /> Member Validity
+          {customer.isMember && (
+            memberProgress ? (
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2.5 shadow-sm">
+                <div className="flex justify-between items-center text-xs font-bold">
+                  <span className="text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                    <Crown size={12} className="text-indigo-500" /> Member Validity
+                  </span>
+                  <span className={memberProgress.isExpired ? "text-rose-600 font-extrabold" : "text-emerald-650 font-extrabold"}>
+                    {memberProgress.isExpired ? "Expired" : `${memberProgress.daysRemaining} Days Remaining`}
+                  </span>
+                </div>
+                
+                <div className="w-full bg-slate-100 border border-slate-200 h-3 rounded-full overflow-hidden relative">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${100 - memberProgress.percent}%` }}
+                    transition={{ duration: 0.8, ease: "easeOut" }}
+                    className={`h-full ${memberProgress.isExpired ? "bg-rose-500" : "bg-gradient-to-r from-emerald-400 to-indigo-500"}`}
+                  />
+                </div>
+                
+                <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  <span>Start: <strong className="text-slate-900">{format(memberProgress.start, "dd MMM yyyy")}</strong></span>
+                  <span>Expiry: <strong className={memberProgress.isExpired ? "text-rose-600" : "text-slate-900"}>{format(memberProgress.expiry, "dd MMM yyyy")}</strong></span>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-amber-50/50 p-3.5 rounded-xl border border-amber-200/60 flex items-center justify-between text-xs font-semibold text-amber-800">
+                <span className="flex items-center gap-1.5">
+                  <Crown size={14} className="text-amber-500" />
+                  <span>สมาชิกรุ่นเดิม (ยังไม่เริ่มนับ 6 เดือน — ระบบจะตั้งอายุ 6 เดือนให้อัตโนมัติเมื่อมีการ Top Up)</span>
                 </span>
-                <span className={memberProgress.isExpired ? "text-rose-600 font-extrabold" : "text-emerald-650 font-extrabold"}>
-                  {memberProgress.isExpired ? "Expired" : `${memberProgress.daysRemaining} Days Remaining`}
-                </span>
               </div>
-              
-              <div className="w-full bg-slate-100 border border-slate-200 h-3 rounded-full overflow-hidden relative">
-                <motion.div 
-                  initial={{ width: 0 }}
-                  animate={{ width: `${100 - memberProgress.percent}%` }}
-                  transition={{ duration: 0.8, ease: "easeOut" }}
-                  className={`h-full ${memberProgress.isExpired ? "bg-rose-500" : "bg-gradient-to-r from-emerald-400 to-indigo-500"}`}
-                />
-              </div>
-              
-              <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                <span>Start: <strong className="text-slate-900">{format(memberProgress.start, "dd MMM yyyy")}</strong></span>
-                <span>Expiry: <strong className={memberProgress.isExpired ? "text-rose-600" : "text-slate-900"}>{format(memberProgress.expiry, "dd MMM yyyy")}</strong></span>
-              </div>
-            </div>
+            )
           )}
 
           {/* LTV Progression Progress Bar */}
+
           {!isStandardPlan && (
             <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2.5">
               <div className="flex justify-between items-center text-xs font-bold">
@@ -637,42 +688,63 @@ export function AdminCustomerProfileModal({
         />
       )}
 
-      {/* Payment Slip Lightbox Dialog */}
-      <Dialog open={previewSlipModalOpen} onOpenChange={setPreviewSlipModalOpen}>
-        <DialogContent className="max-w-lg p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl z-[80]">
-          <DialogHeader className="p-4 bg-slate-900 text-white flex flex-row items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ImageIcon size={18} className="text-emerald-400" />
-              <DialogTitle className="text-sm font-bold text-white">
-                หลักฐานการชำระเงิน — {previewSlipTitle}
-              </DialogTitle>
+      {/* Payment Slip Lightbox Modal — z-[1200] ensures it appears in front of Profile Modal */}
+      {previewSlipModalOpen && (
+        <div 
+          className="fixed inset-0 z-[1200] bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in-0 duration-200"
+          onClick={() => setPreviewSlipModalOpen(false)}
+        >
+          <div 
+            className="relative max-w-lg w-full bg-slate-900 rounded-2xl overflow-hidden shadow-2xl border border-slate-700/80 animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 bg-slate-900 border-b border-slate-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0 pr-2">
+                <ImageIcon size={18} className="text-emerald-400 shrink-0" />
+                <h3 className="text-sm font-bold text-white truncate">
+                  หลักฐานการชำระเงิน — {previewSlipTitle}
+                </h3>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {previewSlipUrl && (
+                  <a
+                    href={previewSlipUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-slate-300 hover:text-white flex items-center gap-1 bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg transition-colors border border-slate-700"
+                    title="Open Full Image"
+                  >
+                    <ExternalLink size={12} />
+                    <span>เปิดรูปเต็ม</span>
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPreviewSlipModalOpen(false)}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                  title="Close"
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
-            {previewSlipUrl && (
-              <a
-                href={previewSlipUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-slate-300 hover:text-white flex items-center gap-1 bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg transition-colors mr-6"
-              >
-                <ExternalLink size={12} />
-                <span>เปิดรูปเต็ม</span>
-              </a>
-            )}
-          </DialogHeader>
-          <div className="p-4 bg-slate-950 flex items-center justify-center max-h-[75vh] overflow-auto">
-            {previewSlipUrl ? (
-              <img
-                src={previewSlipUrl}
-                alt="Payment Slip"
-                className="max-w-full max-h-[68vh] object-contain rounded-lg shadow-lg border border-slate-800"
-              />
-            ) : (
-              <div className="py-12 text-slate-500 text-xs">ไม่มีรูปภาพสลิป</div>
-            )}
+            
+            <div className="p-4 bg-slate-950 flex items-center justify-center max-h-[75vh] overflow-auto">
+              {previewSlipUrl ? (
+                <img
+                  src={previewSlipUrl}
+                  alt="Payment Slip"
+                  className="max-w-full max-h-[68vh] object-contain rounded-lg shadow-lg border border-slate-800"
+                />
+              ) : (
+                <div className="py-12 text-slate-500 text-xs">ไม่มีรูปภาพสลิป</div>
+              )}
+            </div>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      )}
     </>
   );
 }
+
 

@@ -18,23 +18,27 @@ export function AdminCustomerDialog({
   open, 
   onOpenChange, 
   customer, 
-  onSaved 
+  onSaved,
+  onTopUpCustomer
 }: { 
   open: boolean; 
   onOpenChange: (open: boolean) => void; 
   customer?: Customer | null;
   onSaved?: (c: Customer) => void;
+  onTopUpCustomer?: (c: Customer) => void;
 }) {
   const { user } = useAuth();
   const canAdjustBalance = user?.role === "admin" || user?.role === "accounting";
   const canTopUp = user?.role !== "rider";
 
-
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
+  const [localTopUpCustomer, setLocalTopUpCustomer] = useState<Customer | null>(null);
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [adjustMode, setAdjustMode] = useState<"add" | "deduct">("add");
   const [adjustAmount, setAdjustAmount] = useState("");
+  const [adjustReason, setAdjustReason] = useState("");
   const [adjustLoading, setAdjustLoading] = useState(false);
+
 
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
@@ -43,29 +47,36 @@ export function AdminCustomerDialog({
     e.preventDefault();
     if (!customer) return;
     const rawAmount = parseFloat(adjustAmount);
-    if (isNaN(rawAmount) || rawAmount <= 0) {
-      toast.error("Please enter a valid positive amount");
+    if (isNaN(rawAmount) || rawAmount === 0) {
+      toast.error("กรุณาระบุจำนวนเงินที่ต้องการปรับยอด");
       return;
     }
 
     const currentBalance = customer.creditBalance || 0;
-    const delta = adjustMode === "add" ? Math.abs(rawAmount) : -Math.abs(rawAmount);
-    const newBalance = Math.max(0, currentBalance + delta);
+    // If user explicitly typed a negative number, treat as deduction
+    const delta = rawAmount < 0 
+      ? rawAmount 
+      : (adjustMode === "add" ? rawAmount : -rawAmount);
+    const newBalance = Math.round((currentBalance + delta) * 100) / 100;
+    const isAdd = delta >= 0;
 
     setAdjustLoading(true);
     try {
       await customerStore.updateCustomer(customer.id, {
         creditBalance: newBalance,
+        adjustReason: adjustReason.trim() || undefined,
+        reason: adjustReason.trim() || undefined,
         actorId: user?.id,
         actorName: user?.name || user?.email || "Admin",
         actorRole: user?.role
       } as any);
 
       toast.success(
-        `${adjustMode === "add" ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(rawAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
       );
       setAdjustOpen(false);
       setAdjustAmount("");
+      setAdjustReason("");
       setAdjustMode("add");
     } catch (err: any) {
       toast.error(err?.message || "เกิดข้อผิดพลาด กรุณาลองใหม่");
@@ -73,6 +84,7 @@ export function AdminCustomerDialog({
       setAdjustLoading(false);
     }
   };
+
 
 
 
@@ -185,7 +197,19 @@ export function AdminCustomerDialog({
                 {canTopUp && customer?.isMember && (
                   <Button type="button" variant="outline" size="sm"
                     className="h-7 border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[10px] font-bold px-2 rounded-md"
-                    onClick={() => { onOpenChange(false); setTimeout(() => setShowTopUpDialog(true), 150); }}>
+                    onClick={() => {
+                      if (customer) {
+                        if (onTopUpCustomer) {
+                          onOpenChange(false);
+                          onTopUpCustomer(customer);
+                        } else {
+                          setLocalTopUpCustomer(customer);
+                          onOpenChange(false);
+                          setTimeout(() => setShowTopUpDialog(true), 150);
+                        }
+                      }
+                    }}>
+
                     <Wallet size={10} />
                     Top Up
                   </Button>
@@ -359,39 +383,68 @@ export function AdminCustomerDialog({
                 <div className="space-y-2">
                   <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Amount (฿)</Label>
                   <div className="relative">
-                    <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black text-lg ${adjustMode === "add" ? "text-emerald-600" : "text-rose-600"}`}>
-                      {adjustMode === "add" ? "+" : "-"} ฿
+                    <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black text-lg ${
+                      (adjustAmount.startsWith("-") || adjustMode === "deduct") ? "text-rose-600" : "text-emerald-600"
+                    }`}>
+                      {(adjustAmount.startsWith("-") || adjustMode === "deduct") ? "-" : "+"} ฿
                     </span>
                     <Input 
                       type="number" 
-                      step="0.01" 
-                      min="0.01"
+                      step="any"
                       required 
                       autoFocus 
-                      placeholder="e.g. 500" 
+                      placeholder="e.g. 500 หรือ -500" 
                       value={adjustAmount} 
-                      onChange={e => setAdjustAmount(e.target.value)} 
+                      onChange={e => {
+                        const val = e.target.value;
+                        setAdjustAmount(val);
+                        if (val.startsWith("-")) {
+                          setAdjustMode("deduct");
+                        } else if (val.startsWith("+")) {
+                          setAdjustMode("add");
+                        }
+                      }} 
                       className={`h-14 pl-14 border-slate-200 text-xl font-bold rounded-xl bg-white ${
-                        adjustMode === "add" ? "focus-visible:ring-emerald-500 text-emerald-950" : "focus-visible:ring-rose-500 text-rose-950"
+                        (adjustAmount.startsWith("-") || adjustMode === "deduct") 
+                          ? "focus-visible:ring-rose-500 text-rose-950" 
+                          : "focus-visible:ring-emerald-500 text-emerald-950"
                       }`} 
                     />
                   </div>
                 </div>
 
+                {/* Adjustment Reason Input */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
+                    <span>เหตุผลในการปรับยอด (Reason)</span>
+                    <span className="text-[10px] text-slate-400 font-normal">บันทึกลง Log</span>
+                  </Label>
+                  <Input 
+                    type="text"
+                    placeholder="e.g. ยกยอดจากระบบเดิม, ชดเชยผ้าเสียหาย, ปรับปรุงยอดผิดพลาด"
+                    value={adjustReason}
+                    onChange={e => setAdjustReason(e.target.value)}
+                    className="h-11 border-slate-200 text-xs rounded-xl bg-white text-slate-800 placeholder:text-slate-400"
+                  />
+                </div>
+
                 {/* Live Preview Box */}
                 {(() => {
                   const raw = parseFloat(adjustAmount);
-                  const valid = !isNaN(raw) && raw > 0;
-                  const delta = valid ? (adjustMode === "add" ? raw : -raw) : 0;
+                  const valid = !isNaN(raw) && raw !== 0;
+                  const delta = valid ? (raw < 0 ? raw : (adjustMode === "add" ? raw : -raw)) : 0;
                   const cur = customer.creditBalance || 0;
-                  const projected = Math.max(0, cur + delta);
+                  const projected = Math.round((cur + delta) * 100) / 100;
+                  const isAdd = delta >= 0;
                   return (
                     <div className={`p-3.5 rounded-xl border transition-all ${
-                      adjustMode === "add" ? "bg-emerald-50/60 border-emerald-200 text-emerald-900" : "bg-rose-50/60 border-rose-200 text-rose-900"
+                      isAdd ? "bg-emerald-50/60 border-emerald-200 text-emerald-900" : "bg-rose-50/60 border-rose-200 text-rose-900"
                     }`}>
                       <div className="flex justify-between items-center text-xs font-semibold">
                         <span>ยอดหลังปรับปรุง (New Balance):</span>
-                        <span className="text-base font-black">฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        <span className={`text-base font-black ${projected < 0 ? "text-rose-600" : ""}`}>
+                          ฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
                       </div>
                     </div>
                   );
@@ -399,22 +452,31 @@ export function AdminCustomerDialog({
               </div>
               <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100">
                 <Button type="button" variant="ghost" onClick={() => setAdjustOpen(false)} disabled={adjustLoading} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
-                <Button 
-                  type="submit" 
-                  disabled={adjustLoading || !adjustAmount || parseFloat(adjustAmount) <= 0} 
-                  className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
-                    adjustMode === "add"
-                      ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
-                      : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
-                  }`}
-                >
-                  {adjustLoading
-                    ? "Saving..."
-                    : adjustMode === "add"
-                      ? `Confirm Add +฿${parseFloat(adjustAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`
-                      : `Confirm Deduct -฿${parseFloat(adjustAmount || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-                </Button>
+                {(() => {
+                  const raw = parseFloat(adjustAmount);
+                  const valid = !isNaN(raw) && raw !== 0;
+                  const delta = valid ? (raw < 0 ? raw : (adjustMode === "add" ? raw : -raw)) : 0;
+                  const isAdd = delta >= 0;
+                  return (
+                    <Button 
+                      type="submit" 
+                      disabled={adjustLoading || !valid} 
+                      className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
+                        isAdd
+                          ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
+                          : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
+                      }`}
+                    >
+                      {adjustLoading
+                        ? "Saving..."
+                        : isAdd
+                          ? `Confirm Add +฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                          : `Confirm Deduct -฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                    </Button>
+                  );
+                })()}
               </DialogFooter>
+
             </form>
           </DialogContent>
         </Dialog>
@@ -422,9 +484,17 @@ export function AdminCustomerDialog({
       )}
 
       {/* Top Up Dialog — opens after Edit Profile closes to avoid z-index conflict */}
-      {showTopUpDialog && customer && (
-        <TopUpDialog open={showTopUpDialog} onClose={() => setShowTopUpDialog(false)} preselectedCustomer={customer} />
+      {showTopUpDialog && (localTopUpCustomer || customer) && (
+        <TopUpDialog
+          open={showTopUpDialog}
+          onClose={() => {
+            setShowTopUpDialog(false);
+            setLocalTopUpCustomer(null);
+          }}
+          preselectedCustomer={localTopUpCustomer || customer}
+        />
       )}
     </>
   );
 }
+
