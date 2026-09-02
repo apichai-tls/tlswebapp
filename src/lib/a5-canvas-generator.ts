@@ -36,6 +36,9 @@ export async function generateA5ReceiptImage(
   wrapper.style.opacity = "0.01";
   wrapper.style.pointerEvents = "none";
   wrapper.style.width = "559px";
+  wrapper.style.height = "793px";
+  wrapper.style.overflow = "hidden";
+  wrapper.style.backgroundColor = "#ffffff";
   document.body.appendChild(wrapper);
 
   const root = createRoot(wrapper);
@@ -62,6 +65,10 @@ export async function generateA5ReceiptImage(
       allowTaint: true,
       backgroundColor: "#ffffff",
       logging: false,
+      width: 559,
+      height: 793,
+      windowWidth: 559,
+      windowHeight: 793,
       imageTimeout: 8000,
     });
 

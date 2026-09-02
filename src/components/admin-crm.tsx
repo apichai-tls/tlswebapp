@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useSyncExternalStore } from "react";
+import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X } from "lucide-react";
 import { format } from "date-fns";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
@@ -15,10 +15,58 @@ import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
-import { getTopUpTransactionsAction } from "@/actions/db";
+import { getTopUpTransactionsAction, updateTopUpTransactionSlipAction } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired } from "@/lib/utils";
+
+function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith("image/")) {
+      return resolve(file);
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return resolve(file);
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) return resolve(file);
+            const compressed = new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
+              type: "image/jpeg",
+              lastModified: Date.now(),
+            });
+            resolve(compressed);
+          },
+          "image/jpeg",
+          quality
+        );
+      };
+      img.onerror = () => resolve(file);
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => resolve(file);
+    reader.readAsDataURL(file);
+  });
+}
 
 
 const containerVariants = {
@@ -131,6 +179,163 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
   const [previewSlipModalOpen, setPreviewSlipModalOpen] = useState(false);
   const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
   const [previewSlipTitle, setPreviewSlipTitle] = useState("");
+
+  // Retroactive Slip Upload State
+  const [uploadSlipModalOpen, setUploadSlipModalOpen] = useState(false);
+  const [selectedTxForUpload, setSelectedTxForUpload] = useState<{
+    id: string;
+    customerName: string;
+    customerId: string;
+    currentSlipUrl: string | null;
+  } | null>(null);
+  const [uploadedSlipFile, setUploadedSlipFile] = useState<File | null>(null);
+  const [uploadedSlipPreviewUrl, setUploadedSlipPreviewUrl] = useState<string | null>(null);
+  const [isUploadingSlip, setIsUploadingSlip] = useState(false);
+  const [slipUploadProgress, setSlipUploadProgress] = useState(0);
+  const slipFileInputRef = useRef<HTMLInputElement>(null);
+
+  const openUploadSlipModal = (tx: any, customerName: string, currentSlipUrl: string | null) => {
+    setSelectedTxForUpload({
+      id: tx.id,
+      customerName,
+      customerId: tx.memberId,
+      currentSlipUrl,
+    });
+    setUploadedSlipFile(null);
+    setUploadedSlipPreviewUrl(currentSlipUrl || null);
+    setIsUploadingSlip(false);
+    setSlipUploadProgress(0);
+    setUploadSlipModalOpen(true);
+  };
+
+  const handleSelectSlipFile = (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("กรุณาเลือกไฟล์รูปภาพเท่านั้น");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("ขนาดไฟล์ต้องไม่เกิน 10MB");
+      return;
+    }
+    setUploadedSlipFile(file);
+    const objectUrl = URL.createObjectURL(file);
+    setUploadedSlipPreviewUrl(objectUrl);
+  };
+
+  const handleSaveRetroactiveSlip = async () => {
+    if (!selectedTxForUpload) return;
+    if (!uploadedSlipFile && !uploadedSlipPreviewUrl) {
+      toast.error("กรุณาเลือกรูปภาพสลิป");
+      return;
+    }
+
+    if (!uploadedSlipFile && uploadedSlipPreviewUrl === selectedTxForUpload.currentSlipUrl) {
+      setUploadSlipModalOpen(false);
+      return;
+    }
+
+    setIsUploadingSlip(true);
+    setSlipUploadProgress(15);
+
+    try {
+      let finalUrl = selectedTxForUpload.currentSlipUrl || "";
+      if (uploadedSlipFile) {
+        const compressedFile = await compressImage(uploadedSlipFile, 1600, 1600, 0.85);
+        const tempEntityId = selectedTxForUpload.customerId ? `customer-${selectedTxForUpload.customerId}` : `topup-${Date.now()}`;
+
+        try {
+          const signRes = await fetch("/api/upload-url", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              entityType: "job",
+              entityId: tempEntityId,
+              subType: "proofs",
+              contentType: compressedFile.type,
+            }),
+          });
+
+          if (!signRes.ok) throw new Error("Failed to get upload authorization");
+          const { uploadUrl, publicUrl, filePath } = await signRes.json();
+          setSlipUploadProgress(50);
+
+          const putRes = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": compressedFile.type },
+            body: compressedFile,
+          });
+
+          if (!putRes.ok) throw new Error("Cloud upload failed");
+          finalUrl = publicUrl || filePath;
+        } catch (gcsErr: any) {
+          console.warn("GCS Upload fallback to local:", gcsErr?.message);
+          setSlipUploadProgress(60);
+
+          const formData = new FormData();
+          formData.append("file", compressedFile);
+          formData.append("entityType", "job");
+          formData.append("entityId", tempEntityId);
+          formData.append("subType", "proofs");
+
+          const localRes = await fetch("/api/upload-local", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!localRes.ok) {
+            const errData = await localRes.json().catch(() => ({}));
+            throw new Error(errData.error || "Upload failed");
+          }
+
+          const localData = await localRes.json();
+          finalUrl = localData.publicUrl;
+        }
+      }
+
+      setSlipUploadProgress(90);
+
+      await updateTopUpTransactionSlipAction({
+        transactionId: selectedTxForUpload.id,
+        slipImageUrl: finalUrl,
+        userId: user?.id,
+        userName: user?.name || "Admin",
+      });
+
+      setSlipUploadProgress(100);
+      toast.success("อัปโหลดและบันทึกรูปสลิปเรียบร้อยแล้ว");
+      setUploadSlipModalOpen(false);
+      fetchTopUps();
+    } catch (err: any) {
+      console.error("Failed to upload slip:", err);
+      toast.error(`เกิดข้อผิดพลาดในการอัปโหลดสลิป: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsUploadingSlip(false);
+      setSlipUploadProgress(0);
+    }
+  };
+
+  // Support Ctrl+V paste when upload slip modal is open
+  useEffect(() => {
+    if (!uploadSlipModalOpen) return;
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith("image/")) {
+          const file = items[i].getAsFile();
+          if (file) {
+            e.preventDefault();
+            handleSelectSlipFile(file);
+            toast.info("วางรูปภาพจาก Clipboard เรียบร้อย");
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [uploadSlipModalOpen]);
 
 
   const fetchTopUps = () => {
@@ -671,23 +876,41 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                           </TableCell>
                           <TableCell className="py-4 text-center">
                             {slipUrl ? (
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPreviewSlipUrl(slipUrl);
+                                    setPreviewSlipTitle(`${customerName} — Receipt ${tx.id}`);
+                                    setPreviewSlipModalOpen(true);
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-[11px] font-bold transition-all shadow-sm hover:scale-105 cursor-pointer"
+                                  title="คลิกเพื่อดูรูปสลิปหลักฐานการโอน"
+                                >
+                                  <div className="w-4 h-4 rounded overflow-hidden bg-white shrink-0 border border-emerald-200">
+                                    <img src={slipUrl} alt="Slip" className="w-full h-full object-cover" />
+                                  </div>
+                                  <span>Slip</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openUploadSlipModal(tx, customerName, slipUrl)}
+                                  className="p-1 rounded-md text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer"
+                                  title="เปลี่ยนรูปสลิป / อัปโหลดใหม่"
+                                >
+                                  <Edit3 size={12} />
+                                </button>
+                              </div>
+                            ) : (
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setPreviewSlipUrl(slipUrl);
-                                  setPreviewSlipTitle(`${customerName} — Receipt ${tx.id}`);
-                                  setPreviewSlipModalOpen(true);
-                                }}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-[11px] font-bold transition-all shadow-sm hover:scale-105 cursor-pointer"
-                                title="คลิกเพื่อดูรูปสลิปหลักฐานการโอน"
+                                onClick={() => openUploadSlipModal(tx, customerName, null)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-[11px] font-bold transition-all shadow-sm hover:scale-105 cursor-pointer group"
+                                title="คลิกเพื่ออัปโหลดรูปสลิปหลักฐานการโอนย้อนหลัง"
                               >
-                                <div className="w-4 h-4 rounded overflow-hidden bg-white shrink-0 border border-emerald-200">
-                                  <img src={slipUrl} alt="Slip" className="w-full h-full object-cover" />
-                                </div>
-                                <span>Slip</span>
+                                <UploadCloud size={13} className="text-indigo-600 group-hover:scale-110 transition-transform" />
+                                <span>Upload</span>
                               </button>
-                            ) : (
-                              <span className="text-slate-300 text-xs">-</span>
                             )}
                           </TableCell>
                           <TableCell className="pr-6 py-4 text-right">
@@ -1316,6 +1539,153 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
               <div className="py-12 text-slate-500 text-xs">ไม่มีรูปภาพสลิป</div>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Retroactive Slip Upload Modal */}
+      <Dialog open={uploadSlipModalOpen} onOpenChange={(open) => { if (!isUploadingSlip) setUploadSlipModalOpen(open); }}>
+        <DialogContent className="max-w-md p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl z-[85]">
+          <DialogHeader className="p-4 bg-slate-900 text-white flex flex-row items-center justify-between">
+            <div className="flex items-center gap-2">
+              <UploadCloud size={18} className="text-emerald-400" />
+              <div>
+                <DialogTitle className="text-sm font-bold text-white">
+                  อัปโหลดรูปสลิปย้อนหลัง
+                </DialogTitle>
+                <DialogDescription className="text-[11px] text-slate-300 font-medium">
+                  {selectedTxForUpload ? `บิล: ${selectedTxForUpload.id} — ลูกค้า: ${selectedTxForUpload.customerName}` : ""}
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="p-5 space-y-4">
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              ref={slipFileInputRef}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleSelectSlipFile(file);
+              }}
+            />
+
+            {uploadedSlipPreviewUrl ? (
+              <div className="space-y-3">
+                <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-900 flex items-center justify-center max-h-[320px] group shadow-inner">
+                  <img
+                    src={uploadedSlipPreviewUrl}
+                    alt="Slip Preview"
+                    className="max-h-[300px] w-auto object-contain py-2"
+                  />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="bg-white/90 hover:bg-white text-slate-800 text-xs font-bold cursor-pointer"
+                      onClick={() => slipFileInputRef.current?.click()}
+                      disabled={isUploadingSlip}
+                    >
+                      <Edit3 size={13} className="mr-1" />
+                      เปลี่ยนรูป
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      className="text-xs font-bold cursor-pointer"
+                      onClick={() => {
+                        setUploadedSlipFile(null);
+                        setUploadedSlipPreviewUrl(null);
+                        if (slipFileInputRef.current) slipFileInputRef.current.value = "";
+                      }}
+                      disabled={isUploadingSlip}
+                    >
+                      <Trash2 size={13} className="mr-1" />
+                      ลบออก
+                    </Button>
+                  </div>
+                </div>
+                {uploadedSlipFile && (
+                  <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+                    <span className="truncate max-w-[200px]">{uploadedSlipFile.name}</span>
+                    <span>{(uploadedSlipFile.size / 1024).toFixed(0)} KB</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div
+                onClick={() => slipFileInputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) handleSelectSlipFile(file);
+                }}
+                className="border-2 border-dashed border-indigo-200 hover:border-indigo-400 bg-indigo-50/40 hover:bg-indigo-50/70 transition-all rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer group space-y-2"
+              >
+                <div className="w-12 h-12 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <UploadCloud size={24} />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-slate-800">คลิกเพื่อเลือกไฟล์ หรือลากรูปมาวางที่นี่</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">รองรับไฟล์ JPG, PNG, WebP (สูงสุด 10MB) หรือกด Ctrl+V เพื่อวางรูป</p>
+                </div>
+              </div>
+            )}
+
+            {isUploadingSlip && (
+              <div className="space-y-1.5 pt-1">
+                <div className="flex justify-between text-xs font-bold text-slate-700">
+                  <span className="flex items-center gap-1.5 text-indigo-600">
+                    <Loader2 size={13} className="animate-spin" />
+                    กำลังอัปโหลดและบันทึกรูปสลิป...
+                  </span>
+                  <span>{slipUploadProgress}%</span>
+                </div>
+                <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-indigo-600 h-2 transition-all duration-300 rounded-full"
+                    style={{ width: `${slipUploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={isUploadingSlip}
+              onClick={() => setUploadSlipModalOpen(false)}
+              className="text-xs font-medium text-slate-600 cursor-pointer"
+            >
+              ยกเลิก
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={isUploadingSlip || (!uploadedSlipFile && !uploadedSlipPreviewUrl)}
+              onClick={handleSaveRetroactiveSlip}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold gap-1.5 px-4 rounded-xl shadow-md shadow-emerald-600/20 cursor-pointer"
+            >
+              {isUploadingSlip ? (
+                <>
+                  <Loader2 size={13} className="animate-spin" />
+                  กำลังบันทึก...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={13} />
+                  บันทึกสลิป
+                </>
+              )}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

@@ -901,15 +901,15 @@ export default function AdminPage() {
 
 
   const isCustomerWalletExpired = isWalletExpired(selectedProfileCustomer);
-  const isWalletInsufficient = paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
-  const isWalletBlocked = paymentChannel === "Deduct Member" && (isWalletInsufficient || isCustomerWalletExpired);
+  const isWalletInsufficient = paymentChannel === "Deduct Member" && !isPaidJob && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
+  const isWalletBlocked = paymentChannel === "Deduct Member" && !isPaidJob && (isWalletInsufficient || isCustomerWalletExpired);
 
   useEffect(() => {
-    if (isWalletBlocked) {
+    if (isWalletBlocked && !isPaidJob) {
       if (paymentMethod === 'paid') setPaymentMethod('unpaid');
       if (shopPaymentMethod === 'paid') setShopPaymentMethod('unpaid');
     }
-  }, [isWalletBlocked, paymentMethod, shopPaymentMethod]);
+  }, [isWalletBlocked, isPaidJob, paymentMethod, shopPaymentMethod]);
 
 
   useEffect(() => {
@@ -1928,8 +1928,8 @@ export default function AdminPage() {
 
 
         // Handle wallet adjustments for job updates (separate flow — job already exists)
-        // Trigger on SHOP payment status (shopPaymentMethod) — the Pay button gates on shop payment
-        const isShopPaidNow_update = isPayment || shopPaymentMethod === 'paid';
+        // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Save
+        const isShopPaidNow_update = isPayment;
         const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
         if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
           if (paymentChannel === "Deduct Member") {
@@ -1974,8 +1974,8 @@ export default function AdminPage() {
         newJobData.proofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
         // H2 Fix: For NEW jobs paid via "Deduct Member", deduct wallet BEFORE creating the job.
         // If deduction fails → job is never created → no money leak.
-        // Use shopPaymentMethod — wallet actions are triggered by Shop payment, not CSO status
-        const isShopPaidNow_new = isPayment || shopPaymentMethod === 'paid';
+        // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Create
+        const isShopPaidNow_new = isPayment;
         let preDeductedBalance: number | null = null;
         let walletUpdates: Partial<Customer> | null = null;
 
@@ -4334,12 +4334,27 @@ export default function AdminPage() {
                               {/* Col 1: CSO Status (isPaid) */}
                               {!isWalkIn ? (
                                 <div className="space-y-0.5 flex flex-col">
-                                  <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                    <CreditCard size={11} className="text-slate-500" />
-                                    CSO
-                                  </Label>
+                                  <div className="flex items-center justify-between">
+                                    <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                      <CreditCard size={11} className="text-slate-500" />
+                                      CSO
+                                    </Label>
+                                    {isPaidJob && (
+                                      <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
+                                        paymentMethod === 'paid' 
+                                          ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
+                                          : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
+                                      }`}>
+                                        {paymentMethod === 'paid' ? '✓ PAID' : 'UNPAID'}
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="flex items-center gap-1.5 h-6 flex-wrap">
-                                    <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                    <Label className={`flex items-center gap-1 text-[10px] ${
+                                      isPaidJob 
+                                        ? (paymentMethod === 'unpaid' ? 'text-amber-300 font-bold' : 'text-slate-500 opacity-40') 
+                                        : (isCsoOrAdmin ? 'cursor-pointer text-slate-200' : 'cursor-not-allowed text-slate-400')
+                                    }`}>
                                       <input
                                         type="radio"
                                         name="payment-status"
@@ -4347,11 +4362,15 @@ export default function AdminPage() {
                                         checked={paymentMethod === 'unpaid'}
                                         onChange={() => { if (isCsoOrAdmin) setPaymentMethod('unpaid'); }}
                                         onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
-                                        className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
+                                        className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(isCsoOrAdmin && !isPaidJob) ? 'cursor-not-allowed' : ''}`}
                                       />
-                                      <span className="font-medium text-slate-200">Unpaid</span>
+                                      <span className={paymentMethod === 'unpaid' ? 'font-bold' : 'font-medium'}>Unpaid</span>
                                     </Label>
-                                    <Label className={`flex items-center gap-1 text-[10px] ${isCsoOrAdmin && !isPaidJob && !isWalletBlocked ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                                    <Label className={`flex items-center gap-1 text-[10px] ${
+                                      isPaidJob 
+                                        ? (paymentMethod === 'paid' ? 'text-emerald-400 font-black' : 'text-slate-500 opacity-40') 
+                                        : (isCsoOrAdmin && !isWalletBlocked ? 'cursor-pointer text-emerald-400 font-medium' : 'cursor-not-allowed opacity-50')
+                                    }`}>
                                       <input
                                         type="radio"
                                         name="payment-status"
@@ -4359,9 +4378,11 @@ export default function AdminPage() {
                                         checked={paymentMethod === 'paid'}
                                         onChange={() => { if (isCsoOrAdmin && !isWalletBlocked) setPaymentMethod('paid'); }}
                                         onClick={(e) => { if (!isCsoOrAdmin || isWalletBlocked) e.preventDefault(); }}
-                                        className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!isCsoOrAdmin || isWalletBlocked ? 'cursor-not-allowed' : ''}`}
+                                        className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed ${isPaidJob ? 'disabled:opacity-90 accent-emerald-500' : 'disabled:opacity-50'} ${!(isCsoOrAdmin && !isPaidJob && !isWalletBlocked) ? 'cursor-not-allowed' : ''}`}
                                       />
-                                      <span className="font-medium text-emerald-400">Paid</span>
+                                      <span className={paymentMethod === 'paid' ? 'font-black text-emerald-400' : 'font-medium text-slate-400'}>
+                                        {isPaidJob && paymentMethod === 'paid' ? '✓ Paid' : 'Paid'}
+                                      </span>
                                     </Label>
                                     {/* cashPlaced checkbox: show when Cash/COD + CSO Unpaid */}
                                     {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
@@ -4382,12 +4403,27 @@ export default function AdminPage() {
 
                               {/* Col 2: Shop Status (isShopPaid) */}
                               <div className="space-y-0.5">
-                                <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <Store size={11} className="text-slate-500" />
-                                  SHOP
-                                </Label>
+                                <div className="flex items-center justify-between">
+                                  <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                    <Store size={11} className="text-slate-500" />
+                                    SHOP
+                                  </Label>
+                                  {isPaidJob && (
+                                    <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
+                                      shopPaymentMethod === 'paid' 
+                                        ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
+                                        : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
+                                    }`}>
+                                      {shopPaymentMethod === 'paid' ? '✓ PAID' : 'UNPAID'}
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="flex items-center gap-1.5 h-6">
-                                  <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                                  <Label className={`flex items-center gap-1 text-[10px] ${
+                                    isPaidJob 
+                                      ? (shopPaymentMethod === 'unpaid' ? 'text-amber-300 font-bold' : 'text-slate-500 opacity-40') 
+                                      : ((user?.role === 'admin' || user?.role === 'manager') ? 'cursor-pointer text-slate-200' : 'cursor-not-allowed text-slate-400')
+                                  }`}>
                                     <input
                                       type="radio"
                                       name="shop-payment-status"
@@ -4395,11 +4431,15 @@ export default function AdminPage() {
                                       checked={shopPaymentMethod === 'unpaid'}
                                       onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob) setShopPaymentMethod('unpaid'); }}
                                       onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob ? 'cursor-not-allowed' : ''}`}
+                                      className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob) ? 'cursor-not-allowed' : ''}`}
                                     />
-                                    <span className="font-medium text-slate-200">Unpaid</span>
+                                    <span className={shopPaymentMethod === 'unpaid' ? 'font-bold' : 'font-medium'}>Unpaid</span>
                                   </Label>
-                                  <Label className={`flex items-center gap-1 text-[10px] ${(user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletBlocked ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                                  <Label className={`flex items-center gap-1 text-[10px] ${
+                                    isPaidJob 
+                                      ? (shopPaymentMethod === 'paid' ? 'text-emerald-400 font-black' : 'text-slate-500 opacity-40') 
+                                      : ((user?.role === 'admin' || user?.role === 'manager') && !isWalletBlocked ? 'cursor-pointer text-emerald-400 font-medium' : 'cursor-not-allowed opacity-50')
+                                  }`}>
                                     <input
                                       type="radio"
                                       name="shop-payment-status"
@@ -4407,9 +4447,11 @@ export default function AdminPage() {
                                       checked={shopPaymentMethod === 'paid'}
                                       onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isWalletBlocked) setShopPaymentMethod('paid'); }}
                                       onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isWalletBlocked) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob || isWalletBlocked ? 'cursor-not-allowed' : ''}`}
+                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed ${isPaidJob ? 'disabled:opacity-90 accent-emerald-500' : 'disabled:opacity-50'} ${!((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletBlocked) ? 'cursor-not-allowed' : ''}`}
                                     />
-                                    <span className="font-medium text-emerald-400">Paid</span>
+                                    <span className={shopPaymentMethod === 'paid' ? 'font-black text-emerald-400' : 'font-medium text-slate-400'}>
+                                      {isPaidJob && shopPaymentMethod === 'paid' ? '✓ Paid' : 'Paid'}
+                                    </span>
                                   </Label>
                                 </div>
                               </div>
@@ -4418,7 +4460,7 @@ export default function AdminPage() {
 
 
                           {/* Wallet Expired Warning Banner */}
-                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && isCustomerWalletExpired && (
+                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isPaidJob && isCustomerWalletExpired && (
                             <div className="mt-1 p-2 rounded-lg bg-rose-950/90 border border-rose-700 text-[10px] flex items-center justify-between gap-2 text-rose-200 font-bold shadow-md">
                               <div className="flex items-center gap-1.5 min-w-0">
                                 <AlertTriangle size={13} className="text-rose-400 shrink-0" />
@@ -4446,8 +4488,8 @@ export default function AdminPage() {
                             </div>
                           )}
 
-                          {/* Wallet Insufficient Warning Banner (Only when not expired) */}
-                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isCustomerWalletExpired && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
+                          {/* Wallet Insufficient Warning Banner (Only when not expired and not already paid) */}
+                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isPaidJob && !isCustomerWalletExpired && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
                             <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold animate-pulse">
                               <span className="flex items-center gap-1">
                                 <Wallet size={11} className="text-rose-400" />

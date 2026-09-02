@@ -752,17 +752,35 @@ export async function updateSettingAction(key: string, value: string) {
 export async function addJobLogAction(id: string, logEntry: any, actorId?: string, actorName?: string) {
   const job = await prisma.job.findUnique({ where: { id }, select: { adminNotesJson: true } });
   if (!job) throw new Error('Job not found');
-  let notes = [];
+  let notes: any[] = [];
+  let payments: any[] = [];
+  let isStructured = false;
+
   if (job.adminNotesJson) {
     try {
-      notes = JSON.parse(job.adminNotesJson);
-      if (!Array.isArray(notes)) notes = [];
+      const parsed = JSON.parse(job.adminNotesJson);
+      if (parsed && typeof parsed === 'object') {
+        if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
+          isStructured = true;
+          notes = Array.isArray(parsed.notes) ? parsed.notes : [];
+          payments = Array.isArray(parsed.payments) ? parsed.payments : [];
+        } else if (Array.isArray(parsed)) {
+          notes = parsed;
+        }
+      }
     } catch (e) {
       notes = [];
     }
   }
   notes.push(logEntry);
-  const updatedJson = JSON.stringify(notes);
+
+  let updatedJson: string;
+  if (isStructured || payments.length > 0) {
+    updatedJson = JSON.stringify({ payments, notes });
+  } else {
+    updatedJson = JSON.stringify(notes);
+  }
+
   const updated = await prisma.job.update({ 
     where: { id }, 
     data: { adminNotesJson: updatedJson } 
@@ -1378,6 +1396,64 @@ export async function getTopUpTransactionsAction(customerId?: string) {
     orderBy: { createdAt: 'desc' },
   });
   return list;
+}
+
+export async function updateTopUpTransactionSlipAction(data: {
+  transactionId: string;
+  slipImageUrl: string;
+  userId?: string | null;
+  userName?: string | null;
+}) {
+  const tx = await prisma.transaction.findUnique({
+    where: { id: data.transactionId },
+  });
+  if (!tx) throw new Error("Transaction not found");
+
+  let parsedDesc: any = {};
+  try {
+    parsedDesc = JSON.parse(tx.description || "{}");
+  } catch {}
+
+  parsedDesc.slipImageUrl = data.slipImageUrl;
+  if (parsedDesc.receiptData) {
+    parsedDesc.receiptData.slipImageUrl = data.slipImageUrl;
+  }
+
+  const updatedTx = await prisma.transaction.update({
+    where: { id: data.transactionId },
+    data: {
+      description: JSON.stringify(parsedDesc),
+      updatedAt: new Date(),
+    },
+  });
+
+  // Also record in ActivityLog
+  try {
+    const cust = await prisma.customer.findUnique({
+      where: { id: tx.memberId },
+      select: { name: true },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityId: tx.memberId,
+        entityType: 'customer',
+        action: 'UPDATE_TOPUP_SLIP',
+        details: JSON.stringify({
+          receiptNo: data.transactionId,
+          customerName: cust?.name || 'Customer',
+          slipImageUrl: data.slipImageUrl,
+          amount: tx.amount,
+        }),
+        userId: data.userId || null,
+        userName: data.userName || 'Admin',
+      },
+    });
+  } catch (err: any) {
+    console.error("Failed to write ActivityLog for slip update:", err.message);
+  }
+
+  return updatedTx;
 }
 
 export async function getCustomerTodayTopUpAction(customerId: string) {
