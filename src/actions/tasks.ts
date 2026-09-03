@@ -299,19 +299,18 @@ export async function updateTask(
     const isCreator = existing.createdById === actorId;
     const isAdmin = actorRole === "admin";
 
-    // 🔒 Assignee Rule: The person who is assigned (not creator & not admin) is FORBIDDEN from editing core details EXCEPT status, checklist toggling, and assigning additional people
+    // 🔒 Assignee Rule: The person who is assigned (not creator & not admin) is FORBIDDEN from editing core details EXCEPT status, checklist toggling, attachments, and assigning additional people
     if (!isCreator && !isAdmin) {
       if (
         (updates.title !== undefined && updates.title.trim() !== existing.title) ||
         (updates.description !== undefined && (updates.description?.trim() || null) !== existing.description) ||
         (updates.priority !== undefined && updates.priority !== existing.priority) ||
         (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) ||
-        (updates.dueDate !== undefined && (updates.dueDate ? new Date(updates.dueDate).getTime() : null) !== (existing.dueDate ? new Date(existing.dueDate).getTime() : null)) ||
-        (updates.attachments !== undefined && JSON.stringify(updates.attachments) !== (existing.attachmentsJson || "[]"))
+        (updates.dueDate !== undefined && (updates.dueDate ? new Date(updates.dueDate).getTime() : null) !== (existing.dueDate ? new Date(existing.dueDate).getTime() : null))
       ) {
         return {
           success: false,
-          error: "Only the Task Creator or Super Admin can edit core details like Title, Description, Due Date or Attachments",
+          error: "Only the Task Creator or Super Admin can edit core details like Title, Description, or Due Date",
         };
       }
     }

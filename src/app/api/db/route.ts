@@ -26,10 +26,13 @@ export async function GET() {
           OR: [
             { status: { notIn: ['completed', 'cancel'] } },
             { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } },
-            // Include recently completed/cancelled jobs for Rider History (last 7 days)
+            // Include recently completed/cancelled jobs for Rider History & Admin (last 7 days)
             {
               status: { in: ['completed', 'cancel'] },
-              completedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+              OR: [
+                { completedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+                { updatedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } }
+              ]
             }
           ]
         },

@@ -1724,8 +1724,8 @@ export default function AdminPage() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: cannotDeduct ? false : paymentMethod === 'paid',
-      isShopPaid: cannotDeduct ? false : (isPayment || shopPaymentMethod === 'paid'),
+      isPaid: cannotDeduct ? false : (isWalkIn ? isPayment : paymentMethod === 'paid'),
+      isShopPaid: cannotDeduct ? false : (isPayment || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
 
       fee,
       totalAmount: calculatedTotal,
@@ -4402,57 +4402,30 @@ export default function AdminPage() {
                               ) : <div />}
 
                               {/* Col 2: Shop Status (isShopPaid) */}
-                              <div className="space-y-0.5">
+                              <div className="space-y-0.5 flex flex-col">
                                 <div className="flex items-center justify-between">
                                   <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
                                     <Store size={11} className="text-slate-500" />
                                     SHOP
                                   </Label>
-                                  {isPaidJob && (
-                                    <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
-                                      shopPaymentMethod === 'paid' 
-                                        ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
-                                        : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
-                                    }`}>
-                                      {shopPaymentMethod === 'paid' ? '✓ PAID' : 'UNPAID'}
-                                    </span>
-                                  )}
+                                  <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
+                                    isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                      ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
+                                      : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
+                                  }`}>
+                                    {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false) ? '✓ PAID' : 'UNPAID'}
+                                  </span>
                                 </div>
-                                <div className="flex items-center gap-1.5 h-6">
-                                  <Label className={`flex items-center gap-1 text-[10px] ${
-                                    isPaidJob 
-                                      ? (shopPaymentMethod === 'unpaid' ? 'text-amber-300 font-bold' : 'text-slate-500 opacity-40') 
-                                      : ((user?.role === 'admin' || user?.role === 'manager') ? 'cursor-pointer text-slate-200' : 'cursor-not-allowed text-slate-400')
+                                <div className="flex items-center h-6">
+                                  <span className={`text-[10px] ${
+                                    isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                      ? 'font-black text-emerald-400' 
+                                      : 'font-medium text-slate-400'
                                   }`}>
-                                    <input
-                                      type="radio"
-                                      name="shop-payment-status"
-                                      disabled={isPaidJob}
-                                      checked={shopPaymentMethod === 'unpaid'}
-                                      onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob) setShopPaymentMethod('unpaid'); }}
-                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isPaidJob) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob) ? 'cursor-not-allowed' : ''}`}
-                                    />
-                                    <span className={shopPaymentMethod === 'unpaid' ? 'font-bold' : 'font-medium'}>Unpaid</span>
-                                  </Label>
-                                  <Label className={`flex items-center gap-1 text-[10px] ${
-                                    isPaidJob 
-                                      ? (shopPaymentMethod === 'paid' ? 'text-emerald-400 font-black' : 'text-slate-500 opacity-40') 
-                                      : ((user?.role === 'admin' || user?.role === 'manager') && !isWalletBlocked ? 'cursor-pointer text-emerald-400 font-medium' : 'cursor-not-allowed opacity-50')
-                                  }`}>
-                                    <input
-                                      type="radio"
-                                      name="shop-payment-status"
-                                      disabled={isPaidJob || isWalletBlocked}
-                                      checked={shopPaymentMethod === 'paid'}
-                                      onChange={() => { if ((user?.role === 'admin' || user?.role === 'manager') && !isWalletBlocked) setShopPaymentMethod('paid'); }}
-                                      onClick={(e) => { if (!(user?.role === 'admin' || user?.role === 'manager') || isWalletBlocked) e.preventDefault(); }}
-                                      className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed ${isPaidJob ? 'disabled:opacity-90 accent-emerald-500' : 'disabled:opacity-50'} ${!((user?.role === 'admin' || user?.role === 'manager') && !isPaidJob && !isWalletBlocked) ? 'cursor-not-allowed' : ''}`}
-                                    />
-                                    <span className={shopPaymentMethod === 'paid' ? 'font-black text-emerald-400' : 'font-medium text-slate-400'}>
-                                      {isPaidJob && shopPaymentMethod === 'paid' ? '✓ Paid' : 'Paid'}
-                                    </span>
-                                  </Label>
+                                    {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                      ? '✓ Paid via POS / Receipt' 
+                                      : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงินและออกใบเสร็จ")}
+                                  </span>
                                 </div>
                               </div>
                             </div>
@@ -4577,7 +4550,6 @@ export default function AdminPage() {
                                 isCartLocked || 
                                 isPaidJob || 
                                 (!isWalkIn && paymentMethod !== 'paid') || 
-                                shopPaymentMethod !== 'paid' || 
                                 (!paymentChannel || !paymentChannel.trim()) || 
                                 isWalletInsufficient || 
                                 (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
@@ -4588,7 +4560,7 @@ export default function AdminPage() {
                                   ? 'bg-slate-700 text-slate-300'
                                   : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
                                     ? 'bg-rose-600/80 hover:bg-rose-600'
-                                    : (!isWalkIn && paymentMethod !== 'paid') || shopPaymentMethod !== 'paid'
+                                    : (!isWalkIn && paymentMethod !== 'paid')
                                       ? 'bg-slate-700 text-slate-400'
                                       : 'bg-emerald-500 hover:bg-emerald-600'
                               }`}
@@ -4601,11 +4573,9 @@ export default function AdminPage() {
                                       ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
                                       : (!isWalkIn && paymentMethod !== 'paid')
                                         ? (currentLanguage === "en" ? "Waiting for CSO verification (CSO Paid)" : "รอ CSO ยืนยันสถานะชำระเงิน (CSO Paid)")
-                                        : shopPaymentMethod !== 'paid'
-                                          ? (currentLanguage === "en" ? "Waiting for SHOP verification (SHOP Paid)" : "รอ SHOP ยืนยันสถานะชำระเงิน (SHOP Paid)")
-                                          : (!paymentChannel || !paymentChannel.trim())
-                                            ? (currentLanguage === "en" ? "Please select payment channel" : "กรุณาเลือกช่องทางการชำระเงิน")
-                                            : undefined
+                                        : (!paymentChannel || !paymentChannel.trim())
+                                          ? (currentLanguage === "en" ? "Please select payment channel" : "กรุณาเลือกช่องทางการชำระเงิน")
+                                          : undefined
                               }
                             >
                               <Banknote size={12} />

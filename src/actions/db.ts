@@ -385,6 +385,9 @@ export async function updateJobAction(id: string, updates: any) {
       }
     }
     data.status = updates.status;
+    if (updates.status === 'completed' && !existingJob?.completedAt && updates.completedAt === undefined) {
+      data.completedAt = new Date();
+    }
   } else if (existingJob && existingJob.status === 'tba' && (updates.pickupRiderId || updates.deliveryRiderId)) {
     data.status = 'pending';
   }

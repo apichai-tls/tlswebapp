@@ -1719,6 +1719,17 @@ export function TaskFormModal({
     return isCreator || isAdmin || isAssignee;
   }, [initialTask, currentUserId, currentUserRole]);
 
+  // 🔒 Permission check: Creator, Super Admin, AND Assignees can add/edit/delete Task Attachments
+  const canEditAttachments = useMemo(() => {
+    if (!initialTask) return true;
+    const isCreator = initialTask.createdById === currentUserId;
+    const isAdmin = currentUserRole === "admin";
+    const isAssignee = initialTask.assignedToId
+      ? initialTask.assignedToId.split(",").map((s) => s.trim()).includes(currentUserId)
+      : false;
+    return isCreator || isAdmin || isAssignee;
+  }, [initialTask, currentUserId, currentUserRole]);
+
   const groupedUsers = useMemo(() => {
     const active = adminUsers.filter((u) => u.isActive !== false && u.role !== "rider");
     const byRole: Record<string, Record<string, AdminUser[]>> = {};
@@ -2636,7 +2647,7 @@ export function TaskFormModal({
               onDragOver={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                if (canEditTaskDetails) setIsDraggingModalFiles(true);
+                if (canEditAttachments) setIsDraggingModalFiles(true);
               }}
               onDragLeave={(e) => {
                 e.preventDefault();
@@ -2647,7 +2658,7 @@ export function TaskFormModal({
                 e.preventDefault();
                 e.stopPropagation();
                 setIsDraggingModalFiles(false);
-                if (canEditTaskDetails && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                if (canEditAttachments && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                   await processModalFiles(e.dataTransfer.files);
                 }
               }}
@@ -2660,7 +2671,7 @@ export function TaskFormModal({
                   <Paperclip size={13} className="text-indigo-600" />
                   Attachments {attachments.length > 0 && `(${attachments.length})`}
                 </Label>
-                {canEditTaskDetails && (
+                {canEditAttachments && (
                   <button
                     type="button"
                     onClick={() => modalFileInputRef.current?.click()}
@@ -2687,13 +2698,13 @@ export function TaskFormModal({
                   <div className="p-2 bg-slate-50/80 border border-slate-200 rounded-xl max-h-52 overflow-y-auto">
                     <AttachmentsGallery
                       attachments={attachments}
-                      onDelete={canEditTaskDetails ? (attId) => setAttachments((prev) => prev.filter((a) => a.id !== attId)) : undefined}
+                      onDelete={canEditAttachments ? (attId) => setAttachments((prev) => prev.filter((a) => a.id !== attId)) : undefined}
                       onPreviewImage={onPreviewImage}
                       imageSize="normal"
                     />
                   </div>
 
-                  {canEditTaskDetails && (
+                  {canEditAttachments && (
                     <div
                       onClick={() => modalFileInputRef.current?.click()}
                       className={`border border-dashed rounded-lg p-2 text-center cursor-pointer transition-all flex items-center justify-center gap-1.5 text-xs ${
@@ -2708,7 +2719,7 @@ export function TaskFormModal({
                   )}
                 </div>
               ) : (
-                canEditTaskDetails ? (
+                canEditAttachments ? (
                   <div
                     onClick={() => modalFileInputRef.current?.click()}
                     className={`border-2 border-dashed rounded-xl p-3 text-center cursor-pointer transition-all ${

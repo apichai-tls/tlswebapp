@@ -253,11 +253,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       matchesDate = isSameDay(new Date(job.createdAt), today) || 
                     isActive || 
                     (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
-                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false);
+                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
+                    (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
+                    (job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
     } else if (dateFilter === "yesterday") {
       matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
                     (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
-                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false);
+                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
+                    (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false);
     } else if (dateFilter === "custom") {
       const jobDate = new Date(job.createdAt);
       const start = new Date(startDate);
@@ -266,7 +269,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       end.setHours(23, 59, 59, 999);
       matchesDate = (jobDate >= start && jobDate <= end) || 
                     (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
-                    (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false);
+                    (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
+                    (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
     }
 
     let matchesStatus = true;

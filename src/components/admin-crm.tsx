@@ -380,6 +380,10 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
       toast.error("กรุณาระบุจำนวนเงินที่ต้องการปรับยอด");
       return;
     }
+    if (!adjustReason.trim()) {
+      toast.error("กรุณาระบุเหตุผลในการปรับยอดเงิน (Reason is required)");
+      return;
+    }
     const currentBalance = topUpCustomer.creditBalance || 0;
     // If user explicitly typed a negative number, treat as deduction
     const delta = rawAmount < 0 
@@ -1422,16 +1426,22 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
               {/* Adjustment Reason Input */}
               <div className="space-y-1.5">
                 <Label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
-                  <span>เหตุผลในการปรับยอด (Reason)</span>
-                  <span className="text-[10px] text-slate-400 font-normal">บันทึกลง Log</span>
+                  <span>เหตุผลในการปรับยอด (Reason) <span className="text-rose-500 font-bold">*</span></span>
+                  <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
                 </Label>
                 <Input 
                   type="text"
+                  required
                   placeholder="e.g. ยกยอดจากระบบเดิม, ชดเชยผ้าเสียหาย, ปรับปรุงยอดผิดพลาด"
                   value={adjustReason}
                   onChange={e => setAdjustReason(e.target.value)}
-                  className="h-11 border-slate-200 text-xs rounded-xl bg-white text-slate-800 placeholder:text-slate-400"
+                  className={`h-11 border text-xs rounded-xl bg-white text-slate-800 placeholder:text-slate-400 ${
+                    !adjustReason.trim() && topUpAmount ? 'border-amber-400 focus:border-amber-500' : 'border-slate-200'
+                  }`}
                 />
+                {!adjustReason.trim() && topUpAmount && (
+                  <p className="text-[10px] text-amber-600 font-medium">* จำเป็นต้องใส่เหตุผลเพื่อบันทึกประวัติ (Log)</p>
+                )}
               </div>
 
               {/* Live Preview Box */}
@@ -1467,12 +1477,12 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                 return (
                   <Button 
                     type="submit" 
-                    disabled={adjustLoading || !valid}
+                    disabled={adjustLoading || !valid || !adjustReason.trim()}
                     className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
                       isAdd
                         ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
                         : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
-                    }`}
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     {adjustLoading
                       ? "Saving..."
