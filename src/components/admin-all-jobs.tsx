@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, type Job, type JobStatus } from "@/lib/store";
+import { isJobFullyPaid } from "@/lib/utils";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -105,17 +106,19 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     const walkIn = j.source === 'pos' || (j.type as string) === 'in_store';
     const missingBill = !j.billNo || j.billNo.trim() === '';
     
+    const isPaid = isJobFullyPaid(j);
+    
     if (isAdmin) {
-      if (walkIn) return !j.isShopPaid || missingBill;
-      else return !j.isPaid || !j.isShopPaid || missingBill;
+      if (walkIn) return !isPaid || missingBill;
+      else return !j.isPaid || !isPaid || missingBill;
     }
     if (u?.role === 'cso') {
-      if (walkIn) return !j.isShopPaid || missingBill;
+      if (walkIn) return !isPaid || missingBill;
       else return !j.isPaid || missingBill;
     }
     if (u?.role === 'manager') {
-      if (walkIn) return !j.isShopPaid || missingBill;
-      else return !j.isShopPaid;
+      if (walkIn) return !isPaid || missingBill;
+      else return !isPaid;
     }
     return false;
   };
@@ -255,12 +258,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                     (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
                     (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
                     (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
-                    (job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
+                    (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
     } else if (dateFilter === "yesterday") {
       matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
                     (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
                     (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
-                    (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false);
+                    (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
+                    (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
     } else if (dateFilter === "custom") {
       const jobDate = new Date(job.createdAt);
       const start = new Date(startDate);
@@ -350,7 +354,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         "Payment Channel": job.paymentChannel || "-",
         "CSO Pay Status": job.isPaid ? "PAID" : "UNPAID",
         "CSO Paid At": job.csoPaidAt ? format(new Date(job.csoPaidAt), "dd/MM/yyyy HH:mm") : "-",
-        "SHOP Pay Status": job.isShopPaid ? "PAID" : "UNPAID",
+        "SHOP Pay Status": isJobFullyPaid(job) ? "PAID" : "UNPAID",
         "SHOP Paid At": job.shopPaidAt ? format(new Date(job.shopPaidAt), "dd/MM/yyyy HH:mm") : "-",
         "Total Duration": job.completedAt ? getTotalDuration(new Date(job.createdAt), new Date(job.completedAt)) : "-",
         "Status": statusConfig[job.status]?.label || job.status
@@ -705,12 +709,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       
                       <TableCell className="align-middle py-2 text-center">
                         {job.source === 'pos' || (job.type as string) === 'in_store' ? (
-                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            SHOP {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                            SHOP {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                           </Badge>
                         ) : (
-                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {job.isPaid ? 'PAID' : 'UNPAID'}
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid || isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                            {job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                           </Badge>
                         )}
                       </TableCell>
@@ -726,8 +730,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-center">
-                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                          {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                         </Badge>
                       </TableCell>
 
@@ -1100,12 +1104,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 <Banknote size={12} className="text-slate-400" />
                                 <span className="font-bold">฿{job.totalAmount || 0}</span>
                                 {job.source === 'pos' || (job.type as string) === 'in_store' ? (
-                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isShopPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                                    SHOP {job.isShopPaid ? 'PAID' : 'UNPAID'}
+                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                    SHOP {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                                   </span>
                                 ) : (
-                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                                    {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid ? 'PAID' : 'UNPAID'}
+                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid || isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                    {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                                   </span>
                                 )}
                               </div>

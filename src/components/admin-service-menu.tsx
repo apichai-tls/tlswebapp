@@ -68,7 +68,15 @@ export function AdminServiceMenu() {
   );
 
   const packageServices = useMemo(() => 
-    services.filter(s => s.category === "PACKAGE"),
+    services
+      .filter(s => s.category === "PACKAGE")
+      .sort((a, b) => {
+        const isCustomA = !a.price || a.price <= 0;
+        const isCustomB = !b.price || b.price <= 0;
+        if (isCustomA && !isCustomB) return 1;
+        if (!isCustomA && isCustomB) return -1;
+        return (a.price || 0) - (b.price || 0);
+      }),
     [services]
   );
 

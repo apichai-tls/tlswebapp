@@ -159,4 +159,30 @@ export function getWalletStatus(customer?: { memberExpiryDate?: Date | string | 
   return { status: 'active', daysRemaining, expiryDate: expiry, isExpired: false };
 }
 
+/**
+ * Check if a job is fully paid based on isShopPaid, or adminNotesJson.payments >= totalAmount.
+ */
+export function isJobFullyPaid(job?: {
+  isPaid?: boolean | null;
+  isShopPaid?: boolean | null;
+  totalAmount?: number | null;
+  adminNotesJson?: string | null;
+} | null): boolean {
+  if (!job) return false;
+  if (job.isShopPaid === true) return true;
+  if (job.adminNotesJson) {
+    try {
+      const parsed = JSON.parse(job.adminNotesJson);
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
+        const totalPaid = parsed.payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
+        const jobTotal = Number(job.totalAmount) || 0;
+        if (totalPaid >= jobTotal && jobTotal > 0) {
+          return true;
+        }
+      }
+    } catch {}
+  }
+  return false;
+}
+
 

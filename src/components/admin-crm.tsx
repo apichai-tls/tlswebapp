@@ -157,8 +157,8 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const activeShop = shops[0];
 
-  // Only Accounting and Admin can see Adjust Balance button (CSO excluded)
-  const canAdjustBalance = user?.role === 'admin' || user?.role === 'accounting';
+  // Adjust Balance permission: granted via 'adjust-wallet' permission in Manage Users, or default for admin role
+  const canAdjustBalance = Boolean(user?.permissions?.includes('adjust-wallet') || user?.role === 'admin');
   // Everyone except Rider can see Top Up button
   const canTopUp = user?.role !== 'rider';
 
@@ -374,6 +374,10 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
 
   const handleTopUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canAdjustBalance) {
+      toast.error("คุณไม่มีสิทธิ์ในการปรับยอดเงิน Wallet (No permission to adjust wallet)");
+      return;
+    }
     if (!topUpCustomer) return;
     const rawAmount = parseFloat(topUpAmount);
     if (isNaN(rawAmount) || rawAmount === 0) {

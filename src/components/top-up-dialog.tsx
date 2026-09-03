@@ -182,7 +182,15 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   // ── Derived ────────────────────────────────────────────────────────────────
 
   const packageServices = useMemo(() =>
-    services.filter(s => s.category === "PACKAGE" && s.isActive !== false),
+    services
+      .filter(s => s.category === "PACKAGE" && s.isActive !== false)
+      .sort((a, b) => {
+        const isCustomA = !a.price || a.price <= 0;
+        const isCustomB = !b.price || b.price <= 0;
+        if (isCustomA && !isCustomB) return 1;
+        if (!isCustomA && isCustomB) return -1;
+        return (a.price || 0) - (b.price || 0);
+      }),
     [services]
   );
 
@@ -672,7 +680,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <p className="text-sm font-semibold text-slate-800">{svc.nameEn || svc.name}</p>
-                                {svc.memberPrice && svc.memberPrice > svc.price && (
+                                {Boolean(svc.memberPrice && svc.memberPrice > svc.price) && (
                                   <Badge className="bg-emerald-100 text-emerald-800 border-none text-[10px] font-bold px-1.5 py-0">
                                     +฿{formatCurrency(svc.memberPrice - svc.price)} Bonus
                                   </Badge>

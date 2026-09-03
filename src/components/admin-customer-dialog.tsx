@@ -28,7 +28,7 @@ export function AdminCustomerDialog({
   onTopUpCustomer?: (c: Customer) => void;
 }) {
   const { user } = useAuth();
-  const canAdjustBalance = user?.role === "admin" || user?.role === "accounting";
+  const canAdjustBalance = Boolean(user?.permissions?.includes("adjust-wallet") || user?.role === "admin");
   const canTopUp = user?.role !== "rider";
 
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -45,6 +45,10 @@ export function AdminCustomerDialog({
 
   const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canAdjustBalance) {
+      toast.error("คุณไม่มีสิทธิ์ในการปรับยอดเงิน Wallet (No permission to adjust wallet)");
+      return;
+    }
     if (!customer) return;
     const rawAmount = parseFloat(adjustAmount);
     if (isNaN(rawAmount) || rawAmount === 0) {

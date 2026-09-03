@@ -51,3 +51,4 @@ test_log.ts
 public/uploads/
 .agents/
 skills-lock.json
+backups/

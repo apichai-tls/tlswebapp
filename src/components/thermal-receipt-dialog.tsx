@@ -33,6 +33,9 @@ export interface ReceiptData {
   serviceSpeed?: string;
   discount: number;
   discountPercent?: number;
+  promoCode?: string | null;        // Promo code applied (e.g. "EXPRESS20")
+  promoDiscount?: number | null;    // Promo discount amount in THB
+  promoTarget?: "ALL" | "DELIVERY" | null; // Discount target ("ALL" or "DELIVERY")
   total: number;
   isPaid: boolean;
   paymentChannel?: string | null;
@@ -75,7 +78,7 @@ const cleanRemarkForDisplay = (rawRemark: string | null | undefined) => {
   if (!rawRemark) return "";
   return rawRemark
     .split(" | ")
-    .filter(part => !part.startsWith("VAT:") && !part.startsWith("Express") && !part.startsWith("Proforma:") && !part.startsWith("Revision:"))
+    .filter(part => !part.startsWith("VAT:") && !part.startsWith("Express") && !part.startsWith("Proforma:") && !part.startsWith("Revision:") && !part.startsWith("Promo:"))
     .join(" | ")
     .trim();
 };
@@ -202,6 +205,11 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ? paymentTime
     : (job.createdAt ? new Date(job.createdAt) : new Date());
 
+  const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)\s*\((ALL|DELIVERY):([\d.]+)\)/i);
+  const parsedPromoCode = promoMatch ? promoMatch[1] : null;
+  const parsedPromoTarget = promoMatch ? (promoMatch[2] as "ALL" | "DELIVERY") : null;
+  const parsedPromoDiscount = promoMatch ? parseFloat(promoMatch[3]) : 0;
+
   return {
     id: displayId,
     createdAt: receiptDate,
@@ -218,6 +226,9 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     serviceSpeed: jobSpeed,
     discount: job.discount || 0,
     discountPercent: job.discountPercent || 0,
+    promoCode: (job as any).promoCode || parsedPromoCode || null,
+    promoDiscount: (job as any).promoDiscount !== undefined ? (job as any).promoDiscount : (parsedPromoDiscount > 0 ? parsedPromoDiscount : null),
+    promoTarget: (job as any).promoTarget || parsedPromoTarget || null,
     total: job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0),
     isPaid: isJobPaid,
     paymentChannel: job.paymentChannel,
@@ -682,6 +693,17 @@ export function ThermalReceiptDialog({
                 }
               </span>
               <span>-฿{formatCurrency(receiptData.discount)}</span>
+            </div>
+          )}
+          {receiptData.promoDiscount && receiptData.promoDiscount > 0 && (
+            <div className="flex justify-between text-amber-700 font-bold">
+              <span>
+                {currentLanguage === "en"
+                  ? (receiptData.promoTarget === "DELIVERY" ? "DELIVERY DISCOUNT:" : "PROMO CODE:")
+                  : (receiptData.promoTarget === "DELIVERY" ? "ส่วนลดค่าจัดส่ง:" : "โค้ดส่วนลด:")}
+                {receiptData.promoCode ? ` (${receiptData.promoCode})` : ""}
+              </span>
+              <span>-฿{formatCurrency(receiptData.promoDiscount)}</span>
             </div>
           )}
           {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (

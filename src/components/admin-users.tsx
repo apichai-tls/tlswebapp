@@ -87,6 +87,15 @@ const MENU_PERMISSIONS = [
   { id: "users", label: "Manage Users" },
 ];
 
+export const ACTION_PERMISSIONS = [
+  {
+    id: "adjust-wallet",
+    label: "Adjust Wallet Balance",
+    labelTh: "ปรับยอดเงินใน Wallet ลูกค้า",
+    description: "สิทธิ์ในการเพิ่มหรือหักลดเงิน Wallet ลูกค้าแบบ Manual (สำหรับแก้ไขเคสหรือชดเชย)",
+  },
+];
+
 /**
  * Department Priority Order:
  * 1. Accounting
@@ -326,11 +335,13 @@ export function AdminUsers() {
   };
 
   const selectAllPerms = () => {
-    setSelectedPerms(MENU_PERMISSIONS.map((p) => p.id));
+    const existingActions = selectedPerms.filter((p) => ACTION_PERMISSIONS.some((ap) => ap.id === p));
+    setSelectedPerms([...MENU_PERMISSIONS.map((p) => p.id), ...existingActions]);
   };
 
   const clearAllPerms = () => {
-    setSelectedPerms([]);
+    const existingActions = selectedPerms.filter((p) => ACTION_PERMISSIONS.some((ap) => ap.id === p));
+    setSelectedPerms(existingActions);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -351,6 +362,19 @@ export function AdminUsers() {
           permissions: selectedPerms,
         });
         if (!res?.success) throw new Error(res?.error || "Failed to update user");
+
+        // If updating self, sync localStorage immediately
+        if (typeof window !== "undefined" && user?.id === editingId) {
+          try {
+            const raw = localStorage.getItem("authUser");
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              parsed.permissions = selectedPerms;
+              localStorage.setItem("authUser", JSON.stringify(parsed));
+            }
+          } catch {}
+        }
+
         toast.success("User updated successfully");
       } else {
         if (!password) return toast.error("Password is required for new users");
@@ -755,6 +779,47 @@ export function AdminUsers() {
                 ))}
               </div>
             </div>
+
+            {/* Action & Financial Permissions */}
+            <div className="mt-5">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <label className="block text-xs font-bold text-amber-700 uppercase tracking-wider">
+                    Action & Financial Permissions
+                  </label>
+                  <span className="text-[10px] font-medium text-amber-800 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200/60">
+                    สิทธิ์การทำรายการพิเศษ / การเงิน
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2 bg-gradient-to-br from-amber-50/50 to-orange-50/30 p-4 rounded-2xl border border-amber-200/80 shadow-2xs">
+                {ACTION_PERMISSIONS.map((perm) => (
+                  <label
+                    key={perm.id}
+                    className={`flex items-start gap-3 p-3 rounded-xl cursor-pointer transition-all border ${
+                      selectedPerms.includes(perm.id)
+                        ? "bg-white border-amber-400 shadow-sm text-slate-900 ring-1 ring-amber-400/30"
+                        : "bg-white/70 border-slate-200/80 hover:bg-white text-slate-700"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedPerms.includes(perm.id)}
+                      onChange={() => togglePermission(perm.id)}
+                      className="rounded border-amber-400 text-amber-600 focus:ring-amber-500 h-4 w-4 mt-0.5 shrink-0 cursor-pointer"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-slate-900">{perm.label}</span>
+                        <span className="text-[11px] text-amber-800 font-semibold">({perm.labelTh})</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{perm.description}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
           </form>
 
           <DialogFooter className="p-4 px-6 border-t border-slate-100 bg-slate-50/50 flex justify-end gap-2.5 shrink-0">
@@ -906,13 +971,13 @@ export function AdminUsers() {
                           </div>
                         </td>
                         <td className="px-6 py-4 hidden md:table-cell">
-                          <div className="flex flex-wrap gap-1">
+                          <div className="flex flex-wrap gap-1 items-center">
                             {user.role === "admin" ? (
                               <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
                                 All Access
                               </span>
                             ) : (
-                              perms.map((p) => {
+                              perms.filter((p) => p !== "adjust-wallet").map((p) => {
                                 const label = MENU_PERMISSIONS.find((mp) => mp.id === p)?.label || p;
                                 return (
                                   <span
@@ -923,6 +988,11 @@ export function AdminUsers() {
                                   </span>
                                 );
                               })
+                            )}
+                            {perms.includes("adjust-wallet") && (
+                              <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300 shadow-2xs flex items-center gap-0.5">
+                                <span>⚡</span> Adjust Wallet
+                              </span>
                             )}
                             {user.role !== "admin" && perms.length === 0 && (
                               <span className="text-[10px] font-bold text-red-500">No Access</span>

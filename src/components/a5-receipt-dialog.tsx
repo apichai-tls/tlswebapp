@@ -275,17 +275,29 @@ export function A5ReceiptDialog({
               </div>
             </div>
 
-            {/* Receipt Preview Area — renders exactly 559px x 793px scaled to fit dialog */}
-            <div
-              className="w-full flex justify-center pt-4 pb-2 bg-neutral-800 overflow-hidden"
-              style={{ height: "calc(793px * 0.82 + 1.5rem)" }}
-            >
-              <div className="transform scale-[0.82] origin-top shadow-2xl rounded-sm overflow-hidden border border-neutral-300">
-                <A5ReceiptContent
-                  receiptData={receiptData}
-                  activeShop={activeShop}
-                  currentLanguage={currentLanguage}
-                />
+            {/* Receipt Preview Area — renders exactly 559px x 793px scaled to fit dialog (458px x 650px, ratio 1.414) */}
+            <div className="w-full flex justify-center py-4 bg-neutral-800 shrink-0">
+              <div
+                style={{
+                  width: 458,
+                  height: 650,
+                }}
+                className="relative shrink-0 shadow-2xl rounded-sm border border-neutral-300 bg-white overflow-hidden"
+              >
+                <div
+                  style={{
+                    width: 559,
+                    height: 793,
+                    transform: "scale(0.82)",
+                    transformOrigin: "top left",
+                  }}
+                >
+                  <A5ReceiptContent
+                    receiptData={receiptData}
+                    activeShop={activeShop}
+                    currentLanguage={currentLanguage}
+                  />
+                </div>
               </div>
             </div>
 
@@ -421,6 +433,7 @@ export function A5ReceiptContent({
     transportFeeItems.length * 18 +
     (receiptData.expressSurcharge > 0 ? 18 : 0) +
     (receiptData.discount > 0 ? 18 : 0) +
+    ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? 18 : 0) +
     (receiptData.vatRate > 0 ? 18 : 0);
   const paymentsHeight =
     payments.length > 0
@@ -677,6 +690,17 @@ export function A5ReceiptContent({
                       : ""}
                   </span>
                   <span className="font-mono">-{formatCurrency(receiptData.discount)}</span>
+                </div>
+              )}
+              {receiptData.promoDiscount && receiptData.promoDiscount > 0 && (
+                <div className="flex justify-between py-0.5 text-xs text-amber-600">
+                  <span>
+                    {currentLanguage === "en"
+                      ? (receiptData.promoTarget === "DELIVERY" ? "Delivery Discount" : "Promo Code")
+                      : (receiptData.promoTarget === "DELIVERY" ? "ส่วนลดค่าจัดส่ง" : "โค้ดส่วนลด")}
+                    {receiptData.promoCode ? ` (${receiptData.promoCode})` : ""}
+                  </span>
+                  <span className="font-mono">-{formatCurrency(receiptData.promoDiscount)}</span>
                 </div>
               )}
               {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (

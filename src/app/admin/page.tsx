@@ -8,7 +8,7 @@ import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
 import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
-import { refreshDb } from "@/lib/api";
+import { refreshDb, api } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid } from "@/lib/utils";
 
 
 import { Input } from "@/components/ui/input";
@@ -64,6 +64,7 @@ import {
   Clock,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
 
   LayoutDashboard,
   ArrowLeft,
@@ -311,6 +312,19 @@ export default function AdminPage() {
 
         tickCount++;
 
+        // Periodic check against server build version to detect new deploys
+        fetch('/api/version', { cache: 'no-store' })
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data?.buildTime && clientBuildTime && data.buildTime !== clientBuildTime) {
+              setIsVersionOutdated(true);
+              if (!dialogOpenRef.current && !isSubmittingRef.current) {
+                window.location.reload();
+              }
+            }
+          })
+          .catch(() => {});
+
         if (timeSinceLastActive > IDLE_TIMEOUT_MS) {
           // Monitor Mode (Idle): Slow down polling to every 4th tick (e.g. 12s for 3s interval, 60s for 15s interval)
           if (tickCount % 4 === 0) {
@@ -349,6 +363,11 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [isVersionOutdated, setIsVersionOutdated] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const clientBuildTime = process.env.NEXT_PUBLIC_BUILD_TIME;
+  const dialogOpenRef = useRef(dialogOpen);
+  dialogOpenRef.current = dialogOpen;
   const activeJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
@@ -672,6 +691,9 @@ export default function AdminPage() {
   const [billNo, setBillNo] = useState("");
   const isOtherClothingSelected = Boolean(clothingItems?.other?.selected);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(isSubmitting);
+  isSubmittingRef.current = isSubmitting;
+  const isSubmittingLockRef = useRef(false);
 
   const [serviceWeight, setServiceWeight] = useState(2);
   
@@ -814,19 +836,7 @@ export default function AdminPage() {
   const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
   const isPaidJob = editingJobId ? (() => {
     const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
-    if (!j) return false;
-    if (j.adminNotesJson) {
-      try {
-        const parsed = JSON.parse(j.adminNotesJson);
-        if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
-          const totalPaid = parsed.payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
-          if (totalPaid >= (j.totalAmount || 0)) {
-            return true;
-          }
-        }
-      } catch (e) {}
-    }
-    return false;
+    return isJobFullyPaid(j);
   })() : false;
 
 
@@ -851,6 +861,39 @@ export default function AdminPage() {
   const [isPaymentEvent, setIsPaymentEvent] = useState<boolean>(false);
   const [savingJobIds, setSavingJobIds] = useState<Set<string>>(new Set());
   const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
+
+  // Promo Code states
+  const [promoCodeInput, setPromoCodeInput] = useState<string>("");
+  const [appliedPromo, setAppliedPromo] = useState<{
+    code: string;
+    discountType: "PERCENTAGE" | "FIXED";
+    discountTarget: "ALL" | "DELIVERY";
+    discountValue: number;
+    discountAmount: number;
+    netPayable: number;
+    maxDiscount: number | null;
+    description?: string;
+  } | null>(null);
+  const [promoLoading, setPromoLoading] = useState<boolean>(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
+
+  // Dynamic promo discount calculation: if discountTarget === "DELIVERY", calculate from current fee
+  const promoDiscountAmount = useMemo(() => {
+    if (!appliedPromo) return 0;
+    if (appliedPromo.discountTarget === "DELIVERY") {
+      let d = 0;
+      if (appliedPromo.discountType === "PERCENTAGE") {
+        d = (fee * appliedPromo.discountValue) / 100;
+      } else {
+        d = Math.min(appliedPromo.discountValue, fee);
+      }
+      if (appliedPromo.maxDiscount != null && appliedPromo.maxDiscount > 0) {
+        d = Math.min(d, appliedPromo.maxDiscount);
+      }
+      return Math.max(0, Math.min(d, fee));
+    }
+    return appliedPromo.discountAmount;
+  }, [appliedPromo, fee]);
 
   const forceMemberPaymentDialog = useMemo(() => {
     if (!selectedProfileCustomer?.isMember) return false;
@@ -881,23 +924,25 @@ export default function AdminPage() {
     if (dialogVatType === "none" || dialogVatRate <= 0) return 0;
     const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
     const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
-    // VAT base = (subtotal + surcharge) - discount
-    const baseForVat = currentLaundryPrice + surcharge - dialogDiscountAmount + fee;
+    const promoDisc = promoDiscountAmount;
+    // VAT base = (subtotal + surcharge) - % discount - promo discount + fee
+    const baseForVat = currentLaundryPrice + surcharge - dialogDiscountAmount - promoDisc + fee;
     if (dialogVatType === "inclusive") {
       return baseForVat * (dialogVatRate / (100 + dialogVatRate));
     } else {
       return baseForVat * (dialogVatRate / 100);
     }
-  }, [dialogVatType, dialogVatRate, currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee]);
+  }, [dialogVatType, dialogVatRate, currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, promoDiscountAmount]);
 
   const dialogTotal = useMemo(() => {
     const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
     const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
-    // Formula: (subtotal + surcharge) - discount + fee + VAT
-    const baseTotal = currentLaundryPrice + surcharge - dialogDiscountAmount + fee;
+    const promoDisc = promoDiscountAmount;
+    // Formula: (subtotal + surcharge) - % discount - promo discount + fee + VAT
+    const baseTotal = currentLaundryPrice + surcharge - dialogDiscountAmount - promoDisc + fee;
     const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    return baseTotal + vat;
-  }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate]);
+    return Math.max(0, baseTotal + vat);
+  }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate, promoDiscountAmount]);
 
 
   const isCustomerWalletExpired = isWalletExpired(selectedProfileCustomer);
@@ -1063,9 +1108,14 @@ export default function AdminPage() {
     setNoteLogsModalOpen(false);
     setPreviewAdminNoteImage(null);
     setShowJobLogs(false);
+    setPromoCodeInput("");
+    setAppliedPromo(null);
+    setPromoError(null);
+    setShowDialogDiscount(false);
+    setDialogDiscountPercent(0);
   };
 
-  const handleCreateNewJob = () => {
+  const resetDialogForm = () => {
     originalJobRef.current = null;
     setEditingJobId(null);
     setBillNo("");
@@ -1129,6 +1179,9 @@ export default function AdminPage() {
     }
     setDialogDiscountPercent(0);
     setShowDialogDiscount(false);
+    setPromoCodeInput("");
+    setAppliedPromo(null);
+    setPromoError(null);
     const defaultVatType = (systemSettings?.vatType as any) || "none";
     const defaultVatRate = parseFloat(systemSettings?.vatRate || "7") || 7;
     setDialogVatType(defaultVatType);
@@ -1161,17 +1214,124 @@ export default function AdminPage() {
     setPickupDist(0);
     setDeliveryDist(0);
     setIsStuck(false);
+    setSaveError(null);
     setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+  };
+
+  const handleCreateNewJob = () => {
+    resetDialogForm();
     setDialogOpen(true);
   };
 
+  // ── Promo Code Helpers ───────────────────────────────────────────────────────
+  // Calls are made to local Next.js proxy routes (/api/pos/promo/*)
+  // which forward to the production server with the server-side API key (TLS_PROMO_API_KEY env var)
+
+  const handleApplyPromo = async () => {
+    const code = promoCodeInput.trim().toUpperCase();
+    if (!code) return;
+    setPromoLoading(true);
+    setPromoError(null);
+    setAppliedPromo(null);
+    try {
+      const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
+      const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
+      const orderTotal = Math.max(0, currentLaundryPrice + surcharge + fee - dialogDiscountAmount);
+
+      const res = await fetch(`/api/pos/promo/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, orderTotal }),
+      });
+      const data = await res.json();
+      if (res.ok && data.valid) {
+        const isDeliveryOnly = data.discountTarget === "DELIVERY";
+        let calcDiscount = data.discountAmount;
+
+        if (isDeliveryOnly) {
+          // Manual Section 8: discountTarget === "DELIVERY" must be calculated from deliveryFee (fee)
+          if (data.discountType === "PERCENTAGE") {
+            calcDiscount = (fee * data.discountValue) / 100;
+          } else {
+            calcDiscount = Math.min(data.discountValue, fee);
+          }
+          if (data.maxDiscount != null && data.maxDiscount > 0) {
+            calcDiscount = Math.min(calcDiscount, data.maxDiscount);
+          }
+          calcDiscount = Math.max(0, Math.min(calcDiscount, fee));
+
+          if (fee <= 0) {
+            toast.warning(`โค้ด ${data.code} เป็นส่วนลดค่าจัดส่ง (ออเดอร์นี้ไม่มีค่าจัดส่ง ฿0)`);
+          } else {
+            toast.success(`✅ โค้ด ${data.code} — ส่วนลดค่าจัดส่ง ฿${calcDiscount.toFixed(2)}`);
+          }
+        } else {
+          toast.success(`✅ โค้ด ${data.code} — ลด ฿${calcDiscount.toFixed(2)}`);
+        }
+
+        setAppliedPromo({
+          code: data.code,
+          discountType: data.discountType,
+          discountTarget: isDeliveryOnly ? "DELIVERY" : "ALL",
+          discountValue: data.discountValue,
+          discountAmount: calcDiscount,
+          netPayable: Math.max(0, orderTotal - calcDiscount),
+          maxDiscount: data.maxDiscount ?? null,
+          description: data.description,
+        });
+      } else {
+        setPromoError(data.error || "โค้ดไม่ถูกต้อง");
+        toast.error(data.error || "โค้ดส่วนลดไม่ถูกต้อง");
+      }
+    } catch {
+      setPromoError("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
+      toast.error("ไม่สามารถตรวจสอบโค้ดได้ กรุณาลองใหม่");
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const handleRedeemPromo = async (code: string, receiptNo: string, orderTotal: number, discountAmount: number) => {
+    try {
+      await fetch(`/api/pos/promo/redeem`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, receiptNo, orderTotal, discountAmount }),
+      });
+    } catch (e) {
+      console.warn("[PromoCode] Redeem failed (non-blocking):", e);
+    }
+  };
+
   const handleEditFullJob = (job: Job) => {
+    setSaveError(null);
     originalJobRef.current = JSON.parse(JSON.stringify(job));
     setEditingJobId(job.id);
     setDialogDiscountPercent(job.discountPercent || 0);
-    setShowDialogDiscount(!!job.discountPercent && job.discountPercent > 0);
-    
+    const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)\s*\((ALL|DELIVERY):([\d.]+)\)/i);
+    setShowDialogDiscount((!!job.discountPercent && job.discountPercent > 0) || !!promoMatch);
+    if (promoMatch) {
+      const pCode = promoMatch[1];
+      const pTarget = promoMatch[2] as "ALL" | "DELIVERY";
+      const pAmount = parseFloat(promoMatch[3]);
+      setPromoCodeInput(pCode);
+      setAppliedPromo({
+        code: pCode,
+        discountType: "FIXED",
+        discountTarget: pTarget,
+        discountValue: pAmount,
+        discountAmount: pAmount,
+        netPayable: (job.totalAmount || 0),
+        maxDiscount: null,
+      });
+      setPromoError(null);
+    } else {
+      setPromoCodeInput("");
+      setAppliedPromo(null);
+      setPromoError(null);
+    }
+
     const vatMatch = job.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
     if (vatMatch) {
       setDialogVatType(vatMatch[1].toLowerCase() as any);
@@ -1516,12 +1676,25 @@ export default function AdminPage() {
 
 
   async function handleCreate(isPayment: boolean = false) {
+    if (isSubmittingLockRef.current) {
+      console.warn("handleCreate blocked: submit is already in progress");
+      return;
+    }
+    isSubmittingLockRef.current = true;
+    setIsSubmitting(true);
+
+    const abortSubmit = (msg?: string) => {
+      if (msg) toast.error(msg);
+      isSubmittingLockRef.current = false;
+      setIsSubmitting(false);
+    };
+
     if (isPickup && !pickupLoc.trim()) {
-      toast.error("Please fill in the pickup location.");
+      abortSubmit("Please fill in the pickup location.");
       return;
     }
     if (isDelivery && !deliveryLoc.trim()) {
-      toast.error("Please fill in the delivery location.");
+      abortSubmit("Please fill in the delivery location.");
       return;
     }
     // No service type selected is allowed — Package/Online sale (will be set to TBA or completed)
@@ -1531,7 +1704,7 @@ export default function AdminPage() {
 
 
     if (paymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim())) {
-      toast.error(currentLanguage === "en" ? "Please select a payment channel." : "กรุณาเลือกช่องทางการชำระเงิน (Payment Channel)");
+      abortSubmit(currentLanguage === "en" ? "Please select a payment channel." : "กรุณาเลือกช่องทางการชำระเงิน (Payment Channel)");
       return;
     }
 
@@ -1556,8 +1729,6 @@ export default function AdminPage() {
 
     const validPickupDate = getValidDateOrNull(pickupScheduledTime);
     const validDeliveryDate = getValidDateOrNull(deliveryScheduledTime);
-    
-    setIsSubmitting(true);
     let finalBagImageUrls: string[] = [];
     let finalBillImageUrls: string[] = [];
     let finalPickupProofUrls: string[] = [];
@@ -1576,7 +1747,8 @@ export default function AdminPage() {
       !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r) &&
       !r.startsWith("VAT:") &&
       !r.startsWith("Proforma:") &&
-      !r.startsWith("Revision:")
+      !r.startsWith("Revision:") &&
+      !r.startsWith("Promo:")
     );
 
     let finalAdminLogs = Array.isArray(adminLogs) ? [...adminLogs] : [];
@@ -1608,11 +1780,12 @@ export default function AdminPage() {
     const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
     const surcharge = expressRate > 0 ? safeCeil(subtotal * expressRate) : 0;
 
-    // Discount on (subtotal + surcharge), then add fee and VAT
+    // Discount on (subtotal + surcharge), then subtract promo discount, then add fee and VAT
     const discountVal = (subtotal + surcharge) * (dialogDiscountPercent / 100);
-    const baseTotal = subtotal + surcharge - discountVal + fee;
+    const promoDisc = promoDiscountAmount;
+    const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
     const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    const calculatedTotal = baseTotal + vatVal;
+    const calculatedTotal = Math.max(0, baseTotal + vatVal);
 
     const now = new Date();
     const effectiveCreatedAt = editingJobId 
@@ -1638,22 +1811,22 @@ export default function AdminPage() {
       }
     }
 
-    if (paymentChannel === "Deduct Member" && !selectedProfileCustomer?.isMember) {
-      toast.error("Customer is not a member. Cannot use Deduct Member payment channel.");
-      setIsSubmitting(false);
+    const isAlreadyPaidJob = isPaidJob || Boolean(existingJob?.isShopPaid);
+    const isNewDeduction = paymentChannel === "Deduct Member" && isPayment && !isAlreadyPaidJob;
+
+    if (!isAlreadyPaidJob && paymentChannel === "Deduct Member" && !selectedProfileCustomer?.isMember) {
+      abortSubmit("Customer is not a member. Cannot use Deduct Member payment channel.");
       return;
     }
 
-    if (paymentChannel === "Deduct Member" && (shopPaymentMethod === 'paid' || isPayment)) {
+    if (isNewDeduction) {
       if (isWalletExpired(selectedProfileCustomer)) {
-        toast.error("Wallet ของลูกค้ารายนี้หมดอายุการใช้งานแล้ว ไม่สามารถตัดเงินได้ กรุณาให้ลูกค้า Top Up เพื่อต่ออายุ");
-        setIsSubmitting(false);
+        abortSubmit("Wallet ของลูกค้ารายนี้หมดอายุการใช้งานแล้ว ไม่สามารถตัดเงินได้ กรุณาให้ลูกค้า Top Up เพื่อต่ออายุ");
         return;
       }
       const currentBalance = selectedProfileCustomer?.creditBalance || 0;
       if (currentBalance < calculatedTotal) {
-        toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
-        setIsSubmitting(false);
+        abortSubmit(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
         return;
       }
     }
@@ -1680,7 +1853,7 @@ export default function AdminPage() {
     let targetProformaNum: string | null = existingProformaNum || null;
     let effectiveProformaRevision = targetProformaNum ? proformaRevision : 0;
     let effectiveProformaCartHash = targetProformaNum ? lastProformaCartHash : null;
-    const cannotDeduct = paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal) || isWalletExpired(selectedProfileCustomer));
+    const cannotDeduct = !isAlreadyPaidJob && isPayment && paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal) || isWalletExpired(selectedProfileCustomer));
 
 
     const newJobData: any = {
@@ -1724,8 +1897,8 @@ export default function AdminPage() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: cannotDeduct ? false : (isWalkIn ? isPayment : paymentMethod === 'paid'),
-      isShopPaid: cannotDeduct ? false : (isPayment || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
+      isPaid: cannotDeduct ? false : (isPaidJob || isPayment || (isWalkIn ? false : paymentMethod === 'paid')),
+      isShopPaid: cannotDeduct ? false : (isPaidJob || isPayment || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
 
       fee,
       totalAmount: calculatedTotal,
@@ -1754,6 +1927,7 @@ export default function AdminPage() {
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
+        appliedPromo ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})` : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: (() => {
         let existingPayments: any[] = [];
@@ -1813,8 +1987,6 @@ export default function AdminPage() {
       actorName: user?.name || user?.email,
       actorRole: user?.role
     };
-
-    // Preserve existing images for optimistic edit state
     if (targetEditingJobId && existingJob) {
       newJobData.bagImageUrl = existingJob.bagImageUrl || null;
       newJobData.billImageUrl = existingJob.billImageUrl || null;
@@ -1825,7 +1997,7 @@ export default function AdminPage() {
 
     try {
       let savedJobId = targetEditingJobId;
-      if (targetEditingJobId) {
+      if (isEditMode && targetEditingJobId) {
         const payload: Partial<Job> = {};
         if (originalJobRef.current) {
           const orig = originalJobRef.current as any;
@@ -1835,7 +2007,7 @@ export default function AdminPage() {
             'isStuck', 'customerId', 'type', 'status', 'subStatus', 'source', 'customerName', 'customerPhone',
             'pickupLocation', 'dropoffLocation', 'pickupCoords', 'dropoffCoords', 'scheduledAt',
             'pickupScheduledAt', 'pickupScheduledEndAt', 'deliveryScheduledAt', 'deliveryScheduledEndAt',
-            'pickupRiderId', 'deliveryRiderId', 'isPaid', 'fee', 'totalAmount', 'serviceType',
+            'pickupRiderId', 'deliveryRiderId', 'isPaid', 'fee', 'totalAmount', 'discount', 'discountPercent', 'serviceType',
             'pickupDistance', 'deliveryDistance', 'pickupCommission', 'deliveryCommission',
             'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
@@ -1880,24 +2052,10 @@ export default function AdminPage() {
 
         // 1. Optimistic memory update first — Kanban reflects change in 0ms!
         if (Object.keys(payload).length > 0) {
-          await jobStore.updateJobDetails(targetEditingJobId, payload);
+          api.optimisticUpdate(targetEditingJobId, payload);
         }
 
-        // 2. Close dialog immediately — Kanban & UI reflect change in 0ms!
-        setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
-        setAdminNoteInput("");
-        setDialogOpen(false);
-        if (isPayment) {
-          setIsDraftPreview(false);
-          setIsPaymentEvent(true);
-          setShowReceipt(true);
-        } else {
-          setEditingJobId(null);
-          setAdminLogs([]);
-        }
-
-
-        // 3. Complete uploads in background
+        // 2. Complete uploads concurrently
         const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
           bagUploadPromise,
           billUploadPromise,
@@ -1905,27 +2063,30 @@ export default function AdminPage() {
           deliveryUploadPromise
         ]);
 
-        const imageUpdates: any = {};
         if (JSON.stringify(bagUrls) !== JSON.stringify(origBagImageUrls)) {
-          imageUpdates.bagImageUrl = bagUrls.length > 0 ? JSON.stringify(bagUrls) : null;
+          payload.bagImageUrl = (bagUrls.length > 0 ? JSON.stringify(bagUrls) : null) as any;
         }
         if (JSON.stringify(billUrls) !== JSON.stringify(origBillImageUrls)) {
-          imageUpdates.billImageUrl = billUrls.length > 0 ? JSON.stringify(billUrls) : null;
+          payload.billImageUrl = (billUrls.length > 0 ? JSON.stringify(billUrls) : null) as any;
         }
         if (JSON.stringify(pickupUrls) !== JSON.stringify(origPickupProofImageUrls)) {
-          imageUpdates.pickupProofImageUrl = pickupUrls.length > 0 ? JSON.stringify(pickupUrls) : null;
+          payload.pickupProofImageUrl = (pickupUrls.length > 0 ? JSON.stringify(pickupUrls) : null) as any;
         }
         if (JSON.stringify(deliveryUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
-          imageUpdates.deliveryProofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
-          imageUpdates.proofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
+          payload.deliveryProofImageUrl = (deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null) as any;
+          payload.proofImageUrl = (deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null) as any;
         }
 
-        if (Object.keys(imageUpdates).length > 0) {
-          await jobStore.updateJobDetails(targetEditingJobId, imageUpdates);
+        // 3. Persist to DB and await confirmation
+        if (Object.keys(payload).length > 0) {
+          (payload as any).actorId = user?.id;
+          (payload as any).actorName = user?.name || user?.email;
+          (payload as any).actorRole = user?.role;
+          if ((originalJobRef.current as any)?.updatedAt) {
+            (payload as any).updatedAt = (originalJobRef.current as any).updatedAt;
+          }
+          await api.updateJob(targetEditingJobId, payload);
         }
-
-        toast.success(`Job updated successfully!`);
-
 
         // Handle wallet adjustments for job updates (separate flow — job already exists)
         // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Save
@@ -1954,11 +2115,130 @@ export default function AdminPage() {
               if (ml) upd.priceListId = ml.id;
             }
             await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
-            await jobStore.updateJobDetails(targetEditingJobId, { walletBalanceAfter: newBal });
+            await api.updateJob(targetEditingJobId, { walletBalanceAfter: newBal });
             setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
             toast.success(`Customer wallet updated. New balance: ฿${newBal.toLocaleString()}`);
           }
         }
+
+        // [AUTO-PROFORMA] If paying and no proforma was generated yet → auto-assign + capture in background
+        if (isPayment) {
+          const existingProformaNum = proformaReceiptNumber || (existingJob as any)?.proformaNumber;
+          const finalProformaNum = existingProformaNum
+            ? generateProformaBaseNumber(targetEditingJobId) === existingProformaNum
+              ? existingProformaNum
+              : existingProformaNum
+            : generateProformaBaseNumber(targetEditingJobId);
+
+          if (!existingProformaNum) {
+            // First time paying without prior Proforma — save proformaNumber to DB
+            await api.updateJob(targetEditingJobId, {
+              proformaNumber: finalProformaNum,
+              proformaRevision: 0,
+              proformaCartHash: currentCartHash,
+            } as any);
+            setProformaReceiptNumber(finalProformaNum);
+            setProformaRevision(0);
+          }
+
+          // Fire background capture of Proforma image (fire-and-forget, non-blocking)
+          // This ensures proforma-PR-XXXX-rev0.png exists in billImageUrl alongside receipt
+          if (!existingProformaNum) {
+            const proformaCapData = {
+              ...formatJobToReceiptData({
+                ...existingJob,
+                proformaNumber: finalProformaNum,
+                proformaRevision: 0,
+                remark: (newJobData.remark !== undefined ? newJobData.remark : existingJob?.remark),
+                totalAmount: calculatedTotal,
+              } as any),
+              isDraft: true,
+              proformaRevision: 0,
+              jobId: targetEditingJobId,
+              autoCapture: false,
+            };
+            // Offload to microtask so it doesn't block dialog close
+            Promise.resolve().then(async () => {
+              try {
+                const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
+                const proformaBlob = await generateA5ReceiptImage(proformaCapData, activeShop);
+                if (proformaBlob) {
+                  const proformaFilename = `proforma-${finalProformaNum}-rev0.png`;
+                  let proformaUrl: string | null = null;
+                  try {
+                    const signRes = await fetch("/api/upload-url", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        entityType: "job",
+                        entityId: targetEditingJobId,
+                        subType: "proofs",
+                        contentType: "image/png",
+                        filename: proformaFilename,
+                      }),
+                    });
+                    if (signRes.ok) {
+                      const signData = await signRes.json();
+                      if (signData.uploadUrl && signData.publicUrl) {
+                        const putRes = await fetch(signData.uploadUrl, {
+                          method: "PUT",
+                          headers: { "Content-Type": "image/png" },
+                          body: proformaBlob,
+                        });
+                        if (putRes.ok) proformaUrl = signData.publicUrl;
+                      }
+                    }
+                  } catch {
+                    // Fallback to local upload
+                    const file = new File([proformaBlob], proformaFilename, { type: "image/png" });
+                    const fd = new FormData();
+                    fd.append("file", file);
+                    fd.append("entityType", "jobs");
+                    fd.append("entityId", targetEditingJobId);
+                    fd.append("subType", "proofs");
+                    const localRes = await fetch("/api/upload-local", { method: "POST", body: fd });
+                    const localData = await localRes.json();
+                    if (localData.success && localData.publicUrl) proformaUrl = localData.publicUrl;
+                  }
+                  if (proformaUrl) {
+                    const capturedUrl = proformaUrl;
+                    // Use functional update to get latest state, but call DB update in a deferred way
+                    setBillImageUrls(prev => {
+                      const next = prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev];
+                      // Schedule DB update outside React's render (setTimeout = macrotask, safe from setState-in-render)
+                      setTimeout(() => {
+                        api.updateJob(targetEditingJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
+                      }, 0);
+                      return next;
+                    });
+                  }
+                }
+              } catch (e) {
+                console.warn("[AutoProforma] Background proforma capture failed:", e);
+              }
+            });
+          }
+        }
+
+        // 4. Close dialog ONLY AFTER DB save succeeds!
+        setSavingJobIds(prev => new Set(prev).add(targetEditingJobId));
+        setAdminNoteInput("");
+        setSaveError(null);
+        setDialogOpen(false);
+        if (isPayment) {
+          setIsDraftPreview(false);
+          setIsPaymentEvent(true);
+          setShowReceipt(true);
+          // Redeem promo code if applied (fire-and-forget)
+          if (appliedPromo) {
+            handleRedeemPromo(appliedPromo.code, targetEditingJobId, calculatedTotal + promoDiscountAmount, promoDiscountAmount);
+          }
+        } else {
+          resetDialogForm();
+        }
+
+        toast.success(`Job updated successfully!`);
+
       } else {
         // Upload images for NEW job
         const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
@@ -2020,18 +2300,114 @@ export default function AdminPage() {
             remark: updatedRemark,
           } as any);
         }
+        // [AUTO-PROFORMA for NEW JOB] If paying without prior Proforma → auto-assign + capture in background
+        if (isPayment && savedJobId) {
+          const alreadyHasProforma = isNewJobProformaRequested; // was previewed before Pay
+          const autoProformaNum = alreadyHasProforma
+            ? generateProformaBaseNumber(savedJobId)
+            : generateProformaBaseNumber(savedJobId);
+
+          if (!alreadyHasProforma) {
+            // Assign proformaNumber to the newly created job
+            await jobStore.updateJobDetails(savedJobId, {
+              proformaNumber: autoProformaNum,
+              proformaRevision: 0,
+              proformaCartHash: currentCartHash,
+            } as any);
+            setProformaReceiptNumber(autoProformaNum);
+            setProformaRevision(0);
+          }
+
+          // Fire background proforma image capture for new jobs (fire-and-forget)
+          if (!alreadyHasProforma) {
+            const newJobReceiptBase = formatJobToReceiptData({
+              ...job,
+              proformaNumber: autoProformaNum,
+              proformaRevision: 0,
+            } as any);
+            const proformaCapData = {
+              ...newJobReceiptBase,
+              isDraft: true,
+              proformaRevision: 0,
+              jobId: savedJobId,
+              autoCapture: false,
+            };
+            const capturedSavedJobId = savedJobId;
+            Promise.resolve().then(async () => {
+              try {
+                const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
+                const proformaBlob = await generateA5ReceiptImage(proformaCapData, activeShop);
+                if (proformaBlob) {
+                  const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
+                  let proformaUrl: string | null = null;
+                  try {
+                    const signRes = await fetch("/api/upload-url", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        entityType: "job",
+                        entityId: capturedSavedJobId,
+                        subType: "proofs",
+                        contentType: "image/png",
+                        filename: proformaFilename,
+                      }),
+                    });
+                    if (signRes.ok) {
+                      const signData = await signRes.json();
+                      if (signData.uploadUrl && signData.publicUrl) {
+                        const putRes = await fetch(signData.uploadUrl, {
+                          method: "PUT",
+                          headers: { "Content-Type": "image/png" },
+                          body: proformaBlob,
+                        });
+                        if (putRes.ok) proformaUrl = signData.publicUrl;
+                      }
+                    }
+                  } catch {
+                    const file = new File([proformaBlob], proformaFilename, { type: "image/png" });
+                    const fd = new FormData();
+                    fd.append("file", file);
+                    fd.append("entityType", "jobs");
+                    fd.append("entityId", capturedSavedJobId);
+                    fd.append("subType", "proofs");
+                    const localRes = await fetch("/api/upload-local", { method: "POST", body: fd });
+                    const localData = await localRes.json();
+                    if (localData.success && localData.publicUrl) proformaUrl = localData.publicUrl;
+                  }
+                  if (proformaUrl) {
+                    const capturedUrl = proformaUrl;
+                    setBillImageUrls(prev => {
+                      const next = prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev];
+                      // Schedule DB update outside React's render cycle (macrotask = safe)
+                      setTimeout(() => {
+                        jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
+                      }, 0);
+                      return next;
+                    });
+                  }
+                }
+              } catch (e) {
+                console.warn("[AutoProforma] Background new-job proforma capture failed:", e);
+              }
+            });
+          }
+        }
 
         // Close dialog immediately — UI updates in 0ms!
         setAdminNoteInput("");
+        setSaveError(null);
         setDialogOpen(false);
         if (isPayment) {
           setEditingJobId(savedJobId);
           setIsDraftPreview(false);
           setIsPaymentEvent(true);
           setShowReceipt(true);
+          // Redeem promo code if applied (fire-and-forget)
+          if (appliedPromo && savedJobId) {
+            handleRedeemPromo(appliedPromo.code, savedJobId, calculatedTotal + promoDiscountAmount, promoDiscountAmount);
+          }
         } else {
-          setEditingJobId(null);
-          setAdminLogs([]);
+          resetDialogForm();
         }
 
 
@@ -2061,10 +2437,12 @@ export default function AdminPage() {
         }
       }
     } catch (err: any) {
-
       console.error("Job Save Error:", err);
-      toast.error(`Failed to save job: ${err.message || 'Unknown error'}`);
+      const errMsg = err?.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล';
+      setSaveError(errMsg);
+      toast.error(`บันทึกไม่สำเร็จ: ${errMsg}`);
     } finally {
+      isSubmittingLockRef.current = false;
       setIsSubmitting(false);
       if (targetEditingJobId) {
         setSavingJobIds(prev => {
@@ -2085,9 +2463,10 @@ export default function AdminPage() {
 
       // Discount on (subtotal + surcharge)
       const discountVal = (subtotal + surcharge) * (dialogDiscountPercent / 100);
-      const baseTotal = subtotal + surcharge - discountVal + fee;
+      const promoDisc = promoDiscountAmount;
+      const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
       const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-      const calculatedTotal = baseTotal + vatVal;
+      const calculatedTotal = Math.max(0, baseTotal + vatVal);
       
       const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
       const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
@@ -2131,6 +2510,12 @@ export default function AdminPage() {
       const formatted = formatJobToReceiptData(mockJob);
       formatted.isDraft = true; // Mark as draft preview
       formatted.proformaRevision = proformaRevision;
+      // Promo code discount
+      if (appliedPromo) {
+        formatted.promoCode = appliedPromo.code;
+        formatted.promoDiscount = promoDiscountAmount;
+        formatted.promoTarget = appliedPromo.discountTarget;
+      }
       // Always pass the real jobId so capture logic can find it in jobStore
       if (editingJobId) {
         formatted.jobId = editingJobId;
@@ -2139,10 +2524,17 @@ export default function AdminPage() {
     } else if (activeJob) {
       const formatted = formatJobToReceiptData(activeJob);
       formatted.autoCapture = isPaymentEvent;
+      // Pass promo info for payment receipts too
+      if (appliedPromo) {
+        formatted.promoCode = appliedPromo.code;
+        formatted.promoDiscount = promoDiscountAmount;
+        formatted.promoTarget = appliedPromo.discountTarget;
+      }
       return formatted;
     }
     return null;
-  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt, deliveryScheduledTime]);
+  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt, deliveryScheduledTime, appliedPromo, promoDiscountAmount]);
+
 
   const handleEditFullJobRef = useRef(handleEditFullJob);
   handleEditFullJobRef.current = handleEditFullJob;
@@ -2742,6 +3134,21 @@ export default function AdminPage() {
 
         {/* Main Content */}
         <main className="flex-1 flex flex-col">
+          {isVersionOutdated && (
+            <div className="w-full bg-amber-500 text-slate-950 px-4 py-2.5 text-xs font-bold flex items-center justify-between shadow-md z-30 shrink-0">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={16} className="text-slate-950 shrink-0" />
+                <span>ระบบมีการอัปเดตเวอร์ชันใหม่ กรุณากดรีเฟรชหน้าจอเพื่อโหลดเวอร์ชันล่าสุด</span>
+              </div>
+              <button 
+                type="button"
+                onClick={() => window.location.reload()}
+                className="bg-slate-900 text-white px-3 py-1 rounded text-xs font-bold hover:bg-slate-800 transition shrink-0 cursor-pointer"
+              >
+                รีเฟรชเดี๋ยวนี้ (Refresh)
+              </button>
+            </div>
+          )}
           {/* Top bar */}
           <header className={`flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm ${activeTab === 'pos' ? 'lg:hidden' : ''}`}>
             <div className="flex items-center gap-3 lg:hidden px-2 py-2">
@@ -2784,8 +3191,7 @@ export default function AdminPage() {
                       return;
                     }
                     if (!open) {
-                      setAdminNoteInput("");
-                      setAdminLogs([]);
+                      resetDialogForm();
                     }
                     setDialogOpen(open);
                   }} 
@@ -2803,6 +3209,21 @@ export default function AdminPage() {
                     </Button>
                   </motion.div>
                   <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
+                    {isVersionOutdated && (
+                      <div className="sticky top-0 z-50 flex items-center justify-between gap-2 px-4 py-2 bg-amber-500 text-slate-950 text-xs font-bold shadow-md shrink-0">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle size={15} className="text-slate-950 shrink-0" />
+                          <span>ระบบมีเวอร์ชันอัปเดตใหม่ กรุณาบันทึกงานให้เรียบร้อยแล้วกดรีเฟรชหน้าจอ</span>
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => window.location.reload()}
+                          className="bg-slate-900 text-white px-2.5 py-1 rounded text-[11px] font-bold hover:bg-slate-800 transition shrink-0 cursor-pointer"
+                        >
+                          รีเฟรชหน้าจอเดี๋ยวนี้ (Refresh)
+                        </button>
+                      </div>
+                    )}
                 <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 items-start lg:items-center">
                   <div className="col-span-6 lg:col-span-6 flex flex-row items-center gap-4 w-full">
                     <DialogTitle className="flex flex-col items-start gap-1 text-lg shrink-0">
@@ -4222,6 +4643,54 @@ export default function AdminPage() {
                             </div>
                           )}
 
+                          {/* Promo Code Row */}
+                          {showDialogDiscount && !isPaidJob && (
+                            <div className="border-t border-slate-800 py-1.5 space-y-1">
+                              {/* Input row */}
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide whitespace-nowrap">Promo</span>
+                                <input
+                                  type="text"
+                                  placeholder="กรอกโค้ดส่วนลด"
+                                  value={promoCodeInput}
+                                  onChange={(e) => {
+                                    setPromoCodeInput(e.target.value.toUpperCase());
+                                    if (appliedPromo) { setAppliedPromo(null); setPromoError(null); }
+                                  }}
+                                  onKeyDown={(e) => { if (e.key === "Enter") handleApplyPromo(); }}
+                                  className="flex-1 h-6 text-[10px] font-bold bg-slate-800 border border-slate-650 rounded-md outline-none focus:border-amber-400 text-center text-white placeholder:text-slate-600 uppercase"
+                                />
+                                <button
+                                  onClick={handleApplyPromo}
+                                  disabled={promoLoading || !promoCodeInput.trim()}
+                                  className="h-6 px-2 text-[9px] font-black rounded-md bg-amber-500 hover:bg-amber-400 text-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                                >
+                                  {promoLoading ? "..." : "Apply"}
+                                </button>
+                                {appliedPromo && (
+                                  <button
+                                    onClick={() => { setAppliedPromo(null); setPromoCodeInput(""); setPromoError(null); }}
+                                    className="h-6 w-6 flex items-center justify-center rounded-md bg-slate-700 hover:bg-rose-900 text-slate-400 hover:text-rose-400 transition-colors text-xs font-black"
+                                    title="ลบโค้ด"
+                                  >✕</button>
+                                )}
+                              </div>
+                              {/* Applied badge */}
+                              {appliedPromo && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-[9px] text-amber-400 font-bold">
+                                    🎟 {appliedPromo.code} {appliedPromo.discountTarget === "DELIVERY" ? (currentLanguage === "en" ? "(Delivery)" : "(ค่าส่ง)") : ""} {appliedPromo.discountType === "PERCENTAGE" ? `(${appliedPromo.discountValue}%${appliedPromo.maxDiscount ? ` max ฿${appliedPromo.maxDiscount}` : ""})` : ""}
+                                  </span>
+                                  <span className="text-[10px] font-black text-rose-400">-฿{promoDiscountAmount.toFixed(2)}</span>
+                                </div>
+                              )}
+                              {/* Error */}
+                              {promoError && !appliedPromo && (
+                                <p className="text-[9px] text-rose-400 font-bold">{promoError}</p>
+                              )}
+                            </div>
+                          )}
+
                           {/* VAT Row */}
                           {dialogVatType === "exclusive" && dialogVatRate > 0 && (
                             <div className="flex justify-between text-xs font-semibold text-slate-400 py-1 border-t border-slate-800">
@@ -4254,10 +4723,13 @@ export default function AdminPage() {
                                     setShowDialogDiscount(checked);
                                     if (!checked) {
                                       setDialogDiscountPercent(0);
+                                      setAppliedPromo(null);
+                                      setPromoCodeInput("");
+                                      setPromoError(null);
                                     }
                                   }}
                                 />
-                                <span>{currentLanguage === "en" ? "% Discount" : "% ส่วนลด"}</span>
+                                <span>{currentLanguage === "en" ? "Discount" : "ส่วนลด"}</span>
                               </label>
                             </div>
                             <span className="text-xl font-black text-indigo-400">฿{dialogTotal.toFixed(0)}</span>
@@ -4480,7 +4952,7 @@ export default function AdminPage() {
                             <Button 
                               type="button"
                               variant="outline"
-                              disabled={dialogCart.length === 0}
+                              disabled={dialogCart.length === 0 || !editingJobId}
                               onClick={() => {
                                 const cartHash = JSON.stringify({
                                   items: dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
@@ -5062,31 +5534,51 @@ export default function AdminPage() {
                 
                 {!showJobLogs && (
                   <DialogFooter className="mx-0 mb-0 mt-0 p-4 border-t border-slate-200 bg-white shrink-0">
-                    <div className="flex gap-3">
-                    <Button variant="outline" className="flex-1" onClick={() => setDialogOpen(false)} disabled={isSubmitting}>
-                      Cancel
-                    </Button>
-                    <Button 
-                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
-                      onClick={() => handleCreate(false)}
-                      disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
-                    >
-                      {isSubmitting ? (
-                        <>
-                          <Loader2 size={16} className="animate-spin mr-2" />
-                          Uploading & Saving...
-                        </>
-                      ) : isDetailLoading ? (
-                        <>
-                          <Loader2 size={16} className="animate-spin mr-2" />
-                          Loading details...
-                        </>
-                      ) : (
-                        editingJobId ? "Save Changes" : "Create Job"
+                    <div className="flex flex-col w-full gap-2.5">
+                      {saveError && !isSubmitting && (
+                        <div className="w-full p-2.5 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-2 text-xs animate-in fade-in">
+                          <AlertCircle size={16} className="text-rose-600 mt-0.5 shrink-0" />
+                          <div className="flex-1">
+                            <p className="font-bold text-rose-700">บันทึกไม่สำเร็จ (Save Failed)</p>
+                            <p className="text-rose-600 mt-0.5 text-[11px] leading-relaxed">{saveError}</p>
+                          </div>
+                          <Button 
+                            type="button"
+                            size="sm" 
+                            variant="outline" 
+                            className="border-rose-300 text-rose-700 hover:bg-rose-100 h-7 text-xs font-bold shrink-0 cursor-pointer"
+                            onClick={() => { setSaveError(null); handleCreate(false); }}
+                          >
+                            ลองใหม่อีกครั้ง (Retry)
+                          </Button>
+                        </div>
                       )}
-                    </Button>
-                  </div>
-                </DialogFooter>
+                      <div className="flex gap-3">
+                        <Button variant="outline" className="flex-1" onClick={() => { setDialogOpen(false); resetDialogForm(); }} disabled={isSubmitting}>
+                          Cancel
+                        </Button>
+                        <Button 
+                          className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
+                          onClick={() => handleCreate(false)}
+                          disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
+                        >
+                          {isSubmitting ? (
+                            <>
+                              <Loader2 size={16} className="animate-spin mr-2" />
+                              Uploading & Saving...
+                            </>
+                          ) : isDetailLoading ? (
+                            <>
+                              <Loader2 size={16} className="animate-spin mr-2" />
+                              Loading details...
+                            </>
+                          ) : (
+                            editingJobId ? "Save Changes" : "Create Job"
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  </DialogFooter>
                 )}
                 </DialogContent>
               </Dialog>
