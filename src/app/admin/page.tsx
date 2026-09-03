@@ -5553,12 +5553,12 @@ export default function AdminPage() {
                           </Button>
                         </div>
                       )}
-                      <div className="flex gap-3">
-                        <Button variant="outline" className="flex-1" onClick={() => { setDialogOpen(false); resetDialogForm(); }} disabled={isSubmitting}>
+                      <div className="flex justify-end gap-3 w-full">
+                        <Button variant="outline" className="px-5 cursor-pointer" onClick={() => { setDialogOpen(false); resetDialogForm(); }} disabled={isSubmitting}>
                           Cancel
                         </Button>
                         <Button 
-                          className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed" 
+                          className="px-6 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer" 
                           onClick={() => handleCreate(false)}
                           disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
                         >
