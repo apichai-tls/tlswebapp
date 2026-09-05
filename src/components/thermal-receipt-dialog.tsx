@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { type Job, customerStore } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, getTransportFeeBreakdown, safeCeil } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
 
 
 
@@ -144,8 +144,12 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
       }
     } catch {}
   }
+  const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+  const parsedPromoCode = promoMatch ? promoMatch[1] : null;
+  const parsedPromoTarget = promoMatch ? ((promoMatch[2] as "ALL" | "DELIVERY") || "ALL") : null;
+  const parsedPromoDiscount = (promoMatch && promoMatch[3]) ? parseFloat(promoMatch[3]) : 0;
 
-  const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0)) - (job.discount || 0));
+  const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0)) - (job.discount || 0) - parsedPromoDiscount);
   let jobVatAmount = 0;
   if (jobVatType === "inclusive" && jobVatRate > 0) {
     jobVatAmount = baseTotal * (jobVatRate / (100 + jobVatRate));
@@ -187,11 +191,12 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
 
   const jobTotal = job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0);
   const targetCustId = job.customerId || (rawJob as any).customerId;
-  const cust = customerStore.getSnapshot().find(c =>
-    (targetCustId && c.id === targetCustId) ||
-    (job.customerPhone && job.customerPhone !== "-" && c.phone === job.customerPhone) ||
-    (job.customerName && job.customerName !== "Walk-In" && c.name.trim().toUpperCase() === job.customerName.trim().toUpperCase())
-  );
+  const cust = findMatchingCustomer(customerStore.getSnapshot(), {
+    customerId: targetCustId,
+    customerName: job.customerName,
+    customerPhone: job.customerPhone,
+  });
+
   const isMember = (job as any).isMember !== undefined 
     ? Boolean((job as any).isMember) 
     : Boolean(cust?.isMember);
@@ -205,10 +210,6 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ? paymentTime
     : (job.createdAt ? new Date(job.createdAt) : new Date());
 
-  const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)\s*\((ALL|DELIVERY):([\d.]+)\)/i);
-  const parsedPromoCode = promoMatch ? promoMatch[1] : null;
-  const parsedPromoTarget = promoMatch ? (promoMatch[2] as "ALL" | "DELIVERY") : null;
-  const parsedPromoDiscount = promoMatch ? parseFloat(promoMatch[3]) : 0;
 
   return {
     id: displayId,

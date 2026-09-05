@@ -9,6 +9,7 @@ import { addJobLogAction, updateJobAction } from "@/actions/db";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, Job, type AdminNoteLog } from "@/lib/store";
 import { Input } from "@/components/ui/input";
+import { findMatchingCustomer } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { MiniMap } from "@/components/map-loader";
 import { Badge } from "@/components/ui/badge";
@@ -1390,7 +1391,11 @@ export default function RiderPage() {
               ) : (
                 <AnimatePresence mode="popLayout">
                   {myJobs.map((task, i) => {
-                    const customer = customers.find(c => c.id === task.job.customerId || (task.job.customerPhone && c.phone === task.job.customerPhone));
+                    const customer = findMatchingCustomer(customers, {
+                      customerId: task.job.customerId,
+                      customerName: task.job.customerName,
+                      customerPhone: task.job.customerPhone,
+                    });
                     return (
                       <motion.div
                         key={task.taskId}
@@ -1517,7 +1522,11 @@ export default function RiderPage() {
               ) : (
                 <AnimatePresence mode="popLayout">
                   {historyJobs.map((task, i) => {
-                    const customer = customers.find(c => c.id === task.job.customerId || (task.job.customerPhone && c.phone === task.job.customerPhone));
+                    const customer = findMatchingCustomer(customers, {
+                      customerId: task.job.customerId,
+                      customerName: task.job.customerName,
+                      customerPhone: task.job.customerPhone,
+                    });
                     return (
                       <motion.div
                         key={task.taskId}
@@ -1596,7 +1605,11 @@ export default function RiderPage() {
             const targetCoords = selectedJob.targetCoords;
             const distance = selectedJob.distance;
             
-            const customer = customers.find(c => c.id === selectedJob.job.customerId || (selectedJob.job.customerPhone && c.phone === selectedJob.job.customerPhone));
+            const customer = findMatchingCustomer(customers, {
+              customerId: selectedJob.job.customerId,
+              customerName: selectedJob.job.customerName,
+              customerPhone: selectedJob.job.customerPhone,
+            });
             const customerIsVip = customer?.isVIP || false;
             const customerIsMember = customer?.isMember || false;
             const remarks = selectedJob.job.remark ? selectedJob.job.remark.split(" | ") : [];

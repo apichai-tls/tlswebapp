@@ -120,6 +120,7 @@ export async function updateCustomerAction(id: string, updates: any) {
 
   if (updates.isVIP !== undefined) data.isVIP = updates.isVIP;
   if (updates.isWhatsapp !== undefined) data.isWhatsapp = updates.isWhatsapp;
+  if (updates.isNew !== undefined) data.isNew = updates.isNew;
   if (updates.email !== undefined) data.email = updates.email;
   if (updates.lineId !== undefined) data.lineId = updates.lineId;
   if (updates.language !== undefined) data.language = updates.language;

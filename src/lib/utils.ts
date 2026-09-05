@@ -185,4 +185,64 @@ export function isJobFullyPaid(job?: {
   return false;
 }
 
+/**
+ * Checks whether a phone string represents a valid, real phone number
+ * (i.e. not a dummy placeholder like '+66 --', '--', 'N/A', etc. and has at least 8 digits)
+ */
+export function isValidPhoneNumber(phone: string | null | undefined): phone is string {
+  if (!phone) return false;
+  const trimmed = phone.trim();
+  if (!trimmed || trimmed === "-" || trimmed === "--" || trimmed === "+66 --" || trimmed === "+66 -") return false;
+  const digits = trimmed.replace(/\D/g, "");
+  return digits.length >= 8;
+}
+
+/**
+ * Finds the best matching customer for a job or search parameters.
+ * Prioritizes ID match (with name validation fallback), then Name match, then valid Phone match.
+ */
+export function findMatchingCustomer<T extends { id: string; name?: string | null; phone?: string | null }>(
+  customers: T[],
+  lookup: { customerId?: string | null; customerName?: string | null; customerPhone?: string | null }
+): T | null {
+  if (!customers || customers.length === 0) return null;
+
+  const targetId = lookup.customerId?.trim();
+  const targetName = lookup.customerName?.trim().toLowerCase();
+  const targetPhone = lookup.customerPhone?.trim();
+
+  // 1. If customerId is provided, check if it matches
+  if (targetId) {
+    const byId = customers.find(c => c.id === targetId);
+    if (byId) {
+      // If no name is provided, or names match / overlap, use it
+      const cName = (byId.name || "").trim().toLowerCase();
+      if (!targetName || cName === targetName || targetName.includes(cName) || cName.includes(targetName)) {
+        return byId;
+      }
+      // If customerId points to a completely mismatched name (e.g. MELISSA vs VIRAKUMARA LIE),
+      // look for the customer by exact name first
+      if (targetName) {
+        const byName = customers.find(c => (c.name || "").trim().toLowerCase() === targetName);
+        if (byName) return byName;
+      }
+      return byId;
+    }
+  }
+
+  // 2. Match by exact Name
+  if (targetName) {
+    const byName = customers.find(c => (c.name || "").trim().toLowerCase() === targetName);
+    if (byName) return byName;
+  }
+
+  // 3. Match by Phone (ONLY if phone is a valid real phone number)
+  if (isValidPhoneNumber(targetPhone)) {
+    const byPhone = customers.find(c => c.phone && c.phone.trim() === targetPhone);
+    if (byPhone) return byPhone;
+  }
+
+  return null;
+}
+
 

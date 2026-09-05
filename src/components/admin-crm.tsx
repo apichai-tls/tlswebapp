@@ -18,7 +18,7 @@ import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-m
 import { getTopUpTransactionsAction, updateTopUpTransactionSlipAction } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
-import { isWalletExpired } from "@/lib/utils";
+import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer } from "@/lib/utils";
 
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
   return new Promise((resolve) => {
@@ -447,8 +447,8 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
     customers.forEach(c => {
       analytics[c.id] = { jobsCount: 0, ltv: 0 };
       customerById.set(c.id, c);
-      if (c.phone) customerByPhone.set(c.phone, c);
-      if (c.name) customerByName.set(c.name.toUpperCase(), c);
+      if (isValidPhoneNumber(c.phone)) customerByPhone.set(c.phone, c);
+      if (c.name) customerByName.set(c.name.toUpperCase().trim(), c);
     });
     
     jobs.forEach(job => {
@@ -456,18 +456,28 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
       
       if (job.customerId) {
         matchedCustomer = customerById.get(job.customerId);
-      }
-      if (!matchedCustomer && job.customerPhone) {
-        matchedCustomer = customerByPhone.get(job.customerPhone);
+        if (matchedCustomer && job.customerName) {
+          const jName = job.customerName.toUpperCase().trim();
+          const cName = (matchedCustomer.name || "").toUpperCase().trim();
+          if (jName && cName && jName !== cName && !jName.includes(cName) && !cName.includes(jName)) {
+            const byName = customerByName.get(jName);
+            if (byName) matchedCustomer = byName;
+          }
+        }
       }
       if (!matchedCustomer && job.customerName) {
-        matchedCustomer = customerByName.get(job.customerName.toUpperCase());
+        matchedCustomer = customerByName.get(job.customerName.toUpperCase().trim());
       }
+      if (!matchedCustomer && isValidPhoneNumber(job.customerPhone)) {
+        matchedCustomer = customerByPhone.get(job.customerPhone);
+      }
+
       
       if (matchedCustomer) {
         const stats = analytics[matchedCustomer.id];
         if (stats) {
-          if (job.status === "completed") {
+          const isPaidOrCompleted = job.status === "completed" || (job.status !== "cancel" && (isJobFullyPaid(job) || job.isPaid === true || job.isShopPaid === true));
+          if (isPaidOrCompleted) {
             stats.jobsCount += 1;
             stats.ltv += (job.totalAmount || job.fee || 0);
           }
@@ -999,7 +1009,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                   ) : (
                     paginatedCustomers.map((customer, index) => {
                       const stats = customerAnalytics[customer.id] || { jobsCount: 0, ltv: 0 };
-                      const isNewCustomer = stats.jobsCount === 0;
+                      const isNewCustomer = customer.isNew === true;
                       
                       return (
                         <motion.tr

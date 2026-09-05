@@ -6,7 +6,7 @@ import { Printer, X, Loader2, Wallet } from "lucide-react";
 import { ReceiptData } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { getTransportFeeBreakdown, safeCeil } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
 
 import { customerStore } from "@/lib/store";
 
@@ -358,14 +358,12 @@ export function A5ReceiptContent({
     val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   // Match customer for Member Wallet info
-  const targetCustomer = customers.find(
-    (c) =>
-      (receiptData.customerId && c.id === receiptData.customerId) ||
-      (receiptData.customerPhone && receiptData.customerPhone !== "-" && c.phone === receiptData.customerPhone) ||
-      (receiptData.customerName &&
-        receiptData.customerName !== "Walk-In" &&
-        c.name.trim().toUpperCase() === receiptData.customerName.trim().toUpperCase())
-  );
+  const targetCustomer = findMatchingCustomer(customers, {
+    customerId: receiptData.customerId,
+    customerName: receiptData.customerName,
+    customerPhone: receiptData.customerPhone,
+  });
+
 
   const isMember =
     receiptData.isMember !== undefined ? receiptData.isMember : Boolean(targetCustomer?.isMember);

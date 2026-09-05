@@ -12,7 +12,9 @@ import { motion } from "framer-motion";
 import { getTopUpTransactionsAction } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
-import { isWalletExpired } from "@/lib/utils";
+import { isWalletExpired, isValidPhoneNumber } from "@/lib/utils";
+
+
 
 
 // Helper to extract initials for avatar
@@ -97,7 +99,14 @@ export function AdminCustomerProfileModal({
 
   const { jobsCount, ltv, customerJobs } = useMemo(() => {
     if (!customer) return { jobsCount: 0, ltv: 0, customerJobs: [] };
-    const custJobs = jobs.filter(j => j.customerPhone === customer.phone || j.customerId === customer.id);
+    const hasValidPhone = isValidPhoneNumber(customer.phone);
+    const cName = (customer.name || "").trim().toLowerCase();
+    const custJobs = jobs.filter(j => {
+      if (j.customerId && j.customerId === customer.id) return true;
+      if (hasValidPhone && j.customerPhone === customer.phone) return true;
+      if (!hasValidPhone && j.customerName && j.customerName.trim().toLowerCase() === cName) return true;
+      return false;
+    });
     const countedJobs = custJobs.filter(j => isStandardPlan ? j.isPaid : j.status === "completed");
     return {
       customerJobs: custJobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
@@ -105,6 +114,24 @@ export function AdminCustomerProfileModal({
       ltv: countedJobs.reduce((sum, j) => sum + (j.totalAmount || j.fee || 0), 0)
     };
   }, [jobs, customer, isStandardPlan]);
+
+  const usedPromos = useMemo(() => {
+    const list: { code: string; discount?: number; target?: string; date: string; billId: string }[] = [];
+    customerJobs.forEach(job => {
+      if (job.status === "cancel") return;
+      const match = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+      if (match && match[3] && parseFloat(match[3]) > 0) {
+        list.push({
+          code: match[1],
+          target: match[2],
+          discount: parseFloat(match[3]),
+          date: format(new Date(job.createdAt), "dd MMM yyyy"),
+          billId: job.id,
+        });
+      }
+    });
+    return list;
+  }, [customerJobs]);
 
   const progression = useMemo(() => {
     let nextTierName = "";
@@ -434,6 +461,33 @@ export function AdminCustomerProfileModal({
              </div>
           </div>
 
+          {/* Used Promo Codes Banner */}
+          {usedPromos.length > 0 && (
+            <div className="bg-gradient-to-r from-amber-50/80 via-orange-50/50 to-amber-50/80 border border-amber-200 p-3.5 rounded-xl shadow-2xs space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                  <span>🎟️</span> Used Promo Codes (ประวัติโค้ดส่วนลดที่เคยใช้)
+                </span>
+                <span className="text-[10px] font-bold text-amber-700 bg-amber-100/80 px-2 py-0.5 rounded-full border border-amber-200">
+                  {usedPromos.length} {usedPromos.length === 1 ? "code" : "codes"}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                {usedPromos.map((p, idx) => (
+                  <span
+                    key={idx}
+                    className="inline-flex items-center gap-1 bg-white border border-amber-300/80 text-amber-900 text-[11px] font-bold px-2.5 py-0.5 rounded-lg shadow-2xs"
+                  >
+                    <span className="text-amber-600">🎟️</span>
+                    <span>{p.code}</span>
+                    {p.discount != null && <span className="text-rose-600 font-black">(-฿{p.discount.toFixed(0)})</span>}
+                    <span className="text-[9px] text-slate-600 font-normal">({p.date})</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* History Section: Segmented Control for Orders vs Top-ups */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between">
@@ -506,9 +560,22 @@ export function AdminCustomerProfileModal({
                             </TableCell>
                             <TableCell className="py-3">
                               <div className="flex flex-col gap-0.5">
-                                <span className="text-xs font-bold text-slate-900 capitalize">
-                                  {job.serviceType?.replace(/_/g, ' ') || 'General Service'}
-                                </span>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-xs font-bold text-slate-900 capitalize">
+                                    {job.serviceType?.replace(/_/g, ' ') || 'General Service'}
+                                  </span>
+                                  {(() => {
+                                    const match = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+                                    if (!match || !match[3] || parseFloat(match[3]) <= 0) return null;
+                                    const pCode = match[1];
+                                    const pDisc = match[3] ? ` -฿${parseFloat(match[3]).toFixed(0)}` : "";
+                                    return (
+                                      <Badge className="bg-amber-50 text-amber-800 border border-amber-300 shadow-2xs py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded flex items-center gap-0.5">
+                                        <span>🎟️</span> {pCode}{pDisc}
+                                      </Badge>
+                                    );
+                                  })()}
+                                </div>
                                 <span className="text-[10px] text-slate-400">
                                   {job.type === "full_service" ? "Full Service" : job.type === "pickup" ? "Pickup Only" : "Delivery Only"}
                                 </span>

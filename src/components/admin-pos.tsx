@@ -76,7 +76,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber } from "@/lib/utils";
 
 
 
@@ -741,7 +741,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   // Auto-sync selectedCustomer with latest customerStore state when credit balance or member status changes
   useEffect(() => {
     if (selectedCustomer && customers.length > 0) {
-      const fresh = customers.find(c => c.id === selectedCustomer.id || (c.phone && c.phone === selectedCustomer.phone));
+      const fresh = customers.find(c => {
+        if (selectedCustomer.id) return c.id === selectedCustomer.id;
+        if (isValidPhoneNumber(selectedCustomer.phone)) return c.phone === selectedCustomer.phone;
+        return false;
+      });
       if (fresh) {
         if (
           fresh.creditBalance !== selectedCustomer.creditBalance ||
@@ -1995,6 +1999,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         } : null);
       }
 
+      if (isPaidFlag && selectedCustomer?.isNew && selectedCustomer?.id) {
+        await customerStore.updateCustomer(selectedCustomer.id, { isNew: false });
+        setSelectedCustomer(prev => prev ? { ...prev, isNew: false } : null);
+      }
 
       setLatestJob(finalJob);
       setShowReceipt(true);
@@ -4616,8 +4624,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
                               setCart(cartItems);
 
-                              const customer = customers.find(c => c.id === job.customerId || (job.customerPhone && c.phone === job.customerPhone));
+                              const customer = findMatchingCustomer(customers, {
+                                customerId: job.customerId,
+                                customerName: job.customerName,
+                                customerPhone: job.customerPhone,
+                              });
                               setSelectedCustomer(customer || null);
+
 
                               setManualAdjustment(job.discount || 0);
                               setDiscountPercent(job.discountPercent || 0);

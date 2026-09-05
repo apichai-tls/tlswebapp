@@ -23,6 +23,7 @@ model Customer {
   isVIP            Boolean   @default(false)
   isCorporate      Boolean   @default(false)
   isWhatsapp       Boolean   @default(false)
+  isNew            Boolean   @default(true)
   email            String?
   lineId           String?
   language         String?

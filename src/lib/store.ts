@@ -73,6 +73,7 @@ export interface Customer {
   isVIP?: boolean;
   isCorporate?: boolean;
   isWhatsapp?: boolean;
+  isNew?: boolean;
   email?: string | null;
   lineId?: string | null;
   language?: string | null;

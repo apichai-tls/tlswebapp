@@ -102,6 +102,15 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     });
   }, [allRiders, filterArea, shopLocations]);
 
+  // Selectable riders for reassigning (filtered active riders + currently assigned rider if resigned)
+  const reassignOptions = useMemo(() => {
+    if (editRiderId && !filteredRiders.some(r => r.id === editRiderId)) {
+      const existing = allRiders.find(r => r.id === editRiderId);
+      if (existing) return [...filteredRiders, existing];
+    }
+    return filteredRiders;
+  }, [filteredRiders, editRiderId, allRiders]);
+
   // Toggle rider selection
   const toggleRider = (riderId: string) => {
     const next = new Set(selectedRiderIds);
@@ -492,8 +501,10 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                 onChange={(e) => setEditRiderId(e.target.value)}
               >
                 <option value="">-- Unassigned --</option>
-                {filteredRiders.map(r => (
-                  <option key={r.id} value={r.id}>{r.name} ({r.status})</option>
+                {reassignOptions.map(r => (
+                  <option key={r.id} value={r.id}>
+                    {r.name} {r.isActive === false ? "(Resigned / ลาออกแล้ว)" : `(${r.status})`}
+                  </option>
                 ))}
               </select>
             </div>

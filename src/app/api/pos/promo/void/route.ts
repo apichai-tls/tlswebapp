@@ -1,7 +1,7 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const PROMO_BASE = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
-const PROMO_KEY  = process.env.TLS_PROMO_API_KEY  || "";
+const PROMO_KEY  = process.env.TLS_PROMO_API_KEY  || "tls_pos_secret_key_dev_2026";
 
 export async function POST(req: NextRequest) {
   try {

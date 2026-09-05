@@ -236,8 +236,10 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
                   onChange={(e) => setDeliveryRiderId(e.target.value)}
                 >
                   <option value="">-- Assign --</option>
-                  {riders.map(r => (
-                    <option key={`tracker-d-${r.id}`} value={r.id}>{r.name}</option>
+                  {riders.filter(r => r.isActive !== false || (deliveryRiderId && r.id === deliveryRiderId)).map(r => (
+                    <option key={`tracker-d-${r.id}`} value={r.id}>
+                      {r.name}{r.isActive === false ? " (Resigned)" : ""}
+                    </option>
                   ))}
                 </select>
               </div>

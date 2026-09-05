@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, type Job, type JobStatus } from "@/lib/store";
-import { isJobFullyPaid } from "@/lib/utils";
+import { isJobFullyPaid, findMatchingCustomer } from "@/lib/utils";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -193,10 +193,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
     const searchLower = searchTerm.toLowerCase().trim();
     const statusLabel = statusConfig[job.status]?.label || "";
-    const customer = customers.find(c => {
-      if (job.customerId) return c.id === job.customerId;
-      const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
-      return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+    const customer = findMatchingCustomer(customers, {
+      customerId: job.customerId,
+      customerName: job.customerName,
+      customerPhone: job.customerPhone,
     });
 
     const pickupRiderObj = riders.find(r => r.id === job.pickupRiderId);
@@ -661,12 +661,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         <div className="font-medium text-[11px] text-slate-900 flex items-center gap-1 flex-wrap">
                           {job.customerName || "Walk-in Guest"}
                           {(() => {
-                            const c = customers.find(c => {
-                              if (job.customerId) return c.id === job.customerId;
-                              const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
-                              return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+                            const c = findMatchingCustomer(customers, {
+                              customerId: job.customerId,
+                              customerName: job.customerName,
+                              customerPhone: job.customerPhone,
                             });
                             if (!c) return null;
+
                             return (
                               <>
                                 {c.isVIP && <Badge className="text-[8px] px-1 py-0 h-3 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-bold">VIP</Badge>}
@@ -1027,12 +1028,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             <div className="text-xs font-bold text-slate-800 mb-1 flex items-center gap-1.5">
                               {job.customerName || "Walk-in Guest"}
                               {(() => {
-                                const c = customers.find(c => {
-                                  if (job.customerId) return c.id === job.customerId;
-                                  const cleanPhone = job.customerPhone ? job.customerPhone.replace(/\D/g, '') : '';
-                                  return cleanPhone.length >= 5 && c.phone === job.customerPhone;
+                                const c = findMatchingCustomer(customers, {
+                                  customerId: job.customerId,
+                                  customerName: job.customerName,
+                                  customerPhone: job.customerPhone,
                                 });
                                 if (!c) return null;
+
                                 return (
                                   <>
                                     {c.isVIP && <Badge className="text-[8px] px-1 py-0 h-3 bg-gradient-to-r from-amber-200 to-amber-400 text-amber-900 border-none font-bold">VIP</Badge>}

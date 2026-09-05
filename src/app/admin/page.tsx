@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer } from "@/lib/utils";
 
 
 import { Input } from "@/components/ui/input";
@@ -404,7 +404,11 @@ export default function AdminPage() {
   // Auto-sync selectedProfileCustomer with latest customerStore state when credit balance or member status changes
   useEffect(() => {
     if (selectedProfileCustomer && customers.length > 0) {
-      const fresh = customers.find(c => c.id === selectedProfileCustomer.id || (c.phone && c.phone === selectedProfileCustomer.phone));
+      const fresh = customers.find(c => {
+        if (selectedProfileCustomer.id) return c.id === selectedProfileCustomer.id;
+        if (isValidPhoneNumber(selectedProfileCustomer.phone)) return c.phone === selectedProfileCustomer.phone;
+        return false;
+      });
       if (fresh) {
         if (
           fresh.creditBalance !== selectedProfileCustomer.creditBalance ||
@@ -839,6 +843,30 @@ export default function AdminPage() {
     return isJobFullyPaid(j);
   })() : false;
 
+  const isNewCustomer = useMemo(() => {
+    // If no customer selected or typed, not a new customer
+    if (!selectedProfileCustomer && !customerPhone && !customerName) return false;
+
+    if (selectedProfileCustomer) {
+      return selectedProfileCustomer.isNew === true;
+    }
+
+    const targetPhone = customerPhone?.trim();
+    const targetName = customerName?.trim().toUpperCase();
+
+    const matched = customers.find(c =>
+      (targetPhone && c.phone === targetPhone) ||
+      (targetName && c.name?.trim().toUpperCase() === targetName)
+    );
+
+    if (matched) {
+      return matched.isNew === true;
+    }
+
+    // Completely new customer typed manually
+    return true;
+  }, [selectedProfileCustomer, customerPhone, customerName, customers]);
+
 
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
   // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
@@ -1231,6 +1259,18 @@ export default function AdminPage() {
   const handleApplyPromo = async () => {
     const code = promoCodeInput.trim().toUpperCase();
     if (!code) return;
+
+    // Must have a customer selected or specified to validate 1-time per customer
+    const custId = selectedProfileCustomer?.id;
+    const custPhone = customerPhone?.trim();
+    const custName = customerName?.trim();
+
+    if (!custId && !custPhone && !custName) {
+      setPromoError("กรุณาเลือกลูกค้าหรือระบุข้อมูลลูกค้าก่อนใช้โค้ดส่วนลด");
+      toast.error("กรุณาเลือกลูกค้าหรือระบุข้อมูลลูกค้าก่อนใช้โค้ดส่วนลด");
+      return;
+    }
+
     setPromoLoading(true);
     setPromoError(null);
     setAppliedPromo(null);
@@ -1242,7 +1282,14 @@ export default function AdminPage() {
       const res = await fetch(`/api/pos/promo/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, orderTotal }),
+        body: JSON.stringify({
+          code,
+          orderTotal,
+          customerId: custId,
+          customerPhone: custPhone,
+          customerName: custName,
+          currentJobId: editingJobId || undefined,
+        }),
       });
       const data = await res.json();
       if (res.ok && data.valid) {
@@ -1309,22 +1356,27 @@ export default function AdminPage() {
     originalJobRef.current = JSON.parse(JSON.stringify(job));
     setEditingJobId(job.id);
     setDialogDiscountPercent(job.discountPercent || 0);
-    const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)\s*\((ALL|DELIVERY):([\d.]+)\)/i);
-    setShowDialogDiscount((!!job.discountPercent && job.discountPercent > 0) || !!promoMatch);
+    const hasDiscountOn = job.remark ? job.remark.includes("Discount: on") : false;
+    const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+    setShowDialogDiscount(Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || promoMatch));
     if (promoMatch) {
       const pCode = promoMatch[1];
-      const pTarget = promoMatch[2] as "ALL" | "DELIVERY";
-      const pAmount = parseFloat(promoMatch[3]);
+      const pTarget = (promoMatch[2] as "ALL" | "DELIVERY") || "ALL";
+      const pAmount = promoMatch[3] ? parseFloat(promoMatch[3]) : 0;
       setPromoCodeInput(pCode);
-      setAppliedPromo({
-        code: pCode,
-        discountType: "FIXED",
-        discountTarget: pTarget,
-        discountValue: pAmount,
-        discountAmount: pAmount,
-        netPayable: (job.totalAmount || 0),
-        maxDiscount: null,
-      });
+      if (pAmount > 0) {
+        setAppliedPromo({
+          code: pCode,
+          discountType: "FIXED",
+          discountTarget: pTarget,
+          discountValue: pAmount,
+          discountAmount: pAmount,
+          netPayable: Math.max(0, (job.totalAmount || 0)),
+          maxDiscount: null,
+        });
+      } else {
+        setAppliedPromo(null);
+      }
       setPromoError(null);
     } else {
       setPromoCodeInput("");
@@ -1458,7 +1510,11 @@ export default function AdminPage() {
     setCustomerName(job.customerName || "");
     setCustomerPhone(job.customerPhone || "");
     
-    const foundCustomer = customers.find(c => c.id === job.customerId || c.phone === job.customerPhone);
+    const foundCustomer = findMatchingCustomer(customers, {
+      customerId: job.customerId,
+      customerName: job.customerName,
+      customerPhone: job.customerPhone,
+    });
     setSelectedProfileCustomer(foundCustomer || null);
     const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation || s.name === job.pickupLocation || (job.pickupLocation && job.pickupLocation.includes("POS Counter")));
     const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation || s.name === job.dropoffLocation);
@@ -1513,12 +1569,7 @@ export default function AdminPage() {
     setPaymentChannel(fallbackChannel);
     setServiceType(job.serviceType || "wash_fold");
     setEditingFeeLock(job.fee);
-    
-    const matchedCustomer = customers.find(c => 
-      (job.customerId && c.id === job.customerId) || 
-      (job.customerName && c.name === job.customerName) || 
-      (job.customerPhone && c.phone === job.customerPhone)
-    );
+    const matchedCustomer = foundCustomer;
     setSelectedVIPLabel(matchedCustomer?.isVIP ? "VIP" : "");
     setSelectedMemberLabel(matchedCustomer?.isMember ? "Member" : "");
     setSelectedMemberId(matchedCustomer?.memberId || "");
@@ -1748,7 +1799,8 @@ export default function AdminPage() {
       !r.startsWith("VAT:") &&
       !r.startsWith("Proforma:") &&
       !r.startsWith("Revision:") &&
-      !r.startsWith("Promo:")
+      !r.startsWith("Promo:") &&
+      !r.startsWith("Discount:")
     );
 
     let finalAdminLogs = Array.isArray(adminLogs) ? [...adminLogs] : [];
@@ -1780,9 +1832,9 @@ export default function AdminPage() {
     const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
     const surcharge = expressRate > 0 ? safeCeil(subtotal * expressRate) : 0;
 
-    // Discount on (subtotal + surcharge), then subtract promo discount, then add fee and VAT
-    const discountVal = (subtotal + surcharge) * (dialogDiscountPercent / 100);
-    const promoDisc = promoDiscountAmount;
+    // Discount on (subtotal + surcharge), then subtract promo discount (only if applied via Apply button), then add fee and VAT
+    const discountVal = showDialogDiscount ? (subtotal + surcharge) * (dialogDiscountPercent / 100) : 0;
+    const promoDisc = (showDialogDiscount && appliedPromo) ? promoDiscountAmount : 0;
     const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
     const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
     const calculatedTotal = Math.max(0, baseTotal + vatVal);
@@ -1862,7 +1914,7 @@ export default function AdminPage() {
       isStuck,
       createdAt: effectiveCreatedAt,
       discount: discountVal,
-      discountPercent: dialogDiscountPercent,
+      discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
       type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
@@ -1921,13 +1973,18 @@ export default function AdminPage() {
       remark: [
         targetProformaNum ? `Proforma: ${cleanProformaNumber(targetProformaNum)}${effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
         ...customRemarks,
+        showDialogDiscount ? "Discount: on" : "",
         activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
         serviceSpeed === "express_100" ? "Express 100%" : "",
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
-        appliedPromo ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})` : "",
+        showDialogDiscount ? (
+          appliedPromo
+            ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
+            : (promoCodeInput.trim() ? `Promo: ${promoCodeInput.trim().toUpperCase()}` : "")
+        ) : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: (() => {
         let existingPayments: any[] = [];
@@ -2229,6 +2286,10 @@ export default function AdminPage() {
           setIsDraftPreview(false);
           setIsPaymentEvent(true);
           setShowReceipt(true);
+          if (selectedProfileCustomer?.isNew && selectedProfileCustomer?.id) {
+            customerStore.updateCustomer(selectedProfileCustomer.id, { isNew: false });
+            setSelectedProfileCustomer(prev => prev ? { ...prev, isNew: false } : null);
+          }
           // Redeem promo code if applied (fire-and-forget)
           if (appliedPromo) {
             handleRedeemPromo(appliedPromo.code, targetEditingJobId, calculatedTotal + promoDiscountAmount, promoDiscountAmount);
@@ -2402,6 +2463,10 @@ export default function AdminPage() {
           setIsDraftPreview(false);
           setIsPaymentEvent(true);
           setShowReceipt(true);
+          if (selectedProfileCustomer?.isNew && selectedProfileCustomer?.id) {
+            customerStore.updateCustomer(selectedProfileCustomer.id, { isNew: false });
+            setSelectedProfileCustomer(prev => prev ? { ...prev, isNew: false } : null);
+          }
           // Redeem promo code if applied (fire-and-forget)
           if (appliedPromo && savedJobId) {
             handleRedeemPromo(appliedPromo.code, savedJobId, calculatedTotal + promoDiscountAmount, promoDiscountAmount);
@@ -3230,6 +3295,11 @@ export default function AdminPage() {
                       <div className="flex items-center gap-2">
                         <Package size={18} />
                         <span>{editingJobId ? "Edit Job" : "Create New Job"}</span>
+                        {isNewCustomer && (
+                          <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-2xs py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded ml-1">
+                            NEW
+                          </Badge>
+                        )}
                         {selectedVIPLabel && (
                           <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
                             VIP {selectedVIPLabel}
@@ -3310,6 +3380,9 @@ export default function AdminPage() {
                                   setCustomerName(c.name);
                                   setCustomerPhone(c.phone);
                                   setSelectedProfileCustomer(c);
+                                  setAppliedPromo(null);
+                                  setPromoCodeInput("");
+                                  setPromoError(null);
                                   
                                    // Always sync address from CRM when customer is selected
                                    setPickupLoc(c.defaultAddress);
@@ -3352,22 +3425,29 @@ export default function AdminPage() {
                                   <p className="font-semibold text-slate-800">{c.name}</p>
                                   <p className="text-xs text-slate-500">{c.phone}</p>
                                 </div>
-                                {c.isVIP && (
-                                  <Badge variant="outline" className="text-[10px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
-                                    VIP
-                                  </Badge>
-                                )}
-                                {c.isMember && (
-                                  <div className="flex items-center gap-1">
-                                    <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
-                                      Member
+                                <div className="flex items-center gap-1">
+                                  {c.isNew === true && (
+                                    <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-2xs py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded">
+                                      NEW
                                     </Badge>
-                                    <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold flex items-center gap-0.5">
-                                      <Wallet size={9} />
-                                      ฿{(c.creditBalance || 0).toLocaleString()}
+                                  )}
+                                  {c.isVIP && (
+                                    <Badge variant="outline" className="text-[10px] py-0 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold">
+                                      VIP
                                     </Badge>
-                                  </div>
-                                )}
+                                  )}
+                                  {c.isMember && (
+                                    <div className="flex items-center gap-1">
+                                      <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
+                                        Member
+                                      </Badge>
+                                      <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold flex items-center gap-0.5">
+                                        <Wallet size={9} />
+                                        ฿{(c.creditBalance || 0).toLocaleString()}
+                                      </Badge>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             ))
                           ) : (
@@ -3535,6 +3615,11 @@ export default function AdminPage() {
                               </Label>
 
                               <div className="flex items-center gap-1 shrink-0 flex-wrap">
+                                {isNewCustomer && (
+                                  <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-2xs py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded shrink-0">
+                                    NEW
+                                  </Badge>
+                                )}
                                 {selectedVIPLabel && (
                                   <Badge variant="outline" className="text-[9px] py-0 px-1 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold shrink-0">
                                     VIP
@@ -4644,49 +4729,63 @@ export default function AdminPage() {
                           )}
 
                           {/* Promo Code Row */}
-                          {showDialogDiscount && !isPaidJob && (
+                          {showDialogDiscount && (
                             <div className="border-t border-slate-800 py-1.5 space-y-1">
-                              {/* Input row */}
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide whitespace-nowrap">Promo</span>
-                                <input
-                                  type="text"
-                                  placeholder="กรอกโค้ดส่วนลด"
-                                  value={promoCodeInput}
-                                  onChange={(e) => {
-                                    setPromoCodeInput(e.target.value.toUpperCase());
-                                    if (appliedPromo) { setAppliedPromo(null); setPromoError(null); }
-                                  }}
-                                  onKeyDown={(e) => { if (e.key === "Enter") handleApplyPromo(); }}
-                                  className="flex-1 h-6 text-[10px] font-bold bg-slate-800 border border-slate-650 rounded-md outline-none focus:border-amber-400 text-center text-white placeholder:text-slate-600 uppercase"
-                                />
-                                <button
-                                  onClick={handleApplyPromo}
-                                  disabled={promoLoading || !promoCodeInput.trim()}
-                                  className="h-6 px-2 text-[9px] font-black rounded-md bg-amber-500 hover:bg-amber-400 text-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-                                >
-                                  {promoLoading ? "..." : "Apply"}
-                                </button>
-                                {appliedPromo && (
-                                  <button
-                                    onClick={() => { setAppliedPromo(null); setPromoCodeInput(""); setPromoError(null); }}
-                                    className="h-6 w-6 flex items-center justify-center rounded-md bg-slate-700 hover:bg-rose-900 text-slate-400 hover:text-rose-400 transition-colors text-xs font-black"
-                                    title="ลบโค้ด"
-                                  >✕</button>
-                                )}
-                              </div>
-                              {/* Applied badge */}
-                              {appliedPromo && (
-                                <div className="flex justify-between items-center">
-                                  <span className="text-[9px] text-amber-400 font-bold">
-                                    🎟 {appliedPromo.code} {appliedPromo.discountTarget === "DELIVERY" ? (currentLanguage === "en" ? "(Delivery)" : "(ค่าส่ง)") : ""} {appliedPromo.discountType === "PERCENTAGE" ? `(${appliedPromo.discountValue}%${appliedPromo.maxDiscount ? ` max ฿${appliedPromo.maxDiscount}` : ""})` : ""}
-                                  </span>
-                                  <span className="text-[10px] font-black text-rose-400">-฿{promoDiscountAmount.toFixed(2)}</span>
-                                </div>
-                              )}
-                              {/* Error */}
-                              {promoError && !appliedPromo && (
-                                <p className="text-[9px] text-rose-400 font-bold">{promoError}</p>
+                              {!isPaidJob ? (
+                                <>
+                                  {/* Input row */}
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide whitespace-nowrap">Promo</span>
+                                    <input
+                                      type="text"
+                                      placeholder="กรอกโค้ดส่วนลด"
+                                      value={promoCodeInput}
+                                      onChange={(e) => {
+                                        setPromoCodeInput(e.target.value.toUpperCase());
+                                        if (appliedPromo) { setAppliedPromo(null); setPromoError(null); }
+                                      }}
+                                      onKeyDown={(e) => { if (e.key === "Enter") handleApplyPromo(); }}
+                                      className="flex-1 h-6 text-[10px] font-bold bg-slate-800 border border-slate-650 rounded-md outline-none focus:border-amber-400 text-center text-white placeholder:text-slate-600 uppercase"
+                                    />
+                                    <button
+                                      onClick={handleApplyPromo}
+                                      disabled={promoLoading || !promoCodeInput.trim()}
+                                      className="h-6 px-2 text-[9px] font-black rounded-md bg-amber-500 hover:bg-amber-400 text-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                                    >
+                                      {promoLoading ? "..." : "Apply"}
+                                    </button>
+                                    {(appliedPromo || !!promoCodeInput.trim()) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => { setAppliedPromo(null); setPromoCodeInput(""); setPromoError(null); }}
+                                        className="h-6 w-6 flex items-center justify-center rounded-md bg-slate-700 hover:bg-rose-900 text-slate-400 hover:text-rose-400 transition-colors text-xs font-black cursor-pointer shrink-0"
+                                        title="ลบโค้ด"
+                                      >✕</button>
+                                    )}
+                                  </div>
+                                  {/* Applied badge */}
+                                  {appliedPromo && (
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-[9px] text-amber-400 font-bold">
+                                        🎟 {appliedPromo.code} {appliedPromo.discountTarget === "DELIVERY" ? (currentLanguage === "en" ? "(Delivery)" : "(ค่าส่ง)") : ""} {appliedPromo.discountType === "PERCENTAGE" ? `(${appliedPromo.discountValue}%${appliedPromo.maxDiscount ? ` max ฿${appliedPromo.maxDiscount}` : ""})` : ""}
+                                      </span>
+                                      <span className="text-[10px] font-black text-rose-400">-฿{promoDiscountAmount.toFixed(2)}</span>
+                                    </div>
+                                  )}
+                                  {/* Error */}
+                                  {promoError && !appliedPromo && (
+                                    <p className="text-[9px] text-rose-400 font-bold">{promoError}</p>
+                                  )}
+                                </>
+                              ) : (
+                                appliedPromo && (
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-[9px] text-amber-400 font-bold">
+                                      🎟 {appliedPromo.code} {appliedPromo.discountTarget === "DELIVERY" ? (currentLanguage === "en" ? "(Delivery)" : "(ค่าส่ง)") : ""}
+                                    </span>
+                                    <span className="text-[10px] font-black text-rose-400">-฿{promoDiscountAmount.toFixed(2)}</span>
+                                  </div>
+                                )
                               )}
                             </div>
                           )}
@@ -5784,6 +5883,9 @@ export default function AdminPage() {
             setCustomerName(c.name);
             setCustomerPhone(c.phone);
             setSelectedProfileCustomer(c);
+            setAppliedPromo(null);
+            setPromoCodeInput("");
+            setPromoError(null);
             
             // Always sync address from CRM when customer is selected
             setPickupLoc(c.defaultAddress);
