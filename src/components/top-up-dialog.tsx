@@ -24,7 +24,7 @@ import { useCustomers } from "@/lib/use-customers";
 import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate } from "@/lib/utils";
 
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
-import { createTopUpTransactionAction, getCustomerTodayTopUpAction } from "@/actions/db";
+import { getCustomerTodayTopUpAction } from "@/actions/db";
 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -428,32 +428,11 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       const topUpReceiptNo = generateTopUpReceiptNumber(nextSeq, now);
 
-      // Update customer wallet (Paid amount + Bonus credit) & Set 6-Month Expiry (Option A: from today)
-      const currentBalance = selectedCustomer.creditBalance || 0;
-      const newBalance = currentBalance + totalCreditReceived;
-      const newExpiryDate = calculateWalletExpiryDate(now);
-
-      const walletUpdates: Partial<Customer> = { 
-        creditBalance: newBalance,
-        isMember: true,
-        memberExpiryDate: newExpiryDate,
-        memberStartDate: selectedCustomer.memberStartDate || now,
-      };
-
+      let memberPriceListId: string | undefined = undefined;
       if (!selectedCustomer.isMember) {
         const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
-        if (memberList) walletUpdates.priceListId = memberList.id;
-        toast.success(`${selectedCustomer.name} has been upgraded to Member! 🎉`);
+        if (memberList) memberPriceListId = memberList.id;
       }
-
-      await customerStore.updateCustomer(selectedCustomer.id, walletUpdates);
-
-      toast.success(
-        bonusTotal > 0
-          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ฿${formatCurrency(newBalance)} (ใช้ได้ถึง ${format(newExpiryDate, "dd/MM/yyyy")})`
-          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(newBalance)} (ใช้ได้ถึง ${format(newExpiryDate, "dd/MM/yyyy")})`
-      );
-
 
       // Build receipt data
       const rdata: any = {
@@ -482,29 +461,33 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         serviceSpeed: "standard",
       };
 
-      const txDescription = JSON.stringify({
-        packageName: cart.map(i => `${i.service.name} x${i.quantity}`).join(", "),
-        paymentChannel,
-        slipImageUrl: slipImageUrl || null,
+      const topUpResult = await customerStore.topUpCustomer({
+        receiptNumber: topUpReceiptNo,
+        customerId: selectedCustomer.id,
+        paidAmount: cartTotal,
         bonusAmount: bonusTotal,
         totalCredit: totalCreditReceived,
-        balanceBefore: currentBalance,
-        balanceAfter: newBalance,
-        createdBy: user?.name || user?.email || "Admin",
+        paymentChannel,
+        slipImageUrl: slipImageUrl || null,
+        packageName: cart.map(i => `${i.service.name} x${i.quantity}`).join(", "),
         receiptData: rdata,
+        actorId: user?.id || null,
+        actorName: user?.name || user?.email || "Staff",
+        priceListId: memberPriceListId,
       });
 
-      createTopUpTransactionAction({
-        id: topUpReceiptNo,
-        memberId: selectedCustomer.id,
-        amount: cartTotal,
-        type: "TOPUP",
-        description: txDescription,
-        status: "COMPLETED",
-        userId: user?.id || null,
-        userName: user?.name || user?.email || "Admin",
-      }).catch(err => console.error("Failed to save top-up transaction:", err));
+      const finalBalance = topUpResult.balanceAfter;
+      const finalExpiryDate = calculateWalletExpiryDate(now);
 
+      if (!selectedCustomer.isMember) {
+        toast.success(`${selectedCustomer.name} has been upgraded to Member! 🎉`);
+      }
+
+      toast.success(
+        bonusTotal > 0
+          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ฿${formatCurrency(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
+          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
+      );
 
       setReceiptData(rdata);
       setReceiptJobId(topUpReceiptNo);

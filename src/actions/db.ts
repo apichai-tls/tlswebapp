@@ -2,6 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
+import { calculateWalletExpiryDate } from '@/lib/utils';
 
 // CUSTOMERS
 export async function addCustomerAction(data: any) {
@@ -72,7 +73,13 @@ export async function updateCustomerAction(id: string, updates: any) {
     data.defaultLng = updates.defaultCoords.lng;
   }
   if (updates.priceListId !== undefined) data.priceListId = updates.priceListId;
-  if (updates.creditBalance !== undefined) data.creditBalance = updates.creditBalance;
+  if (updates.creditBalanceDelta !== undefined) {
+    const balBefore = Number(currentCustomer.creditBalance || 0);
+    const delta = Number(updates.creditBalanceDelta);
+    data.creditBalance = Math.max(0, Math.round((balBefore + delta) * 100) / 100);
+  } else if (updates.creditBalance !== undefined) {
+    data.creditBalance = updates.creditBalance;
+  }
   if (updates.tier !== undefined) data.tier = updates.tier;
   
   if (updates.isMember !== undefined) {
@@ -153,10 +160,13 @@ export async function updateCustomerAction(id: string, updates: any) {
       changes.customerName = currentCustomer.name;
 
       // If creditBalance changed, also write a dedicated ADJUST log with clear before/after/diff details
-      if (changes.creditBalance) {
+      // Skip if explicitly suppressed or initiated by topup
+      if (changes.creditBalance && !updates.skipAdjustLog && updates.actionSource !== 'topup') {
         const balBefore = Number(currentCustomer.creditBalance || 0);
         const balAfter = Number(data.creditBalance || 0);
-        const diff = balAfter - balBefore;
+        const diff = updates.creditBalanceDelta !== undefined 
+          ? Number(updates.creditBalanceDelta) 
+          : (balAfter - balBefore);
         const isAdd = diff >= 0;
 
         await prisma.activityLog.create({
@@ -1314,6 +1324,121 @@ function shouldPreserveExisting(newValue: any, existingValue: any): boolean {
     }
   }
   return false;
+}
+
+// ATOMIC TOP-UP ACTION: Atomically increments wallet balance and records Transaction & ActivityLog
+export async function processTopUpAction(data: {
+  receiptNumber: string;
+  customerId: string;
+  paidAmount: number;
+  bonusAmount?: number;
+  totalCredit: number;
+  paymentChannel: string;
+  slipImageUrl?: string | null;
+  packageName?: string;
+  receiptData?: any;
+  actorId?: string | null;
+  actorName?: string | null;
+  priceListId?: string | null;
+}) {
+  return await prisma.$transaction(async (tx) => {
+    // 1. Fetch fresh customer directly from DB with transaction lock
+    const currentCust = await tx.customer.findUnique({
+      where: { id: data.customerId }
+    });
+    if (!currentCust) throw new Error("Customer not found");
+
+    const balBefore = Number(currentCust.creditBalance || 0);
+    const balAfter = Math.round((balBefore + data.totalCredit) * 100) / 100;
+    const now = new Date();
+    const expiry = calculateWalletExpiryDate(now);
+
+    const updateData: any = {
+      creditBalance: balAfter,
+      isMember: true,
+      memberExpiryDate: expiry,
+      memberStartDate: currentCust.memberStartDate || now,
+      updatedAt: now,
+    };
+
+    if (data.priceListId && !currentCust.isMember) {
+      updateData.priceListId = data.priceListId;
+    }
+
+    // 2. Update customer atomically
+    const updatedCustomer = await tx.customer.update({
+      where: { id: data.customerId },
+      data: updateData
+    });
+
+    // 3. Prepare receiptData and txDescription
+    const rdata = data.receiptData ? {
+      ...data.receiptData,
+      id: data.receiptNumber,
+      receiptNumber: data.receiptNumber,
+      total: data.paidAmount,
+      subtotal: data.paidAmount,
+      isPaid: true,
+      createdAt: now,
+    } : null;
+
+    const txDescription = JSON.stringify({
+      packageName: data.packageName || "TOPUP",
+      paymentChannel: data.paymentChannel,
+      slipImageUrl: data.slipImageUrl || null,
+      bonusAmount: data.bonusAmount || 0,
+      totalCredit: data.totalCredit,
+      balanceBefore: balBefore,
+      balanceAfter: balAfter,
+      createdBy: data.actorName || "Staff",
+      receiptData: rdata,
+    });
+
+    // 4. Create Transaction record
+    const transaction = await tx.transaction.create({
+      data: {
+        id: data.receiptNumber,
+        memberId: data.customerId,
+        amount: data.paidAmount,
+        type: 'TOPUP',
+        description: txDescription,
+        status: 'COMPLETED',
+        updatedAt: now,
+      }
+    });
+
+    // 5. Create ActivityLog (TOPUP only, NO erroneous ADJUST log!)
+    await tx.activityLog.create({
+      data: {
+        entityId: data.customerId,
+        entityType: 'customer',
+        action: 'TOPUP',
+        details: JSON.stringify({
+          customerName: currentCust.name,
+          receiptNo: data.receiptNumber,
+          amount: data.paidAmount,
+          type: 'TOPUP',
+          bonusAmount: data.bonusAmount || 0,
+          totalCredit: data.totalCredit,
+          balanceBefore: balBefore,
+          balanceAfter: balAfter,
+          paymentChannel: data.paymentChannel,
+          slipImageUrl: data.slipImageUrl || null,
+          packageName: data.packageName,
+        }),
+        userId: data.actorId || null,
+        userName: data.actorName || null,
+      }
+    });
+
+    return {
+      success: true,
+      updatedCustomer,
+      transaction,
+      balanceBefore: balBefore,
+      balanceAfter: balAfter,
+    };
+  });
 }
 
 // TOP-UP TRANSACTIONS

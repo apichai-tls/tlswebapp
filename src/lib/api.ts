@@ -347,6 +347,12 @@ export const api = {
           ...updates,
           name: savedCustomer.name,
           memberId: savedCustomer.memberId,
+          creditBalance: savedCustomer.creditBalance,
+          isMember: savedCustomer.isMember,
+          memberStartDate: savedCustomer.memberStartDate,
+          memberExpiryDate: savedCustomer.memberExpiryDate,
+          priceListId: savedCustomer.priceListId || c.priceListId,
+          updatedAt: savedCustomer.updatedAt,
         };
         updatedCustomer = u;
         return u;
@@ -355,6 +361,29 @@ export const api = {
     });
     if (!updatedCustomer) throw new Error("Customer not found");
     return updatedCustomer;
+  },
+
+  async topUpCustomer(data: Parameters<typeof dbActions.processTopUpAction>[0]) {
+    const result = await dbActions.processTopUpAction(data);
+    if (result.updatedCustomer) {
+      const db = initDb();
+      const saved = result.updatedCustomer;
+      db.customers = db.customers.map(c => {
+        if (c.id === data.customerId) {
+          return {
+            ...c,
+            creditBalance: saved.creditBalance,
+            isMember: saved.isMember,
+            memberStartDate: saved.memberStartDate,
+            memberExpiryDate: saved.memberExpiryDate,
+            priceListId: saved.priceListId || c.priceListId,
+            updatedAt: saved.updatedAt,
+          };
+        }
+        return c;
+      });
+    }
+    return result;
   },
 
   async deleteCustomer(id: string): Promise<void> {

@@ -70,8 +70,9 @@ export function AdminCustomerDialog({
 
     setAdjustLoading(true);
     try {
-      await customerStore.updateCustomer(customer.id, {
+      const updated = await customerStore.updateCustomer(customer.id, {
         creditBalance: newBalance,
+        creditBalanceDelta: delta,
         adjustReason: adjustReason.trim() || undefined,
         reason: adjustReason.trim() || undefined,
         actorId: user?.id,
@@ -79,8 +80,9 @@ export function AdminCustomerDialog({
         actorRole: user?.role
       } as any);
 
+      const actualNewBalance = updated?.creditBalance ?? newBalance;
       toast.success(
-        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${actualNewBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
       );
       setAdjustOpen(false);
       setAdjustAmount("");

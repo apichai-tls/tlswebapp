@@ -3933,9 +3933,13 @@ export default function AdminPage() {
                                   onChange={(e) => setPickupRiderId(e.target.value)}
                                 >
                                   <option value="">-- Assign Rider --</option>
-                                  {riders.map(r => (
-                                    <option key={`p-${r.id}`} value={r.id}>{r.name}</option>
-                                  ))}
+                                  {riders
+                                    .filter(r => r.isActive !== false || (pickupRiderId && r.id === pickupRiderId))
+                                    .map(r => (
+                                      <option key={`p-${r.id}`} value={r.id}>
+                                        {r.name}{r.isActive === false ? " (Resigned / ลาออกแล้ว)" : ""}
+                                      </option>
+                                    ))}
                                 </select>
                               </div>
                             </div>
@@ -3989,9 +3993,13 @@ export default function AdminPage() {
                                     onChange={(e) => setDeliveryRiderId(e.target.value)}
                                   >
                                     <option value="">-- Assign Rider --</option>
-                                    {riders.map(r => (
-                                      <option key={`d-${r.id}`} value={r.id}>{r.name}</option>
-                                    ))}
+                                    {riders
+                                      .filter(r => r.isActive !== false || (deliveryRiderId && r.id === deliveryRiderId))
+                                      .map(r => (
+                                        <option key={`d-${r.id}`} value={r.id}>
+                                          {r.name}{r.isActive === false ? " (Resigned / ลาออกแล้ว)" : ""}
+                                        </option>
+                                      ))}
                                   </select>
                                 )}
                               </div>

@@ -272,8 +272,14 @@ export const customerStore = {
     return newCustomer;
   },
   async updateCustomer(id: string, updates: Partial<Customer>) {
-    await api.updateCustomer(id, updates);
+    const updated = await api.updateCustomer(id, updates);
     emitCustomerChange();
+    return updated;
+  },
+  async topUpCustomer(data: Parameters<typeof api.topUpCustomer>[0]) {
+    const result = await api.topUpCustomer(data);
+    emitCustomerChange();
+    return result;
   },
   async deleteCustomer(id: string) {
     await api.deleteCustomer(id);
