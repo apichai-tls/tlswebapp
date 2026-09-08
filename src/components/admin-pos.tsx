@@ -89,6 +89,10 @@ const cleanRemarkForDisplay = (rawRemark: string | null | undefined) => {
     .trim();
 };
 
+const normalizeVatType = (type?: string | null): "none" | "inclusive" | "exclusive" => {
+  return type === "inclusive" || type === "exclusive" ? type : "none";
+};
+
 const playAudioFeedback = (type: "click" | "success" | "delete") => {
   try {
     const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
@@ -769,10 +773,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [sessionCapturedReceiptUrls, setSessionCapturedReceiptUrls] = useState<string[]>([]);
   const [deliveryScheduledTime, setDeliveryScheduledTime] = useState<string>(() => getTomorrowDateTimeString());
 
-  const isPaidJob = loadedJobId ? (() => {
+  const isPaidJob = useMemo(() => {
+    if (!loadedJobId) return false;
     const j = jobs.find(job => job.id === loadedJobId);
     if (!j) return false;
-    if (j.adminNotesJson) {
+    if (j.adminNotesJson && j.adminNotesJson.includes('"payments"')) {
       try {
         const parsed = JSON.parse(j.adminNotesJson);
         if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
@@ -784,40 +789,47 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       } catch (e) {}
     }
     return false;
-  })() : false;
+  }, [loadedJobId, jobs]);
 
   // Calculate valid shop hours and minutes based on settings
-  const posHourPart = deliveryScheduledTime && deliveryScheduledTime.includes('T') ? deliveryScheduledTime.split('T')[1].split(':')[0] : "00";
-  const posMinutePart = deliveryScheduledTime && deliveryScheduledTime.includes('T') ? deliveryScheduledTime.split('T')[1].split(':')[1] : "00";
+  const { validHours, validMinutes } = useMemo(() => {
+    const posHourPart = deliveryScheduledTime && deliveryScheduledTime.includes('T') ? deliveryScheduledTime.split('T')[1].split(':')[0] : "00";
+    const posMinutePart = deliveryScheduledTime && deliveryScheduledTime.includes('T') ? deliveryScheduledTime.split('T')[1].split(':')[1] : "00";
 
-  const openHour = settings?.shopOpenTime ? parseInt(settings.shopOpenTime.split(":")[0], 10) : 9;
-  const closeHour = settings?.shopCloseTime ? parseInt(settings.shopCloseTime.split(":")[0], 10) : 19;
-  const startHour = isNaN(openHour) ? 9 : openHour;
-  const endHour = isNaN(closeHour) ? 19 : closeHour;
+    const openHour = settings?.shopOpenTime ? parseInt(settings.shopOpenTime.split(":")[0], 10) : 9;
+    const closeHour = settings?.shopCloseTime ? parseInt(settings.shopCloseTime.split(":")[0], 10) : 19;
+    const startHour = isNaN(openHour) ? 9 : openHour;
+    const endHour = isNaN(closeHour) ? 19 : closeHour;
 
-  const hoursSet = new Set<string>();
-  for (let i = startHour; i <= endHour; i++) {
-    hoursSet.add(String(i).padStart(2, "0"));
-  }
-  if (posHourPart) {
-    hoursSet.add(posHourPart);
-  }
-  const validHours = Array.from(hoursSet).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    const hoursSet = new Set<string>();
+    for (let i = startHour; i <= endHour; i++) {
+      hoursSet.add(String(i).padStart(2, "0"));
+    }
+    if (posHourPart) {
+      hoursSet.add(posHourPart);
+    }
+    const sortedHours = Array.from(hoursSet).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
 
-  const minutesSet = new Set<string>(["00", "30"]);
-  if (posMinutePart) {
-    minutesSet.add(posMinutePart);
-  }
-  const validMinutes = Array.from(minutesSet).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    const minutesSet = new Set<string>(["00", "30"]);
+    if (posMinutePart) {
+      minutesSet.add(posMinutePart);
+    }
+    const sortedMinutes = Array.from(minutesSet).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+
+    return { validHours: sortedHours, validMinutes: sortedMinutes };
+  }, [deliveryScheduledTime, settings?.shopOpenTime, settings?.shopCloseTime]);
 
   const [receivedCash, setReceivedCash] = useState("");
   const [localDeliveryPrice, setLocalDeliveryPrice] = useState("");
 
   const isDeliveryEnabled = settings?.enableDeliveryService === "true";
-  const deliveryItem = cart.find(item => item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item");
-  const deliveryServiceType = deliveryItem 
-    ? (deliveryItem.id === "delivery-pickup-service-item" ? "both" : "delivery_only")
-    : null;
+  const { deliveryItem, deliveryServiceType } = useMemo(() => {
+    const item = cart.find(i => i.id === "delivery-pickup-service-item" || i.id === "delivery-only-service-item");
+    const type = item 
+      ? (item.id === "delivery-pickup-service-item" ? "both" : "delivery_only")
+      : null;
+    return { deliveryItem: item, deliveryServiceType: type };
+  }, [cart]);
 
   const resetCartForm = () => {
     setCart([]);
@@ -841,7 +853,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     capturedReceiptUrlsRef.current = [];
     setSessionCapturedReceiptUrls([]);
     // Reset VAT to current system settings defaults
-    setVatType((settings?.vatType as any) || "none");
+    setVatType(normalizeVatType(settings?.vatType));
     setVatRate(parseFloat(settings?.vatRate || "7") || 7);
     // L2 Fix: Reset category back to "All" so POS doesn't stay stuck on previous category
     setSelectedCategory("All");
@@ -957,7 +969,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       let usedCard = false;
       let usedCredit = false;
 
-      if (job.adminNotesJson) {
+      if (job.adminNotesJson && job.adminNotesJson.includes('"payments"')) {
         try {
           const parsed = JSON.parse(job.adminNotesJson);
           if (parsed && Array.isArray(parsed.payments)) {
@@ -980,7 +992,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (!hasPaymentLog) {
         if (!job.createdAt) continue;
         const jobTime = new Date(job.createdAt).getTime();
-        if (jobTime >= shiftOpenTime && job.createdBy === shift.userName && job.isPaid) {
+        const isShiftOwner = job.shiftId === shift.id ||
+          Boolean(job.createdBy && (job.createdBy === shift.userName || job.createdBy === shift.userId));
+        if (jobTime >= shiftOpenTime && isShiftOwner && job.isPaid) {
           const method = job.paymentMethod?.toLowerCase();
           const amount = job.totalAmount || 0;
           if (method === 'cash') { cashSales += amount; usedCash = true; }
@@ -1259,11 +1273,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Initialize VAT settings from global settings
   useEffect(() => {
-    if (settings?.vatType) {
-      setVatType(settings.vatType as any);
-    } else {
-      setVatType("none");
-    }
+    setVatType(normalizeVatType(settings?.vatType));
     setVatRate(parseFloat(settings?.vatRate || "7") || 7);
   }, [settings?.vatType, settings?.vatRate]);
 
@@ -1288,6 +1298,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     const activeServices = services.filter(s => s.isActive !== false && s.category !== "PACKAGE");
     const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
     return ["All", ...uniqueCats];
+  }, [services]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const s of services) {
+      if (s.isActive !== false && s.category && s.category !== "PACKAGE") {
+        counts[s.category] = (counts[s.category] || 0) + 1;
+      }
+    }
+    return counts;
   }, [services]);
 
 
@@ -1452,7 +1472,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     // Formula: (subtotal + surcharge) - discount + VAT
     const baseTotal = subtotal + expressSurcharge - discountAmount;
     const vat = vatType === "exclusive" ? (baseTotal * (vatRate / 100)) : 0;
-    return baseTotal + vat + manualAdjustment;
+    const rawTotal = baseTotal + vat + manualAdjustment;
+    return Math.max(0, Math.round(rawTotal * 100) / 100);
   }, [subtotal, expressSurcharge, discountAmount, vatType, vatRate, manualAdjustment]);
 
   const forceMemberPayment = useMemo(() => {
@@ -1973,8 +1994,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
       if (balanceAdjustment !== 0 && selectedCustomer) {
-        const newBalance = (selectedCustomer.creditBalance || 0) + balanceAdjustment;
-        const updates: Partial<Customer> = { creditBalance: newBalance };
+        const updates: Partial<Customer> & { creditBalanceDelta?: number } = { creditBalanceDelta: balanceAdjustment };
         
         if (balanceAdjustment > 0) {
           updates.isMember = true;
@@ -1987,12 +2007,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           }
         }
 
-        await customerStore.updateCustomer(selectedCustomer.id, updates);
+        const updatedCust = await customerStore.updateCustomer(selectedCustomer.id, updates);
+        const confirmedBalance = updatedCust?.creditBalance ?? Math.max(0, (selectedCustomer.creditBalance || 0) + balanceAdjustment);
         
         // Update local state copy to immediately reflect in current view
         setSelectedCustomer(prev => prev ? { 
           ...prev, 
-          creditBalance: newBalance,
+          creditBalance: confirmedBalance,
           isMember: updates.isMember !== undefined ? updates.isMember : prev.isMember,
           memberExpiryDate: updates.memberExpiryDate !== undefined ? updates.memberExpiryDate : prev.memberExpiryDate,
           priceListId: updates.priceListId !== undefined ? updates.priceListId : prev.priceListId
@@ -2955,7 +2976,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 pb-4">
               {categories.filter(cat => cat !== "All").map(cat => {
                 const style = getCategoryStyles(cat);
-                const count = services.filter(s => s.isActive !== false && s.category === cat).length;
+                const count = categoryCounts[cat] || 0;
                 return (
                   <motion.div
                     whileHover={{ y: -3, scale: 1.02 }}
@@ -4659,14 +4680,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
                                 // VAT settings are loaded globally from system settings, not overridden
 
-                                const cleanRemark = job.remark
-                                  .split(" | Express")[0]
-                                  .split(" | VAT:")[0];
-                                setRemark(
-                                  cleanRemark.startsWith("Express") || cleanRemark.startsWith("VAT:") 
-                                    ? "" 
-                                    : cleanRemark
+                                const parts = job.remark.split(" | ").map(p => p.trim());
+                                const userParts = parts.filter(p => 
+                                  !p.startsWith("Proforma:") && 
+                                  !p.startsWith("Express") && 
+                                  !p.startsWith("VAT:")
                                 );
+                                setRemark(userParts.join(" | "));
                               } else {
                                 setRemark("");
                                 setServiceSpeed("standard");

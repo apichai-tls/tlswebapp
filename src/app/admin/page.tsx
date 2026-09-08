@@ -2315,7 +2315,7 @@ export default function AdminPage() {
         // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Create
         const isShopPaidNow_new = isPayment;
         let preDeductedBalance: number | null = null;
-        let walletUpdates: Partial<Customer> | null = null;
+        let walletUpdates: Partial<Customer> & { creditBalanceDelta?: number } | null = null;
 
         if (isShopPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member") {
           // Validate balance is sufficient before proceeding
@@ -2483,7 +2483,7 @@ export default function AdminPage() {
 
         // Handle topup package wallet top-up (after job creation — low risk, topup adds money)
         if (isShopPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
-          const upd: Partial<Customer> = { creditBalanceDelta: packageTotal };
+          const upd: Partial<Customer> & { creditBalanceDelta?: number } = { creditBalanceDelta: packageTotal };
           if (!selectedProfileCustomer.isMember) {
             upd.isMember = true;
             const pls = priceListStore.getSnapshot();
