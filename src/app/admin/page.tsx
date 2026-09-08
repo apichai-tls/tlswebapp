@@ -2160,7 +2160,7 @@ export default function AdminPage() {
           const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
           if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
           if (balAdj !== 0) {
-            const upd: Partial<Customer> = { creditBalanceDelta: balAdj };
+            const upd: Partial<Customer> & { creditBalanceDelta?: number } = { creditBalanceDelta: balAdj };
             if (balAdj > 0 && !selectedProfileCustomer.isMember) {
               upd.isMember = true;
               const pls = priceListStore.getSnapshot();
