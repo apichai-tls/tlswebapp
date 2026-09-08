@@ -260,8 +260,8 @@ export default function AdminPage() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "tasks"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "tasks"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
@@ -1277,7 +1277,9 @@ export default function AdminPage() {
     try {
       const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
       const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
-      const orderTotal = Math.max(0, currentLaundryPrice + surcharge + fee - dialogDiscountAmount);
+      // Exclude delivery fee so minimum order value evaluates strictly against laundry service amount
+      const orderTotal = Math.max(0, currentLaundryPrice + surcharge - dialogDiscountAmount);
+      const grandTotalBeforePromo = Math.max(0, currentLaundryPrice + surcharge + fee - dialogDiscountAmount);
 
       const res = await fetch(`/api/pos/promo/check`, {
         method: "POST",
@@ -1323,7 +1325,7 @@ export default function AdminPage() {
           discountTarget: isDeliveryOnly ? "DELIVERY" : "ALL",
           discountValue: data.discountValue,
           discountAmount: calcDiscount,
-          netPayable: Math.max(0, orderTotal - calcDiscount),
+          netPayable: Math.max(0, grandTotalBeforePromo - calcDiscount),
           maxDiscount: data.maxDiscount ?? null,
           description: data.description,
         });
@@ -1358,25 +1360,22 @@ export default function AdminPage() {
     setDialogDiscountPercent(job.discountPercent || 0);
     const hasDiscountOn = job.remark ? job.remark.includes("Discount: on") : false;
     const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
-    setShowDialogDiscount(Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || promoMatch));
-    if (promoMatch) {
+    const hasValidPromo = Boolean(promoMatch && promoMatch[3] && parseFloat(promoMatch[3]) > 0);
+    setShowDialogDiscount(Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || hasValidPromo));
+    if (hasValidPromo && promoMatch) {
       const pCode = promoMatch[1];
       const pTarget = (promoMatch[2] as "ALL" | "DELIVERY") || "ALL";
-      const pAmount = promoMatch[3] ? parseFloat(promoMatch[3]) : 0;
+      const pAmount = parseFloat(promoMatch[3]);
       setPromoCodeInput(pCode);
-      if (pAmount > 0) {
-        setAppliedPromo({
-          code: pCode,
-          discountType: "FIXED",
-          discountTarget: pTarget,
-          discountValue: pAmount,
-          discountAmount: pAmount,
-          netPayable: Math.max(0, (job.totalAmount || 0)),
-          maxDiscount: null,
-        });
-      } else {
-        setAppliedPromo(null);
-      }
+      setAppliedPromo({
+        code: pCode,
+        discountType: "FIXED",
+        discountTarget: pTarget,
+        discountValue: pAmount,
+        discountAmount: pAmount,
+        netPayable: Math.max(0, (job.totalAmount || 0)),
+        maxDiscount: null,
+      });
       setPromoError(null);
     } else {
       setPromoCodeInput("");
@@ -1980,11 +1979,9 @@ export default function AdminPage() {
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
-        showDialogDiscount ? (
-          appliedPromo
-            ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
-            : (promoCodeInput.trim() ? `Promo: ${promoCodeInput.trim().toUpperCase()}` : "")
-        ) : "",
+        showDialogDiscount && appliedPromo
+          ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
+          : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: (() => {
         let existingPayments: any[] = [];
@@ -2163,18 +2160,18 @@ export default function AdminPage() {
           const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
           if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
           if (balAdj !== 0) {
-            const newBal = Math.max(0, (selectedProfileCustomer.creditBalance || 0) + balAdj);
-            const upd: Partial<Customer> = { creditBalance: newBal };
+            const upd: Partial<Customer> = { creditBalanceDelta: balAdj };
             if (balAdj > 0 && !selectedProfileCustomer.isMember) {
               upd.isMember = true;
               const pls = priceListStore.getSnapshot();
               const ml = pls.find(p => p.name.toLowerCase().includes("member"));
               if (ml) upd.priceListId = ml.id;
             }
-            await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
-            await api.updateJob(targetEditingJobId, { walletBalanceAfter: newBal });
-            setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
-            toast.success(`Customer wallet updated. New balance: ฿${newBal.toLocaleString()}`);
+            const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
+            const confirmedBal = updatedCust?.creditBalance ?? Math.max(0, (selectedProfileCustomer.creditBalance || 0) + balAdj);
+            await api.updateJob(targetEditingJobId, { walletBalanceAfter: confirmedBal });
+            setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+            toast.success(`Customer wallet updated. New balance: ฿${confirmedBal.toLocaleString()}`);
           }
         }
 
@@ -2328,10 +2325,10 @@ export default function AdminPage() {
             setIsSubmitting(false);
             return;
           }
-          preDeductedBalance = Math.max(0, currentBalance - calculatedTotal);
-          walletUpdates = { creditBalance: preDeductedBalance };
+          walletUpdates = { creditBalanceDelta: -calculatedTotal };
           // Deduct wallet first — if this fails, we abort before creating the job
-          await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
+          const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
+          preDeductedBalance = updatedCust?.creditBalance ?? Math.max(0, currentBalance - calculatedTotal);
         }
 
         // Also handle topup packages (balance increase — safe to do after job creation)
@@ -2486,19 +2483,19 @@ export default function AdminPage() {
 
         // Handle topup package wallet top-up (after job creation — low risk, topup adds money)
         if (isShopPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
-          const currentBal = preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0);
-          const newBal = currentBal + packageTotal;
-          const upd: Partial<Customer> = { creditBalance: newBal };
+          const upd: Partial<Customer> = { creditBalanceDelta: packageTotal };
           if (!selectedProfileCustomer.isMember) {
             upd.isMember = true;
             const pls = priceListStore.getSnapshot();
             const ml = pls.find(p => p.name.toLowerCase().includes("member"));
             if (ml) upd.priceListId = ml.id;
           }
-          await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
-          await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: newBal });
-          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
-          toast.success(`Member wallet topped up. New balance: ฿${newBal.toLocaleString()}`);
+          const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
+          const currentBal = preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0);
+          const confirmedBal = updatedCust?.creditBalance ?? (currentBal + packageTotal);
+          await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: confirmedBal });
+          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+          toast.success(`Member wallet topped up. New balance: ฿${confirmedBal.toLocaleString()}`);
         }
       }
     } catch (err: any) {

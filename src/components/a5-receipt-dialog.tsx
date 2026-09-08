@@ -427,7 +427,7 @@ export function A5ReceiptContent({
   const itemRowHeight = 20;
   const itemsHeight = receiptData.items.length * itemRowHeight;
   const totalsBaseHeight =
-    88 +
+    92 +
     transportFeeItems.length * 18 +
     (receiptData.expressSurcharge > 0 ? 18 : 0) +
     (receiptData.discount > 0 ? 18 : 0) +
@@ -711,9 +711,9 @@ export function A5ReceiptContent({
                   <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
                 </div>
               )}
-              <div className="flex justify-between py-1 text-base font-black text-neutral-900 border-t-2 border-neutral-900">
-                <span>{currentLanguage === "en" ? "GRAND TOTAL" : "ยอดสุทธิ"}</span>
-                <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
+              <div className="flex justify-between items-center py-1 text-sm font-black text-neutral-900 border-t-2 border-neutral-900 whitespace-nowrap gap-2">
+                <span className="shrink-0">{currentLanguage === "en" ? "GRAND TOTAL" : "ยอดสุทธิ"}</span>
+                <span className="font-mono shrink-0">฿{formatCurrency(receiptData.total)}</span>
               </div>
               {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
                 <div className="flex justify-between py-0.5 text-[10px] text-neutral-500">
