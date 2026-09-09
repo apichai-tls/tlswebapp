@@ -625,6 +625,276 @@ function ActiveShiftDetailsDialog({
   );
 }
 
+interface CloseShiftDialogProps {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  activeShift: CashierShift | null;
+  activeShiftStats: {
+    cashSales: number;
+    transferSales: number;
+    cardSales: number;
+    creditSales: number;
+    expectedCash: number;
+    totalOrders: number;
+    cashOrders: number;
+    transferOrders: number;
+    cardOrders: number;
+    creditOrders: number;
+  };
+  currentLanguage: string;
+}
+
+function CloseShiftDialog({
+  isOpen,
+  onOpenChange,
+  activeShift,
+  activeShiftStats,
+  currentLanguage
+}: CloseShiftDialogProps) {
+  const [actualCash, setActualCash] = useState("");
+  const [closeShiftNotes, setCloseShiftNotes] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (!activeShift) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cashVal = parseFloat(actualCash);
+    if (isNaN(cashVal) || cashVal < 0) {
+      toast.error(
+        currentLanguage === "en"
+          ? "Please enter a valid actual cash amount (must be at least 0)"
+          : "กรุณาระบุเงินสดนับจริงให้ถูกต้อง (ต้องไม่น้อยกว่า 0)"
+      );
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await shiftStore.closeShift(activeShift.id, cashVal, closeShiftNotes);
+      toast.success(
+        currentLanguage === "en"
+          ? "Cashier shift closed successfully. POS system locked."
+          : "ปิดรอบลิ้นชักเงินสดสำเร็จแล้ว ระบบถูกล็อก"
+      );
+      onOpenChange(false);
+      setActualCash("");
+      setCloseShiftNotes("");
+    } catch (err) {
+      toast.error(
+        currentLanguage === "en"
+          ? "Failed to close cashier shift"
+          : "ไม่สามารถปิดรอบลิ้นชักเงินสดได้"
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md p-5 bg-card border border-border shadow-2xl rounded-2xl">
+        <DialogHeader className="shrink-0 mb-3">
+          <DialogTitle className="text-base font-black text-foreground flex items-center gap-2">
+            <Banknote className="text-red-500" size={18} />
+            {currentLanguage === "en" ? "Close Cashier Shift & Drawer Report" : "รายงานปิดกะพนักงานและลิ้นชักเงินสด"}
+          </DialogTitle>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="rounded-xl border border-border bg-muted/30 p-3.5 space-y-2.5 text-xs text-foreground font-semibold leading-relaxed">
+            <div className="flex justify-between items-center text-[10px] text-muted-foreground font-bold border-b border-border pb-1.5 mb-1">
+              <span>{currentLanguage === "en" ? "Staff" : "พนักงาน"}: {activeShift.userName}</span>
+              <span>
+                {currentLanguage === "en" ? "Opened At" : "เปิดกะเมื่อ"}: {format(new Date(activeShift.openedAt), "dd/MM/yyyy HH:mm")}
+              </span>
+            </div>
+
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">
+                {currentLanguage === "en" ? "1. Starting Float:" : "1. เงินทอนเริ่มต้น (Starting Float):"}
+              </span>
+              <span>฿{activeShift.startingCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+            </div>
+
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">
+                {currentLanguage === "en" ? "2. Cash Sales:" : "2. ยอดขายเงินสด (Cash Sales):"}
+              </span>
+              <span className="text-emerald-600 dark:text-emerald-400">
+                +฿{activeShiftStats.cashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="flex justify-between font-black border-t border-dashed border-border pt-2 text-sm">
+              <span>
+                {currentLanguage === "en" ? "Expected Cash in Drawer:" : "ยอดเงินสดที่ควรมี (Expected Cash):"}
+              </span>
+              <span>฿{activeShiftStats.expectedCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+            </div>
+
+            <div className="border-t border-border pt-2.5 mt-1 space-y-1 text-[11px]">
+              <p className="text-muted-foreground font-bold mb-1">
+                {currentLanguage === "en" ? "Non-cash Sales:" : "ยอดขายช่องทางอื่น ๆ (Non-cash Sales):"}
+              </p>
+              <div className="flex justify-between text-muted-foreground">
+                <span>
+                  {currentLanguage === "en" ? "- Bank Transfer:" : "- โอนเงิน (Bank Transfer):"}
+                </span>
+                <span>฿{activeShiftStats.transferSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="flex justify-between text-muted-foreground">
+                <span>
+                  {currentLanguage === "en" ? "- Card:" : "- บัตรเครดิต (Card):"}
+                </span>
+                <span>฿{activeShiftStats.cardSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="flex justify-between text-muted-foreground">
+                <span>
+                  {currentLanguage === "en" ? "- Member Wallet:" : "- หักบัญชีสมาชิก (Member Wallet):"}
+                </span>
+                <span>฿{activeShiftStats.creditSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+              </div>
+            </div>
+
+            <div className="border-t border-border pt-2 mt-1 space-y-1 text-[11px]">
+              <div className="flex justify-between text-foreground font-bold mb-1">
+                <span>
+                  {currentLanguage === "en" ? "Total Orders:" : "จำนวนออเดอร์ทั้งหมด:"}
+                </span>
+                <span>
+                  {activeShiftStats.totalOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
+                </span>
+              </div>
+              <div className="flex justify-between text-muted-foreground pl-2">
+                <span>
+                  {currentLanguage === "en" ? "• Cash:" : "• เงินสด:"}
+                </span>
+                <span>
+                  {activeShiftStats.cashOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
+                </span>
+              </div>
+              <div className="flex justify-between text-muted-foreground pl-2">
+                <span>
+                  {currentLanguage === "en" ? "• Bank Transfer:" : "• โอนเงิน:"}
+                </span>
+                <span>
+                  {activeShiftStats.transferOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
+                </span>
+              </div>
+              <div className="flex justify-between text-muted-foreground pl-2">
+                <span>
+                  {currentLanguage === "en" ? "• Card:" : "• บัตร:"}
+                </span>
+                <span>
+                  {activeShiftStats.cardOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
+                </span>
+              </div>
+              <div className="flex justify-between text-muted-foreground pl-2">
+                <span>
+                  {currentLanguage === "en" ? "• Member Wallet:" : "• กระเป๋าสมาชิก:"}
+                </span>
+                <span>
+                  {activeShiftStats.creditOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1.5 text-left">
+            <Label htmlFor="closeShift_actualCash" className="text-xs font-bold text-foreground">
+              {currentLanguage === "en" ? "Actual Cash in Drawer (฿) *" : "เงินสดนับจริงในลิ้นชัก (฿) *"}
+            </Label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-muted-foreground">฿</span>
+              <Input
+                id="closeShift_actualCash"
+                type="number"
+                step="any"
+                required
+                placeholder="0.00"
+                className="pl-7 bg-muted/50 border-border text-foreground font-black focus-visible:ring-emerald-500"
+                value={actualCash}
+                onChange={(e) => setActualCash(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {actualCash && !isNaN(parseFloat(actualCash)) && (() => {
+            const diff = parseFloat(actualCash) - activeShiftStats.expectedCash;
+            return (
+              <div className="flex justify-between items-center text-xs font-bold rounded-lg p-2.5 border bg-muted/40">
+                <span className="text-muted-foreground">
+                  {currentLanguage === "en" ? "Difference (Shortage/Overage):" : "ส่วนต่าง (Shortage/Overage):"}
+                </span>
+                {diff > 0 ? (
+                  <span className="text-emerald-600 dark:text-emerald-400">
+                    +฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} {currentLanguage === "en" ? "(Overage)" : "(เงินเกิน)"}
+                  </span>
+                ) : diff < 0 ? (
+                  <span className="text-red-600 dark:text-red-400 font-black">
+                    ฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} {currentLanguage === "en" ? "(Shortage)" : "(เงินขาด)"}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    ฿0.00 {currentLanguage === "en" ? "(Balanced)" : "(ยอดตรง)"}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
+
+          <div className="space-y-1.5 text-left">
+            <Label htmlFor="closeShift_notes" className="text-xs font-bold text-foreground">
+              {currentLanguage === "en" ? "Additional Notes" : "บันทึกเพิ่มเติมการปิดกะ"}
+            </Label>
+            <Input
+              id="closeShift_notes"
+              type="text"
+              placeholder={
+                currentLanguage === "en"
+                  ? "e.g., drawer balanced, excess coins..."
+                  : "เช่น ส่งยอดบัญชีเรียบร้อย, มีเงินเหรียญเยอะ..."
+              }
+              className="bg-muted/50 border-border text-xs focus-visible:ring-emerald-500"
+              value={closeShiftNotes}
+              onChange={(e) => setCloseShiftNotes(e.target.value)}
+            />
+          </div>
+
+          <DialogFooter className="pt-2 border-t border-border gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              className="h-9 font-bold text-xs rounded-xl cursor-pointer"
+            >
+              {currentLanguage === "en" ? "Cancel" : "ยกเลิก"}
+            </Button>
+            <Button
+              type="submit"
+              disabled={isSubmitting}
+              className="h-9 bg-red-600 hover:bg-red-500 dark:bg-red-600 dark:hover:bg-red-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-red-600/10"
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {currentLanguage === "en" ? "Submitting..." : "กำลังส่งรายงาน..."}
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={16} />
+                  {currentLanguage === "en" ? "Submit & Close Shift" : "ยืนยันปิดรอบลิ้นชักเงินสด"}
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 const getCategoryStyles = (category: string) => {
   const cat = category.toUpperCase();
   if (cat.includes("WASH") || cat.includes("FOLD") || cat.includes("KILO")) {
@@ -1105,10 +1375,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     let creditOrders = 0;
     
     const shiftOpenTime = new Date(activeShift.openedAt).getTime();
+    const shiftCloseTime = activeShift.closedAt ? new Date(activeShift.closedAt).getTime() : Infinity;
     
     for (const job of jobs) {
       // Only count jobs belonging to this shift's branch
       if (job.branchId !== activeShift.branchId) continue;
+      // Skip cancelled jobs in sales calculation
+      if (job.status === 'cancel') continue;
       
       let hasPaymentLog = false;
       let usedCash = false;
@@ -1125,7 +1398,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             for (const pay of parsed.payments) {
               const payTime = new Date(pay.timestamp).getTime();
               // Check if payment was made during this shift
-              if (payTime >= shiftOpenTime) {
+              if (payTime >= shiftOpenTime && payTime <= shiftCloseTime) {
                 const method = pay.method?.toLowerCase();
                 const amount = pay.amount || 0;
                 if (method === 'cash') {
@@ -1153,7 +1426,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (!hasPaymentLog) {
         if (!job.createdAt) continue;
         const jobTime = new Date(job.createdAt).getTime();
-        if (jobTime >= shiftOpenTime && job.createdBy === activeShift.userName && job.isPaid) {
+        if (jobTime >= shiftOpenTime && jobTime <= shiftCloseTime && job.createdBy === activeShift.userName && job.isPaid) {
           const method = job.paymentMethod?.toLowerCase();
           const amount = job.totalAmount || 0;
           if (method === 'cash') {
@@ -1204,13 +1477,21 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   const isShiftFromPreviousDay = useMemo(() => {
     if (!activeShift?.openedAt) return false;
-    const openedDate = new Date(activeShift.openedAt);
-    const today = new Date();
-    return (
-      openedDate.getFullYear() !== today.getFullYear() ||
-      openedDate.getMonth() !== today.getMonth() ||
-      openedDate.getDate() !== today.getDate()
-    );
+    const openedAt = new Date(activeShift.openedAt);
+    const now = new Date();
+
+    // Business day boundary = 6:00 AM
+    // A shift opened yesterday before 6 AM cutoff today is considered "previous day"
+    // But a night shift (opened 23:00, now 01:00 same night) is NOT previous day
+    const getBusinessDay = (d: Date) => {
+      const adjusted = new Date(d);
+      if (adjusted.getHours() < 6) {
+        adjusted.setDate(adjusted.getDate() - 1);
+      }
+      return `${adjusted.getFullYear()}-${adjusted.getMonth()}-${adjusted.getDate()}`;
+    };
+
+    return getBusinessDay(openedAt) !== getBusinessDay(now);
   }, [activeShift]);
 
   const getProductPrice = useCallback((product: ServiceItem) => {
@@ -1922,7 +2203,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           status: hasPosPackage ? "topup" : undefined,
           completedAt: isPaidFlag && isStandardPlan ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
-          shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || undefined) : undefined,
+          shiftId: CASHIER_SHIFT_ENABLED ? (loadedJob?.shiftId || activeShift?.id || undefined) : undefined,
           billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
           proformaReceiptNumber: targetProformaNum || undefined,
           proformaNumber: targetProformaNum || undefined,
@@ -2129,240 +2410,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           </motion.div>
         </div>
 
-        <Dialog open={isCloseShiftOpen} onOpenChange={setIsCloseShiftOpen}>
-          <DialogContent className="max-w-md p-5 bg-card border border-border shadow-2xl rounded-2xl">
-            <DialogHeader className="shrink-0 mb-3">
-              <DialogTitle className="text-base font-black text-foreground flex items-center gap-2">
-                <Banknote className="text-red-500" size={18} />
-                {currentLanguage === "en" ? "Close Cashier Shift & Drawer Report" : "รายงานปิดกะพนักงานและลิ้นชักเงินสด"}
-              </DialogTitle>
-            </DialogHeader>
-
-            {activeShift && (
-              <form onSubmit={async (e) => {
-                e.preventDefault();
-                if (!activeShift) return;
-                const cashVal = parseFloat(actualCash);
-                if (isNaN(cashVal) || cashVal < 0) {
-                  toast.error(
-                    currentLanguage === "en"
-                      ? "Please enter a valid actual cash amount (must be at least 0)"
-                      : "กรุณาระบุเงินสดนับจริงให้ถูกต้อง (ต้องไม่น้อยกว่า 0)"
-                  );
-                  return;
-                }
-                setIsShiftSubmitting(true);
-                try {
-                  await shiftStore.closeShift(activeShift.id, cashVal, closeShiftNotes);
-                  toast.success(
-                    currentLanguage === "en"
-                      ? "Cashier shift closed successfully. POS system locked."
-                      : "ปิดรอบลิ้นชักเงินสดสำเร็จแล้ว ระบบถูกล็อก"
-                  );
-                  setIsCloseShiftOpen(false);
-                  setActualCash("");
-                  setCloseShiftNotes("");
-                } catch (err) {
-                  toast.error(
-                    currentLanguage === "en"
-                      ? "Failed to close cashier shift"
-                      : "ไม่สามารถปิดรอบลิ้นชักเงินสดได้"
-                  );
-                } finally {
-                  setIsShiftSubmitting(false);
-                }
-              }} className="space-y-4">
-                <div className="rounded-xl border border-border bg-muted/30 p-3.5 space-y-2.5 text-xs text-foreground font-semibold leading-relaxed">
-                  <div className="flex justify-between items-center text-[10px] text-muted-foreground font-bold border-b border-border pb-1.5 mb-1">
-                    <span>{currentLanguage === "en" ? "Staff" : "พนักงาน"}: {activeShift.userName}</span>
-                    <span>
-                      {currentLanguage === "en" ? "Opened At" : "เปิดกะเมื่อ"}: {format(new Date(activeShift.openedAt), "dd/MM/yyyy HH:mm")}
-                    </span>
-                  </div>
-                  
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">
-                      {currentLanguage === "en" ? "1. Starting Float:" : "1. เงินทอนเริ่มต้น (Starting Float):"}
-                    </span>
-                    <span>฿{activeShift.startingCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                  </div>
-                  
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">
-                      {currentLanguage === "en" ? "2. Cash Sales:" : "2. ยอดขายเงินสด (Cash Sales):"}
-                    </span>
-                    <span className="text-emerald-600 dark:text-emerald-400">
-                      +฿{activeShiftStats.cashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  
-                  <div className="flex justify-between font-black border-t border-dashed border-border pt-2 text-sm">
-                    <span>
-                      {currentLanguage === "en" ? "Expected Cash in Drawer:" : "ยอดเงินสดที่ควรมี (Expected Cash):"}
-                    </span>
-                    <span>฿{activeShiftStats.expectedCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                  </div>
-
-                  <div className="border-t border-border pt-2.5 mt-1 space-y-1 text-[11px]">
-                    <p className="text-muted-foreground font-bold mb-1">
-                      {currentLanguage === "en" ? "Non-cash Sales:" : "ยอดขายช่องทางอื่น ๆ (Non-cash Sales):"}
-                    </p>
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>
-                        {currentLanguage === "en" ? "- Bank Transfer:" : "- โอนเงิน (Bank Transfer):"}
-                      </span>
-                      <span>฿{activeShiftStats.transferSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>
-                        {currentLanguage === "en" ? "- Card:" : "- บัตรเครดิต (Card):"}
-                      </span>
-                      <span>฿{activeShiftStats.cardSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>
-                        {currentLanguage === "en" ? "- Member Wallet:" : "- หักบัญชีสมาชิก (Member Wallet):"}
-                      </span>
-                      <span>฿{activeShiftStats.creditSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                    </div>
-                  </div>
-
-                  <div className="border-t border-border pt-2 mt-1 space-y-1 text-[11px]">
-                    <div className="flex justify-between text-foreground font-bold mb-1">
-                      <span>
-                        {currentLanguage === "en" ? "Total Orders:" : "จำนวนออเดอร์ทั้งหมด:"}
-                      </span>
-                      <span>
-                        {activeShiftStats.totalOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground pl-2">
-                      <span>
-                        {currentLanguage === "en" ? "• Cash:" : "• เงินสด:"}
-                      </span>
-                      <span>
-                        {activeShiftStats.cashOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground pl-2">
-                      <span>
-                        {currentLanguage === "en" ? "• Bank Transfer:" : "• โอนเงิน:"}
-                      </span>
-                      <span>
-                        {activeShiftStats.transferOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground pl-2">
-                      <span>
-                        {currentLanguage === "en" ? "• Card:" : "• บัตรเครดิต:"}
-                      </span>
-                      <span>
-                        {activeShiftStats.cardOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground pl-2">
-                      <span>
-                        {currentLanguage === "en" ? "• Member Wallet:" : "• หักบัญชีสมาชิก:"}
-                      </span>
-                      <span>
-                        {activeShiftStats.creditOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5 text-left">
-                  <Label htmlFor="actualCash" className="text-xs font-bold text-foreground">
-                    {currentLanguage === "en" ? "Actual Cash in Drawer (฿) *" : "เงินสดนับจริงในลิ้นชัก (฿) *"}
-                  </Label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-muted-foreground">฿</span>
-                    <Input
-                      id="actualCash"
-                      type="number"
-                      step="any"
-                      required
-                      placeholder="0.00"
-                      className="pl-7 bg-muted/50 border-border text-foreground font-black focus-visible:ring-emerald-500"
-                      value={actualCash}
-                      onChange={(e) => setActualCash(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                {actualCash && !isNaN(parseFloat(actualCash)) && (() => {
-                  const diff = parseFloat(actualCash) - activeShiftStats.expectedCash;
-                  return (
-                    <div className="flex justify-between items-center text-xs font-bold rounded-lg p-2.5 border bg-muted/40">
-                      <span className="text-muted-foreground">
-                        {currentLanguage === "en" ? "Difference (Shortage/Overage):" : "ส่วนต่าง (Shortage/Overage):"}
-                      </span>
-                      {diff > 0 ? (
-                        <span className="text-emerald-600 dark:text-emerald-400">
-                          +฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} {currentLanguage === "en" ? "(Overage)" : "(เงินเกิน)"}
-                        </span>
-                      ) : diff < 0 ? (
-                        <span className="text-red-600 dark:text-red-400 font-black">
-                          ฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} {currentLanguage === "en" ? "(Shortage)" : "(เงินขาด)"}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">
-                          ฿0.00 {currentLanguage === "en" ? "(Balanced)" : "(ยอดตรง)"}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                <div className="space-y-1.5 text-left">
-                  <Label htmlFor="closeShiftNotes" className="text-xs font-bold text-foreground">
-                    {currentLanguage === "en" ? "Additional Notes" : "บันทึกเพิ่มเติมการปิดกะ"}
-                  </Label>
-                  <Input
-                    id="closeShiftNotes"
-                    type="text"
-                    placeholder={
-                      currentLanguage === "en"
-                        ? "e.g., drawer balanced, excess coins..."
-                        : "เช่น ส่งยอดบัญชีเรียบร้อย, มีเงินเหรียญเยอะ..."
-                    }
-                    className="bg-muted/50 border-border text-xs focus-visible:ring-emerald-500"
-                    value={closeShiftNotes}
-                    onChange={(e) => setCloseShiftNotes(e.target.value)}
-                  />
-                </div>
-
-                <DialogFooter className="pt-2 border-t border-border gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setIsCloseShiftOpen(false)}
-                    className="h-9 font-bold text-xs rounded-xl cursor-pointer"
-                  >
-                    {currentLanguage === "en" ? "Cancel" : "ยกเลิก"}
-                  </Button>
-                  <Button
-                    type="submit"
-                    disabled={isShiftSubmitting}
-                    className="h-9 bg-red-600 hover:bg-red-500 dark:bg-red-600 dark:hover:bg-red-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-red-600/10"
-                  >
-                    {isShiftSubmitting ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        {currentLanguage === "en" ? "Submitting..." : "กำลังส่งรายงาน..."}
-                      </>
-                    ) : (
-                      <>
-                        {currentLanguage === "en" ? "Confirm and Close Shift" : "ยืนยันปิดรอบและปิดกะพนักงาน"}
-                      </>
-                    )}
-                  </Button>
-                </DialogFooter>
-              </form>
-            )}
-          </DialogContent>
-        </Dialog>
+        <CloseShiftDialog
+          isOpen={isCloseShiftOpen}
+          onOpenChange={setIsCloseShiftOpen}
+          activeShift={activeShift}
+          activeShiftStats={activeShiftStats}
+          currentLanguage={currentLanguage}
+        />
         {renderActiveShiftDetailsDialog()}
       </>
     );
@@ -2613,7 +2667,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       setIsShiftSubmitting(true);
                       try {
                         if (user?.id) {
-                          await shiftStore.fetchActiveShift(user.id);
+                          await shiftStore.fetchActiveShift(user.id, activeShop?.id || activeBranchId, true);
                           toast.success(
                             currentLanguage === "en"
                               ? "Status refreshed successfully."
@@ -4199,240 +4253,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           }}
         />
       )}      {/* Close Cashier Shift Report Dialog */}
-      <Dialog open={isCloseShiftOpen} onOpenChange={setIsCloseShiftOpen}>
-        <DialogContent className="max-w-md p-5 bg-card border border-border shadow-2xl rounded-2xl">
-          <DialogHeader className="shrink-0 mb-3">
-            <DialogTitle className="text-base font-black text-foreground flex items-center gap-2">
-              <Banknote className="text-red-500" size={18} />
-              {currentLanguage === "en" ? "Close Cashier Shift & Drawer Report" : "รายงานปิดกะพนักงานและลิ้นชักเงินสด"}
-            </DialogTitle>
-          </DialogHeader>
-
-          {activeShift && (
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              if (!activeShift) return;
-              const cashVal = parseFloat(actualCash);
-              if (isNaN(cashVal) || cashVal < 0) {
-                toast.error(
-                  currentLanguage === "en"
-                    ? "Please enter a valid actual cash amount (must be at least 0)"
-                    : "กรุณาระบุเงินสดนับจริงให้ถูกต้อง (ต้องไม่น้อยกว่า 0)"
-                );
-                return;
-              }
-              setIsShiftSubmitting(true);
-              try {
-                await shiftStore.closeShift(activeShift.id, cashVal, closeShiftNotes);
-                toast.success(
-                  currentLanguage === "en"
-                    ? "Cashier shift closed successfully. POS system locked."
-                    : "ปิดรอบลิ้นชักเงินสดสำเร็จแล้ว ระบบถูกล็อก"
-                );
-                setIsCloseShiftOpen(false);
-                setActualCash("");
-                setCloseShiftNotes("");
-              } catch (err) {
-                toast.error(
-                  currentLanguage === "en"
-                    ? "Failed to close cashier shift"
-                    : "ไม่สามารถปิดรอบลิ้นชักเงินสดได้"
-                );
-              } finally {
-                setIsShiftSubmitting(false);
-              }
-            }} className="space-y-4">
-              <div className="rounded-xl border border-border bg-muted/30 p-3.5 space-y-2.5 text-xs text-foreground font-semibold leading-relaxed">
-                <div className="flex justify-between items-center text-[10px] text-muted-foreground font-bold border-b border-border pb-1.5 mb-1">
-                  <span>{currentLanguage === "en" ? "Staff" : "พนักงาน"}: {activeShift.userName}</span>
-                  <span>
-                    {currentLanguage === "en" ? "Opened At" : "เปิดกะเมื่อ"}: {format(new Date(activeShift.openedAt), "dd/MM/yyyy HH:mm")}
-                  </span>
-                </div>
-                
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">
-                    {currentLanguage === "en" ? "1. Starting Float:" : "1. เงินทอนเริ่มต้น (Starting Float):"}
-                  </span>
-                  <span>฿{activeShift.startingCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-                
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">
-                    {currentLanguage === "en" ? "2. Cash Sales:" : "2. ยอดขายเงินสด (Cash Sales):"}
-                  </span>
-                  <span className="text-emerald-600 dark:text-emerald-400">
-                    +฿{activeShiftStats.cashSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </span>
-                </div>
-                
-                <div className="flex justify-between font-black border-t border-dashed border-border pt-2 text-sm">
-                  <span>
-                    {currentLanguage === "en" ? "Expected Cash in Drawer:" : "ยอดเงินสดที่ควรมี (Expected Cash):"}
-                  </span>
-                  <span>฿{activeShiftStats.expectedCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-
-                <div className="border-t border-border pt-2.5 mt-1 space-y-1 text-[11px]">
-                  <p className="text-muted-foreground font-bold mb-1">
-                    {currentLanguage === "en" ? "Non-cash Sales:" : "ยอดขายช่องทางอื่น ๆ (Non-cash Sales):"}
-                  </p>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>
-                      {currentLanguage === "en" ? "- Bank Transfer:" : "- โอนเงิน (Bank Transfer):"}
-                    </span>
-                    <span>฿{activeShiftStats.transferSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>
-                      {currentLanguage === "en" ? "- Card:" : "- บัตรเครดิต (Card):"}
-                    </span>
-                    <span>฿{activeShiftStats.cardSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>
-                      {currentLanguage === "en" ? "- Member Wallet:" : "- หักบัญชีสมาชิก (Member Wallet):"}
-                    </span>
-                    <span>฿{activeShiftStats.creditSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                  </div>
-                </div>
-
-                <div className="border-t border-border pt-2 mt-1 space-y-1 text-[11px]">
-                  <div className="flex justify-between text-foreground font-bold mb-1">
-                    <span>
-                      {currentLanguage === "en" ? "Total Orders:" : "จำนวนออเดอร์ทั้งหมด:"}
-                    </span>
-                    <span>
-                      {activeShiftStats.totalOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground pl-2">
-                    <span>
-                      {currentLanguage === "en" ? "• Cash:" : "• เงินสด:"}
-                    </span>
-                    <span>
-                      {activeShiftStats.cashOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground pl-2">
-                    <span>
-                      {currentLanguage === "en" ? "• Bank Transfer:" : "• โอนเงิน:"}
-                    </span>
-                    <span>
-                      {activeShiftStats.transferOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground pl-2">
-                    <span>
-                      {currentLanguage === "en" ? "• Card:" : "• บัตรเครดิต:"}
-                    </span>
-                    <span>
-                      {activeShiftStats.cardOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground pl-2">
-                    <span>
-                      {currentLanguage === "en" ? "• Member Wallet:" : "• หักบัญชีสมาชิก:"}
-                    </span>
-                    <span>
-                      {activeShiftStats.creditOrders} {currentLanguage === "en" ? "orders" : "ออเดอร์"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-1.5 text-left">
-                <Label htmlFor="actualCash" className="text-xs font-bold text-foreground">
-                  {currentLanguage === "en" ? "Actual Cash in Drawer (฿) *" : "เงินสดนับจริงในลิ้นชัก (฿) *"}
-                </Label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-muted-foreground">฿</span>
-                  <Input
-                    id="actualCash"
-                    type="number"
-                    step="any"
-                    required
-                    placeholder="0.00"
-                    className="pl-7 bg-muted/50 border-border text-foreground font-black focus-visible:ring-emerald-500"
-                    value={actualCash}
-                    onChange={(e) => setActualCash(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              {actualCash && !isNaN(parseFloat(actualCash)) && (() => {
-                const diff = parseFloat(actualCash) - activeShiftStats.expectedCash;
-                return (
-                  <div className="flex justify-between items-center text-xs font-bold rounded-lg p-2.5 border bg-muted/40">
-                    <span className="text-muted-foreground">
-                      {currentLanguage === "en" ? "Difference (Shortage/Overage):" : "ส่วนต่าง (Shortage/Overage):"}
-                    </span>
-                    {diff > 0 ? (
-                      <span className="text-emerald-600 dark:text-emerald-400">
-                        +฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} {currentLanguage === "en" ? "(Overage)" : "(เงินเกิน)"}
-                      </span>
-                    ) : diff < 0 ? (
-                      <span className="text-red-600 dark:text-red-400 font-black">
-                        ฿{diff.toLocaleString(undefined, { minimumFractionDigits: 2 })} {currentLanguage === "en" ? "(Shortage)" : "(เงินขาด)"}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">
-                        ฿0.00 {currentLanguage === "en" ? "(Balanced)" : "(ยอดตรง)"}
-                      </span>
-                    )}
-                  </div>
-                );
-              })()}
-
-              <div className="space-y-1.5 text-left">
-                <Label htmlFor="closeShiftNotes" className="text-xs font-bold text-foreground">
-                  {currentLanguage === "en" ? "Additional Notes" : "บันทึกเพิ่มเติมการปิดกะ"}
-                </Label>
-                <Input
-                  id="closeShiftNotes"
-                  type="text"
-                  placeholder={
-                    currentLanguage === "en"
-                      ? "e.g., drawer balanced, excess coins..."
-                      : "เช่น ส่งยอดบัญชีเรียบร้อย, มีเงินเหรียญเยอะ..."
-                  }
-                  className="bg-muted/50 border-border text-xs focus-visible:ring-emerald-500"
-                  value={closeShiftNotes}
-                  onChange={(e) => setCloseShiftNotes(e.target.value)}
-                />
-              </div>
-
-              <DialogFooter className="pt-2 border-t border-border gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsCloseShiftOpen(false)}
-                  className="h-9 font-bold text-xs rounded-xl cursor-pointer"
-                >
-                  {currentLanguage === "en" ? "Cancel" : "ยกเลิก"}
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={isShiftSubmitting}
-                  className="h-9 bg-red-600 hover:bg-red-500 dark:bg-red-600 dark:hover:bg-red-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-red-600/10"
-                >
-                  {isShiftSubmitting ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {currentLanguage === "en" ? "Submitting..." : "กำลังส่งรายงาน..."}
-                    </>
-                  ) : (
-                    <>
-                      {currentLanguage === "en" ? "Confirm and Close Shift" : "ยืนยันปิดรอบและปิดกะพนักงาน"}
-                    </>
-                  )}
-                </Button>
-              </DialogFooter>
-            </form>
-          )}
-        </DialogContent>
-      </Dialog>
+      <CloseShiftDialog
+        isOpen={isCloseShiftOpen}
+        onOpenChange={setIsCloseShiftOpen}
+        activeShift={activeShift}
+        activeShiftStats={activeShiftStats}
+        currentLanguage={currentLanguage}
+      />
 
       <ShiftHistoryDialog
         isOpen={isShiftHistoryOpen}

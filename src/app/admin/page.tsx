@@ -1359,23 +1359,28 @@ export default function AdminPage() {
     setEditingJobId(job.id);
     setDialogDiscountPercent(job.discountPercent || 0);
     const hasDiscountOn = job.remark ? job.remark.includes("Discount: on") : false;
-    const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+    const promoMatch = job.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
     const hasValidPromo = Boolean(promoMatch && promoMatch[3] && parseFloat(promoMatch[3]) > 0);
-    setShowDialogDiscount(Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || hasValidPromo));
-    if (hasValidPromo && promoMatch) {
-      const pCode = promoMatch[1];
-      const pTarget = (promoMatch[2] as "ALL" | "DELIVERY") || "ALL";
-      const pAmount = parseFloat(promoMatch[3]);
+    const hasRawPromo = Boolean(promoMatch && promoMatch[1]);
+    setShowDialogDiscount(Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || hasValidPromo || hasRawPromo));
+    if (promoMatch && promoMatch[1]) {
+      const pCode = promoMatch[1].trim().toUpperCase();
       setPromoCodeInput(pCode);
-      setAppliedPromo({
-        code: pCode,
-        discountType: "FIXED",
-        discountTarget: pTarget,
-        discountValue: pAmount,
-        discountAmount: pAmount,
-        netPayable: Math.max(0, (job.totalAmount || 0)),
-        maxDiscount: null,
-      });
+      if (hasValidPromo) {
+        const pTarget = (promoMatch[2] as "ALL" | "DELIVERY") || "ALL";
+        const pAmount = parseFloat(promoMatch[3]);
+        setAppliedPromo({
+          code: pCode,
+          discountType: "FIXED",
+          discountTarget: pTarget,
+          discountValue: pAmount,
+          discountAmount: pAmount,
+          netPayable: Math.max(0, (job.totalAmount || 0)),
+          maxDiscount: null,
+        });
+      } else {
+        setAppliedPromo(null);
+      }
       setPromoError(null);
     } else {
       setPromoCodeInput("");
@@ -1762,7 +1767,7 @@ export default function AdminPage() {
     const isAlreadyCompleted = existingJob?.status === "completed";
     
     const shop = shopLocations[selectedStoreIndex] || shopLocations[0];
-    const targetShift = (activeShift && activeShift.branchId === shop.id) ? activeShift : null;
+    const targetShift = (isWalkIn && activeShift && activeShift.branchId === shop.id) ? activeShift : null;
 
     const targetShiftId = targetShift?.id || (existingJob ? (existingJob as any).shiftId : null) || null;
 
@@ -1979,9 +1984,11 @@ export default function AdminPage() {
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
-        showDialogDiscount && appliedPromo
-          ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
-          : "",
+        (showDialogDiscount || appliedPromo || promoCodeInput.trim()) ? (
+          appliedPromo
+            ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
+            : (promoCodeInput.trim() ? `Promo: ${promoCodeInput.trim().toUpperCase()}` : "")
+        ) : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: (() => {
         let existingPayments: any[] = [];
@@ -2539,7 +2546,12 @@ export default function AdminPage() {
         serviceSpeed === "express_100" ? "Express 100%" : "",
         proformaReceiptNumber ? `Proforma: ${cleanProformaNumber(proformaReceiptNumber)}` : "",
         proformaReceiptNumber ? `Revision: ${proformaRevision}` : "",
-        dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : ""
+        dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
+        (showDialogDiscount || appliedPromo || promoCodeInput.trim()) ? (
+          appliedPromo
+            ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
+            : (promoCodeInput.trim() ? `Promo: ${promoCodeInput.trim().toUpperCase()}` : "")
+        ) : "",
       ].filter(Boolean);
       
       const mockJob: any = {

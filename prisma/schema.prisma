@@ -119,6 +119,8 @@ model Job {
   proformaNumber         String?   // base number e.g. "PR-TLS-00009" (no revision suffix)
   proformaRevision       Int?      // current revision: 0, 1, 2 ...
   proformaCartHash       String?   // JSON hash of cart when last proforma was generated
+
+  @@index([shiftId])
 }
 
 model ServiceItem {
@@ -260,6 +262,9 @@ model CashierShift {
   transferOrders  Int          @default(0)
   branch          ShopLocation @relation(fields: [branchId], references: [id])
   jobs            Job[]
+
+  @@index([userId, status])
+  @@index([branchId, status])
 }
 
 model Department {

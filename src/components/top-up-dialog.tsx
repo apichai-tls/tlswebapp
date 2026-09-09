@@ -224,6 +224,17 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
   const cartIsEmpty = cart.length === 0;
 
+  // ── VAT Calculation (Inclusive VAT) ──────────────────────────────────────────
+  const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
+  const vatRate = useMemo(() => {
+    return parseFloat(systemSettings?.vatRate || "7") || 7;
+  }, [systemSettings?.vatRate]);
+  const vatType: "inclusive" = "inclusive";
+  const vatAmount = useMemo(() => {
+    if (vatRate <= 0 || cartTotal <= 0) return 0;
+    return Math.round((cartTotal * (vatRate / (100 + vatRate))) * 100) / 100;
+  }, [cartTotal, vatRate]);
+
   // ── Effects ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (open) {
@@ -421,8 +432,8 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       const now = new Date();
 
       // Sequential counter for Top-Up Receipt (Option C: No Job created)
-      const systemSettings = settingsStore.getSnapshot();
-      const currentSeq = parseInt(systemSettings?.[TOPUP_SEQ_KEY] || "0", 10);
+      const freshSettings = settingsStore.getSnapshot();
+      const currentSeq = parseInt(freshSettings?.[TOPUP_SEQ_KEY] || "0", 10);
       const nextSeq = currentSeq + 1;
       settingsStore.updateSetting(TOPUP_SEQ_KEY, String(nextSeq)).catch(() => {});
 
@@ -449,9 +460,9 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         discount: 0,
         deliveryFee: 0,
         expressSurcharge: 0,
-        vatAmount: 0,
-        vatType: "none",
-        vatRate: 0,
+        vatAmount,
+        vatType,
+        vatRate,
         paymentChannel,
         slipImageUrl: slipImageUrl || null,
         isPaid: true,
@@ -739,7 +750,14 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                     <div className="pt-2 border-t border-slate-200 space-y-1">
                       <div className="flex justify-between text-xs text-slate-600">
                         <span>Amount to Pay</span>
-                        <span className="font-bold text-slate-800">฿{formatCurrency(cartTotal)}</span>
+                        <div className="text-right">
+                          <span className="font-bold text-slate-800">฿{formatCurrency(cartTotal)}</span>
+                          {vatAmount > 0 && (
+                            <span className="block text-[10px] text-slate-400 font-medium">
+                              (รวม VAT {vatRate}%: ฿{formatCurrency(vatAmount)})
+                            </span>
+                          )}
+                        </div>
                       </div>
                       {bonusTotal > 0 && (
                         <div className="flex justify-between text-xs text-emerald-600 font-semibold">
@@ -810,7 +828,14 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                   <div className="pt-2 border-t border-emerald-200 space-y-1.5">
                     <div className="flex justify-between items-center">
                       <span className="text-sm font-bold text-slate-700">Payment Due</span>
-                      <span className="text-base font-bold text-slate-900">฿{formatCurrency(cartTotal)}</span>
+                      <div className="text-right">
+                        <span className="text-base font-bold text-slate-900">฿{formatCurrency(cartTotal)}</span>
+                        {vatAmount > 0 && (
+                          <p className="text-[10px] text-slate-500 font-medium">
+                            (รวม VAT {vatRate}%: ฿{formatCurrency(vatAmount)})
+                          </p>
+                        )}
+                      </div>
                     </div>
                     {bonusTotal > 0 && (
                       <div className="flex justify-between items-center text-xs text-emerald-700 font-semibold">

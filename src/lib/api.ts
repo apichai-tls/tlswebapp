@@ -818,7 +818,8 @@ export const api = {
       userId,
       userName,
       branchId,
-      startingCash
+      startingCash,
+      notes
     });
     if (!res.success) throw new Error(res.error || "Failed to open shift");
     return res.shift;
@@ -832,8 +833,8 @@ export const api = {
     if (!res.success) throw new Error(res.error || "Failed to close shift");
     return res.shift;
   },
-  async getClosedCashierShifts(tenantId?: string) {
-    return dbActions.getClosedShiftsAction();
+  async getClosedCashierShifts(branchId?: string) {
+    return dbActions.getClosedShiftsAction(branchId);
   },
   async getOpenCashierShifts() {
     return dbActions.getOpenShiftsAction();

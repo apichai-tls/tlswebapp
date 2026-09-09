@@ -763,6 +763,8 @@ let isFetchingShift = false;       // guard against concurrent fetches
 let lastShiftFetchTime = 0;        // TTL: timestamp of last successful fetch
 let currentUserId: string | null = null;   // stored so poll callback can filter
 let currentBranchId: string | undefined;   // stored so poll callback can filter
+let recentlyClosedShiftId: string | null = null; // guard against in-flight poll resurrection
+let recentlyClosedAt = 0;
 const SHIFT_FETCH_TTL_MS = 30_000; // Re-fetch at most once per 30 seconds
 const SHIFT_CACHE_KEY = 'pos_shift_cache';
 
@@ -887,6 +889,8 @@ export const shiftStore = {
   async closeShift(id: string, actualCash: number, notes?: string) {
     try {
       const res = await api.closeCashierShift(id, actualCash, notes);
+      recentlyClosedShiftId = id;
+      recentlyClosedAt = Date.now();
       activeShift = null;
       branchActiveShift = null;
       hasLoadedActiveShift = true;
@@ -914,8 +918,14 @@ export const shiftStore = {
    */
   syncFromPoll(openShifts: Array<{ id: string; userId: string; branchId: string; userName: string; openedAt: string; startingCash: number; status: string }>) {
     if (!currentUserId) return; // not initialized yet
-    const userShift = openShifts.find(s => s.userId === currentUserId) || null;
-    const bShift = currentBranchId ? (openShifts.find(s => s.branchId === currentBranchId) || null) : null;
+
+    // Filter out recently closed shift within the last 15 seconds to prevent resurrection from in-flight polls
+    const validOpenShifts = (recentlyClosedShiftId && (Date.now() - recentlyClosedAt < 15_000))
+      ? openShifts.filter(s => s.id !== recentlyClosedShiftId)
+      : openShifts;
+
+    const userShift = validOpenShifts.find(s => s.userId === currentUserId) || null;
+    const bShift = currentBranchId ? (validOpenShifts.find(s => s.branchId === currentBranchId) || null) : null;
 
     const newActiveShift = userShift ? (JSON.parse(JSON.stringify(userShift), (key, value) => {
       if (key.includes('At') && value) return new Date(value);
@@ -937,9 +947,9 @@ export const shiftStore = {
     lastShiftFetchTime = Date.now();
     if (changed) emitShiftChange();
   },
-  async getClosedShifts(tenantId?: string) {
+  async getClosedShifts(branchId?: string) {
     try {
-      const res = await api.getClosedCashierShifts(tenantId);
+      const res = await api.getClosedCashierShifts(branchId);
       return JSON.parse(JSON.stringify(res), (key, value) => {
         if (key.includes('At') && value) return new Date(value);
         return value;
