@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { useRiders } from "@/lib/use-riders";
-import { shopStore, type Rider } from "@/lib/store";
+import { shopStore, riderStore, type Rider } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { useAuth } from "@/providers/auth-provider";
 
@@ -22,7 +22,7 @@ function createAvatarIcon(rider: Rider) {
           rider.status === 'online' ? 'border-emerald-500' :
           rider.status === 'busy' ? 'border-amber-500' : 'border-slate-400'
         }">
-          <img src="${rider.avatarUrl || 'https://i.pravatar.cc/150'}" style="width: 100%; height: 100%; object-fit: cover;" class="rounded-full" />
+          <img src="${rider.avatarUrl || 'https://i.pravatar.cc/150'}" style="width: 100%; height: 100%; object-fit: cover;" class="rounded-full" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(rider.name)}&background=64748b&color=fff'" />
           <div class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-white ${
             rider.status === 'online' ? 'bg-emerald-500' :
             rider.status === 'busy' ? 'bg-amber-500' : 'bg-slate-400'
@@ -34,6 +34,18 @@ function createAvatarIcon(rider: Rider) {
     iconAnchor: [0, 0],
     popupAnchor: [0, -60],
   });
+}
+
+// Icon caches to prevent Leaflet from destroying/re-creating DOM nodes every render
+const avatarIconCache = new Map<string, L.DivIcon>();
+function getAvatarIcon(rider: Rider) {
+  const key = `${rider.id}-${rider.status}-${rider.avatarUrl || 'default'}`;
+  let icon = avatarIconCache.get(key);
+  if (!icon) {
+    icon = createAvatarIcon(rider);
+    avatarIconCache.set(key, icon);
+  }
+  return icon;
 }
 
 // Shop Marker Icon
@@ -52,6 +64,17 @@ function createShopIcon(shop: { name: string, address: string }) {
     iconAnchor: [0, 0],
     popupAnchor: [0, -36],
   });
+}
+
+const shopIconCache = new Map<string, L.DivIcon>();
+function getShopIcon(shop: { id?: string, name: string, address: string }) {
+  const key = shop.id || shop.name;
+  let icon = shopIconCache.get(key);
+  if (!icon) {
+    icon = createShopIcon(shop);
+    shopIconCache.set(key, icon);
+  }
+  return icon;
 }
 
 function MapUpdater({ center }: { center: [number, number] }) {
@@ -73,17 +96,83 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
     setIsMounted(true);
   }, []);
 
+  // Real-time GPS Polling: Fetch fresh rider locations every 10s while map is mounted
+  useEffect(() => {
+    let isSubscribed = true;
+
+    const pollRiderLocations = async () => {
+      try {
+        const res = await fetch("/api/rider-location");
+        if (!res.ok) return;
+        const freshRiders = await res.json();
+        if (!isSubscribed || !Array.isArray(freshRiders)) return;
+
+        for (const r of freshRiders) {
+          if (r.id) {
+            const updates: Partial<Rider> = { status: r.status };
+            if (r.currentLat && r.currentLng) {
+              updates.currentLocation = { lat: r.currentLat, lng: r.currentLng };
+            }
+            riderStore.updateRider(r.id, updates);
+          }
+        }
+      } catch {
+        // Silently ignore network blips
+      }
+    };
+
+    pollRiderLocations();
+    const interval = setInterval(pollRiderLocations, 10000);
+
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Filter riders by area (manager scope)
+  const filteredRiders = useMemo(() => {
+    if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
+      return riders.filter(r => {
+        const branch = shopLocations.find(s => s.id === r.branchId);
+        return branch?.area === user.area;
+      });
+    }
+    return riders;
+  }, [riders, user?.role, user?.area, shopLocations]);
+
+  // Compute active riders with fallback to assigned branch coordinates if GPS is missing or mock (13.73, 100.53)
+  const activeRiders = useMemo(() => {
+    return filteredRiders
+      .filter(r => r.status === 'online' || r.status === 'busy')
+      .map(r => {
+        let loc = r.currentLocation;
+        // Fallback: If rider has no GPS or default mock (13.73, 100.53) but is assigned to a specific branch (like Pattaya)
+        if ((!loc || (loc.lat === 13.73 && loc.lng === 100.53)) && r.branchId) {
+          const assignedBranch = shopLocations.find(s => s.id === r.branchId);
+          if (assignedBranch && (assignedBranch.coords.lat !== 13.73 || assignedBranch.coords.lng !== 100.53)) {
+            loc = assignedBranch.coords;
+          }
+        }
+        return {
+          ...r,
+          effectiveLocation: loc,
+        };
+      })
+      .filter(r => Boolean(r.effectiveLocation));
+  }, [filteredRiders, shopLocations]);
+
+  const { onlineCount, busyCount } = useMemo(() => {
+    let online = 0;
+    let busy = 0;
+    for (const r of activeRiders) {
+      if (r.status === 'online') online++;
+      else if (r.status === 'busy') busy++;
+    }
+    return { onlineCount: online, busyCount: busy };
+  }, [activeRiders]);
+
   if (!isMounted) return null;
-
-  // Filter riders by area
-  if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
-    riders = riders.filter(r => {
-      const branch = shopLocations.find(s => s.id === r.branchId);
-      return branch?.area === user.area;
-    });
-  }
-
-  const activeRiders = riders.filter(r => (r.status === 'online' || r.status === 'busy') && r.currentLocation);
 
   return (
     <div className={`relative flex flex-col h-full bg-slate-50 w-full overflow-hidden ${minimal ? '' : 'flex-1 rounded-tl-xl border-t border-l border-slate-200'}`}>
@@ -94,8 +183,8 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
               Live Fleet Monitor
             </h2>
             <div className="flex gap-2 text-[10px] sm:text-xs font-medium bg-white/95 px-2.5 py-1.5 sm:px-4 sm:py-2.5 rounded-xl shadow-lg border border-slate-200/60 animate-in fade-in duration-300">
-              <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Online ({activeRiders.filter(r => r.status === 'online').length})</span>
-              <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500" /> Busy ({activeRiders.filter(r => r.status === 'busy').length})</span>
+              <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Online ({onlineCount})</span>
+              <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500" /> Busy ({busyCount})</span>
             </div>
           </div>
         </div>
@@ -106,12 +195,20 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
         <select 
           className="text-xs sm:text-sm border border-slate-200 rounded px-1.5 py-0.5 sm:px-2 sm:py-1 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 font-semibold"
           onChange={(e) => {
-            if (e.target.value === "bangkok") setMapCenter([13.736717, 100.523186]);
-            if (e.target.value === "pattaya") setMapCenter([12.9236, 100.8825]);
+            const val = e.target.value;
+            if (val === "bangkok") setMapCenter([13.736717, 100.523186]);
+            else if (val === "pattaya") setMapCenter([12.9236, 100.8825]);
+            else {
+              const shop = shopLocations.find(s => s.id === val);
+              if (shop) setMapCenter([shop.coords.lat, shop.coords.lng]);
+            }
           }}
         >
-          <option value="bangkok">Bangkok</option>
+          <option value="bangkok">Bangkok (Default)</option>
           <option value="pattaya">Pattaya</option>
+          {shopLocations.map(shop => (
+            <option key={shop.id} value={shop.id}>{shop.name}</option>
+          ))}
         </select>
       </div>
 
@@ -126,7 +223,7 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
         <MapUpdater center={mapCenter} />
         <TileLayer
           attribution='&copy; <a href="https://maps.google.com">Google Maps</a>'
-          url="http://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
+          url="https://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
         />
         
         {/* Render Shop Markers */}
@@ -134,7 +231,7 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
           <Marker 
             key={`shop-${shop.id}`}
             position={[shop.coords.lat, shop.coords.lng]}
-            icon={createShopIcon(shop)}
+            icon={getShopIcon(shop)}
             zIndexOffset={500}
           >
             <Tooltip direction="top" className="font-sans font-bold text-xs shadow-md border-0 bg-slate-900 text-white" opacity={0.9} offset={[0, -20]}>
@@ -147,8 +244,8 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
         {activeRiders.map((rider) => (
           <Marker 
             key={rider.id}
-            position={[rider.currentLocation!.lat, rider.currentLocation!.lng]}
-            icon={createAvatarIcon(rider)}
+            position={[rider.effectiveLocation!.lat, rider.effectiveLocation!.lng]}
+            icon={getAvatarIcon(rider)}
             zIndexOffset={1000}
           >
             <Popup className="rounded-xl font-sans" offset={[0, -20]}>

@@ -103,9 +103,9 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const currentUserId = user?.id ?? "unknown";
-  const currentUserName = (user as any)?.name ?? user?.email ?? "Admin";
+  const currentUserName = user?.name ?? user?.email ?? "Admin";
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoadingTasks(true);
     try {
       const [tasksRes, usersRes] = await Promise.all([
@@ -132,20 +132,11 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
     } finally {
       setLoadingTasks(false);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     loadData();
-  }, [user]);
-
-  const today = new Date();
-  const isToday = (dateStr: string | Date | undefined) => {
-    if (!dateStr) return false;
-    const date = new Date(dateStr);
-    return date.getDate() === today.getDate() &&
-      date.getMonth() === today.getMonth() &&
-      date.getFullYear() === today.getFullYear();
-  };
+  }, [loadData]);
 
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
@@ -253,7 +244,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
       let usedCard = false;
       let usedCredit = false;
       
-      if (job.adminNotesJson) {
+      if (job.adminNotesJson && job.adminNotesJson.includes('"payments"')) {
         try {
           const parsed = JSON.parse(job.adminNotesJson);
           if (parsed && Array.isArray(parsed.payments)) {
@@ -287,7 +278,9 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
       if (!hasPaymentLog) {
         if (!job.createdAt) continue;
         const jobTime = new Date(job.createdAt).getTime();
-        if (jobTime >= shiftOpenTime && job.createdBy === activeShift.userName && job.isPaid) {
+        const isShiftOwner = job.shiftId === activeShift.id ||
+          Boolean(job.createdBy && (job.createdBy === activeShift.userName || job.createdBy === activeShift.userId));
+        if (jobTime >= shiftOpenTime && isShiftOwner && job.isPaid) {
           const method = job.paymentMethod?.toLowerCase();
           const amount = job.totalAmount || 0;
           if (method === "cash") {
@@ -390,42 +383,103 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   };
 
   // Only display TODAY'S jobs for the dashboard
-  let todaysJobs = jobs.filter(j => isToday(j.createdAt));
+  const { todaysJobs, pendingCount, activeCount, completedCount } = useMemo(() => {
+    const now = new Date();
+    const tYear = now.getFullYear();
+    const tMonth = now.getMonth();
+    const tDate = now.getDate();
 
-  const pendingCount = todaysJobs.filter((j) => j.status === "pending").length;
-  const activeCount = todaysJobs.filter((j) => ["pickup", "billing", "delivery"].includes(j.status)).length;
-  const completedCount = todaysJobs.filter((j) => j.status === "completed").length;
+    const tJobs: Job[] = [];
+    let pending = 0;
+    let active = 0;
+    let completed = 0;
 
-  const displayedJobs = todaysJobs.filter(j => activeTab === "all" ? true : activeTab === "active" ? ["pickup", "billing", "delivery"].includes(j.status) : j.status === activeTab);
+    for (const j of jobs) {
+      if (!j.createdAt) continue;
+      const d = new Date(j.createdAt);
+      if (d.getDate() === tDate && d.getMonth() === tMonth && d.getFullYear() === tYear) {
+        tJobs.push(j);
+        if (j.status === "pending") pending++;
+        else if (["pickup", "billing", "delivery"].includes(j.status)) active++;
+        else if (j.status === "completed") completed++;
+      }
+    }
+
+    return {
+      todaysJobs: tJobs,
+      pendingCount: pending,
+      activeCount: active,
+      completedCount: completed,
+    };
+  }, [jobs]);
+
+  const displayedJobs = useMemo(() => {
+    if (activeTab === "all") return todaysJobs;
+    if (activeTab === "active") {
+      return todaysJobs.filter(j => ["pickup", "billing", "delivery"].includes(j.status));
+    }
+    return todaysJobs.filter(j => j.status === activeTab);
+  }, [todaysJobs, activeTab]);
 
   // Financial Summary
-  const filteredCompletedJobs = jobs.filter(j => {
-    if (j.status !== 'completed') return false;
+  const { filteredCompletedJobs, monthlyRevenue, monthlyRiderPayout, platformProfit } = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    const lastMonthDate = new Date(currentYear, currentMonth - 1, 1);
+    const lastMonth = lastMonthDate.getMonth();
+    const lastMonthYear = lastMonthDate.getFullYear();
 
-    const date = new Date(j.completedAt || j.createdAt);
-    if (financePeriod === "this_month") {
-      return date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear();
-    }
-    if (financePeriod === "last_month") {
-      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      return date.getMonth() === lastMonth.getMonth() && date.getFullYear() === lastMonth.getFullYear();
-    }
-    if (financePeriod === "this_year") {
-      return date.getFullYear() === today.getFullYear();
-    }
-    return true; // all_time
-  });
+    const filtered = jobs.filter(j => {
+      if (j.status !== 'completed') return false;
 
-  const monthlyRevenue = filteredCompletedJobs.reduce((sum, j) => sum + (j.totalAmount || 0), 0);
-  const monthlyRiderPayout = filteredCompletedJobs.reduce((sum, j) => {
-    const comm = (j.pickupCommission || 0) + (j.deliveryCommission || 0);
-    return sum + (comm > 0 ? comm : (j.fee || 0));
-  }, 0);
-  const platformProfit = monthlyRevenue - monthlyRiderPayout;
+      const date = new Date(j.completedAt || j.createdAt);
+      if (financePeriod === "this_month") {
+        return date.getMonth() === currentMonth && date.getFullYear() === currentYear;
+      }
+      if (financePeriod === "last_month") {
+        return date.getMonth() === lastMonth && date.getFullYear() === lastMonthYear;
+      }
+      if (financePeriod === "this_year") {
+        return date.getFullYear() === currentYear;
+      }
+      return true; // all_time
+    });
+
+    const revenue = filtered.reduce((sum, j) => sum + (j.totalAmount || 0), 0);
+    // Exact sum of pickup and delivery commissions (aligned with admin-reports.tsx)
+    const riderPayout = filtered.reduce((sum, j) => {
+      const comm = (Number(j.pickupCommission) || 0) + (Number(j.deliveryCommission) || 0);
+      return sum + comm;
+    }, 0);
+    const profit = revenue - riderPayout;
+
+    return {
+      filteredCompletedJobs: filtered,
+      monthlyRevenue: revenue,
+      monthlyRiderPayout: riderPayout,
+      platformProfit: profit,
+    };
+  }, [jobs, financePeriod]);
 
   // Task KPI count for top banner
-  const activeTasksCount = tasks.filter(t => !t.isArchived && (t.status === "todo" || t.status === "in_progress" || t.status === "stuck")).length;
-  const stuckOverdueTasksCount = tasks.filter(t => !t.isArchived && (t.status === "stuck" || (t.status !== "done" && t.dueDate && new Date(t.dueDate) < today))).length;
+  const { activeTasksCount, stuckOverdueTasksCount } = useMemo(() => {
+    const now = new Date();
+    let active = 0;
+    let stuckOrOverdue = 0;
+
+    for (const t of tasks) {
+      if (t.isArchived) continue;
+      if (t.status === "todo" || t.status === "in_progress" || t.status === "stuck") {
+        active++;
+      }
+      if (t.status === "stuck" || (t.status !== "done" && t.dueDate && new Date(t.dueDate) < now)) {
+        stuckOrOverdue++;
+      }
+    }
+
+    return { activeTasksCount: active, stuckOverdueTasksCount: stuckOrOverdue };
+  }, [tasks]);
 
   const handleSaveTask = async (taskData: any) => {
     if (editingTask) {
@@ -630,7 +684,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                 </h2>
                 <select
                   value={financePeriod}
-                  onChange={(e) => setFinancePeriod(e.target.value as any)}
+                  onChange={(e) => setFinancePeriod(e.target.value as "this_month" | "last_month" | "this_year" | "all_time")}
                   className="h-8 w-[140px] rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-900"
                 >
                   <option value="this_month">This Month</option>
@@ -822,9 +876,10 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
       <Dialog open={!!selectedJobId} onOpenChange={(v) => !v && setSelectedJobId(null)}>
         <DialogContent className="max-w-md p-4 max-h-[90vh] overflow-hidden flex flex-col pt-8 bg-slate-50/50">
           <DialogTitle className="sr-only">Task Tracker</DialogTitle>
-          {selectedJobId && (
-            <AdminTaskTracker job={jobs.find((j) => j.id === selectedJobId)!} />
-          )}
+          {selectedJobId && (() => {
+            const currentJob = jobs.find((j) => j.id === selectedJobId);
+            return currentJob ? <AdminTaskTracker job={currentJob} /> : null;
+          })()}
         </DialogContent>
       </Dialog>
 

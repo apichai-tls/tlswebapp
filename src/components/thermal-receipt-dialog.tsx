@@ -145,9 +145,9 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     } catch {}
   }
   const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
-  const parsedPromoCode = promoMatch ? promoMatch[1] : null;
-  const parsedPromoTarget = promoMatch ? ((promoMatch[2] as "ALL" | "DELIVERY") || "ALL") : null;
   const parsedPromoDiscount = (promoMatch && promoMatch[3]) ? parseFloat(promoMatch[3]) : 0;
+  const parsedPromoCode = promoMatch && parsedPromoDiscount > 0 ? promoMatch[1] : null;
+  const parsedPromoTarget = promoMatch && parsedPromoDiscount > 0 ? ((promoMatch[2] as "ALL" | "DELIVERY") || "ALL") : null;
 
   const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0)) - (job.discount || 0) - parsedPromoDiscount);
   let jobVatAmount = 0;

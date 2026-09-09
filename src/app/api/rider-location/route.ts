@@ -28,3 +28,36 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
+
+/**
+ * GET /api/rider-location
+ * Lightweight endpoint for Admin Live Map real-time GPS polling.
+ * Returns only active riders with their current coordinates and status.
+ */
+export async function GET() {
+  try {
+    const riders = await prisma.rider.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        name: true,
+        nickname: true,
+        status: true,
+        currentLat: true,
+        currentLng: true,
+        branchId: true,
+        avatarUrl: true,
+        rating: true,
+        completedJobs: true,
+        vehicleType: true,
+        vehiclePlate: true,
+      },
+    });
+
+    return NextResponse.json(riders);
+  } catch (err) {
+    console.error('[rider-location] Failed to fetch locations:', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+

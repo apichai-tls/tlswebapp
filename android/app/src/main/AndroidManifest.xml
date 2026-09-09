@@ -33,6 +33,11 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Geolocation: required for live rider tracking -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" />
+
     <!-- Camera: required by @capacitor/camera -->
     <uses-permission android:name="android.permission.CAMERA" />
 

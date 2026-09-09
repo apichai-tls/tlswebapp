@@ -134,7 +134,7 @@ export function CreateJobMap({ branchCoords, pickupCoords, deliveryCoords, onMar
       >
         <TileLayer
           attribution='&copy; <a href="https://maps.google.com">Google Maps</a>'
-          url="http://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
+          url="https://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
         />
         
         <Marker 

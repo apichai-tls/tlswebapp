@@ -96,7 +96,7 @@ export function FullMap({ markers, className = "" }: FullMapProps) {
       >
         <TileLayer
           attribution='&copy; <a href="https://maps.google.com">Google Maps</a>'
-          url="http://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
+          url="https://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
         />
         {allCoords.length > 0 && <FitBounds coords={allCoords} />}
         {markers.map((m) => (
@@ -163,7 +163,7 @@ export function MiniMap({ pickup, dropoff, pickupLabel, dropoffLabel }: MiniMapP
       >
         <TileLayer
           attribution='&copy; <a href="https://maps.google.com">Google Maps</a>'
-          url="http://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
+          url="https://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"
         />
         <FitBounds coords={routePath && routePath.length > 0 ? routePath : [pickup, dropoff]} />
         

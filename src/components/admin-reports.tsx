@@ -506,6 +506,25 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     const promoJobs = filteredJobs.filter(job => {
       if (job.status === "cancel") return false;
       if (!job.remark || !/Promo:/i.test(job.remark)) return false;
+
+      // Ensure the job actually received an applied promo discount or legacy free delivery
+      const match = job.remark.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+      if (!match) return false;
+
+      const code = match[1]?.trim().toUpperCase();
+      const explicitDiscount = match[3] ? parseFloat(match[3]) : 0;
+      const fee = Number(job.fee) || 0;
+
+      // Case A: Explicit discount syntax, e.g. Promo: CODE (DELIVERY:50) -> must have discount > 0
+      if (match[3]) {
+        if (explicitDiscount <= 0) return false;
+      } else {
+        // Case B: Legacy syntax without (TARGET:AMOUNT), e.g. Promo: FREEDELIVERY
+        // Only accept if code is FREEDELIVERY and fee was 0 (free delivery).
+        // Any other plain promo text (e.g. Promo: TEST) where discount was not applied (ยอดไม่ถึง) must be excluded.
+        if (code !== "FREEDELIVERY" || fee > 0) return false;
+      }
+
       return true;
     });
 

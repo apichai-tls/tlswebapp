@@ -67,6 +67,7 @@ export interface Customer {
   defaultCoords: LatLng;
   priceListId?: string;
   creditBalance?: number; // Credit Wallet
+  creditBalanceDelta?: number; // Atomic adjustment
   tier?: CustomerTier; // Legacy
   isMember?: boolean; // Legacy
   memberId?: string | null;

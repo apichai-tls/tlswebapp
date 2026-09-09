@@ -67,11 +67,22 @@ export async function GET(request: Request) {
             where: { id },
             select: { adminNotesJson: true }
           });
-          let notes = [];
+          let notes: any[] = [];
+          let payments: any[] = [];
+          let isStructured = false;
+
           if (job?.adminNotesJson) {
             try {
-              notes = JSON.parse(job.adminNotesJson);
-              if (!Array.isArray(notes)) notes = [];
+              const parsed = JSON.parse(job.adminNotesJson);
+              if (parsed && typeof parsed === 'object') {
+                if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
+                  isStructured = true;
+                  notes = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
+                  payments = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
+                } else if (Array.isArray(parsed)) {
+                  notes = [...parsed];
+                }
+              }
             } catch {
               notes = [];
             }
@@ -86,9 +97,13 @@ export async function GET(request: Request) {
 
           if (!hasRecentAutoDeliveryNote) {
             notes.push(logEntry);
+            const updatedJson = (isStructured || payments.length > 0)
+              ? JSON.stringify({ payments, notes })
+              : JSON.stringify(notes);
+
             await prisma.job.update({
               where: { id },
-              data: { adminNotesJson: JSON.stringify(notes) }
+              data: { adminNotesJson: updatedJson }
             });
           }
         } catch (e) {

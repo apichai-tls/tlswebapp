@@ -1222,11 +1222,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                   const job = filteredJobs.find(j => j.id === jobId);
                   if (!job) return;
 
-                  let notes = [];
+                  let notes: any[] = [];
+                  let payments: any[] = [];
+                  let isStructured = false;
+
                   if (job.adminNotesJson) {
                     try {
-                      notes = JSON.parse(job.adminNotesJson);
-                      if (!Array.isArray(notes)) notes = [];
+                      const parsed = JSON.parse(job.adminNotesJson);
+                      if (parsed && typeof parsed === 'object') {
+                        if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
+                          isStructured = true;
+                          notes = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
+                          payments = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
+                        } else if (Array.isArray(parsed)) {
+                          notes = [...parsed];
+                        }
+                      }
                     } catch (e) {
                       notes = [];
                     }
@@ -1242,10 +1253,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                   };
                   notes.push(newLog);
 
+                  const updatedJson = (isStructured || payments.length > 0)
+                    ? JSON.stringify({ payments, notes })
+                    : JSON.stringify(notes);
+
                   const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
                   await jobStore.updateJobDetails(jobId, { 
                     status: targetStatus as JobStatus, 
-                    adminNotesJson: JSON.stringify(notes) 
+                    adminNotesJson: updatedJson 
                   }, actorDetails);
                   toast.success(`Job updated to ${statusConfig[targetStatus as JobStatus].label}`);
                   setReopenDialog({ isOpen: false, jobId: "", targetStatus: "", reason: "" });
