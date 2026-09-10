@@ -2131,7 +2131,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       const payAmt = loadedJob ? (total - existingPayments.reduce((s, p) => s + p.amount, 0)) : total;
       if (isPaid && payAmt > 0) {
-        const paymentRecord: any = { amount: payAmt, method: paymentMethod, timestamp, shiftId };
+        const paymentRecord: any = { 
+          amount: payAmt, 
+          method: paymentMethod, 
+          timestamp, 
+          shiftId,
+          paidBy: user?.name || user?.email || "POS Counter"
+        };
         if (paymentMethod === "cash") {
           const receivedVal = parseFloat(receivedCash);
           if (!isNaN(receivedVal) && receivedVal >= payAmt) {

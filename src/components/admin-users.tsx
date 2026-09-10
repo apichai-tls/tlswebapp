@@ -83,6 +83,7 @@ const MENU_PERMISSIONS = [
   { id: "map", label: "Live Map" },
   { id: "calculator", label: "Distance Calculator" },
   { id: "reports", label: "Reports & Analytics" },
+  { id: "marketing", label: "Marketing & Analytics" },
   { id: "activity-logs", label: "Activity Logs" },
   { id: "settings", label: "Settings" },
   { id: "users", label: "Manage Users" },

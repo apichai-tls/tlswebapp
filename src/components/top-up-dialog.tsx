@@ -484,6 +484,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         receiptData: rdata,
         actorId: user?.id || null,
         actorName: user?.name || user?.email || "Staff",
+        branchId: user?.branchId || null,
         priceListId: memberPriceListId,
       });
 

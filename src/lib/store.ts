@@ -83,6 +83,7 @@ export interface Customer {
   dob?: string | null;
   taxId?: string | null;
   companyName?: string | null;
+  createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
   memberStartDate?: Date | string | null;
   memberExpiryDate?: Date | string | null;
@@ -137,7 +138,8 @@ export interface Job {
   deliveryScheduledEndAt?: Date;
   pickupRiderId?: string;
   deliveryRiderId?: string;
-  items?: { name: string; quantity: number; price: number }[];
+  items?: { name: string; quantity: number; price: number; nameEn?: string | null; serviceId?: string; unit?: string }[];
+  itemsJson?: string | null;
   walletBalanceAfter?: number | null;
   
   pickupDistance?: number;
@@ -146,6 +148,7 @@ export interface Job {
   deliveryCommission?: number;
 
   legs?: JobLegs;
+  legsJson?: string | null;
   remark?: string;
   adminNotesJson?: string;
   adminNote?: string;

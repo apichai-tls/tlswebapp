@@ -47,6 +47,7 @@ import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
 import { AdminReports } from "@/components/admin-reports";
+import { AdminMarketing } from "@/components/admin-marketing";
 import { AdminTasks } from "@/components/admin-tasks";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
@@ -87,6 +88,7 @@ import {
   CalendarClock,
   Calculator,
   BarChart3,
+  Megaphone,
   ShieldAlert,
   Loader2,
   ChevronLeft,
@@ -227,7 +229,7 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "tasks" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "marketing" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -236,7 +238,7 @@ export default function AdminPage() {
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "reports"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "reports", "marketing"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -260,8 +262,8 @@ export default function AdminPage() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "tasks"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "marketing" | "tasks"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "marketing", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
@@ -347,7 +349,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "marketing" | "tasks") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -2023,7 +2025,8 @@ export default function AdminPage() {
             amount: remainingToPay,
             method: pMethod,
             timestamp: new Date().toISOString(),
-            shiftId: targetShiftId
+            shiftId: targetShiftId,
+            paidBy: user?.name || user?.email || "Admin"
           });
         }
 
@@ -2824,6 +2827,19 @@ export default function AdminPage() {
                 {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
               </motion.a>
             )}
+
+            {hasAccess("marketing") && (
+              <motion.a
+                href="#marketing"
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("marketing"); }}
+                whileHover={{ x: 2 }}
+                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "marketing" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                title="Marketing & Analytics"
+              >
+                <Megaphone size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Marketing & Analytics</span>}
+              </motion.a>
+            )}
             {/* Tasks — available to all logged in users */}
             <motion.a
               href="#tasks"
@@ -3130,6 +3146,23 @@ export default function AdminPage() {
                     >
                       <BarChart3 size={18} />
                       <span>Reports & Analytics</span>
+                    </a>
+                  )}
+
+                  {hasAccess("marketing") && (
+                    <a
+                      href="#marketing"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleTabChange("marketing");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
+                        activeTab === "marketing" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Megaphone size={18} />
+                      <span>Marketing & Analytics</span>
                     </a>
                   )}
                   {/* Tasks — available to all logged in users */}
@@ -5863,6 +5896,7 @@ export default function AdminPage() {
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
           {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
+          {activeTab === "marketing" && hasAccess("marketing") && <AdminMarketing onViewJob={stableHandleEditFullJob} />}
 
           {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
 

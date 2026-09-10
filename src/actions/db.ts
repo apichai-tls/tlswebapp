@@ -1404,6 +1404,7 @@ export async function processTopUpAction(data: {
   receiptData?: any;
   actorId?: string | null;
   actorName?: string | null;
+  branchId?: string | null;
   priceListId?: string | null;
 }) {
   return await prisma.$transaction(async (tx) => {
@@ -1456,6 +1457,7 @@ export async function processTopUpAction(data: {
       balanceBefore: balBefore,
       balanceAfter: balAfter,
       createdBy: data.actorName || "Staff",
+      branchId: data.branchId || null,
       receiptData: rdata,
     });
 
@@ -1490,6 +1492,7 @@ export async function processTopUpAction(data: {
           paymentChannel: data.paymentChannel,
           slipImageUrl: data.slipImageUrl || null,
           packageName: data.packageName,
+          branchId: data.branchId || null,
         }),
         userId: data.actorId || null,
         userName: data.actorName || null,
@@ -1571,25 +1574,84 @@ export async function createTopUpTransactionAction(data: {
 }
 
 
-export async function getTopUpTransactionsAction(customerId?: string) {
-  const where: any = { type: 'TOPUP' };
-  if (customerId) where.memberId = customerId;
-  const list = await prisma.transaction.findMany({
-    where,
-    include: {
-      Customer: {
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          memberId: true,
-          creditBalance: true,
+export async function getTopUpTransactionsAction(
+  filterOrCustomerId?: string | {
+    customerId?: string;
+    startDate?: string;
+    endDate?: string;
+    branchId?: string;
+  }
+) {
+  try {
+    const where: any = { type: 'TOPUP' };
+
+    let customerId: string | undefined;
+    let startDate: string | undefined;
+    let endDate: string | undefined;
+
+    if (typeof filterOrCustomerId === 'string') {
+      customerId = filterOrCustomerId;
+    } else if (filterOrCustomerId && typeof filterOrCustomerId === 'object') {
+      customerId = filterOrCustomerId.customerId;
+      startDate = filterOrCustomerId.startDate;
+      endDate = filterOrCustomerId.endDate;
+    }
+
+    if (customerId) {
+      where.memberId = customerId;
+    }
+
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) where.createdAt.lte = new Date(endDate);
+    }
+
+    const list = await prisma.transaction.findMany({
+      where,
+      include: {
+        Customer: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            memberId: true,
+            creditBalance: true,
+            isMember: true,
+            isVIP: true,
+          }
         }
-      }
-    },
-    orderBy: { createdAt: 'desc' },
-  });
-  return list;
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return list.map(t => {
+      let meta: any = {};
+      try {
+        meta = JSON.parse(t.description || "{}");
+      } catch {}
+
+      return {
+        ...t,
+        amount: Number(t.amount) || 0,
+        createdAt: t.createdAt.toISOString(),
+        customerName: t.Customer?.name || 'Customer',
+        customerPhone: t.Customer?.phone || '',
+        packageName: meta.packageName || 'Top Up',
+        paymentChannel: meta.paymentChannel || 'Transfer',
+        bonusAmount: Number(meta.bonusAmount) || 0,
+        totalCredit: Number(meta.totalCredit) || Number(t.amount) || 0,
+        balanceBefore: meta.balanceBefore != null ? Number(meta.balanceBefore) : null,
+        balanceAfter: meta.balanceAfter != null ? Number(meta.balanceAfter) : null,
+        createdBy: meta.createdBy || 'Staff',
+        branchId: meta.branchId || null,
+        slipImageUrl: meta.slipImageUrl || null,
+      };
+    });
+  } catch (err: any) {
+    console.error("Failed to load top-up transactions:", err?.message || err);
+    return [];
+  }
 }
 
 export async function updateTopUpTransactionSlipAction(data: {
@@ -1693,6 +1755,4 @@ export async function getCustomerTodayTopUpAction(customerId: string) {
     return null;
   }
 }
-
-
 
