@@ -102,7 +102,8 @@ export async function performProdToTestSync(): Promise<SyncSummary> {
       if (commonCols.length === 0) continue;
 
       const quotedCols = commonCols.map((c: string) => `"${c}"`).join(', ');
-      const prodDataRes = await prodClient.query(`SELECT ${quotedCols} FROM public."${table}"`);
+      const querySuffix = table === 'ActivityLog' ? ' ORDER BY "createdAt" DESC LIMIT 3000' : '';
+      const prodDataRes = await prodClient.query(`SELECT ${quotedCols} FROM public."${table}"${querySuffix}`);
       const totalProdRows = prodDataRes.rows.length;
 
       if (totalProdRows === 0) {
@@ -110,7 +111,7 @@ export async function performProdToTestSync(): Promise<SyncSummary> {
         continue;
       }
 
-      const BATCH_SIZE = 250;
+      const BATCH_SIZE = 500;
       const updateCols = commonCols.filter((c: string) => c !== 'id');
       const updateClause = updateCols.length > 0
         ? `DO UPDATE SET ${updateCols.map((c: string) => `"${c}" = EXCLUDED."${c}"`).join(', ')}`
