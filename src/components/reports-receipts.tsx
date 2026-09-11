@@ -477,21 +477,123 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     setPage(1);
   }, [receiptTypeFilter, searchQuery, startDate, endDate, selectedStore, selectedEmployee, selectedTimeRange]);
 
-  // --- CSV Export ---
+  // --- CSV Export (Matching Loyverse Receipts Export Format) ---
   const handleExportCSV = () => {
     let csv = "\uFEFF"; // UTF-8 BOM for Thai characters in Excel
-    csv += "Receipt no.,Bill no.,Date,Store,Employee,Customer,Customer Phone,Type,Total\n";
+    csv += "Date,Month,Receipt number,Bill no.,Receipt type,Gross sales,Discounts,Net sales,Taxes,Total collected,Cost of goods,Gross profit,Payment type,Description,POS,Store,Cashier name,Customer name,Customer contacts,Status\n";
+
     filteredReceipts.forEach(r => {
-      const recNo = `"${r.receiptNo.replace(/"/g, '""')}"`;
-      const billNo = `"${(r.billNo || "").replace(/"/g, '""')}"`;
-      const date = `"${r.dateStr.replace(/"/g, '""')}"`;
-      const store = `"${r.store.replace(/"/g, '""')}"`;
-      const emp = `"${r.employee.replace(/"/g, '""')}"`;
-      const cust = `"${r.customerName.replace(/"/g, '""')}"`;
-      const phone = `"${r.customerPhone.replace(/"/g, '""')}"`;
-      const type = r.type;
-      const total = r.total.toFixed(2);
-      csv += `${recNo},${billNo},${date},${store},${emp},${cust},${phone},${type},${total}\n`;
+      // 1. Date & Month
+      const dateFormatted = format(r.date, "M/d/yy h:mm a");
+      const monthFormatted = format(r.date, "yyyy-MM");
+
+      // 2. Financials and Details
+      let grossSales = 0;
+      let discounts = 0;
+      let netSales = 0;
+      let taxes = 0;
+      let totalCollected = r.total;
+      const costOfGoods = 0;
+      let grossProfit = 0;
+      let paymentType = "Cash";
+      let description = "";
+      let posName = "POS 1";
+      let status = "Closed";
+
+      if (r.rawJob) {
+        const job = r.rawJob;
+        discounts = Number(job.discount) || 0;
+        totalCollected = Number(job.totalAmount) || 0;
+        grossSales = totalCollected + discounts;
+        netSales = totalCollected;
+        // 7% VAT included in price: netSales * 7 / 107
+        taxes = (netSales * 7) / 107;
+        grossProfit = netSales - costOfGoods;
+
+        // Payment Type
+        const channel = job.paymentChannel || job.paymentMethod || "Cash";
+        if (channel.toLowerCase() === "cash") paymentType = "Cash";
+        else if (channel.toLowerCase() === "credit") paymentType = "DEDUCT PACKAGE";
+        else if (channel.toLowerCase() === "card") paymentType = "Credit Card";
+        else paymentType = channel;
+
+        // Description: items + fees
+        const descItems: string[] = [];
+        if (Array.isArray(job.items) && job.items.length > 0) {
+          job.items.forEach((it: any) => {
+            if (it && it.name) {
+              const qty = it.quantity !== undefined ? it.quantity : 1;
+              descItems.push(`${qty} x ${it.name}`);
+            }
+          });
+        }
+        if (job.fee && Number(job.fee) > 0 && !descItems.some(d => d.includes("FEES"))) {
+          descItems.push("1 x DELIVERY FEES");
+        }
+        description = descItems.join(", ") || (job.status === "topup" ? "Top-up Member Credits" : "Laundry Order");
+
+        // POS Name
+        const shop = shops.find(s => s.id === job.branchId);
+        if (shop) {
+          if (shop.name.includes("SR") || shop.id.includes("SR")) posName = "NITA POS 1";
+          else if (shop.name.includes("OF") || shop.id.includes("OF")) posName = "TLSOFS1";
+          else if (shop.name.includes("PTY") || shop.id.includes("PTY")) posName = "TLSPTY";
+          else posName = shop.name;
+        }
+
+        status = job.status === "cancel" ? "Refund" : "Closed";
+      } else if (r.rawTopUp) {
+        const topup = r.rawTopUp;
+        totalCollected = Number(topup.amount) || 0;
+        grossSales = totalCollected;
+        discounts = 0;
+        netSales = totalCollected;
+        taxes = (netSales * 7) / 107;
+        grossProfit = netSales;
+        paymentType = topup.paymentChannel || "Cash";
+        description = `1 x ${topup.packageName || "TOP UP MEMBER"}`;
+        
+        const shop = shops.find(s => s.id === topup.branchId);
+        if (shop) {
+          if (shop.name.includes("SR") || shop.id.includes("SR")) posName = "NITA POS 1";
+          else if (shop.name.includes("OF") || shop.id.includes("OF")) posName = "TLSOFS1";
+          else if (shop.name.includes("PTY") || shop.id.includes("PTY")) posName = "TLSPTY";
+          else posName = shop.name;
+        }
+
+        status = topup.status === "cancelled" ? "Refund" : "Closed";
+      } else {
+        netSales = totalCollected;
+        grossSales = totalCollected;
+        taxes = (netSales * 7) / 107;
+        grossProfit = netSales;
+      }
+
+      // Escape quotes for CSV
+      const escape = (val: string) => `"${(val || "").replace(/"/g, '""')}"`;
+
+      csv += [
+        escape(dateFormatted),
+        escape(monthFormatted),
+        escape(r.receiptNo),
+        escape(r.billNo || ""),
+        escape(r.type),
+        grossSales.toFixed(2),
+        discounts.toFixed(2),
+        netSales.toFixed(2),
+        taxes.toFixed(2),
+        totalCollected.toFixed(2),
+        costOfGoods.toFixed(2),
+        grossProfit.toFixed(2),
+        escape(paymentType),
+        escape(description),
+        escape(posName),
+        escape(r.store),
+        escape(r.employee),
+        escape(r.customerName || ""),
+        escape(r.customerPhone || ""),
+        escape(status)
+      ].join(",") + "\n";
     });
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
