@@ -406,7 +406,7 @@ export function AdminSettings() {
     }
   };
 
-  const handleShopSubmit = (e: React.FormEvent) => {
+  const handleShopSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!shopName.trim() || !shopAddress.trim()) {
       toast.error("Please fill in all fields");
@@ -425,14 +425,19 @@ export function AdminSettings() {
       addressFull: shopAddressFull.trim() || null,
       proformaQrUrl: shopProformaQrUrl.trim() || null,
     };
-    if (editingShop) {
-      shopStore.updateShopLocation(editingShop.id, payload);
-      toast.success("Branch updated");
-    } else {
-      shopStore.addShopLocation(payload);
-      toast.success("Branch added");
+    try {
+      if (editingShop) {
+        await shopStore.updateShopLocation(editingShop.id, payload);
+        toast.success("Branch updated");
+      } else {
+        await shopStore.addShopLocation(payload);
+        toast.success("Branch added");
+      }
+      setIsShopModalOpen(false);
+    } catch (err: any) {
+      console.error("Failed to save branch:", err);
+      toast.error(err?.message || "Failed to save branch");
     }
-    setIsShopModalOpen(false);
   };
 
   return (

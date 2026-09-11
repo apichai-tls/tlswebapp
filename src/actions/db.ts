@@ -689,6 +689,7 @@ export async function addShopLocationAction(data: any) {
       lat: data.coords.lat,
       lng: data.coords.lng,
       noCommission: data.noCommission || false,
+      isPosEnabled: data.isPosEnabled ?? false,
       area: data.area || "BKK",
       logoUrl: data.logoUrl || null,
       phone: data.phone || null,
@@ -709,6 +710,9 @@ export async function updateShopLocationAction(id: string, updates: any) {
   }
   if (typeof updates.noCommission !== 'undefined') {
     data.noCommission = updates.noCommission;
+  }
+  if (typeof updates.isPosEnabled !== 'undefined') {
+    data.isPosEnabled = updates.isPosEnabled;
   }
   if (updates.area !== undefined) data.area = updates.area;
   if (updates.logoUrl !== undefined) data.logoUrl = updates.logoUrl;
