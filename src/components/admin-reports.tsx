@@ -61,7 +61,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Sub-tabs state
-  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sale-report" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos" | "customer">("overview");
+  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sale-report" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos">("overview");
   const [saleReportSubTab, setSaleReportSubTab] = useState<"item" | "category" | "employee" | "payment-type">("item");
 
   // Filters State
@@ -75,26 +75,11 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const [orderPaymentFilter, setOrderPaymentFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
-  // Customer Report states
-  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
-  const [selectedCustomerForReport, setSelectedCustomerForReport] = useState<any | null>(null);
-  const [showOnlyTopup, setShowOnlyTopup] = useState(false);
-  const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
-
   // Shift orders dialog state
   const [selectedShiftForOrders, setSelectedShiftForOrders] = useState<CashierShift | null>(null);
   const [selectedJobForDetails, setSelectedJobForDetails] = useState<any | null>(null);
   const [shiftOrdersSearchQuery, setShiftOrdersSearchQuery] = useState("");
 
-  const filteredCustomersForReport = useMemo(() => {
-    if (!customerSearchQuery.trim()) return [];
-    const query = customerSearchQuery.toLowerCase().trim();
-    return customers.filter(c => 
-      c.name.toLowerCase().includes(query) || 
-      c.phone.includes(query) ||
-      (c.memberId && c.memberId.toLowerCase().includes(query))
-    );
-  }, [customerSearchQuery, customers]);
 
 
 
@@ -197,81 +182,6 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     });
   }, [jobs, selectedBranch, dateRange, customStartDate, customEndDate]);
 
-  const customerJobsForReport = useMemo(() => {
-    if (!selectedCustomerForReport) return [];
-
-    // 1. Get all jobs for this customer from the entire job list (jobs)
-    const rawJobs = jobs.filter(j =>
-      j.customerId === selectedCustomerForReport.id || 
-      j.customerPhone === selectedCustomerForReport.phone
-    );
-
-    // 2. Sort from newest to oldest
-    const sorted = [...rawJobs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-    // 3. Calculate running balance backwards
-    let runningBalance = selectedCustomerForReport.creditBalance || 0;
-    
-    const mapped = sorted.map(job => {
-      // If the job already has walletBalanceAfter in DB, we use it. Otherwise compute it.
-      const hasSnapshot = job.walletBalanceAfter !== undefined && job.walletBalanceAfter !== null;
-      const displayBalance = hasSnapshot ? job.walletBalanceAfter : runningBalance;
-
-      // Adjust runningBalance backwards for the next (older) step
-      const isTopup = job.status === "topup" && job.isPaid;
-      const isCreditPayment = (job.paymentChannel === "credit" || job.paymentMethod === "credit") && job.isPaid;
-
-      if (isTopup) {
-        // This transaction increased the wallet, so going backward, the balance was lower
-        runningBalance -= (job.totalAmount || job.fee || 0);
-      } else if (isCreditPayment) {
-        // This transaction decreased the wallet, so going backward, the balance was higher
-        runningBalance += (job.totalAmount || job.fee || 0);
-      }
-
-      return {
-        ...job,
-        displayWalletBalance: displayBalance,
-        isWalletAffecting: isTopup || isCreditPayment
-      };
-    });
-
-    // 4. Finally, filter by the selected date range, branch, and showOnlyTopup filter
-    const filteredMapped = mapped.filter(job => {
-      if (selectedBranch !== "all" && job.branchId !== selectedBranch) return false;
-      if (!job.createdAt) return false;
-      const jobDate = new Date(job.createdAt);
-      const today = new Date();
-
-      let dateFilterPassed = true;
-      if (dateRange === "today") {
-        dateFilterPassed = jobDate >= startOfDay(today) && jobDate <= endOfDay(today);
-      } else if (dateRange === "7days") {
-        dateFilterPassed = jobDate >= startOfDay(subDays(today, 7));
-      } else if (dateRange === "30days") {
-        dateFilterPassed = jobDate >= startOfDay(subDays(today, 30));
-      } else if (dateRange === "month") {
-        dateFilterPassed = jobDate.getMonth() === today.getMonth() && jobDate.getFullYear() === today.getFullYear();
-      } else if (dateRange === "custom") {
-        if (customStartDate) {
-          const startMs = new Date(customStartDate).setHours(0, 0, 0, 0);
-          if (jobDate.getTime() < startMs) dateFilterPassed = false;
-        }
-        if (customEndDate) {
-          const endMs = new Date(customEndDate).setHours(23, 59, 59, 999);
-          if (jobDate.getTime() > endMs) dateFilterPassed = false;
-        }
-      }
-
-      if (!dateFilterPassed) return false;
-
-      if (showOnlyTopup && job.status !== "topup") return false;
-
-      return true;
-    });
-
-    return filteredMapped;
-  }, [selectedCustomerForReport, jobs, selectedBranch, dateRange, customStartDate, customEndDate, showOnlyTopup]);
 
   // Metric summaries for Overview Panel
   const overviewStats = useMemo(() => {
@@ -562,26 +472,6 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         csvContent += `"${job.id}","${(job.customerName || "").replace(/"/g, '""')}","${dateStr}","${job.status}","${job.paymentChannel || ""}","${job.isPaid ? 'Paid' : 'Unpaid'}",${job.totalAmount || 0}\n`;
       });
 
-    } else if (subTab === "customer") {
-      if (selectedCustomerForReport) {
-        csvContent += `Customer Statement: ${selectedCustomerForReport.name}\n`;
-        csvContent += `Phone: ${selectedCustomerForReport.phone}\n`;
-        csvContent += `Current Credit Balance: ฿${selectedCustomerForReport.creditBalance || 0}\n\n`;
-        csvContent += "Date,Transaction ID,Type,Total Amount,Wallet Balance After,Status\n";
-
-        customerJobsForReport.forEach(job => {
-          const dateStr = job.createdAt ? format(new Date(job.createdAt), "yyyy-MM-dd HH:mm:ss") : "";
-          const isTopup = job.status === "topup";
-          const typeStr = isTopup ? "Wallet Topup" : "Laundry Service";
-          csvContent += `"${dateStr}","${job.id}","${typeStr}",${job.totalAmount || 0},${job.displayWalletBalance || 0},"${job.status}"\n`;
-        });
-      } else {
-        csvContent += "Customer List Export\n\n";
-        csvContent += "Customer ID,Name,Phone,Credit Balance,Is Member,VIP\n";
-        customers.forEach(c => {
-          csvContent += `"${c.id}","${c.name.replace(/"/g, '""')}","${c.phone}",${c.creditBalance || 0},"${c.isMember ? 'Yes' : 'No'}","${c.isVIP ? 'Yes' : 'No'}"\n`;
-        });
-      }
     }
 
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -697,8 +587,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
               {subTab === "overview" ? "Print Overview" :
                subTab === "shift" ? "Print Shift Report" :
                subTab === "order" ? "Print Order Report" :
-               subTab === "pos" ? "Print POS Report" :
-               subTab === "customer" ? "Print Customer Report" : "Print Report"}
+               subTab === "pos" ? "Print POS Report" : "Print Report"}
             </button>
           </div>
         )}
@@ -800,18 +689,6 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         >
           <Store size={14} />
           POS Report
-        </button>
-
-        <button
-          onClick={() => setSubTab("customer")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "customer"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <Users size={14} />
-          Customer Report
         </button>
       </div>
 
@@ -1475,357 +1352,6 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         </div>
       )}
 
-      {subTab === "customer" && (
-        <div className="space-y-6 animate-in fade-in duration-200">
-          {/* Customer Search Section */}
-          <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
-            <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide mb-3">
-              Search Customer Report
-            </h3>
-            <div className="relative max-w-md">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-450">
-                <Search size={16} />
-              </div>
-              <input
-                type="text"
-                placeholder="Search by Name, Phone, or Member ID..."
-                className="w-full pl-9 pr-4 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
-                value={customerSearchQuery}
-                onChange={(e) => setCustomerSearchQuery(e.target.value)}
-              />
-              {/* Dropdown Results */}
-              {filteredCustomersForReport.length > 0 && (
-                <div className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl max-h-60 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-                  {filteredCustomersForReport.map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => {
-                        setSelectedCustomerForReport(c);
-                        setCustomerSearchQuery("");
-                      }}
-                      className="w-full text-left px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-850 flex items-center justify-between text-xs font-bold transition-colors cursor-pointer"
-                    >
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-slate-800 dark:text-slate-100">{c.name}</span>
-                        <span className="text-[10px] text-slate-450 font-medium">{c.phone}</span>
-                      </div>
-                      {c.isMember && c.memberId && (
-                        <span className="bg-indigo-50 text-indigo-700 text-[8px] font-bold px-1.5 py-0.5 rounded border border-indigo-200/50">
-                          MEMBER: {c.memberId}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Customer Usage Report Details */}
-          {selectedCustomerForReport ? (
-            <div className="space-y-6">
-              {/* Customer Profile & Statistics Card */}
-              <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-6 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-                <div className="space-y-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold text-sm border border-indigo-100">
-                      {selectedCustomerForReport.name.substring(0, 2).toUpperCase()}
-                    </div>
-                    <div>
-                      <h4 className="text-base font-black text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-                        {selectedCustomerForReport.name}
-                        {selectedCustomerForReport.isMember && (
-                          <span className="bg-indigo-50 text-indigo-700 text-[9px] font-black px-1.5 py-0.5 rounded border border-indigo-200/50 flex items-center gap-0.5">
-                            MEMBER
-                          </span>
-                        )}
-                      </h4>
-                      <p className="text-xs font-bold text-slate-500">{selectedCustomerForReport.phone}</p>
-                    </div>
-                  </div>
-
-                  {selectedCustomerForReport.isMember && selectedCustomerForReport.memberExpiryDate && (
-                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold bg-slate-50 dark:bg-slate-900 border border-slate-200/40 px-2.5 py-1 rounded-lg w-fit">
-                      <History size={12} className="text-slate-400" />
-                      <span>
-                        Membership: {format(new Date(selectedCustomerForReport.memberStartDate || selectedCustomerForReport.createdAt), "dd MMM yyyy")}
-                        {" - "}
-                        {format(new Date(selectedCustomerForReport.memberExpiryDate), "dd MMM yyyy")}
-                      </span>
-                      {new Date(selectedCustomerForReport.memberExpiryDate).getTime() < Date.now() ? (
-                        <span className="text-rose-600 font-black ml-1 uppercase">(Expired)</span>
-                      ) : (
-                        <span className="text-emerald-600 font-black ml-1 uppercase">(Active)</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-8 text-center shrink-0">
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-450 uppercase tracking-widest">Total Spend (LTV)</p>
-                    <p className="text-lg font-black text-slate-900 dark:text-slate-100">
-                      ฿{jobs.filter(j => j.customerId === selectedCustomerForReport.id || j.customerPhone === selectedCustomerForReport.phone)
-                        .filter(j => j.isPaid || j.status === "completed")
-                        .reduce((sum, j) => sum + (j.totalAmount || j.fee || 0), 0)
-                        .toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="w-px bg-slate-200 dark:bg-slate-800 h-8" />
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-450 uppercase tracking-widest">Wallet Balance</p>
-                    <p className="text-lg font-black text-emerald-600">
-                      ฿{(selectedCustomerForReport.creditBalance || 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setSelectedCustomerForReport(null)}
-                    className="ml-4 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[10px] font-black uppercase text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-900 cursor-pointer"
-                  >
-                    Clear Search
-                  </button>
-                </div>
-              </div>
-
-              {/* Customer Job History List */}
-              <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">
-                    Job & Top-up History
-                  </h3>
-                  
-                  {/* Filter Top-up Only Toggle */}
-                  <button
-                    onClick={() => setShowOnlyTopup(prev => !prev)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase transition-all cursor-pointer ${
-                      showOnlyTopup
-                        ? "bg-indigo-50 text-indigo-700 border-indigo-200/60"
-                        : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"
-                    }`}
-                  >
-                    <Percent size={12} />
-                    Filter Topup Member Only
-                  </button>
-                </div>
-
-                {customerJobsForReport.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs text-left">
-                      <thead>
-                        <tr className="border-b border-slate-150 dark:border-slate-800 text-[10px] font-black text-slate-400 uppercase tracking-wider">
-                          <th className="pb-2">Job ID</th>
-                          <th className="pb-2">Date</th>
-                          <th className="pb-2">Type / Items</th>
-                          <th className="pb-2 text-right">Amount</th>
-                          <th className="pb-2 text-center">Payment Channel</th>
-                          <th className="pb-2 text-right">Wallet Balance</th>
-                          <th className="pb-2 text-center">Status</th>
-                          <th className="pb-2 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-850 text-slate-700 dark:text-slate-200 font-semibold">
-                        {customerJobsForReport.map((job: any) => (
-                          <tr key={job.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/30">
-                            <td className="py-3 font-mono text-[10px] text-slate-400">{job.id}</td>
-                            <td className="py-3 text-[11px] font-medium">
-                              {format(new Date(job.createdAt), "dd MMM yyyy HH:mm")}
-                            </td>
-                            <td className="py-3">
-                              <span className="font-bold text-slate-800 dark:text-slate-100">
-                                {job.status === "topup" ? (
-                                  <span className="text-indigo-600 font-extrabold uppercase flex items-center gap-0.5"><Crown size={12} /> TOPUP MEMBER</span>
-                                ) : (
-                                  (job.items || []).map((it: any) => `${it.name} (x${it.quantity})`).join(", ") || "Laundry Order"
-                                )}
-                              </span>
-                            </td>
-                            <td className="py-3 text-right font-black text-slate-900 dark:text-slate-50">
-                              ฿{(job.totalAmount || job.fee || 0).toFixed(0)}
-                            </td>
-                            <td className="py-3 text-center font-bold text-slate-400 text-[10px] uppercase">
-                               {(() => {
-                                 const ch = job.paymentChannel || job.paymentMethod || "-";
-                                 if (ch.toLowerCase() === "credit") return "Deduct Member";
-                                 if (ch.toLowerCase() === "card") return "Credit Card";
-                                 return ch;
-                               })()}
-                             </td>
-                            <td className="py-3 text-right font-black text-slate-900 dark:text-slate-50">
-                              {job.isWalletAffecting ? `฿${(job.displayWalletBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "-"}
-                            </td>
-                            <td className="py-3 text-center">
-                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
-                                job.status === "completed" ? "bg-emerald-100 text-emerald-800" : (job.status === "topup" ? "bg-indigo-100 text-indigo-750" : "bg-indigo-50 text-indigo-600")
-                              }`}>
-                                {job.status}
-                              </span>
-                            </td>
-                            <td className="py-3 text-right">
-                              <button
-                                onClick={() => {
-                                  if (onViewJob) onViewJob(job);
-                                  else setSelectedJobForView(job);
-                                }}
-                                className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-350 text-[10px] font-black uppercase flex items-center gap-1 ml-auto cursor-pointer"
-                              >
-                                <Eye size={12} />
-                                View Details
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="text-center py-12 text-slate-450 font-bold bg-slate-50/50 dark:bg-slate-900/10 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800">
-                    No orders or top-up history found.
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="text-center py-16 text-slate-450 font-bold bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow-sm space-y-2">
-              <Users size={32} className="mx-auto text-indigo-400/80 mb-2" />
-              <p className="text-sm">Please search and select a customer to view their report.</p>
-              <p className="text-[10px] text-slate-400 font-medium">Type name, phone number, or Member No in the search bar above.</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* View-Only Job Detail Modal */}
-      {selectedJobForView && (
-        <Dialog open={!!selectedJobForView} onOpenChange={() => setSelectedJobForView(null)}>
-          <DialogContent className="max-w-lg p-6 bg-white overflow-y-auto max-h-[90vh] z-[9999] rounded-2xl shadow-2xl border-none">
-            <DialogHeader className="mb-4 pb-3 border-b border-slate-100 flex flex-row items-center justify-between">
-              <DialogTitle className="text-base font-black text-slate-900 tracking-tight flex items-center gap-1.5">
-                <ClipboardList size={18} className="text-indigo-500" />
-                Job Details: {selectedJobForView.id}
-              </DialogTitle>
-            </DialogHeader>
-
-            <div className="space-y-4 text-xs font-semibold text-slate-700">
-              {/* Customer details banner */}
-              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/60 space-y-1">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Customer Details</p>
-                <div className="flex justify-between font-bold text-slate-800">
-                  <span>Name: {selectedJobForView.customerName}</span>
-                  <span>Phone: {selectedJobForView.customerPhone}</span>
-                </div>
-                {selectedJobForView.createdAt && (
-                  <p className="text-[10px] text-slate-400 font-medium">Recorded Date: {format(new Date(selectedJobForView.createdAt), "dd MMM yyyy HH:mm")}</p>
-                )}
-              </div>
-
-              {/* Status details */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/50 space-y-0.5">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Job Status</span>
-                  <div className="text-slate-800 font-extrabold capitalize">{selectedJobForView.status}</div>
-                </div>
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/50 space-y-0.5">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Payment Status</span>
-                  <div className="flex items-center gap-1 text-slate-800 font-extrabold uppercase">
-                    {selectedJobForView.isPaid ? (
-                      <span className="text-emerald-600 font-bold">PAID ({selectedJobForView.paymentChannel || selectedJobForView.paymentMethod || "CASH"})</span>
-                    ) : (
-                      <span className="text-amber-500 font-bold">UNPAID</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Items details table */}
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Order Details</p>
-                <div className="border border-slate-200/80 rounded-xl overflow-hidden divide-y divide-slate-100 bg-slate-50/20">
-                  {(selectedJobForView.items || []).length > 0 ? (
-                    (selectedJobForView.items || []).map((it: any, index: number) => (
-                      <div key={index} className="flex justify-between items-center p-3 text-xs font-bold text-slate-800">
-                        <div className="flex flex-col gap-0.5">
-                          <span>{it.name}</span>
-                          <span className="text-[10px] text-slate-450 font-medium">Qty: {it.quantity} × ฿{it.price}</span>
-                        </div>
-                        <span className="font-extrabold text-slate-900">฿{(it.price * it.quantity).toFixed(0)}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="p-4 text-center font-bold text-slate-400">
-                      {selectedJobForView.status === "topup" ? "Top-up Member Credits" : "No items listed"}
-                    </div>
-                  )}
-                  <div className="flex justify-between items-center p-3 bg-slate-50/80 text-xs font-black text-slate-900">
-                    <span>GRAND TOTAL</span>
-                    <span className="text-indigo-650 text-sm">฿{(selectedJobForView.totalAmount || selectedJobForView.fee || 0).toFixed(0)}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Uploaded Receipt Preview */}
-              {selectedJobForView.billImageUrl && (
-                <div className="space-y-1.5">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Uploaded Receipts (Bill/Transfer)</p>
-                  <div className="grid grid-cols-1 gap-2 pt-1">
-                    {(() => {
-                      try {
-                        const urls = JSON.parse(selectedJobForView.billImageUrl);
-                        const urlList = Array.isArray(urls) ? urls : [urls];
-                        return urlList.map((url: string, index: number) => (
-                          <div key={index} className="relative group border border-slate-205 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
-                            <img
-                              src={url}
-                              alt={`Receipt ${index + 1}`}
-                              className="max-h-50 object-contain rounded-lg"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => printImageUrl(url)}
-                              className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
-                              title="พิมพ์รูปภาพนี้"
-                            >
-                              <Printer size={14} />
-                              <span>พิมพ์</span>
-                            </button>
-                          </div>
-                        ));
-                      } catch {
-                        return (
-                          <div className="relative group border border-slate-205 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
-                            <img
-                              src={selectedJobForView.billImageUrl}
-                              alt="Receipt"
-                              className="max-h-50 object-contain rounded-lg"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => printImageUrl(selectedJobForView.billImageUrl)}
-                              className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
-                              title="พิมพ์รูปภาพนี้"
-                            >
-                              <Printer size={14} />
-                              <span>พิมพ์</span>
-                            </button>
-                          </div>
-                        );
-                      }
-                    })()}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <DialogFooter className="mt-6 pt-3 border-t border-slate-100">
-              <Button
-                onClick={() => setSelectedJobForView(null)}
-                className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black uppercase text-xs tracking-wider rounded-xl h-9 cursor-pointer border-none"
-              >
-                Close View
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
 
       {/* SHIFT ORDERS & READ-ONLY JOB DETAILS DIALOG */}
       <Dialog 

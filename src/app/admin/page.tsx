@@ -5963,6 +5963,7 @@ export default function AdminPage() {
                 setTopUpCustomer(customer || null);
                 setShowTopUpDialog(true);
               }} 
+              onViewJob={stableHandleEditFullJob}
             />
           )}
         {activeTab === "calculator" && <FeeCalculatorPage />}

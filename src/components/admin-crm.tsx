@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X } from "lucide-react";
-import { format } from "date-fns";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft } from "lucide-react";
+import { format, subDays, startOfDay, endOfDay } from "date-fns";
+import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
 import { customerStore, priceListStore, poiStore, shopStore, type Customer } from "@/lib/store";
@@ -148,7 +149,13 @@ const getLastActiveText = (date?: Date) => {
   }
 };
 
-export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void } = {}) {
+export function AdminCRM({ 
+  onTopUp, 
+  onViewJob 
+}: { 
+  onTopUp?: (customer?: Customer) => void;
+  onViewJob?: (job: any) => void;
+} = {}) {
   const { user } = useAuth();
   const customers = useCustomers();
   const jobs = useJobs();
@@ -163,9 +170,19 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
   const canTopUp = user?.role !== 'rider';
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+
+  // Customer Report States
+  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
+  const [selectedCustomerForReport, setSelectedCustomerForReport] = useState<Customer | null>(null);
+  const [showOnlyTopup, setShowOnlyTopup] = useState(false);
+  const [reportDateRange, setReportDateRange] = useState<"today" | "7days" | "30days" | "month" | "custom">("30days");
+  const [reportCustomStartDate, setReportCustomStartDate] = useState("");
+  const [reportCustomEndDate, setReportCustomEndDate] = useState("");
+  const [reportBranchFilter, setReportBranchFilter] = useState<string>("all");
+  const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
 
   // Top-Up History State
   const [allTopUpTxs, setAllTopUpTxs] = useState<any[]>([]);
@@ -570,6 +587,118 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
     return filteredTopUpTxs.slice(startIndex, startIndex + pageSize);
   }, [filteredTopUpTxs, currentPage, pageSize]);
 
+  // Customer Report Autocomplete Search
+  const filteredCustomersForReport = useMemo(() => {
+    if (!customerSearchQuery.trim()) return [];
+    const query = customerSearchQuery.toLowerCase().trim();
+    return customers.filter(c => 
+      c.name.toLowerCase().includes(query) || 
+      c.phone.includes(query) ||
+      (c.memberId && c.memberId.toLowerCase().includes(query))
+    );
+  }, [customerSearchQuery, customers]);
+
+  // Customer Report Jobs & Running Balance
+  const customerJobsForReport = useMemo(() => {
+    if (!selectedCustomerForReport) return [];
+
+    // 1. Get all jobs for this customer from the entire job list (jobs)
+    const rawJobs = jobs.filter(j =>
+      j.customerId === selectedCustomerForReport.id || 
+      j.customerPhone === selectedCustomerForReport.phone
+    );
+
+    // 2. Sort from newest to oldest
+    const sorted = [...rawJobs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    // 3. Calculate running balance backwards
+    let runningBalance = selectedCustomerForReport.creditBalance || 0;
+    
+    const mapped = sorted.map(job => {
+      // If the job already has walletBalanceAfter in DB, we use it. Otherwise compute it.
+      const hasSnapshot = job.walletBalanceAfter !== undefined && job.walletBalanceAfter !== null;
+      const displayBalance = hasSnapshot ? job.walletBalanceAfter : runningBalance;
+
+      // Adjust runningBalance backwards for the next (older) step
+      const isTopup = job.status === "topup" && job.isPaid;
+      const isCreditPayment = (job.paymentChannel === "credit" || job.paymentMethod === "credit") && job.isPaid;
+
+      if (isTopup) {
+        // This transaction increased the wallet, so going backward, the balance was lower
+        runningBalance -= (job.totalAmount || job.fee || 0);
+      } else if (isCreditPayment) {
+        // This transaction decreased the wallet, so going backward, the balance was higher
+        runningBalance += (job.totalAmount || job.fee || 0);
+      }
+
+      return {
+        ...job,
+        displayWalletBalance: displayBalance,
+        isWalletAffecting: isTopup || isCreditPayment
+      };
+    });
+
+    // 4. Finally, filter by the selected date range, branch, and showOnlyTopup filter
+    const filteredMapped = mapped.filter(job => {
+      if (reportBranchFilter !== "all" && job.branchId !== reportBranchFilter) return false;
+      if (!job.createdAt) return false;
+      const jobDate = new Date(job.createdAt);
+      const today = new Date();
+
+      let dateFilterPassed = true;
+      if (reportDateRange === "today") {
+        dateFilterPassed = jobDate >= startOfDay(today) && jobDate <= endOfDay(today);
+      } else if (reportDateRange === "7days") {
+        dateFilterPassed = jobDate >= startOfDay(subDays(today, 7));
+      } else if (reportDateRange === "30days") {
+        dateFilterPassed = jobDate >= startOfDay(subDays(today, 30));
+      } else if (reportDateRange === "month") {
+        dateFilterPassed = jobDate.getMonth() === today.getMonth() && jobDate.getFullYear() === today.getFullYear();
+      } else if (reportDateRange === "custom") {
+        if (reportCustomStartDate) {
+          const startMs = new Date(reportCustomStartDate).setHours(0, 0, 0, 0);
+          if (jobDate.getTime() < startMs) dateFilterPassed = false;
+        }
+        if (reportCustomEndDate) {
+          const endMs = new Date(reportCustomEndDate).setHours(23, 59, 59, 999);
+          if (jobDate.getTime() > endMs) dateFilterPassed = false;
+        }
+      }
+
+      if (!dateFilterPassed) return false;
+
+      if (showOnlyTopup && job.status !== "topup") return false;
+
+      return true;
+    });
+
+    return filteredMapped;
+  }, [selectedCustomerForReport, jobs, reportBranchFilter, reportDateRange, reportCustomStartDate, reportCustomEndDate, showOnlyTopup]);
+
+  const handleExportCustomerStatement = () => {
+    if (!selectedCustomerForReport) return;
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+    csvContent += `Customer Statement: ${selectedCustomerForReport.name}\n`;
+    csvContent += `Phone: ${selectedCustomerForReport.phone}\n`;
+    csvContent += `Current Credit Balance: ฿${selectedCustomerForReport.creditBalance || 0}\n\n`;
+    csvContent += "Date,Transaction ID,Type,Total Amount,Wallet Balance After,Status\n";
+
+    customerJobsForReport.forEach(job => {
+      const dateStr = job.createdAt ? format(new Date(job.createdAt), "yyyy-MM-dd HH:mm:ss") : "";
+      const isTopup = job.status === "topup";
+      const typeStr = isTopup ? "Wallet Topup" : "Laundry Service";
+      csvContent += `"${dateStr}","${job.id}","${typeStr}",${job.totalAmount || 0},${job.displayWalletBalance || 0},"${job.status}"\n`;
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `customer_statement_${selectedCustomerForReport.name.replace(/\s+/g, '_')}_${format(new Date(), "yyyyMMdd")}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const totalItems = activeTab === "topup_history" ? filteredTopUpTxs.length : sortedCustomers.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 
@@ -772,18 +901,31 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
               <Receipt size={14} className={activeTab === "topup_history" ? "text-white" : "text-emerald-600"} />
               Top-up History ({allTopUpTxs.length})
             </button>
+            <button
+              onClick={() => setActiveTab("customer_report")}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                activeTab === "customer_report"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <FileText size={14} className={activeTab === "customer_report" ? "text-white" : "text-indigo-600"} />
+              Customer Report
+            </button>
           </div>
 
-          {/* Search bar inside the bar */}
-          <div className="relative w-full lg:w-80">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-            <Input 
-              placeholder="Search name, phone, LINE, email, ID..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 h-10 border-slate-200 bg-slate-50 focus-visible:ring-indigo-500 rounded-xl text-xs font-medium"
-            />
-          </div>
+          {/* Search bar inside the bar (shown when not on customer report) */}
+          {activeTab !== "customer_report" && (
+            <div className="relative w-full lg:w-80">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <Input 
+                placeholder="Search name, phone, LINE, email, ID..." 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 h-10 border-slate-200 bg-slate-50 focus-visible:ring-indigo-500 rounded-xl text-xs font-medium"
+              />
+            </div>
+          )}
 
         </div>
       </div>
@@ -795,7 +937,349 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
         transition={{ delay: 0.2 }}
         className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
       >
-        {activeTab === "topup_history" ? (
+        {activeTab === "customer_report" ? (
+          <div className="p-5 sm:p-6 space-y-6">
+            {/* Header & Controls Bar */}
+            <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-slate-50/70 p-4 rounded-xl border border-slate-200/80">
+              {/* Customer Search Autocomplete */}
+              <div className="relative flex-1 max-w-md">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                  <Search size={16} />
+                </div>
+                <Input
+                  type="text"
+                  placeholder="ค้นหาลูกค้าด้วยชื่อ, เบอร์โทร, หรือ Member ID..."
+                  className="pl-9 pr-4 py-2 text-xs font-semibold rounded-xl border-slate-200 bg-white shadow-sm"
+                  value={customerSearchQuery}
+                  onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                />
+                {/* Dropdown Results */}
+                {filteredCustomersForReport.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto divide-y divide-slate-100">
+                    {filteredCustomersForReport.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomerForReport(c);
+                          setCustomerSearchQuery("");
+                        }}
+                        className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-center justify-between text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-slate-800">{c.name}</span>
+                          <span className="text-[10px] text-slate-400 font-medium">{c.phone}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-bold text-emerald-600">฿{(c.creditBalance || 0).toLocaleString()}</span>
+                          {c.isMember && c.memberId && (
+                            <span className="bg-indigo-50 text-indigo-700 text-[8px] font-bold px-1.5 py-0.5 rounded border border-indigo-200/50">
+                              MEMBER: {c.memberId}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Filters & Export Action */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Branch Filter */}
+                <select
+                  value={reportBranchFilter}
+                  onChange={(e) => setReportBranchFilter(e.target.value)}
+                  className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
+                >
+                  <option value="all">All Branches</option>
+                  {shops.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+
+                {/* Date Range Filter */}
+                <select
+                  value={reportDateRange}
+                  onChange={(e) => setReportDateRange(e.target.value as any)}
+                  className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
+                >
+                  <option value="today">Today</option>
+                  <option value="7days">Last 7 Days</option>
+                  <option value="30days">Last 30 Days</option>
+                  <option value="month">This Month</option>
+                  <option value="custom">Custom Range</option>
+                </select>
+
+                {reportDateRange === "custom" && (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      value={reportCustomStartDate}
+                      onChange={(e) => setReportCustomStartDate(e.target.value)}
+                      className="h-9 px-2.5 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm"
+                    />
+                    <span className="text-slate-400 text-xs">-</span>
+                    <input
+                      type="date"
+                      value={reportCustomEndDate}
+                      onChange={(e) => setReportCustomEndDate(e.target.value)}
+                      className="h-9 px-2.5 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm"
+                    />
+                  </div>
+                )}
+
+                {/* Filter Top-up Only Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setShowOnlyTopup(prev => !prev)}
+                  className={`flex items-center gap-1.5 h-9 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    showOnlyTopup
+                      ? "bg-indigo-50 text-indigo-700 border-indigo-200 shadow-sm"
+                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <Percent size={13} />
+                  <span>Topup Member Only</span>
+                </button>
+
+                {/* Export Statement Button */}
+                <Button
+                  type="button"
+                  onClick={handleExportCustomerStatement}
+                  disabled={!selectedCustomerForReport}
+                  className="h-9 px-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Download size={14} />
+                  <span>Export Statement (CSV)</span>
+                </Button>
+              </div>
+            </div>
+
+            {/* Selected Customer Profile Card & History */}
+            {selectedCustomerForReport ? (
+              <div className="space-y-6">
+                {/* Profile Card */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-sm border ${getAvatarStyles(selectedCustomerForReport)}`}>
+                        {getInitials(selectedCustomerForReport.name)}
+                      </div>
+                      <div>
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          {selectedCustomerForReport.name}
+                          {selectedCustomerForReport.isVIP && (
+                            <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] font-bold">
+                              VIP
+                            </Badge>
+                          )}
+                          {selectedCustomerForReport.isMember && (
+                            <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200 text-[10px] font-bold flex items-center gap-1">
+                              <Crown size={11} />
+                              MEMBER {selectedCustomerForReport.memberId ? `#${selectedCustomerForReport.memberId}` : ""}
+                            </Badge>
+                          )}
+                          {selectedCustomerForReport.isCorporate && (
+                            <Badge className="bg-slate-100 text-slate-700 border-slate-300 text-[10px] font-bold flex items-center gap-1">
+                              <Building size={11} />
+                              CORP
+                            </Badge>
+                          )}
+                        </h4>
+                        <p className="text-xs font-bold text-slate-500 flex items-center gap-1 mt-0.5">
+                          <Phone size={12} className="text-slate-400" />
+                          {selectedCustomerForReport.phone}
+                        </p>
+                      </div>
+                    </div>
+
+                    {selectedCustomerForReport.isMember && selectedCustomerForReport.memberExpiryDate && (
+                      <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-bold bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg w-fit">
+                        <History size={12} className="text-slate-400" />
+                        <span>
+                          Membership: {format(new Date(selectedCustomerForReport.memberStartDate || selectedCustomerForReport.createdAt || Date.now()), "dd MMM yyyy")}
+                          {" - "}
+                          {format(new Date(selectedCustomerForReport.memberExpiryDate!), "dd MMM yyyy")}
+                        </span>
+                        {new Date(selectedCustomerForReport.memberExpiryDate!).getTime() < Date.now() ? (
+                          <span className="text-rose-600 font-black ml-1 uppercase">(Expired)</span>
+                        ) : (
+                          <span className="text-emerald-600 font-black ml-1 uppercase">(Active)</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-8 text-center shrink-0">
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Spend (LTV)</p>
+                      <p className="text-lg font-black text-slate-900">
+                        ฿{jobs.filter(j => j.customerId === selectedCustomerForReport.id || j.customerPhone === selectedCustomerForReport.phone)
+                          .filter(j => j.isPaid || j.status === "completed")
+                          .reduce((sum, j) => sum + (j.totalAmount || j.fee || 0), 0)
+                          .toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="w-px bg-slate-200 h-8" />
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Wallet Balance</p>
+                      <p className="text-lg font-black text-emerald-600">
+                        ฿{(selectedCustomerForReport.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCustomerForReport(null)}
+                      className="ml-2 px-3 py-1.5 rounded-xl border border-slate-200 text-[10px] font-black uppercase text-slate-500 hover:bg-slate-50 cursor-pointer"
+                    >
+                      Clear Customer
+                    </button>
+                  </div>
+                </div>
+
+                {/* Job & Top-up History Table */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                  <div className="flex justify-between items-center">
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide flex items-center gap-2">
+                      <ClipboardList size={16} className="text-indigo-600" />
+                      Job & Top-up History ({customerJobsForReport.length} transactions)
+                    </h3>
+                  </div>
+
+                  {customerJobsForReport.length > 0 ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                            <th className="pb-3 pl-2">Job ID</th>
+                            <th className="pb-3">Date</th>
+                            <th className="pb-3">Type / Items</th>
+                            <th className="pb-3 text-right">Amount</th>
+                            <th className="pb-3 text-center">Payment Channel</th>
+                            <th className="pb-3 text-right">Wallet Balance</th>
+                            <th className="pb-3 text-center">Status</th>
+                            <th className="pb-3 text-right pr-2">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-slate-700 font-semibold">
+                          {customerJobsForReport.map((job: any) => (
+                            <tr key={job.id} className="hover:bg-slate-50/70 transition-colors">
+                              <td className="py-3 pl-2 font-mono text-[11px] text-slate-500 font-bold">{job.id}</td>
+                              <td className="py-3 text-[11px] font-medium text-slate-600">
+                                {format(new Date(job.createdAt), "dd MMM yyyy HH:mm")}
+                              </td>
+                              <td className="py-3">
+                                <span className="font-bold text-slate-800">
+                                  {job.status === "topup" ? (
+                                    <span className="text-indigo-600 font-extrabold uppercase flex items-center gap-1">
+                                      <Crown size={12} /> TOPUP MEMBER
+                                    </span>
+                                  ) : (
+                                    (job.items || []).map((it: any) => `${it.name} (x${it.quantity})`).join(", ") || "Laundry Order"
+                                  )}
+                                </span>
+                              </td>
+                              <td className="py-3 text-right font-black text-slate-900">
+                                ฿{(job.totalAmount || job.fee || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                              </td>
+                              <td className="py-3 text-center font-bold text-slate-500 text-[10px] uppercase">
+                                {(() => {
+                                  const ch = job.paymentChannel || job.paymentMethod || "-";
+                                  if (ch.toLowerCase() === "credit") return "Deduct Member";
+                                  if (ch.toLowerCase() === "card") return "Credit Card";
+                                  return ch;
+                                })()}
+                              </td>
+                              <td className="py-3 text-right font-black text-slate-900">
+                                {job.isWalletAffecting ? `฿${(job.displayWalletBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` : "-"}
+                              </td>
+                              <td className="py-3 text-center">
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                  job.status === "completed" ? "bg-emerald-100 text-emerald-800" : (job.status === "topup" ? "bg-indigo-100 text-indigo-800" : "bg-indigo-50 text-indigo-600")
+                                }`}>
+                                  {job.status}
+                                </span>
+                              </td>
+                              <td className="py-3 text-right pr-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (onViewJob) onViewJob(job);
+                                    else setSelectedJobForView(job);
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-black uppercase flex items-center gap-1 ml-auto cursor-pointer transition-colors"
+                                >
+                                  <Eye size={12} />
+                                  View Details
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 text-slate-400 font-bold bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                      No orders or top-up history found for the selected date range.
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="text-center py-12 text-slate-500 bg-slate-50/50 border border-slate-200 rounded-2xl shadow-sm space-y-2">
+                  <Users size={36} className="mx-auto text-indigo-500 mb-2" />
+                  <p className="text-sm font-bold text-slate-800">ค้นหาและเลือกลูกค้าเพื่อดูรายงานสรุป (Customer Statement Report)</p>
+                  <p className="text-xs text-slate-400 font-medium">พิมพ์ชื่อ, เบอร์โทรศัพท์, หรือ Member ID ในช่องค้นหาด้านบน หรือเลือกลูกค้าจากรายการด้านล่าง</p>
+                </div>
+
+                {/* Quick Selection Customer List */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-400 mb-3 px-2">
+                    รายชื่อลูกค้าล่าสุด / ยอดนิยม (Quick Select Customer)
+                  </h4>
+                  <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+                    {customers.slice(0, 15).map(c => (
+                      <div key={c.id} className="flex items-center justify-between py-2.5 px-3 hover:bg-slate-50 rounded-xl transition-colors">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-9 h-9 rounded-lg flex items-center justify-center font-bold text-xs border ${getAvatarStyles(c)}`}>
+                            {getInitials(c.name)}
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                              {c.name}
+                              {c.isMember && (
+                                <span className="bg-indigo-50 text-indigo-700 text-[8px] font-bold px-1 py-0.2 rounded border border-indigo-200/50">
+                                  MEMBER
+                                </span>
+                              )}
+                            </p>
+                            <p className="text-[11px] text-slate-400">{c.phone}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <p className="text-[10px] text-slate-400 font-semibold">Balance</p>
+                            <p className="text-xs font-extrabold text-emerald-600">฿{(c.creditBalance || 0).toLocaleString()}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs font-bold border-indigo-200 text-indigo-700 hover:bg-indigo-50 rounded-lg cursor-pointer"
+                            onClick={() => setSelectedCustomerForReport(c)}
+                          >
+                            Select
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : activeTab === "topup_history" ? (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -1214,6 +1698,20 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
                                 </Button>
                               )}
 
+                              {/* Customer Report / Statement button */}
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                className="h-8 w-8 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors rounded-lg"
+                                title="Customer Report / Statement"
+                                onClick={() => {
+                                  setSelectedCustomerForReport(customer);
+                                  setActiveTab("customer_report");
+                                }}
+                              >
+                                <FileText size={15} />
+                              </Button>
+
                               {/* View detail button */}
                               <Button 
                                 variant="ghost" 
@@ -1262,7 +1760,7 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
         )}
 
         {/* Pagination Controls */}
-        {totalItems > 0 && (
+        {activeTab !== "customer_report" && totalItems > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>
@@ -1712,6 +2210,139 @@ export function AdminCRM({ onTopUp }: { onTopUp?: (customer?: Customer) => void 
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* View-Only Job Detail Modal */}
+      {selectedJobForView && (
+        <Dialog open={!!selectedJobForView} onOpenChange={() => setSelectedJobForView(null)}>
+          <DialogContent className="max-w-lg p-6 bg-white overflow-y-auto max-h-[90vh] z-[9999] rounded-2xl shadow-2xl border-none">
+            <DialogHeader className="mb-4 pb-3 border-b border-slate-100 flex flex-row items-center justify-between">
+              <DialogTitle className="text-base font-black text-slate-900 tracking-tight flex items-center gap-1.5">
+                <ClipboardList size={18} className="text-indigo-500" />
+                Job Details: {selectedJobForView.id}
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 text-xs font-semibold text-slate-700">
+              {/* Customer details banner */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/60 space-y-1">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Customer Details</p>
+                <div className="flex justify-between font-bold text-slate-800">
+                  <span>Name: {selectedJobForView.customerName}</span>
+                  <span>Phone: {selectedJobForView.customerPhone}</span>
+                </div>
+                {selectedJobForView.createdAt && (
+                  <p className="text-[10px] text-slate-400 font-medium">Recorded Date: {format(new Date(selectedJobForView.createdAt), "dd MMM yyyy HH:mm")}</p>
+                )}
+              </div>
+
+              {/* Status details */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/50 space-y-0.5">
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Job Status</span>
+                  <div className="text-slate-800 font-extrabold capitalize">{selectedJobForView.status}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/50 space-y-0.5">
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Payment Status</span>
+                  <div className="flex items-center gap-1 text-slate-800 font-extrabold uppercase">
+                    {selectedJobForView.isPaid ? (
+                      <span className="text-emerald-600 font-bold">PAID ({selectedJobForView.paymentChannel || selectedJobForView.paymentMethod || "CASH"})</span>
+                    ) : (
+                      <span className="text-amber-500 font-bold">UNPAID</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Items details table */}
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Order Details</p>
+                <div className="border border-slate-200/80 rounded-xl overflow-hidden divide-y divide-slate-100 bg-slate-50/20">
+                  {(selectedJobForView.items || []).length > 0 ? (
+                    (selectedJobForView.items || []).map((it: any, index: number) => (
+                      <div key={index} className="flex justify-between items-center p-3 text-xs font-bold text-slate-800">
+                        <div className="flex flex-col gap-0.5">
+                          <span>{it.name}</span>
+                          <span className="text-[10px] text-slate-400 font-medium">Qty: {it.quantity} × ฿{it.price}</span>
+                        </div>
+                        <span className="font-extrabold text-slate-900">฿{(it.price * it.quantity).toFixed(0)}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="p-4 text-center font-bold text-slate-400">
+                      {selectedJobForView.status === "topup" ? "Top-up Member Credits" : "No items listed"}
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center p-3 bg-slate-50/80 text-xs font-black text-slate-900">
+                    <span>GRAND TOTAL</span>
+                    <span className="text-indigo-600 text-sm">฿{(selectedJobForView.totalAmount || selectedJobForView.fee || 0).toFixed(0)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Uploaded Receipt Preview */}
+              {selectedJobForView.billImageUrl && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Uploaded Receipts (Bill/Transfer)</p>
+                  <div className="grid grid-cols-1 gap-2 pt-1">
+                    {(() => {
+                      try {
+                        const urls = JSON.parse(selectedJobForView.billImageUrl);
+                        const urlList = Array.isArray(urls) ? urls : [urls];
+                        return urlList.map((url: string, index: number) => (
+                          <div key={index} className="relative group border border-slate-200 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
+                            <img
+                              src={url}
+                              alt={`Receipt ${index + 1}`}
+                              className="max-h-50 object-contain rounded-lg"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => printImageUrl(url)}
+                              className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
+                              title="พิมพ์รูปภาพนี้"
+                            >
+                              <Printer size={14} />
+                              <span>พิมพ์</span>
+                            </button>
+                          </div>
+                        ));
+                      } catch {
+                        return (
+                          <div className="relative group border border-slate-200 rounded-xl overflow-hidden shadow-sm bg-slate-50 max-h-56 flex items-center justify-center p-1">
+                            <img
+                              src={selectedJobForView.billImageUrl}
+                              alt="Receipt"
+                              className="max-h-50 object-contain rounded-lg"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => printImageUrl(selectedJobForView.billImageUrl)}
+                              className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
+                              title="พิมพ์รูปภาพนี้"
+                            >
+                              <Printer size={14} />
+                              <span>พิมพ์</span>
+                            </button>
+                          </div>
+                        );
+                      }
+                    })()}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter className="mt-6 pt-3 border-t border-slate-100">
+              <Button
+                onClick={() => setSelectedJobForView(null)}
+                className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black uppercase text-xs tracking-wider rounded-xl h-9 cursor-pointer border-none"
+              >
+                Close View
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
