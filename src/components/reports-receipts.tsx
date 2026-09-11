@@ -64,6 +64,7 @@ type ReceiptTypeFilter = "all" | "sales" | "refunds";
 export interface ReceiptItem {
   id: string;
   receiptNo: string;
+  billNo?: string;
   date: Date;
   dateStr: string;
   store: string;
@@ -290,9 +291,8 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     return true;
   };
 
-  // Format Receipt Number nicely matching Loyverse (prioritizing billNo if filled)
+  // Format Receipt Number nicely matching Loyverse (e.g. 1-36849 or TU-2608-00001)
   const formatReceiptNumber = (job: Job): string => {
-    if (job.billNo && job.billNo.trim()) return job.billNo.trim();
     if ((job as any).receiptNumber) return (job as any).receiptNumber;
     if ((job as any).proformaNumber) return (job as any).proformaNumber;
     if ((job as any).proformaReceiptNumber) return (job as any).proformaReceiptNumber;
@@ -347,11 +347,13 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       const store = getStoreName(job.branchId);
       const customerName = (job.customerName && job.customerName !== "ลูกค้าทั่วไป") ? job.customerName.trim() : "";
       const customerPhone = job.customerPhone || "";
+      const billNo = job.billNo && job.billNo.trim() ? job.billNo.trim() : "";
       const total = Number(job.totalAmount) || 0;
 
       list.push({
         id: job.id,
         receiptNo,
+        billNo,
         date: jDate,
         dateStr: format(jDate, "MMM dd, yyyy hh:mm a"),
         store,
@@ -395,6 +397,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       list.push({
         id: topup.id,
         receiptNo: topup.id || `TU-${topup.memberId}`,
+        billNo: "",
         date: tDate,
         dateStr: format(tDate, "MMM dd, yyyy hh:mm a"),
         store,
@@ -442,7 +445,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       // Text search query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
-        const matchesNo = r.receiptNo.toLowerCase().includes(q) || r.id.toLowerCase().includes(q);
+        const matchesNo = r.receiptNo.toLowerCase().includes(q) || r.id.toLowerCase().includes(q) || (r.billNo ? r.billNo.toLowerCase().includes(q) : false);
         const matchesStore = r.store.toLowerCase().includes(q);
         const matchesEmp = r.employee.toLowerCase().includes(q);
         const matchesCust = r.customerName.toLowerCase().includes(q) || r.customerPhone.includes(q);
@@ -477,9 +480,10 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   // --- CSV Export ---
   const handleExportCSV = () => {
     let csv = "\uFEFF"; // UTF-8 BOM for Thai characters in Excel
-    csv += "Receipt no.,Date,Store,Employee,Customer,Customer Phone,Type,Total\n";
+    csv += "Receipt no.,Bill no.,Date,Store,Employee,Customer,Customer Phone,Type,Total\n";
     filteredReceipts.forEach(r => {
       const recNo = `"${r.receiptNo.replace(/"/g, '""')}"`;
+      const billNo = `"${(r.billNo || "").replace(/"/g, '""')}"`;
       const date = `"${r.dateStr.replace(/"/g, '""')}"`;
       const store = `"${r.store.replace(/"/g, '""')}"`;
       const emp = `"${r.employee.replace(/"/g, '""')}"`;
@@ -487,7 +491,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       const phone = `"${r.customerPhone.replace(/"/g, '""')}"`;
       const type = r.type;
       const total = r.total.toFixed(2);
-      csv += `${recNo},${date},${store},${emp},${cust},${phone},${type},${total}\n`;
+      csv += `${recNo},${billNo},${date},${store},${emp},${cust},${phone},${type},${total}\n`;
     });
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -757,6 +761,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
             <thead>
               <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                 <th className="py-3 px-4 text-left">Receipt no.</th>
+                <th className="py-3 px-4 text-left">Bill no.</th>
                 <th className="py-3 px-4 text-left">Date</th>
                 <th className="py-3 px-4 text-left">Store</th>
                 <th className="py-3 px-4 text-left">Employee</th>
@@ -777,6 +782,11 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
                     {/* Receipt no. */}
                     <td className="py-3.5 px-4 font-semibold text-slate-850 dark:text-slate-100 text-left">
                       {receipt.receiptNo}
+                    </td>
+
+                    {/* Bill no. */}
+                    <td className="py-3.5 px-4 font-mono text-slate-600 dark:text-slate-300 text-left">
+                      {receipt.billNo || "—"}
                     </td>
 
                     {/* Date */}
@@ -928,6 +938,12 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
                   <span className="text-slate-400">Date & Time:</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceiptForModal.dateStr}</span>
                 </div>
+                {selectedReceiptForModal.billNo && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Bill No:</span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceiptForModal.billNo}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-slate-400">Store:</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceiptForModal.store}</span>
