@@ -480,7 +480,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   // --- CSV Export (Matching Loyverse Receipts Export Format) ---
   const handleExportCSV = () => {
     let csv = "\uFEFF"; // UTF-8 BOM for Thai characters in Excel
-    csv += "Date,Month,Receipt number,Bill no.,Receipt type,Gross sales,Discounts,Net sales,Taxes,Total collected,Cost of goods,Gross profit,Payment type,Description,POS,Store,Cashier name,Customer name,Customer contacts,Status\n";
+    csv += "Date,Receipt number,Bill no.,Receipt type,Gross sales,Discounts,Net sales,Taxes,Total collected,Cost of goods,Gross profit,Payment type,Description,POS,Store,Cashier name,Customer name,Customer contacts,Status,Month\n";
 
     filteredReceipts.forEach(r => {
       // 1. Date & Month
@@ -574,7 +574,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
 
       csv += [
         escape(dateFormatted),
-        escape(monthFormatted),
         escape(r.receiptNo),
         escape(r.billNo || ""),
         escape(r.type),
@@ -592,7 +591,8 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         escape(r.employee),
         escape(r.customerName || ""),
         escape(r.customerPhone || ""),
-        escape(status)
+        escape(status),
+        escape(monthFormatted)
       ].join(",") + "\n";
     });
 
