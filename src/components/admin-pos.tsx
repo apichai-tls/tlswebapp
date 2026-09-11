@@ -948,8 +948,6 @@ const getCategoryStyles = (category: string) => {
 };
 
 export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPreselected }: AdminPOSProps = {}) {
-  const CASHIER_SHIFT_ENABLED = false; // Set to true to re-enable cashier shift system
-
   const { user } = useAuth();
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const allShops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -965,6 +963,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const activeShop = useMemo(() => {
     return shops.find(s => s.id === activeBranchId) || shops[0];
   }, [shops, activeBranchId]);
+
+  // Dynamically enable cashier shift system based on branch setting (isPosEnabled)
+  const CASHIER_SHIFT_ENABLED = Boolean(activeShop?.isPosEnabled);
 
 
 
@@ -2353,7 +2354,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
   };
 
-  if (!hasLoadedShift) {
+  if (CASHIER_SHIFT_ENABLED && !hasLoadedShift) {
     return (
       <div className="flex flex-col items-center justify-center h-[calc(100vh-4rem)] w-full bg-background font-sans gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -2460,7 +2461,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {shops.map(shop => {
-              const activeShopShift = CASHIER_SHIFT_ENABLED ? allOpenShifts.find(s => s.branchId === shop.id) : null;
+              const activeShopShift = shop.isPosEnabled ? allOpenShifts.find(s => s.branchId === shop.id) : null;
               return (
                 <motion.button
                   key={shop.id}
@@ -2927,7 +2928,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
         <div className="flex items-center gap-4 shrink-0 min-w-0">
           {/* Active Shift Header Badge & Close Shift button */}
-          {activeShift && (
+          {CASHIER_SHIFT_ENABLED && activeShift && (
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-muted border border-border shadow-sm shrink-0">
               <div className="flex h-6.5 w-6.5 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-500 shrink-0">
                 <Banknote size={14} />
