@@ -17,8 +17,9 @@ import { useRiders } from "@/lib/use-riders";
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
-import { jobStore, shopStore, customerStore, type Job, type JobStatus } from "@/lib/store";
+import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
 import { isJobFullyPaid, findMatchingCustomer } from "@/lib/utils";
+import { getPaymentChannels } from "@/lib/payment-channels";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -88,6 +89,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   savingJobIds?: Set<string>,
 }) {
   const riders = useRiders();
+  const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
   const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
@@ -216,15 +218,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     }
   }, [user]);
 
-  const availablePaymentChannels = [
-    "Cash / COD",
-    "Transfer",
-    "Credit Card",
-    "Gateway",
-    "PromptPay",
-    "Deduct Member",
-    "HQ/Credit"
-  ];
+  const availablePaymentChannels = useMemo(() => {
+    const configured = getPaymentChannels(systemSettings).map((c) => c.name);
+    const fromJobs = jobs
+      .map((j) => j.paymentChannel?.trim())
+      .filter((pc): pc is string => Boolean(pc));
+    return Array.from(new Set([...configured, ...fromJobs]));
+  }, [systemSettings, jobs]);
 
   // Filter Logic
   const filteredJobs = jobs.filter((job) => {

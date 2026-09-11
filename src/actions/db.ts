@@ -278,20 +278,28 @@ export async function addJobAction(data: any) {
   
   if (!jobId || String(jobId).startsWith('JOB-')) {
     const year = new Date().getFullYear().toString(); // 4-digit year, auto-changes each year
+    const isTestDb = Boolean(
+      process.env.DATABASE_URL?.includes('/tls_test') || 
+      process.env.DIRECT_URL?.includes('/tls_test') ||
+      process.env.APP_ENV === 'test'
+    );
+    const prefix = isTestDb ? `T${year}` : year;
+
     const latestJob = await prisma.job.findFirst({
-      where: { id: { startsWith: year } },
+      where: { id: { startsWith: prefix } },
       orderBy: { id: 'desc' }
     });
     
-    if (latestJob && latestJob.id.length >= 10) {
-      const lastNum = parseInt(latestJob.id.substring(4), 10);
+    if (latestJob) {
+      const numericPart = latestJob.id.replace(/^T/, '').substring(4);
+      const lastNum = parseInt(numericPart, 10);
       if (!isNaN(lastNum)) {
-        jobId = `${year}${(lastNum + 1).toString().padStart(6, '0')}`;
+        jobId = `${prefix}${(lastNum + 1).toString().padStart(6, '0')}`;
       } else {
-        jobId = `${year}000001`;
+        jobId = `${prefix}000001`;
       }
     } else {
-      jobId = `${year}000001`;
+      jobId = `${prefix}000001`;
     }
   }
 

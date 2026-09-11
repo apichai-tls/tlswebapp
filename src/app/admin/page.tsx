@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer } from "@/lib/utils";
+import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
 import { Input } from "@/components/ui/input";
@@ -55,6 +56,7 @@ import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
 import { addJobLogAction } from "@/actions/db";
+import { createTaxInvoiceTaskForJobAction } from "@/actions/tasks";
 import { useRiders } from "@/lib/use-riders";
 import {
   Plus,
@@ -978,6 +980,10 @@ export default function AdminPage() {
     return Math.max(0, baseTotal + vat);
   }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate, promoDiscountAmount]);
 
+
+  const activePaymentChannels = useMemo(() => {
+    return getActivePaymentChannels(systemSettings, !!selectedProfileCustomer?.isMember);
+  }, [systemSettings, selectedProfileCustomer?.isMember]);
 
   const isCustomerWalletExpired = isWalletExpired(selectedProfileCustomer);
   const isWalletInsufficient = paymentChannel === "Deduct Member" && !isPaidJob && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
@@ -2032,16 +2038,7 @@ export default function AdminPage() {
         const finalPayments = [...existingPayments];
 
         if (isPaidNow && remainingToPay > 0) {
-          const mapChannelToMethod = (ch?: string) => {
-            if (!ch) return "cash";
-            if (ch === "Cash / COD") return "cash";
-            if (ch === "Transfer" || ch === "PromptPay") return "transfer";
-            if (ch === "Credit Card" || ch === "Gateway") return "card";
-            if (ch === "Deduct Member" || ch === "HQ/Credit") return "credit";
-            return "cash";
-          };
-
-          const pMethod = mapChannelToMethod(paymentChannel);
+          const pMethod = mapChannelNameToMethod(paymentChannel, getPaymentChannels(systemSettings));
           finalPayments.push({
             amount: remainingToPay,
             method: pMethod,
@@ -2533,6 +2530,27 @@ export default function AdminPage() {
           setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
           toast.success(`Member wallet topped up. New balance: ฿${confirmedBal.toLocaleString()}`);
         }
+      }
+
+      // Auto-create Tax Invoice Task for Accounting Team if requested
+      if (isTaxInvoiceRequested && savedJobId) {
+        createTaxInvoiceTaskForJobAction({
+          jobId: savedJobId,
+          customerName: customerName || selectedProfileCustomer?.name,
+          customerPhone: customerPhone || selectedProfileCustomer?.phone,
+          isCorporate: selectedProfileCustomer?.isCorporate,
+          totalAmount: calculatedTotal,
+          paymentChannel: paymentChannel || undefined,
+          branchName: shop?.name,
+          createdById: user?.id,
+          createdByName: user?.name || user?.email || "CSO/Admin",
+        }).then((res) => {
+          if (res.success && !res.alreadyExisted) {
+            toast.info("📋 ส่งเรื่องออกใบกำกับภาษีไปยังฝ่ายบัญชีแล้ว");
+          }
+        }).catch((err) => {
+          console.error("Failed to auto-create tax invoice task:", err);
+        });
       }
     } catch (err: any) {
       console.error("Job Save Error:", err);
@@ -4944,15 +4962,15 @@ export default function AdminPage() {
                                   onChange={(e) => setPaymentChannel(e.target.value)}
                                 >
                                   <option value="">Select Channel</option>
-                                  <option value="Cash / COD">Cash / COD</option>
-                                  <option value="Transfer">Transfer</option>
-                                  <option value="Credit Card">Credit Card</option>
-                                  <option value="Gateway">Gateway</option>
-                                  <option value="PromptPay">PromptPay</option>
-                                  {selectedProfileCustomer?.isMember && (
-                                    <option value="Deduct Member">Deduct Member</option>
+                                  {paymentChannel && !activePaymentChannels.some(c => c.name === paymentChannel) && (
+                                    <option value={paymentChannel}>{paymentChannel}</option>
                                   )}
-                                  <option value="HQ/Credit">HQ/Credit</option>
+                                  {activePaymentChannels.map((c) => (
+                                    <option key={c.id} value={c.name}>
+                                      {c.name}
+                                    </option>
+                                  ))}
+
                                 </select>
                                 {selectedProfileCustomer?.isMember && (
                                   <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
@@ -5595,13 +5613,14 @@ export default function AdminPage() {
                                   onChange={(e) => setPaymentChannel(e.target.value)}
                                 >
                                   <option value="">Select Channel</option>
-                                  <option value="Cash / COD">Cash / COD</option>
-                                  <option value="Transfer">Transfer</option>
-                                  <option value="Credit Card">Credit Card</option>
-                                  <option value="Gateway">Gateway</option>
-                                  <option value="PromptPay">PromptPay</option>
-                                  <option value="Deduct Member">Deduct Member</option>
-                                  <option value="HQ/Credit">HQ/Credit</option>
+                                  {paymentChannel && !activePaymentChannels.some(c => c.name === paymentChannel) && (
+                                    <option value={paymentChannel}>{paymentChannel}</option>
+                                  )}
+                                  {activePaymentChannels.map((c) => (
+                                    <option key={c.id} value={c.name}>
+                                      {c.name}
+                                    </option>
+                                  ))}
                                 </select>
                               </div>
 

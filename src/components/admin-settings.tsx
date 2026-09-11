@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
+import { 
+  type PaymentChannelItem, 
+  type PaymentChannelType, 
+  getPaymentChannels, 
+  PAYMENT_TYPE_LABELS, 
+  DEFAULT_PAYMENT_CHANNELS 
+} from "@/lib/payment-channels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,6 +63,107 @@ export function AdminSettings() {
       toast.success("VAT setting updated successfully");
     } catch (err) {
       toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  // Payment Channels State
+  const paymentChannels = getPaymentChannels(systemSettings);
+  const [isChannelModalOpen, setIsChannelModalOpen] = useState(false);
+  const [editingChannel, setEditingChannel] = useState<PaymentChannelItem | null>(null);
+  const [channelName, setChannelName] = useState("");
+  const [channelType, setChannelType] = useState<PaymentChannelType>("transfer");
+  const [channelEnabled, setChannelEnabled] = useState(true);
+  const [channelRequiresMember, setChannelRequiresMember] = useState(false);
+  const [deletingChannel, setDeletingChannel] = useState<PaymentChannelItem | null>(null);
+
+  const handleSavePaymentChannels = async (newChannels: PaymentChannelItem[]) => {
+    try {
+      await settingsStore.updateSetting("paymentChannels", JSON.stringify(newChannels));
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success("บันทึกช่องทางการชำระเงินเรียบร้อยแล้ว");
+    } catch (err) {
+      toast.error("บันทึกล้มเหลว: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  const handleOpenAddChannel = () => {
+    setEditingChannel(null);
+    setChannelName("");
+    setChannelType("transfer");
+    setChannelEnabled(true);
+    setChannelRequiresMember(false);
+    setIsChannelModalOpen(true);
+  };
+
+  const handleOpenEditChannel = (ch: PaymentChannelItem) => {
+    setEditingChannel(ch);
+    setChannelName(ch.name);
+    setChannelType(ch.type);
+    setChannelEnabled(ch.enabled);
+    setChannelRequiresMember(!!ch.requiresMember);
+    setIsChannelModalOpen(true);
+  };
+
+  const handleToggleChannel = async (id: string) => {
+    const updated = paymentChannels.map((c) =>
+      c.id === id ? { ...c, enabled: !c.enabled } : c
+    );
+    await handleSavePaymentChannels(updated);
+  };
+
+  const handleSubmitChannel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!channelName.trim()) {
+      toast.error("กรุณาระบุชื่อช่องทางการชำระเงิน");
+      return;
+    }
+
+    let updated: PaymentChannelItem[];
+    if (editingChannel) {
+      updated = paymentChannels.map((c) =>
+        c.id === editingChannel.id
+          ? {
+              ...c,
+              name: channelName.trim(),
+              type: channelType,
+              enabled: channelEnabled,
+              requiresMember: channelRequiresMember,
+            }
+          : c
+      );
+    } else {
+      if (paymentChannels.some((c) => c.name.toLowerCase() === channelName.trim().toLowerCase())) {
+        toast.error("มีชื่อช่องทางการชำระเงินนี้อยู่แล้ว");
+        return;
+      }
+      const newId = "channel_" + Date.now();
+      const newChannel: PaymentChannelItem = {
+        id: newId,
+        name: channelName.trim(),
+        type: channelType,
+        enabled: channelEnabled,
+        requiresMember: channelRequiresMember,
+        isSystem: false,
+      };
+      updated = [...paymentChannels, newChannel];
+    }
+
+    await handleSavePaymentChannels(updated);
+    setIsChannelModalOpen(false);
+  };
+
+  const handleConfirmDeleteChannel = async () => {
+    if (!deletingChannel) return;
+    const updated = paymentChannels.filter((c) => c.id !== deletingChannel.id);
+    await handleSavePaymentChannels(updated);
+    setDeletingChannel(null);
+    toast.success(`ลบช่องทาง "${deletingChannel.name}" เรียบร้อยแล้ว`);
+  };
+
+  const handleResetDefaultChannels = async () => {
+    if (confirm("ต้องการรีเซ็ตช่องทางการชำระเงินกลับเป็นค่าเริ่มต้น 7 ช่องทางใช่หรือไม่?")) {
+      await handleSavePaymentChannels(DEFAULT_PAYMENT_CHANNELS);
     }
   };
   
@@ -622,6 +730,124 @@ export function AdminSettings() {
         </div>
       </div>
 
+      {/* Payment Channels Settings */}
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
+              <CreditCard size={24} />
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-slate-800">Payment Channels (ช่องทางการชำระเงิน)</h3>
+              <p className="text-xs text-slate-500 font-medium">
+                จัดการช่องทางการชำระเงินของระบบ (เพิ่ม, ลบ, แก้ไขชื่อ, เปิด/ปิดการใช้งาน เพื่อแสดงใน Job Modal และ POS)
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleResetDefaultChannels}
+              className="text-xs text-slate-500 hover:text-slate-700"
+            >
+              Reset to Defaults
+            </Button>
+            <Button
+              type="button"
+              onClick={handleOpenAddChannel}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs h-9 px-4 rounded-xl shadow-sm flex items-center gap-1.5"
+            >
+              <Plus size={16} />
+              เพิ่มช่องทางใหม่
+            </Button>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm text-slate-600">
+              <thead className="bg-slate-50 text-slate-700 font-bold text-xs uppercase tracking-wider border-b border-slate-200">
+                <tr>
+                  <th className="py-3.5 px-6">ชื่อช่องทาง (Channel Name)</th>
+                  <th className="py-3.5 px-6">ประเภท (Type)</th>
+                  <th className="py-3.5 px-6 text-center">สถานะ (Status)</th>
+                  <th className="py-3.5 px-6 text-right">จัดการ (Actions)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {paymentChannels.map((channel) => {
+                  const typeInfo = PAYMENT_TYPE_LABELS[channel.type] || PAYMENT_TYPE_LABELS.other;
+                  return (
+                    <tr key={channel.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-4 px-6 font-bold text-slate-900">
+                        <div className="flex items-center gap-2">
+                          <span>{channel.name}</span>
+                          {channel.requiresMember && (
+                            <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200">
+                              เฉพาะสมาชิก (Member Only)
+                            </Badge>
+                          )}
+                          {channel.isSystem && (
+                            <span className="text-[10px] text-slate-400 font-normal">
+                              (ระบบ)
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-4 px-6">
+                        <span className={`inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full border ${typeInfo.color}`}>
+                          {typeInfo.label}
+                        </span>
+                      </td>
+                      <td className="py-4 px-6 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleChannel(channel.id)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer ${
+                            channel.enabled
+                              ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                              : "bg-slate-100 text-slate-400 hover:bg-slate-200"
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${channel.enabled ? "bg-emerald-500" : "bg-slate-400"}`} />
+                          {channel.enabled ? "เปิดใช้งาน" : "ปิดใช้งาน"}
+                        </button>
+                      </td>
+                      <td className="py-4 px-6 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenEditChannel(channel)}
+                            className="h-8 w-8 p-0 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50"
+                            title="แก้ไข"
+                          >
+                            <Edit3 size={15} />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setDeletingChannel(channel)}
+                            className="h-8 w-8 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50"
+                            title="ลบ"
+                          >
+                            <Trash2 size={15} />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       {/* Temporarily hidden: change false to true to show again */}
       {false && (
         <div className="space-y-4 pt-8 border-t border-slate-100">
@@ -1034,6 +1260,137 @@ export function AdminSettings() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add / Edit Payment Channel Modal */}
+      <Dialog open={isChannelModalOpen} onOpenChange={setIsChannelModalOpen}>
+        <DialogContent className="sm:max-w-[480px] p-0 overflow-hidden bg-white rounded-2xl">
+          <DialogHeader className="p-6 pb-4 border-b border-slate-100 bg-slate-50/50">
+            <DialogTitle className="text-xl font-bold text-slate-900 flex items-center gap-2">
+              <CreditCard className="text-indigo-600" size={22} />
+              {editingChannel ? "แก้ไขช่องทางการชำระเงิน" : "เพิ่มช่องทางการชำระเงินใหม่"}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-500">
+              กำหนดชื่อและประเภทช่องทางชำระเงินสำหรับแสดงในระบบ
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleSubmitChannel}>
+            <div className="p-6 space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="channelNameInput" className="text-xs font-bold text-slate-700">
+                  ชื่อช่องทาง (Channel Name) <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="channelNameInput"
+                  value={channelName}
+                  onChange={(e) => setChannelName(e.target.value)}
+                  placeholder="เช่น TrueMoney Wallet, Alipay, บัตรเครดิต"
+                  className="h-10 text-sm font-semibold border-slate-200 focus:border-indigo-500"
+                  required
+                  autoFocus
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="channelTypeInput" className="text-xs font-bold text-slate-700">
+                  ประเภทการชำระเงิน (Payment Type)
+                </Label>
+                <select
+                  id="channelTypeInput"
+                  value={channelType}
+                  onChange={(e) => setChannelType(e.target.value as PaymentChannelType)}
+                  className="w-full h-10 px-3 text-sm font-medium border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-800"
+                >
+                  <option value="cash">เงินสด (Cash)</option>
+                  <option value="transfer">โอนเงิน / QR Code (Transfer)</option>
+                  <option value="card">บัตรเครดิต / เดบิต / Gateway (Card)</option>
+                  <option value="wallet">วอลเล็ทสมาชิก (Wallet)</option>
+                  <option value="credit">เครดิต / ค้างชำระ (Credit)</option>
+                  <option value="other">อื่นๆ (Other)</option>
+                </select>
+              </div>
+
+              <div className="pt-2 space-y-3 border-t border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    id="channelEnabledInput"
+                    checked={channelEnabled}
+                    onChange={(e) => setChannelEnabled(e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <Label htmlFor="channelEnabledInput" className="text-xs font-semibold text-slate-800 cursor-pointer">
+                    เปิดใช้งานช่องทางนี้ในระบบ (Active)
+                  </Label>
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    id="channelRequiresMemberInput"
+                    checked={channelRequiresMember}
+                    onChange={(e) => setChannelRequiresMember(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded border-slate-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <Label htmlFor="channelRequiresMemberInput" className="text-xs font-semibold text-slate-800 cursor-pointer">
+                    เฉพาะลูกค้าที่เป็นสมาชิกเท่านั้น (Member Only / หัก Wallet)
+                  </Label>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter className="p-4 px-6 border-t border-slate-100 bg-slate-50/50 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsChannelModalOpen(false)}
+                className="h-9 px-4 font-semibold text-xs text-slate-600"
+              >
+                ยกเลิก
+              </Button>
+              <Button
+                type="submit"
+                className="h-9 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm"
+              >
+                {editingChannel ? "บันทึกการแก้ไข" : "เพิ่มช่องทาง"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Payment Channel Confirmation Modal */}
+      <Dialog open={!!deletingChannel} onOpenChange={(open) => !open && setDeletingChannel(null)}>
+        <DialogContent className="sm:max-w-[400px] p-6 bg-white rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold text-slate-900 flex items-center gap-2">
+              <Trash2 className="text-red-600" size={20} />
+              ยืนยันการลบช่องทางการชำระเงิน
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-500 mt-2">
+              คุณแน่ใจหรือไม่ว่าต้องการลบช่องทาง <span className="font-bold text-slate-800">"{deletingChannel?.name}"</span> ออกจากระบบ?
+              บิลเก่าที่เคยใช้ช่องทางนี้จะยังคงเก็บประวัติไว้ตามเดิม
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-6 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeletingChannel(null)}
+              className="h-9 px-4 text-xs font-semibold"
+            >
+              ยกเลิก
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirmDeleteChannel}
+              className="h-9 px-5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm"
+            >
+              ยืนยันลบ
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

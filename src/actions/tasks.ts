@@ -1097,3 +1097,109 @@ export async function deleteChecklistItem(
   }
 }
 
+export async function createTaxInvoiceTaskForJobAction(params: {
+  jobId: string;
+  customerName?: string;
+  customerPhone?: string;
+  isCorporate?: boolean;
+  totalAmount?: number;
+  paymentChannel?: string;
+  branchName?: string;
+  createdById?: string;
+  createdByName?: string;
+}): Promise<{
+  success: boolean;
+  data?: TaskItem;
+  alreadyExisted?: boolean;
+  error?: string;
+}> {
+  try {
+    const { jobId, customerName, customerPhone, isCorporate, totalAmount, paymentChannel, branchName, createdById, createdByName } = params;
+    if (!jobId) return { success: false, error: "Missing jobId" };
+
+    // 1. Check for duplicate task for this job
+    const existing = await prisma.task.findFirst({
+      where: {
+        jobId,
+        title: { startsWith: "ออกใบกำกับภาษี" },
+        status: { not: "done" },
+        isArchived: false,
+      },
+    });
+
+    if (existing) {
+      return { success: true, data: existing as TaskItem, alreadyExisted: true };
+    }
+
+    // 2. Query all active accounting staff members
+    const accountingUsers = await prisma.adminUser.findMany({
+      where: {
+        role: "accounting",
+        isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+      },
+    });
+
+    const assignedToId = accountingUsers.length > 0 
+      ? accountingUsers.map((u) => u.id).join(",") 
+      : null;
+    const assignedToName = accountingUsers.length > 0 
+      ? accountingUsers.map((u) => u.name || u.email).join(", ") 
+      : null;
+
+    // 3. Format Due Date: 3 business days from now
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + 3);
+
+    // 4. Job Short ID
+    const shortId = jobId.split("-")[0].toUpperCase();
+    const custDisplay = customerName || "ลูกค้าไม่ระบุชื่อ";
+
+    const title = `ออกใบกำกับภาษี: Job #${shortId} - ${custDisplay}`;
+
+    // 5. Checklist items
+    const checklist: TaskChecklistItem[] = [
+      { id: "chk_1", text: "ตรวจสอบข้อมูลผู้เสียภาษี / เอกสารบริษัท", completed: false },
+      { id: "chk_2", text: "ตรวจสอบยอดชำระเงินและช่องทางการชำระเงิน", completed: false },
+      { id: "chk_3", text: "ออกเอกสารใบกำกับภาษีในระบบบัญชี", completed: false },
+      { id: "chk_4", text: "จัดส่งใบกำกับภาษีให้ลูกค้า / ประสานงานจัดส่ง", completed: false },
+    ];
+
+    // 6. Description
+    const descLines = [
+      `📋 **คำขอออกใบกำกับภาษี**`,
+      `• **Job ID:** #${shortId} (${jobId})`,
+      `• **ลูกค้า:** ${custDisplay}${customerPhone ? ` (${customerPhone})` : ""}`,
+      isCorporate ? `• **ประเภทลูกค้า:** นิติบุคคล / Corporate B2B 🏢` : null,
+      totalAmount !== undefined ? `• **ยอดเงินรวม:** ฿${Number(totalAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : null,
+      paymentChannel ? `• **ช่องทางชำระเงิน:** ${paymentChannel}` : null,
+      branchName ? `• **สาขา:** ${branchName}` : null,
+      `• **ขอเรื่องโดย:** ${createdByName || "ระบบอัตโนมัติ (CSO/Admin)"}`,
+      `• **วันที่ขอ:** ${format(new Date(), "dd/MM/yyyy HH:mm")}`,
+    ].filter(Boolean).join("\n");
+
+    const result = await createTask({
+      title,
+      description: descLines,
+      priority: "medium",
+      jobId,
+      assignedToId: assignedToId || undefined,
+      assignedToName: assignedToName || undefined,
+      dueDate: dueDate.toISOString(),
+      checklist,
+      createdById: createdById || "system",
+      createdByName: createdByName || "System Auto",
+    });
+
+    return { ...result, alreadyExisted: false };
+  } catch (err: any) {
+    console.error("Error creating tax invoice task:", err);
+    return { success: false, error: err.message || "Failed to create tax invoice task" };
+  }
+}
+
+
