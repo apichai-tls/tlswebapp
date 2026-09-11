@@ -48,6 +48,7 @@ import { ReportsSalesByCategory } from "@/components/reports-sales-by-category";
 import { ReportsSalesByEmployee } from "@/components/reports-sales-by-employee";
 import { ReportsSalesByPaymentType } from "@/components/reports-sales-by-payment-type";
 import { ReportsReceipts } from "@/components/reports-receipts";
+import { ReportsTaxes } from "@/components/reports-taxes";
 
 interface AdminReportsProps {
   onViewJob?: (job: any) => void;
@@ -60,7 +61,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Sub-tabs state
-  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "shift" | "order" | "pos" | "customer">("overview");
+  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos" | "customer">("overview");
 
   // Filters State
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
@@ -608,8 +609,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
           <p className="text-xs text-slate-500 font-semibold mt-1">Live business performance metrics, transaction analytics, and sales summaries</p>
         </div>
 
-        {/* Filter Toolbar Controls (Hidden when in Sales Summary, Sales by Item, Sales by Category, Sales by Employee, Sales by Payment Type, or Receipts as they have dedicated toolbars) */}
-        {subTab !== "sales-summary" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && (
+        {/* Filter Toolbar Controls (Hidden when in Sales Summary, Sales by Item, Sales by Category, Sales by Employee, Sales by Payment Type, Receipts, or Taxes as they have dedicated toolbars) */}
+        {subTab !== "sales-summary" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && subTab !== "taxes" && (
           <div className="flex flex-wrap items-center gap-2">
             {/* Branch Select */}
             <div className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-sm">
@@ -786,6 +787,18 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         >
           <Receipt size={14} />
           Receipts
+        </button>
+
+        <button
+          onClick={() => setSubTab("taxes")}
+          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
+            subTab === "taxes"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-450 hover:text-slate-800"
+          }`}
+        >
+          <Percent size={14} />
+          Taxes
         </button>
 
         <button
@@ -1077,6 +1090,15 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
             if (onViewJob) onViewJob(job);
             else setSelectedJobForDetails(job);
           }}
+        />
+      )}
+
+      {/* 2.6 TAXES (Loyverse style) */}
+      {subTab === "taxes" && (
+        <ReportsTaxes
+          jobs={jobs}
+          selectedBranch={selectedBranch}
+          onViewJob={onViewJob}
         />
       )}
 

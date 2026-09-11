@@ -165,6 +165,21 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       return true;
     });
 
+    // Pre-calculate the first non-cancelled job ID for each customer across all history
+    const firstJobIdByCustomer = new Map<string, string>();
+    const sortedAllJobs = [...jobs]
+      .filter(j => j.status !== "cancel" && j.createdAt)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    for (const j of sortedAllJobs) {
+      if (j.customerId && !firstJobIdByCustomer.has(`id:${j.customerId}`)) {
+        firstJobIdByCustomer.set(`id:${j.customerId}`, j.id);
+      }
+      if (j.customerPhone && typeof j.customerPhone === 'string' && j.customerPhone.trim() && !firstJobIdByCustomer.has(`phone:${j.customerPhone.trim()}`)) {
+        firstJobIdByCustomer.set(`phone:${j.customerPhone.trim()}`, j.id);
+      }
+    }
+
     // Lookup map for customers
     const customerMap = new Map<string, any>();
     customers.forEach(c => {
@@ -215,7 +230,11 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
       // Customer info & badges
       const customer = (job.customerId && customerMap.get(job.customerId)) || (job.customerPhone && customerMap.get(job.customerPhone));
-      const isNewCustomer = customer ? customer.isNew === true : false;
+      const isFirstOrder = Boolean(
+        (job.customerId && firstJobIdByCustomer.get(`id:${job.customerId}`) === job.id) ||
+        (job.customerPhone && typeof job.customerPhone === 'string' && firstJobIdByCustomer.get(`phone:${job.customerPhone.trim()}`) === job.id)
+      );
+      const isNewCustomer = isFirstOrder || (customer ? customer.isNew === true : false);
       const isVIP = customer ? customer.isVIP === true : false;
       const isMember = customer ? (customer.isMember === true || !!customer.memberId) : false;
 

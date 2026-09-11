@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, Plus, Minus } from "lucide-react";
+import { Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, Plus, Minus, Building } from "lucide-react";
 import { customerStore, priceListStore, poiStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { LocationInput } from "@/components/location-input";
@@ -159,7 +159,7 @@ export function AdminCustomerDialog({
       name, phone, defaultAddress: address, defaultCoords: coords, priceListId: finalPriceListId,
       email: email.trim() || null, lineId: lineId.trim() || null, language, remark: remark.trim() || null,
       secondaryAddress: secondaryAddress.trim() || null, dob: dob || null, taxId: taxId.trim() || null,
-      companyName: companyName.trim() || null, isVIP, isMember, isWhatsapp,
+      companyName: companyName.trim() || null, isVIP, isCorporate, isMember, isWhatsapp,
       memberId: isMember ? memberId.trim() || null : null,
       memberStartDate: isMember && memberStartDate ? memberStartDate : null,
       memberExpiryDate: isMember && memberExpiryDate ? memberExpiryDate : null,
@@ -323,6 +323,13 @@ export function AdminCustomerDialog({
                 <div>
                   <p className="text-sm font-bold text-indigo-800 flex items-center gap-1.5"><Crown size={16} className="text-indigo-600" /> VIP Customer</p>
                   <p className="text-xs text-indigo-600/80">Enable special delivery rates (฿4/km) and apply VIP pricing list</p>
+                </div>
+              </label>
+              <label className="flex items-center gap-3 p-3 bg-slate-100/80 rounded-lg border border-slate-250 cursor-pointer hover:bg-slate-100 transition-colors">
+                <input type="checkbox" checked={isCorporate} onChange={e => setIsCorporate(e.target.checked)} className="h-5 w-5 rounded border-slate-400 text-slate-700 focus:ring-slate-700 bg-white" />
+                <div>
+                  <p className="text-sm font-bold text-slate-800 flex items-center gap-1.5"><Building size={16} className="text-slate-600" /> Corporate B2B Customer</p>
+                  <p className="text-xs text-slate-600/80">จัดกลุ่มเป็นลูกค้าองค์กร/นิติบุคคลสำหรับงาน B2B การออกใบกำกับภาษี และรายงาน CRM</p>
                 </div>
               </label>
             </div>

@@ -827,9 +827,9 @@ export default function RiderPage() {
   }
 
   // GPS Tracking Logic
-  // ✅ FIX: Depend only on activeRider?.id — NOT on activeRider?.status.
-  // Previously, every time refreshDb() changed the status in memory, this effect restarted,
-  // clearing watchPosition and resetting firstFix=true, causing GPS to jump to IP location.
+  // ✅ Native Background Geolocation (Capacitor Android APK) with Web fallback
+  // In native APK: runs an Android Foreground Service so GPS continues when using Google Maps or screen is locked.
+  // In Web: uses navigator.geolocation.watchPosition + Screen WakeLock API.
   const activeRiderIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!activeRider?.id) {
@@ -843,7 +843,10 @@ export default function RiderPage() {
     let lastPushTime = 0;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
     let firstFix = true;
-    let watcherId: number | null = null;
+    let webWatcherId: number | null = null;
+    let nativeWatcherId: string | null = null;
+    let wakeLockSentinel: any = null;
+    let isCancelled = false;
 
     const MIN_DISTANCE_METERS = 20;
     const THROTTLE_MS = 15000;
@@ -860,69 +863,179 @@ export default function RiderPage() {
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    const pushLocation = (lat: number, lng: number) => {
+    const pushLocation = async (lat: number, lng: number, isNative: boolean) => {
       lastPushedLat = lat;
       lastPushedLng = lng;
       lastPushTime = Date.now();
       const riderId = activeRiderIdRef.current;
       if (!riderId) return;
       riderStore.updateRider(riderId, { currentLocation: { lat, lng } });
-      fetch('/api/rider-location', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ riderId, lat, lng }),
-      }).catch(err => console.error('[GPS] Failed to persist location:', err));
+
+      if (isNative) {
+        try {
+          const { CapacitorHttp } = await import('@capacitor/core');
+          await CapacitorHttp.patch({
+            url: `${window.location.origin}/api/rider-location`,
+            headers: { 'Content-Type': 'application/json' },
+            data: { riderId, lat, lng },
+          });
+        } catch (err) {
+          console.error('[BackgroundGPS] Native PATCH error, falling back to fetch:', err);
+          fetch('/api/rider-location', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ riderId, lat, lng }),
+          }).catch(e => console.error('[BackgroundGPS] Fetch fallback error:', e));
+        }
+      } else {
+        fetch('/api/rider-location', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ riderId, lat, lng }),
+        }).catch(err => console.error('[GPS] Failed to persist location:', err));
+      }
     };
 
-    const startWatch = () => {
-      if (watcherId !== null) navigator.geolocation.clearWatch(watcherId);
-      watcherId = navigator.geolocation.watchPosition(
-        (pos) => {
-          setGpsActive(true);
-          const { latitude, longitude, accuracy } = pos.coords;
-          if (accuracy > MAX_ACCURACY_M) return;
-          const now = Date.now();
-          const timeSinceLast = now - lastPushTime;
-          const hasMoved =
-            lastPushedLat === null ||
-            haversineDistance(lastPushedLat, lastPushedLng!, latitude, longitude) >= MIN_DISTANCE_METERS;
-          if (firstFix || (hasMoved && timeSinceLast >= THROTTLE_MS)) {
-            firstFix = false;
-            if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
-            pushLocation(latitude, longitude);
-          } else if (hasMoved && !throttleTimer) {
-            const remaining = THROTTLE_MS - timeSinceLast;
-            throttleTimer = setTimeout(() => {
-              throttleTimer = null;
-              pushLocation(latitude, longitude);
-            }, remaining);
+    const setupTracking = async () => {
+      try {
+        const { Capacitor, registerPlugin } = await import('@capacitor/core');
+        if (Capacitor.isNativePlatform()) {
+          type BackgroundGeolocationPluginType = import('@capacitor-community/background-geolocation').BackgroundGeolocationPlugin;
+          const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPluginType>('BackgroundGeolocation');
+
+          try {
+            const id = await BackgroundGeolocation.addWatcher(
+              {
+                backgroundTitle: 'TLS Rider Tracking',
+                backgroundMessage: 'ระบบกำลังส่งพิกัดงานเดลิเวอรีในพื้นหลัง',
+                requestPermissions: true,
+                stale: false,
+                distanceFilter: MIN_DISTANCE_METERS,
+              },
+              (pos, err) => {
+                if (isCancelled) return;
+                if (err) {
+                  console.error('[BackgroundGPS] Native watcher error:', err);
+                  setGpsActive(false);
+                  return;
+                }
+                if (!pos) return;
+                setGpsActive(true);
+                const { latitude, longitude, accuracy } = pos;
+                if (accuracy && accuracy > MAX_ACCURACY_M) return;
+
+                const now = Date.now();
+                const timeSinceLast = now - lastPushTime;
+                const hasMoved =
+                  lastPushedLat === null ||
+                  haversineDistance(lastPushedLat, lastPushedLng!, latitude, longitude) >= MIN_DISTANCE_METERS;
+
+                if (firstFix || (hasMoved && timeSinceLast >= THROTTLE_MS)) {
+                  firstFix = false;
+                  if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
+                  pushLocation(latitude, longitude, true);
+                } else if (hasMoved && !throttleTimer) {
+                  const remaining = THROTTLE_MS - timeSinceLast;
+                  throttleTimer = setTimeout(() => {
+                    throttleTimer = null;
+                    pushLocation(latitude, longitude, true);
+                  }, remaining);
+                }
+              }
+            );
+
+            if (isCancelled) {
+              BackgroundGeolocation.removeWatcher({ id }).catch(() => {});
+            } else {
+              nativeWatcherId = id;
+            }
+            return; // Successfully started native background geolocation
+          } catch (nativeErr) {
+            console.warn('[BackgroundGPS] Native watcher start failed, falling back to Web Geolocation:', nativeErr);
           }
-        },
-        (err) => {
-          console.error('[GPS] Error:', err.code, err.message);
-          setGpsActive(false);
-        },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
-      );
+        }
+      } catch (err) {
+        console.warn('[BackgroundGPS] Capacitor import failed, falling back to Web Geolocation:', err);
+      }
+
+      // Web Browser Fallback: Wake Lock (keep screen awake on motorbike mount) + watchPosition
+      if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+        try {
+          (navigator as any).wakeLock?.request('screen').then((lock: any) => {
+            wakeLockSentinel = lock;
+          }).catch(() => {});
+        } catch (_) {}
+      }
+
+      const startWebWatch = () => {
+        if (webWatcherId !== null) navigator.geolocation.clearWatch(webWatcherId);
+        webWatcherId = navigator.geolocation.watchPosition(
+          (pos) => {
+            if (isCancelled) return;
+            setGpsActive(true);
+            const { latitude, longitude, accuracy } = pos.coords;
+            if (accuracy > MAX_ACCURACY_M) return;
+            const now = Date.now();
+            const timeSinceLast = now - lastPushTime;
+            const hasMoved =
+              lastPushedLat === null ||
+              haversineDistance(lastPushedLat, lastPushedLng!, latitude, longitude) >= MIN_DISTANCE_METERS;
+            if (firstFix || (hasMoved && timeSinceLast >= THROTTLE_MS)) {
+              firstFix = false;
+              if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
+              pushLocation(latitude, longitude, false);
+            } else if (hasMoved && !throttleTimer) {
+              const remaining = THROTTLE_MS - timeSinceLast;
+              throttleTimer = setTimeout(() => {
+                throttleTimer = null;
+                pushLocation(latitude, longitude, false);
+              }, remaining);
+            }
+          },
+          (err) => {
+            if (isCancelled) return;
+            console.error('[GPS] Web Error:', err.code, err.message);
+            setGpsActive(false);
+          },
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
+        );
+      };
+
+      startWebWatch();
     };
 
-    startWatch();
+    setupTracking();
 
-    // ✅ FIX: Resume GPS when app comes back to foreground (Android WebView / PWA)
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        firstFix = true; // get a fresh fix immediately
-        startWatch();
+        firstFix = true;
+        if (typeof navigator !== 'undefined' && 'wakeLock' in navigator && !wakeLockSentinel) {
+          (navigator as any).wakeLock?.request('screen').then((lock: any) => {
+            wakeLockSentinel = lock;
+          }).catch(() => {});
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      if (watcherId !== null) navigator.geolocation.clearWatch(watcherId);
+      isCancelled = true;
       if (throttleTimer) clearTimeout(throttleTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (webWatcherId !== null) navigator.geolocation.clearWatch(webWatcherId);
+      if (wakeLockSentinel) {
+        wakeLockSentinel.release().catch(() => {});
+        wakeLockSentinel = null;
+      }
+      if (nativeWatcherId) {
+        import('@capacitor/core').then(({ registerPlugin }) => {
+          type BackgroundGeolocationPluginType = import('@capacitor-community/background-geolocation').BackgroundGeolocationPlugin;
+          const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPluginType>('BackgroundGeolocation');
+          BackgroundGeolocation.removeWatcher({ id: nativeWatcherId! }).catch(console.error);
+        }).catch(() => {});
+      }
     };
-  }, [activeRider?.id]); // ✅ Only restart GPS when rider ID changes, NOT on status changes
+  }, [activeRider?.id]); // ✅ Only restart GPS when rider ID changes
 
   const allTasks: RiderTask[] = [];
   if (activeRider) {

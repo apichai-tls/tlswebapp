@@ -35,6 +35,7 @@ export async function addCustomerAction(data: any) {
       isMember: data.isMember || false,
       memberId,
       isVIP: data.isVIP || false,
+      isCorporate: data.isCorporate || false,
       isWhatsapp: data.isWhatsapp || false,
       email: data.email,
       lineId: data.lineId,
@@ -126,6 +127,7 @@ export async function updateCustomerAction(id: string, updates: any) {
   }
 
   if (updates.isVIP !== undefined) data.isVIP = updates.isVIP;
+  if (updates.isCorporate !== undefined) data.isCorporate = updates.isCorporate;
   if (updates.isWhatsapp !== undefined) data.isWhatsapp = updates.isWhatsapp;
   if (updates.isNew !== undefined) data.isNew = updates.isNew;
   if (updates.email !== undefined) data.email = updates.email;
@@ -785,10 +787,13 @@ export async function addJobLogAction(id: string, logEntry: any, actorId?: strin
   let payments: any[] = [];
   let isStructured = false;
 
+  let existingObj: any = {};
+
   if (job.adminNotesJson) {
     try {
       const parsed = JSON.parse(job.adminNotesJson);
       if (parsed && typeof parsed === 'object') {
+        existingObj = parsed;
         if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
           isStructured = true;
           notes = Array.isArray(parsed.notes) ? parsed.notes : [];
@@ -804,8 +809,8 @@ export async function addJobLogAction(id: string, logEntry: any, actorId?: strin
   notes.push(logEntry);
 
   let updatedJson: string;
-  if (isStructured || payments.length > 0) {
-    updatedJson = JSON.stringify({ payments, notes });
+  if (isStructured || payments.length > 0 || existingObj.isTaxInvoiceRequested !== undefined) {
+    updatedJson = JSON.stringify({ ...existingObj, payments, notes });
   } else {
     updatedJson = JSON.stringify(notes);
   }

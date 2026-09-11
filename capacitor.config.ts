@@ -7,6 +7,9 @@ const config: CapacitorConfig = {
   server: {
     url: 'https://app.thatlaundryshop.com/rider',
     cleartext: true
+  },
+  android: {
+    useLegacyBridge: true
   }
 };
 

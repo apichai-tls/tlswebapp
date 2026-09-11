@@ -349,6 +349,8 @@ export const api = {
           memberId: savedCustomer.memberId,
           creditBalance: savedCustomer.creditBalance,
           isMember: savedCustomer.isMember,
+          isVIP: savedCustomer.isVIP,
+          isCorporate: savedCustomer.isCorporate,
           memberStartDate: savedCustomer.memberStartDate,
           memberExpiryDate: savedCustomer.memberExpiryDate,
           priceListId: savedCustomer.priceListId || c.priceListId,

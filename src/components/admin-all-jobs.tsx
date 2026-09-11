@@ -47,6 +47,32 @@ type FilterDate = "today" | "yesterday" | "custom";
 
 const KANBAN_COLUMNS: JobStatus[] = ['tba', 'pending', 'pickup', 'billing', 'delivery', 'completed', 'cancel'];
 
+export function getBranchShortName(nameOrShop?: string | { name?: string } | null): string {
+  if (!nameOrShop) return "";
+  const name = typeof nameOrShop === "string" ? nameOrShop : (nameOrShop.name || "");
+  if (!name) return "";
+
+  const lower = name.toLowerCase();
+  if (lower.includes("15 sukhumvit") || lower.includes("sukhumvit 15")) {
+    return "15 Sukhumvit";
+  }
+  if (lower.includes("phattanakarn") || lower.includes("pattanakarn")) {
+    return "Phattanakarn";
+  }
+  if (lower.includes("pattaya")) {
+    return "Pattaya";
+  }
+
+  // If inside parentheses e.g. "That Laundry Shop (Asoke)"
+  const match = name.match(/\((.*?)\)/);
+  if (match && match[1]?.trim()) {
+    return match[1].trim();
+  }
+
+  // Fallback: strip common prefix
+  const cleaned = name.replace(/^(That Laundry Shop|TLS)\s*[-:—–]?\s*/i, '').trim();
+  return cleaned || name;
+}
 
 export const AdminAllJobs = React.memo(function AdminAllJobs({ 
   jobs, 
@@ -96,6 +122,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const customers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
+
+  const handleConfirmCancel = async () => {
+    if (!cancellingJob || !cancelReason.trim()) return;
+    try {
+      const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+      await jobStore.updateJobDetails(cancellingJob.id, { 
+        status: "cancel", 
+        remark: `${cancellingJob.remark || ''} | Cancelled Reason: ${cancelReason.trim()}`.trim() 
+      }, actorDetails);
+      toast.success(`Job #${cancellingJob.id.split('-')[0].toUpperCase()} has been cancelled.`);
+      setCancellingJob(null);
+      setCancelReason("");
+    } catch (e: any) {
+      toast.error(`Error: ${e.message}`);
+    }
+  };
 
   const today = new Date();
   const yesterday = subDays(today, 1);
@@ -235,7 +277,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       (job.serviceSpeed && job.serviceSpeed.toLowerCase().includes(searchLower)) ||
       (job.paymentChannel && job.paymentChannel.toLowerCase().includes(searchLower)) ||
       (job.paymentMethod && job.paymentMethod.toLowerCase().includes(searchLower)) ||
-      (shopObj && shopObj.name && shopObj.name.toLowerCase().includes(searchLower)) ||
+      (shopObj && (
+        (shopObj.name && shopObj.name.toLowerCase().includes(searchLower)) ||
+        getBranchShortName(shopObj.name).toLowerCase().includes(searchLower)
+      )) ||
       (customer && (
         (customer.name && customer.name.toLowerCase().includes(searchLower)) ||
         (customer.phone && customer.phone.includes(searchLower)) ||
@@ -608,11 +653,19 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         <div className="flex flex-col gap-1 mb-1.5">
                           <div className="font-mono text-xs font-semibold text-slate-900 flex items-center gap-1.5">
                             <span>#{job.id.split('-')[0].toUpperCase()}</span>
-                            {job.branchId && (
-                              <span className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded truncate max-w-[100px]">
-                                {shopLocations.find(s => s.id === job.branchId)?.name}
-                              </span>
-                            )}
+                            {job.branchId && (() => {
+                              const shop = shopLocations.find(s => s.id === job.branchId);
+                              const shortName = getBranchShortName(shop?.name);
+                              if (!shortName) return null;
+                              return (
+                                <span 
+                                  title={shop?.name}
+                                  className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded truncate max-w-[120px] border border-slate-200/60"
+                                >
+                                  {shortName}
+                                </span>
+                              );
+                            })()}
                           </div>
                           <div className="flex gap-1 items-center flex-wrap">
                           {savingJobIds?.has(job.id) && (
@@ -703,8 +756,15 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
-                        <div className="text-[11px] font-bold text-slate-700">
-                          {job.paymentChannel || "Unspecified"}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[11px] font-bold text-slate-700">
+                            {job.paymentChannel || "Unspecified"}
+                          </span>
+                          {(job.remark?.includes("ขอใบกำกับภาษี") || (job.remark && job.remark.includes("Tax Invoice"))) && (
+                            <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[8.5px] px-1 py-0 h-4 font-black tracking-wider shadow-none">
+                              TAX REQ
+                            </Badge>
+                          )}
                         </div>
                       </TableCell>
                       
@@ -804,8 +864,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               value={job.status}
                               onChange={(e) => {
                                 const newStatus = e.target.value as JobStatus;
+                                if (newStatus === job.status) return;
                                 if (newStatus === "cancel") {
                                   setCancellingJob(job);
+                                  setCancelReason("");
                                 } else {
                                   const updates: any = { status: newStatus };
                                   if (newStatus === 'completed') {
@@ -905,6 +967,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         try {
                           const job = filteredJobs.find(j => j.id === jobId);
                           if (!job) return;
+                          if (job.status === status) return;
+
+                          // If dropping onto cancel column, show cancel reason dialog
+                          if (status === 'cancel') {
+                            setCancellingJob(job);
+                            setCancelReason("");
+                            return;
+                          }
                           
                           // Check if moving out of completed status
                           if (job.status === 'completed') {
@@ -987,11 +1057,19 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               <div className="flex flex-col gap-1 w-full">
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   <span className="font-mono text-xs font-bold text-slate-900">#{job.id.split('-')[0].toUpperCase()}</span>
-                                  {job.branchId && (
-                                    <span className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded truncate max-w-[100px]">
-                                      {shopLocations.find(s => s.id === job.branchId)?.name}
-                                    </span>
-                                  )}
+                                  {job.branchId && (() => {
+                                    const shop = shopLocations.find(s => s.id === job.branchId);
+                                    const shortName = getBranchShortName(shop?.name);
+                                    if (!shortName) return null;
+                                    return (
+                                      <span 
+                                        title={shop?.name}
+                                        className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded truncate max-w-[120px] border border-slate-200/60"
+                                      >
+                                        {shortName}
+                                      </span>
+                                    );
+                                  })()}
                                   {job.laundryTypes && job.laundryTypes.length > 0 && (
                                     <span className="text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded tracking-wide">
                                       {job.laundryTypes.join(', ')}
@@ -1150,10 +1228,15 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         </div>
       )}
 
-      <Dialog open={!!cancellingJob} onOpenChange={(open) => !open && setCancellingJob(null)}>
+      <Dialog open={!!cancellingJob} onOpenChange={(open) => {
+        if (!open) {
+          setCancellingJob(null);
+          setCancelReason("");
+        }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Cancel Job</DialogTitle>
+            <DialogTitle>Cancel Job {cancellingJob ? `#${cancellingJob.id.split('-')[0].toUpperCase()}` : ""}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
@@ -1161,30 +1244,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               <Input 
                 value={cancelReason} 
                 onChange={e => setCancelReason(e.target.value)} 
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && cancelReason.trim()) {
+                    e.preventDefault();
+                    handleConfirmCancel();
+                  }
+                }}
                 placeholder="e.g. Customer requested, Invalid location..."
                 autoFocus
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCancellingJob(null)}>Keep Job</Button>
+            <Button variant="outline" onClick={() => { setCancellingJob(null); setCancelReason(""); }}>Keep Job</Button>
             <Button 
               disabled={!cancelReason.trim()}
-              onClick={async () => {
-                if (!cancellingJob) return;
-                try {
-                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
-                  await jobStore.updateJobDetails(cancellingJob.id, { 
-                    status: "cancel", 
-                    remark: `${cancellingJob.remark || ''} | Cancelled Reason: ${cancelReason}`.trim() 
-                  }, actorDetails);
-                  toast.success(`Job has been cancelled.`);
-                  setCancellingJob(null);
-                  setCancelReason("");
-                } catch (e: any) {
-                  toast.error(`Error: ${e.message}`);
-                }
-              }} 
+              onClick={handleConfirmCancel} 
               className="bg-red-600 text-white hover:bg-red-700"
             >
               Confirm Cancel

@@ -115,6 +115,7 @@ import {
   ExternalLink,
   Wallet,
   Save,
+  FileText,
 } from "lucide-react";
 
 import Link from "next/link";
@@ -695,6 +696,7 @@ export default function AdminPage() {
   const [otherClothingName, setOtherClothingName] = useState("");
   const [otherClothingPrice, setOtherClothingPrice] = useState<number>(0);
   const [billNo, setBillNo] = useState("");
+  const [isTaxInvoiceRequested, setIsTaxInvoiceRequested] = useState(false);
   const isOtherClothingSelected = Boolean(clothingItems?.other?.selected);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isSubmittingRef = useRef(isSubmitting);
@@ -871,6 +873,8 @@ export default function AdminPage() {
 
 
   const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
+  const canSeeTaxInvoice = user?.role === 'cso' || user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'accounting';
+  const canSeeStuck = user?.role === 'admin' || user?.role === 'cso' || user?.role === 'superadmin';
   // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
   const isPricingLocked = isPaidJob;
   const isCartLocked = isPaidJob;
@@ -1131,6 +1135,7 @@ export default function AdminPage() {
     setSelectedMemberLabel("");
     setSelectedMemberId("");
     setBillNo("");
+    setIsTaxInvoiceRequested(false);
     setAdminNote("");
     setAdminNoteInput("");
     setShowAdminNote(false);
@@ -1149,6 +1154,7 @@ export default function AdminPage() {
     originalJobRef.current = null;
     setEditingJobId(null);
     setBillNo("");
+    setIsTaxInvoiceRequested(false);
     setDialogSelectedCategory(null);
     setDialogCart([]);
 
@@ -1719,6 +1725,16 @@ export default function AdminPage() {
 
     setEditingJobId(job.id);
     setBillNo(job.billNo || "");
+    let isTaxReq = Boolean(job.remark && (job.remark.includes("ขอใบกำกับภาษี") || job.remark.includes("Tax Invoice")));
+    if (job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (parsed && typeof parsed === "object" && parsed.isTaxInvoiceRequested !== undefined) {
+          isTaxReq = Boolean(parsed.isTaxInvoiceRequested);
+        }
+      } catch (e) {}
+    }
+    setIsTaxInvoiceRequested(isTaxReq);
     setAdminNoteInput("");
 
     setShowNoteUploader(false);
@@ -1986,6 +2002,7 @@ export default function AdminPage() {
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
+        isTaxInvoiceRequested ? "ขอใบกำกับภาษี" : "",
         (showDialogDiscount || appliedPromo || promoCodeInput.trim()) ? (
           appliedPromo
             ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
@@ -1994,11 +2011,15 @@ export default function AdminPage() {
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: (() => {
         let existingPayments: any[] = [];
+        let existingParsed: any = {};
         if (existingJob && existingJob.adminNotesJson) {
           try {
             const parsed = JSON.parse(existingJob.adminNotesJson);
-            if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments)) {
-              existingPayments = parsed.payments;
+            if (parsed && typeof parsed === "object") {
+              existingParsed = parsed;
+              if (Array.isArray(parsed.payments)) {
+                existingPayments = parsed.payments;
+              }
             }
           } catch (e) {}
         }
@@ -2032,10 +2053,15 @@ export default function AdminPage() {
 
 
         const cleanLogs = finalAdminLogs.map(({ isNew, ...rest }) => rest);
+        const notesObj: any = {
+          ...existingParsed,
+          notes: cleanLogs,
+          isTaxInvoiceRequested,
+        };
         if (finalPayments.length > 0) {
-          return JSON.stringify({ payments: finalPayments, notes: cleanLogs });
+          notesObj.payments = finalPayments;
         }
-        return cleanLogs.length > 0 ? JSON.stringify(cleanLogs) : null;
+        return JSON.stringify(notesObj);
       })(),
 
       branchId: shop.id,
@@ -4447,16 +4473,32 @@ export default function AdminPage() {
                               )}
                             </span>
                             
-                            {(user?.role === 'admin' || user?.role === 'cso') && (
-                              <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
-                                <input 
-                                  type="checkbox" 
-                                  checked={isStuck} 
-                                  onChange={(e) => setIsStuck(e.target.checked)} 
-                                  className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3 w-3 cursor-pointer"
-                                />
-                                <span className="text-[10px] font-bold uppercase tracking-wider">Stuck</span>
-                              </Label>
+                            {(canSeeStuck || canSeeTaxInvoice) && (
+                              <div className="flex items-center gap-2.5">
+                                {canSeeTaxInvoice && (
+                                  <Label className={`flex items-center gap-1 cursor-pointer select-none transition-colors ${isTaxInvoiceRequested ? 'text-amber-300 font-bold' : 'text-slate-400 hover:text-slate-300'}`}>
+                                    <input 
+                                      type="checkbox" 
+                                      checked={isTaxInvoiceRequested} 
+                                      onChange={(e) => setIsTaxInvoiceRequested(e.target.checked)} 
+                                      className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer"
+                                    />
+                                    <FileText size={11} className={isTaxInvoiceRequested ? "text-amber-400" : "text-slate-400"} />
+                                    <span className="text-[10px] font-bold uppercase tracking-wider">ขอใบกำกับภาษี</span>
+                                  </Label>
+                                )}
+                                {canSeeStuck && (
+                                  <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={isStuck} 
+                                      onChange={(e) => setIsStuck(e.target.checked)} 
+                                      className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3 w-3 cursor-pointer"
+                                    />
+                                    <span className="text-[10px] font-bold uppercase tracking-wider">Stuck</span>
+                                  </Label>
+                                )}
+                              </div>
                             )}
                           </div>
                           <div id="order-items-list" className="overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar max-h-[45vh]">
@@ -5403,18 +5445,34 @@ export default function AdminPage() {
                     >
                       {/* Summary Card */}
                       <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md shrink-0">
-                        {(user?.role === 'admin' || user?.role === 'cso') && (
+                        {(canSeeStuck || canSeeTaxInvoice) && (
                           <div className="flex justify-between items-center pb-2 mb-2 border-b border-slate-700/50">
-                            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Job Flag</span>
-                            <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
-                              <input 
-                                type="checkbox" 
-                                checked={isStuck} 
-                                onChange={(e) => setIsStuck(e.target.checked)} 
-                                className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3.5 w-3.5"
-                              />
-                              <span className="text-xs font-bold">Stuck</span>
-                            </Label>
+                            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Job Flags</span>
+                            <div className="flex items-center gap-3">
+                              {canSeeTaxInvoice && (
+                                <Label className={`flex items-center gap-1.5 cursor-pointer select-none transition-colors ${isTaxInvoiceRequested ? 'text-amber-300 font-bold' : 'text-slate-400 hover:text-slate-300'}`}>
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isTaxInvoiceRequested} 
+                                    onChange={(e) => setIsTaxInvoiceRequested(e.target.checked)} 
+                                    className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 h-3.5 w-3.5 cursor-pointer"
+                                  />
+                                  <FileText size={12} className={isTaxInvoiceRequested ? "text-amber-400" : "text-slate-400"} />
+                                  <span className="text-xs font-bold">ขอใบกำกับภาษี</span>
+                                </Label>
+                              )}
+                              {canSeeStuck && (
+                                <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isStuck} 
+                                    onChange={(e) => setIsStuck(e.target.checked)} 
+                                    className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3.5 w-3.5"
+                                  />
+                                  <span className="text-xs font-bold">Stuck</span>
+                                </Label>
+                              )}
+                            </div>
                           </div>
                         )}
                         <div className="flex flex-col gap-1 mb-2 pb-2 border-b border-slate-700">
@@ -5573,9 +5631,6 @@ export default function AdminPage() {
                                 />
                               </div>
                             </div>
-
-
-
 
                             <div className="space-y-0.5">
                               <Label className="flex items-center gap-1 text-[10px] font-medium text-slate-400 uppercase tracking-wider">

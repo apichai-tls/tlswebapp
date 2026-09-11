@@ -255,11 +255,11 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     return null;
   };
 
-  // Distinct employees for the employee dropdown
+  // Distinct employees for the employee dropdown (only shop-paid jobs + topups)
   const employeeList = useMemo(() => {
     const set = new Set<string>();
     jobs.forEach(j => {
-      if (j.isPaid || j.isShopPaid) {
+      if (j.isShopPaid) {
         const payee = getJobPayee(j);
         if (payee) set.add(payee);
       }
@@ -271,7 +271,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     });
     if (set.size === 0) {
       jobs.forEach(j => {
-        if (j.createdBy && j.createdBy.trim()) {
+        if (j.isShopPaid && j.createdBy && j.createdBy.trim()) {
           set.add(j.createdBy.trim());
         }
       });
@@ -290,8 +290,9 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     return true;
   };
 
-  // Format Receipt Number nicely matching Loyverse (e.g. 1-36849 or TU-2608-00001)
+  // Format Receipt Number nicely matching Loyverse (prioritizing billNo if filled)
   const formatReceiptNumber = (job: Job): string => {
+    if (job.billNo && job.billNo.trim()) return job.billNo.trim();
     if ((job as any).receiptNumber) return (job as any).receiptNumber;
     if ((job as any).proformaNumber) return (job as any).proformaNumber;
     if ((job as any).proformaReceiptNumber) return (job as any).proformaReceiptNumber;
@@ -337,11 +338,10 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         return;
       }
 
+      // ดึงมาเฉพาะรายการที่หน้าร้านรับชำระ (Shop Paid) ยกเว้น Topup ซึ่งประมวลผลแยกอยู่ด้านล่าง
+      if (!job.isShopPaid) return;
+
       const isCancelled = job.status === "cancel";
-      const isPaid = Boolean(job.isPaid || job.isShopPaid);
-
-      if (!isPaid && !isCancelled) return;
-
       const type: "Sale" | "Refund" = isCancelled ? "Refund" : "Sale";
       const receiptNo = formatReceiptNumber(job);
       const store = getStoreName(job.branchId);
@@ -442,7 +442,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       // Text search query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
-        const matchesNo = r.receiptNo.toLowerCase().includes(q);
+        const matchesNo = r.receiptNo.toLowerCase().includes(q) || r.id.toLowerCase().includes(q);
         const matchesStore = r.store.toLowerCase().includes(q);
         const matchesEmp = r.employee.toLowerCase().includes(q);
         const matchesCust = r.customerName.toLowerCase().includes(q) || r.customerPhone.includes(q);

@@ -420,26 +420,37 @@ export function A5ReceiptContent({
 
   const transportFeeItems = getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType);
 
-  // ── Dynamic Adaptive Scaling ───────────────────────────────────────────────
-  const headerHeight = 115;
-  const customerHeight = receiptData.deliveryScheduledAt ? 56 : 46;
-  const tableHeaderHeight = 24;
-  const itemRowHeight = 20;
-  const itemsHeight = receiptData.items.length * itemRowHeight;
-  const totalsBaseHeight =
-    92 +
-    transportFeeItems.length * 18 +
-    (receiptData.expressSurcharge > 0 ? 18 : 0) +
-    (receiptData.discount > 0 ? 18 : 0) +
-    ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? 18 : 0) +
-    (receiptData.vatRate > 0 ? 18 : 0);
-  const paymentsHeight =
+  // ── Dynamic Density & Auto-Compaction ─────────────────────────────────────────
+  const itemCount = receiptData.items.length;
+  const extraTotalsLines =
+    transportFeeItems.length +
+    (receiptData.expressSurcharge > 0 ? 1 : 0) +
+    (receiptData.discount > 0 ? 1 : 0) +
+    ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? 1 : 0) +
+    (receiptData.vatRate > 0 ? 1 : 0);
+  const paymentLines = payments.length > 0 ? payments.length + 1 : 0;
+  // ── Dynamic Adaptive Density / Compaction Calculation ───────────────────────
+  // Step 1: Calculate total estimated height under 100% standard (Normal) styling
+  const normalHeaderHeight = 125;
+  const normalCustomerHeight = receiptData.deliveryScheduledAt ? 58 : 48;
+  const normalTableHeaderHeight = 26;
+  const normalItemRowHeight = 25; // py-1 (8px) + line-height (16px) + border (1px)
+  const normalItemsHeight = receiptData.items.length * normalItemRowHeight;
+  const normalTotalsRowHeight = 20;
+  const normalTotalsBaseHeight =
+    56 +
+    transportFeeItems.length * normalTotalsRowHeight +
+    (receiptData.expressSurcharge > 0 ? normalTotalsRowHeight : 0) +
+    (receiptData.discount > 0 ? normalTotalsRowHeight : 0) +
+    ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? normalTotalsRowHeight : 0) +
+    (receiptData.vatRate > 0 ? normalTotalsRowHeight : 0);
+  const normalPaymentsHeight =
     payments.length > 0
-      ? payments.length * 18 + 26
+      ? payments.length * normalTotalsRowHeight + 38
       : !isPaidEffective && !receiptData.isDraft && (receiptData.total || 0) > 0
-      ? 24
+      ? 20
       : 0;
-  const qrOrWalletHeight = receiptData.isDraft
+  const normalQrOrWalletHeight = (receiptData.isDraft && !isPaidEffective)
     ? isMember
       ? isWalletSufficient
         ? 62
@@ -447,10 +458,83 @@ export function A5ReceiptContent({
       : activeShop?.proformaQrUrl
       ? 88
       : 0
-    : 0;
-  const voidHeight = receiptData.status === "cancel" ? 35 : 0;
-  const footerHeight = 32;
-  const contentPadding = 48; // 24px top + 24px bottom
+    : (receiptData.isDraft && isPaidEffective ? 26 : 0);
+  const normalVoidHeight = receiptData.status === "cancel" ? 35 : 0;
+  const normalFooterHeight = 28;
+  const normalContentPadding = 48; // 24px top + 24px bottom
+
+  const estimatedNormalHeight =
+    normalHeaderHeight +
+    normalCustomerHeight +
+    normalTableHeaderHeight +
+    normalItemsHeight +
+    normalTotalsBaseHeight +
+    normalPaymentsHeight +
+    normalQrOrWalletHeight +
+    normalVoidHeight +
+    normalFooterHeight +
+    normalContentPadding;
+
+  const A5_MAX_HEIGHT = 793;
+
+  // Only reduce font size / padding when the content actually starts to exceed A5 page capacity!
+  // Compact mode: triggers when normal height exceeds 745px (starting to overflow A5)
+  // UltraCompact mode: triggers when normal height exceeds 860px (very long orders)
+  const isCompact = estimatedNormalHeight > 745 && estimatedNormalHeight <= 860;
+  const isUltraCompact = estimatedNormalHeight > 860;
+
+  // Dynamic styling tokens based on compaction mode
+  const outerPadding = isUltraCompact ? "12px 18px" : isCompact ? "16px 22px" : "24px 28px";
+  const headerMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
+  const logoClass = isUltraCompact ? "h-6" : isCompact ? "h-7" : "h-9";
+  const customerMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
+  const tableMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
+  const tableHeaderClass = isUltraCompact ? "py-0.5 px-1 text-[9px]" : isCompact ? "py-0.5 px-1 text-[9.5px]" : "py-1.5 px-1 text-[10px]";
+  const tableRowClass = isUltraCompact ? "py-0.5 px-1 text-[9.5px]" : isCompact ? "py-0.5 px-1 text-[10.5px]" : "py-1 px-1 text-xs";
+  const totalsMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
+  const totalsRowClass = isUltraCompact ? "py-0 text-[9.5px]" : isCompact ? "py-0.5 text-[10.5px]" : "py-0.5 text-xs";
+  const grandTotalClass = isUltraCompact ? "py-0.5 text-xs font-black" : isCompact ? "py-0.5 text-[13px] font-black" : "py-1 text-sm font-black";
+  const paymentsRowClass = isUltraCompact ? "py-0 text-[9px]" : isCompact ? "py-0.5 text-[10px]" : "py-0.5 text-xs";
+  const qrBoxClass = isUltraCompact ? "p-1 mb-1 gap-2 rounded-lg" : isCompact ? "p-1.5 mb-1.5 gap-2.5 rounded-xl" : "p-2 mb-2 gap-3 rounded-xl";
+  const qrImageClass = isUltraCompact ? "h-11 w-11" : isCompact ? "h-14 w-14" : "h-18 w-18";
+  const qrTitleClass = `font-bold text-neutral-400 uppercase tracking-widest ${isUltraCompact ? "text-[8px]" : "text-[9px]"}`;
+  const qrAmountClass = `font-black text-neutral-900 ${isUltraCompact ? "text-xs" : isCompact ? "text-[13px]" : "text-sm"}`;
+  const qrSubtextClass = `leading-tight text-neutral-400 ${isUltraCompact ? "text-[8px]" : "text-[9px]"}`;
+
+  // Step 2: Accurate height calculation based on chosen compaction mode
+  const headerHeight = isUltraCompact ? 95 : isCompact ? 110 : normalHeaderHeight;
+  const customerHeight = receiptData.deliveryScheduledAt
+    ? (isUltraCompact ? 46 : isCompact ? 52 : normalCustomerHeight)
+    : (isUltraCompact ? 38 : isCompact ? 44 : normalCustomerHeight);
+  const tableHeaderHeight = isUltraCompact ? 18 : isCompact ? 22 : normalTableHeaderHeight;
+  const itemRowHeight = isUltraCompact ? 16 : isCompact ? 19 : normalItemRowHeight;
+  const itemsHeight = receiptData.items.length * itemRowHeight;
+  const totalsRowHeight = isUltraCompact ? 14 : isCompact ? 17 : normalTotalsRowHeight;
+  const totalsBaseHeight =
+    (isUltraCompact ? 40 : isCompact ? 48 : 56) +
+    transportFeeItems.length * totalsRowHeight +
+    (receiptData.expressSurcharge > 0 ? totalsRowHeight : 0) +
+    (receiptData.discount > 0 ? totalsRowHeight : 0) +
+    ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? totalsRowHeight : 0) +
+    (receiptData.vatRate > 0 ? totalsRowHeight : 0);
+  const paymentsHeight =
+    payments.length > 0
+      ? payments.length * totalsRowHeight + (isUltraCompact ? 28 : isCompact ? 32 : 38)
+      : !isPaidEffective && !receiptData.isDraft && (receiptData.total || 0) > 0
+      ? (isUltraCompact ? 16 : 20)
+      : 0;
+  const qrOrWalletHeight = (receiptData.isDraft && !isPaidEffective)
+    ? isMember
+      ? isWalletSufficient
+        ? (isUltraCompact ? 42 : isCompact ? 50 : 62)
+        : (isUltraCompact ? 54 : isCompact ? 68 : 88)
+      : activeShop?.proformaQrUrl
+      ? (isUltraCompact ? 54 : isCompact ? 68 : 88)
+      : 0
+    : (receiptData.isDraft && isPaidEffective ? (isUltraCompact ? 20 : 26) : 0);
+  const voidHeight = receiptData.status === "cancel" ? (isUltraCompact ? 26 : 35) : 0;
+  const footerHeight = isUltraCompact ? 22 : normalFooterHeight;
+  const contentPadding = isUltraCompact ? 24 : isCompact ? 32 : normalContentPadding;
 
   const estimatedTotalHeight =
     headerHeight +
@@ -464,11 +548,12 @@ export function A5ReceiptContent({
     footerHeight +
     contentPadding;
 
-  const A5_MAX_HEIGHT = 793;
   const scale =
     estimatedTotalHeight > A5_MAX_HEIGHT
-      ? Math.max(0.55, (A5_MAX_HEIGHT - 8) / estimatedTotalHeight)
+      ? Math.max(0.5, (A5_MAX_HEIGHT - 6) / estimatedTotalHeight)
       : 1;
+
+  const remainingBalance = Math.max(0, (receiptData.total || 0) - totalPaid);
 
   return (
     <div
@@ -484,11 +569,11 @@ export function A5ReceiptContent({
     >
       <div
         style={{
-          width: 559,
-          height: A5_MAX_HEIGHT,
+          width: scale < 1 ? `${Math.round(559 / scale)}px` : "559px",
+          minHeight: scale < 1 ? `${Math.round(A5_MAX_HEIGHT / scale)}px` : `${A5_MAX_HEIGHT}px`,
           transform: scale < 1 ? `scale(${scale})` : undefined,
           transformOrigin: "top left",
-          padding: "24px 28px",
+          padding: outerPadding,
           boxSizing: "border-box",
         }}
         className="flex flex-col h-full bg-white relative justify-between"
@@ -509,26 +594,26 @@ export function A5ReceiptContent({
           </div>
         )}
 
-        {/* Top & Middle Section Wrapper */}
-        <div className="flex-1 flex flex-col min-h-0">
+        {/* Top & Middle Section Wrapper (natural flow without min-h-0 overlap) */}
+        <div className="flex-1 flex flex-col">
           {/* Header */}
-          <div className="flex justify-between items-start mb-3">
+          <div className={`flex justify-between items-start ${headerMargin}`}>
             <div className="flex-1">
-              <div className="mb-1.5">
+              <div className={isUltraCompact ? "mb-0.5" : "mb-1.5"}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={activeShop?.logoUrl || "/logo.png"}
                   alt="Shop Logo"
-                  className="h-9 object-contain filter grayscale contrast-125"
+                  className={`${logoClass} object-contain filter grayscale contrast-125`}
                 />
               </div>
-              <h1 className="text-sm font-black text-neutral-900 uppercase tracking-tight leading-tight">
+              <h1 className={`${isUltraCompact ? "text-xs" : "text-sm"} font-black text-neutral-900 uppercase tracking-tight leading-tight`}>
                 {activeShop?.name || "That Laundry Shop"}
               </h1>
-              <p className="text-[11px] text-neutral-600 max-w-[260px] mt-0.5 whitespace-pre-line leading-tight">
+              <p className="text-[10px] text-neutral-600 max-w-[260px] mt-0.5 whitespace-pre-line leading-tight">
                 {activeShop?.addressFull || activeShop?.address || "123 Sukhumvit Road, Bangkok"}
               </p>
-              <p className="text-[11px] text-neutral-600 mt-0.5">
+              <p className="text-[10px] text-neutral-600 mt-0.5">
                 Tel: {activeShop?.phone || "081-111-2222"}
                 {activeShop?.taxId && (
                   <span className="ml-2">
@@ -538,7 +623,7 @@ export function A5ReceiptContent({
               </p>
             </div>
             <div className="text-right">
-              <h2 className="text-lg font-black text-neutral-900 uppercase tracking-wider mb-1.5">
+              <h2 className={`${isUltraCompact ? "text-base mb-0.5" : "text-lg mb-1.5"} font-black text-neutral-900 uppercase tracking-wider`}>
                 {receiptData.isDraft
                   ? currentLanguage === "en"
                     ? "PROFORMA INVOICE"
@@ -587,15 +672,15 @@ export function A5ReceiptContent({
             </div>
           </div>
 
-          <hr className="border-neutral-300 mb-3" />
+          <hr className={`border-neutral-300 ${customerMargin}`} />
 
           {/* Customer + Collection Date */}
-          <div className="flex justify-between mb-3">
+          <div className={`flex justify-between ${customerMargin}`}>
             <div className="flex-1">
               <h3 className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-0.5">
                 {currentLanguage === "en" ? "BILLED TO" : "ลูกค้า"}
               </h3>
-              <p className="text-sm font-bold text-neutral-900 leading-tight">
+              <p className={`${isUltraCompact ? "text-xs" : "text-sm"} font-bold text-neutral-900 leading-tight`}>
                 {receiptData.customerName}
               </p>
               <p className="text-xs text-neutral-600 font-mono mt-0.5">{receiptData.customerPhone}</p>
@@ -605,7 +690,7 @@ export function A5ReceiptContent({
                 <h3 className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-0.5">
                   {currentLanguage === "en" ? "COLLECTION DATE" : "วันรับผ้าคืน"}
                 </h3>
-                <p className="text-sm font-bold text-neutral-900 leading-tight">
+                <p className={`${isUltraCompact ? "text-xs" : "text-sm"} font-bold text-neutral-900 leading-tight`}>
                   {format(new Date(receiptData.deliveryScheduledAt), "dd/MM/yyyy")}
                 </p>
                 <p className="text-xs text-neutral-600">
@@ -616,19 +701,19 @@ export function A5ReceiptContent({
           </div>
 
           {/* Items Table */}
-          <table className="w-full text-left mb-3 border-collapse text-xs">
+          <table className={`w-full text-left border-collapse ${tableMargin}`}>
             <thead>
               <tr className="border-b-2 border-neutral-800 font-bold text-neutral-900">
-                <th className="py-1.5 px-1 w-[50%]">
+                <th className={`${tableHeaderClass} w-[50%]`}>
                   {currentLanguage === "en" ? "DESCRIPTION" : "รายการ"}
                 </th>
-                <th className="py-1.5 px-1 text-center">
+                <th className={`${tableHeaderClass} text-center`}>
                   {currentLanguage === "en" ? "QTY" : "จำนวน"}
                 </th>
-                <th className="py-1.5 px-1 text-right">
+                <th className={`${tableHeaderClass} text-right`}>
                   {currentLanguage === "en" ? "UNIT PRICE" : "ราคาต่อหน่วย"}
                 </th>
-                <th className="py-1.5 px-1 text-right">
+                <th className={`${tableHeaderClass} text-right`}>
                   {currentLanguage === "en" ? "TOTAL" : "รวม"}
                 </th>
               </tr>
@@ -636,12 +721,12 @@ export function A5ReceiptContent({
             <tbody className="text-neutral-800 font-medium">
               {receiptData.items.map((item, idx) => (
                 <tr key={idx} className="border-b border-neutral-200">
-                  <td className="py-1 px-1">
+                  <td className={tableRowClass}>
                     {currentLanguage === "en" ? item.nameEn || item.name : item.name}
                   </td>
-                  <td className="py-1 px-1 text-center font-mono">{item.quantity}</td>
-                  <td className="py-1 px-1 text-right font-mono">{formatCurrency(item.price)}</td>
-                  <td className="py-1 px-1 text-right font-mono">
+                  <td className={`${tableRowClass} text-center font-mono`}>{item.quantity}</td>
+                  <td className={`${tableRowClass} text-right font-mono`}>{formatCurrency(item.price)}</td>
+                  <td className={`${tableRowClass} text-right font-mono`}>
                     {formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}
                   </td>
                 </tr>
@@ -650,9 +735,9 @@ export function A5ReceiptContent({
           </table>
 
           {/* Totals Section */}
-          <div className="flex justify-end mb-3">
-            <div className="w-1/2">
-              <div className="flex justify-between py-0.5 text-xs text-neutral-700 border-b border-neutral-300 pb-0.5 mb-0.5">
+          <div className={`flex justify-end ${totalsMargin}`}>
+            <div className="w-[55%]">
+              <div className={`flex justify-between ${totalsRowClass} text-neutral-700 border-b border-neutral-300 pb-0.5 mb-0.5`}>
                 <span>{currentLanguage === "en" ? "SUBTOTAL" : "ยอดรวม"}</span>
                 <span className="font-mono">
                   ฿
@@ -664,14 +749,14 @@ export function A5ReceiptContent({
               {transportFeeItems.map((feeItem, idx) => (
                 <div
                   key={`fee-${idx}`}
-                  className="flex justify-between py-0.5 text-xs text-neutral-700"
+                  className={`flex justify-between ${totalsRowClass} text-neutral-700`}
                 >
                   <span>{currentLanguage === "en" ? feeItem.name : feeItem.nameTh}</span>
                   <span className="font-mono">฿{formatCurrency(feeItem.total)}</span>
                 </div>
               ))}
               {receiptData.expressSurcharge > 0 && (
-                <div className="flex justify-between py-0.5 text-xs text-rose-700">
+                <div className={`flex justify-between ${totalsRowClass} text-rose-700`}>
                   <span>
                     {currentLanguage === "en" ? "Express Surcharge" : "ค่าบริการด่วนพิเศษ"}
                     {receiptData.serviceSpeed === "express_50" ? " (+50%)" : " (+100%)"}
@@ -680,7 +765,7 @@ export function A5ReceiptContent({
                 </div>
               )}
               {receiptData.discount > 0 && (
-                <div className="flex justify-between py-0.5 text-xs text-emerald-600">
+                <div className={`flex justify-between ${totalsRowClass} text-emerald-600`}>
                   <span>
                     {currentLanguage === "en" ? "Discount" : "ส่วนลด"}
                     {receiptData.discountPercent && receiptData.discountPercent > 0
@@ -691,7 +776,7 @@ export function A5ReceiptContent({
                 </div>
               )}
               {receiptData.promoDiscount && receiptData.promoDiscount > 0 && (
-                <div className="flex justify-between py-0.5 text-xs text-amber-600">
+                <div className={`flex justify-between ${totalsRowClass} text-amber-600`}>
                   <span>
                     {currentLanguage === "en"
                       ? (receiptData.promoTarget === "DELIVERY" ? "Delivery Discount" : "Promo Code")
@@ -702,7 +787,7 @@ export function A5ReceiptContent({
                 </div>
               )}
               {receiptData.vatType === "exclusive" && receiptData.vatRate > 0 && (
-                <div className="flex justify-between py-0.5 text-xs text-neutral-700 border-b border-neutral-200">
+                <div className={`flex justify-between ${totalsRowClass} text-neutral-700 border-b border-neutral-200`}>
                   <span>
                     {currentLanguage === "en"
                       ? `VAT (${receiptData.vatRate}%)`
@@ -711,12 +796,12 @@ export function A5ReceiptContent({
                   <span className="font-mono">฿{formatCurrency(receiptData.vatAmount)}</span>
                 </div>
               )}
-              <div className="flex justify-between items-center py-1 text-sm font-black text-neutral-900 border-t-2 border-neutral-900 whitespace-nowrap gap-2">
+              <div className={`flex justify-between items-center border-t-2 border-neutral-900 whitespace-nowrap gap-2 ${grandTotalClass}`}>
                 <span className="shrink-0">{currentLanguage === "en" ? "GRAND TOTAL" : "ยอดสุทธิ"}</span>
                 <span className="font-mono shrink-0">฿{formatCurrency(receiptData.total)}</span>
               </div>
               {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
-                <div className="flex justify-between py-0.5 text-[10px] text-neutral-500">
+                <div className="flex justify-between py-0.5 text-[9.5px] text-neutral-500">
                   <span>
                     {currentLanguage === "en"
                       ? `Includes VAT ${receiptData.vatRate}%`
@@ -732,7 +817,7 @@ export function A5ReceiptContent({
                   {payments.map((p, pIdx) => (
                     <div
                       key={pIdx}
-                      className="flex justify-between py-0.5 text-xs text-neutral-800"
+                      className={`flex justify-between ${paymentsRowClass} text-neutral-800`}
                     >
                       <span className="uppercase text-[9px] font-bold">
                         {format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID (
@@ -741,15 +826,15 @@ export function A5ReceiptContent({
                       <span className="font-mono font-bold">฿{formatCurrency(p.amount)}</span>
                     </div>
                   ))}
-                  <div className="flex justify-between py-0.5 mt-0.5 text-xs font-black text-neutral-900 border-t border-neutral-200">
+                  <div className={`flex justify-between mt-0.5 text-neutral-900 border-t border-neutral-200 ${paymentsRowClass} font-black`}>
                     <span>{currentLanguage === "en" ? "TOTAL PAID" : "ชำระแล้ว"}</span>
                     <span className="font-mono">฿{formatCurrency(totalPaid)}</span>
                   </div>
-                  {!isPaidEffective && receiptData.total - totalPaid > 0.01 && (
-                    <div className="flex justify-between py-0.5 text-xs font-black text-rose-600">
+                  {!isPaidEffective && remainingBalance > 0.01 && (
+                    <div className={`flex justify-between py-0.5 text-rose-600 font-black ${isUltraCompact ? "text-[9.5px]" : "text-xs"}`}>
                       <span>{currentLanguage === "en" ? "BALANCE DUE" : "ยอดคงค้าง"}</span>
                       <span className="font-mono">
-                        ฿{formatCurrency(receiptData.total - totalPaid)}
+                        ฿{formatCurrency(remainingBalance)}
                       </span>
                     </div>
                   )}
@@ -760,7 +845,7 @@ export function A5ReceiptContent({
                 !receiptData.isDraft &&
                 (receiptData.total || 0) > 0 && (
                   <div className="mt-1.5 pt-1.5 border-t border-dashed border-neutral-300">
-                    <div className="flex justify-between py-0.5 text-xs font-black text-rose-600">
+                    <div className={`flex justify-between py-0.5 text-rose-600 font-black ${isUltraCompact ? "text-[9.5px]" : "text-xs"}`}>
                       <span>
                         {currentLanguage === "en" ? "BALANCE DUE (UNPAID)" : "ยอดรอชำระ"}
                       </span>
@@ -773,29 +858,41 @@ export function A5ReceiptContent({
         </div>
 
         {/* Footer — anchored cleanly at bottom */}
-        <div className="shrink-0 mt-auto pt-2 border-t border-neutral-200">
-          {/* QR / Payment Section — only on Proforma */}
-          {receiptData.isDraft && (
+        <div className="shrink-0 mt-auto pt-1.5 border-t border-neutral-200">
+          {/* If Proforma is already paid in full, show clean paid badge instead of duplicate SCAN TO PAY */}
+          {receiptData.isDraft && isPaidEffective && (
+            <div className={`flex items-center justify-between border border-emerald-200 rounded-lg bg-emerald-50/70 text-emerald-800 shrink-0 ${isUltraCompact ? "p-1 mb-1 text-[9px]" : "p-1.5 mb-1 text-[10px]"}`}>
+              <span className="font-bold uppercase tracking-wider flex items-center gap-1">
+                ✓ {currentLanguage === "en" ? "Payment Completed" : "ชำระเงินเรียบร้อยแล้ว"}
+              </span>
+              <span className="font-mono font-black text-emerald-900">
+                ฿{formatCurrency(totalPaid || receiptData.total || 0)}
+              </span>
+            </div>
+          )}
+
+          {/* QR / Payment Section — only on Proforma when NOT yet paid */}
+          {receiptData.isDraft && !isPaidEffective && (
             <>
               {isMember ? (
                 isWalletSufficient ? (
                   /* Member + Sufficient Wallet Balance: No QR Code */
-                  <div className="flex items-center gap-3 mb-2 p-2.5 border border-indigo-200/80 rounded-xl bg-indigo-50/40 shrink-0">
-                    <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg shrink-0">
-                      <Wallet size={20} />
+                  <div className={`flex items-center border border-indigo-200/80 bg-indigo-50/40 shrink-0 ${qrBoxClass}`}>
+                    <div className={`bg-indigo-100 text-indigo-600 rounded-lg shrink-0 ${isUltraCompact ? "p-1" : "p-1.5"}`}>
+                      <Wallet size={isUltraCompact ? 14 : 18} />
                     </div>
                     <div className="flex flex-col gap-0.5">
                       <p className="text-[9px] font-bold text-indigo-800 uppercase tracking-widest">
                         Member Wallet Payment
                       </p>
-                      <p className="text-xs font-bold text-neutral-800">
+                      <p className={`${isUltraCompact ? "text-[10px]" : "text-xs"} font-bold text-neutral-800`}>
                         Your wallet balance is{" "}
                         <span className="font-mono text-emerald-700 font-black">
                           ฿{formatCurrency(walletBalance)}
                         </span>
                         .
                       </p>
-                      <p className="text-[9.5px] text-neutral-500 font-medium leading-tight">
+                      <p className="text-[8.5px] text-neutral-500 font-medium leading-tight">
                         Payment will be automatically deducted from your member wallet.
                       </p>
                     </div>
@@ -803,26 +900,26 @@ export function A5ReceiptContent({
                 ) : (
                   /* Member + Insufficient Wallet Balance: Shows QR Code */
                   activeShop?.proformaQrUrl && (
-                    <div className="flex items-center gap-3 mb-2 p-2 border border-amber-200/80 rounded-xl bg-amber-50/60 shrink-0">
+                    <div className={`flex items-center border border-amber-200/80 bg-amber-50/60 shrink-0 ${qrBoxClass}`}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={activeShop.proformaQrUrl}
                         alt="Payment QR Code"
-                        className="h-18 w-18 object-contain shrink-0"
+                        className={`${qrImageClass} object-contain shrink-0`}
                         crossOrigin="anonymous"
                       />
                       <div className="flex flex-col gap-0.5">
                         <p className="text-[9px] font-bold text-amber-800 uppercase tracking-widest">
                           Scan to Pay & Top Up
                         </p>
-                        <p className="text-xs font-bold text-neutral-900">
+                        <p className={qrAmountClass}>
                           Your wallet balance is{" "}
                           <span className="font-mono text-rose-600 font-black">
                             ฿{formatCurrency(walletBalance)}
                           </span>
                           .
                         </p>
-                        <p className="text-[9.5px] text-neutral-600 leading-tight mt-0.5 font-medium">
+                        <p className="text-[8.5px] text-neutral-600 leading-tight font-medium">
                           Please top up your wallet or scan QR code to proceed.
                         </p>
                       </div>
@@ -832,22 +929,22 @@ export function A5ReceiptContent({
               ) : (
                 /* Non-Member Retail Customer: PromptPay QR Code */
                 activeShop?.proformaQrUrl && (
-                  <div className="flex items-center gap-3 mb-2 p-2 border border-neutral-200 rounded-xl bg-neutral-50 shrink-0">
+                  <div className={`flex items-center border border-neutral-200 bg-neutral-50 shrink-0 ${qrBoxClass}`}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={activeShop.proformaQrUrl}
                       alt="Payment QR Code"
-                      className="h-18 w-18 object-contain shrink-0"
+                      className={`${qrImageClass} object-contain shrink-0`}
                       crossOrigin="anonymous"
                     />
                     <div className="flex flex-col gap-0.5">
-                      <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">
+                      <p className={qrTitleClass}>
                         Scan to Pay
                       </p>
-                      <p className="text-sm font-black text-neutral-900">
-                        ฿{formatCurrency(receiptData.total)}
+                      <p className={qrAmountClass}>
+                        ฿{formatCurrency(remainingBalance > 0 ? remainingBalance : receiptData.total || 0)}
                       </p>
-                      <p className="text-[9px] text-neutral-400 leading-tight mt-0.5">
+                      <p className={qrSubtextClass}>
                         Scan QR code to complete
                         <br />
                         your payment via PromptPay
