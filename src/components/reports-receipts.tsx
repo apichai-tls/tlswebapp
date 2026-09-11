@@ -480,7 +480,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   // --- CSV Export (Matching Loyverse Receipts Export Format) ---
   const handleExportCSV = () => {
     let csv = "\uFEFF"; // UTF-8 BOM for Thai characters in Excel
-    csv += "Date,Receipt number,Bill no.,Receipt type,Gross sales,Discounts,Net sales,Taxes,Total collected,Payment type,Description,POS,Store,Cashier name,Customer name,Customer contacts,Status,Month\n";
+    csv += "Date,Receipt number,Bill no.,Receipt type,Gross sales,Discounts,Before Taxes,Taxes,Total collected,Payment type,Description,POS,Store,Cashier name,Customer name,Customer contacts,Status,Month\n";
 
     filteredReceipts.forEach(r => {
       // 1. Date & Month
@@ -490,7 +490,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       // 2. Financials and Details
       let grossSales = 0;
       let discounts = 0;
-      let netSales = 0;
+      let beforeTaxes = 0;
       let taxes = 0;
       let totalCollected = r.total;
       let paymentType = "Cash";
@@ -503,9 +503,9 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         discounts = Number(job.discount) || 0;
         totalCollected = Number(job.totalAmount) || 0;
         grossSales = totalCollected + discounts;
-        netSales = totalCollected;
-        // 7% VAT included in price: netSales * 7 / 107
-        taxes = (netSales * 7) / 107;
+        // 7% VAT included in price: totalCollected * 7 / 107
+        taxes = (totalCollected * 7) / 107;
+        beforeTaxes = totalCollected - taxes;
 
         // Payment Type
         const channel = job.paymentChannel || job.paymentMethod || "Cash";
@@ -544,8 +544,8 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         totalCollected = Number(topup.amount) || 0;
         grossSales = totalCollected;
         discounts = 0;
-        netSales = totalCollected;
-        taxes = (netSales * 7) / 107;
+        taxes = (totalCollected * 7) / 107;
+        beforeTaxes = totalCollected - taxes;
         paymentType = topup.paymentChannel || "Cash";
         description = `1 x ${topup.packageName || "TOP UP MEMBER"}`;
         
@@ -559,9 +559,9 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
 
         status = topup.status === "cancelled" ? "Refund" : "Closed";
       } else {
-        netSales = totalCollected;
         grossSales = totalCollected;
-        taxes = (netSales * 7) / 107;
+        taxes = (totalCollected * 7) / 107;
+        beforeTaxes = totalCollected - taxes;
       }
 
       // Escape quotes for CSV
@@ -574,7 +574,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         escape(r.type),
         grossSales.toFixed(2),
         discounts.toFixed(2),
-        netSales.toFixed(2),
+        beforeTaxes.toFixed(2),
         taxes.toFixed(2),
         totalCollected.toFixed(2),
         escape(paymentType),
