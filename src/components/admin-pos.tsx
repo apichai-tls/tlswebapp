@@ -77,6 +77,7 @@ import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
 import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber } from "@/lib/utils";
+import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
 
@@ -1758,6 +1759,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return Math.max(0, Math.round(rawTotal * 100) / 100);
   }, [subtotal, expressSurcharge, discountAmount, vatType, vatRate, manualAdjustment]);
 
+  const activePaymentChannels = useMemo(() => {
+    return getActivePaymentChannels(settings, Boolean(selectedCustomer?.isMember));
+  }, [settings, selectedCustomer?.isMember]);
+
+  const memberWalletChannelName = useMemo(() => {
+    const walletCh = activePaymentChannels.find(c => c.type === "wallet" || c.requiresMember);
+    return walletCh?.name || "Deduct Member";
+  }, [activePaymentChannels]);
+
   const forceMemberPayment = useMemo(() => {
     if (!selectedCustomer?.isMember) return false;
     return cart.some(item => 
@@ -1768,7 +1778,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     );
   }, [selectedCustomer, cart]);
 
-  const effectivePaymentChannel = forceMemberPayment ? "Deduct Member" : posPaymentChannel;
+  const effectivePaymentChannel = forceMemberPayment ? memberWalletChannelName : posPaymentChannel;
 
   // Force member payment method (credit) for member customers adding non-package items
   useEffect(() => {
@@ -1778,13 +1788,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (hasSufficient) {
         setIsPaid(true);
         setPaymentMethod("credit");
-        setPosPaymentChannel("Deduct Member");
+        setPosPaymentChannel(memberWalletChannelName);
       } else {
         setIsPaid(false);
         setPosPaymentChannel("");
       }
     }
-  }, [forceMemberPayment, total, selectedCustomer?.creditBalance, selectedCustomer?.memberExpiryDate]);
+  }, [forceMemberPayment, total, selectedCustomer?.creditBalance, selectedCustomer?.memberExpiryDate, memberWalletChannelName]);
 
 
 
@@ -1911,7 +1921,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       discountPercent: discountPercent,
       total: total,
       isPaid: isPaid,
-      paymentChannel: isPaid ? (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? "Deduct Member" : "Credit Wallet")) : undefined,
+      paymentChannel: isPaid ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
       remark: [remark, expressText, vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : ""].filter(Boolean).join(" | ") || undefined,
       isDraft: true,
       vatType: vatType,
@@ -2035,7 +2045,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               discount: manualAdjustment + discountAmount,
               total: total,
               isPaid: isPaid,
-              paymentChannel: isPaid ? (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? "Deduct Member" : "Credit Wallet")) : undefined,
+              paymentChannel: isPaid ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
               remark: [remark, selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "", vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : ""].filter(Boolean).join(" | ") || undefined,
               isDraft: true,
               vatType,
@@ -2135,6 +2145,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const paymentRecord: any = { 
           amount: payAmt, 
           method: paymentMethod, 
+          channel: effectivePaymentChannel || undefined,
           timestamp, 
           shiftId,
           paidBy: user?.name || user?.email || "POS Counter"
@@ -2161,18 +2172,21 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         if (m === "cash") return "Cash / COD";
         if (m === "transfer") return "Transfer";
         if (m === "card") return "Credit Card";
-        if (m === "credit") return selectedCustomer?.isMember ? "Deduct Member" : "HQ/Credit";
+        if (m === "credit") return selectedCustomer?.isMember ? memberWalletChannelName : "HQ/Credit";
         return m ? m.toUpperCase() : undefined;
       };
 
-      if (newPayments.length > 0) {
+      if (effectivePaymentChannel) {
+        finalChannel = effectivePaymentChannel;
+        finalMethod = paymentMethod;
+      } else if (newPayments.length > 0) {
         const lastPay = newPayments[newPayments.length - 1];
         finalMethod = lastPay.method;
-        finalChannel = getStandardChannelName(lastPay.method);
+        finalChannel = lastPay.channel || getStandardChannelName(lastPay.method);
       } else if (finalPayments.length > 0) {
         const lastPay = finalPayments[finalPayments.length - 1];
         finalMethod = lastPay.method;
-        finalChannel = getStandardChannelName(lastPay.method);
+        finalChannel = lastPay.channel || getStandardChannelName(lastPay.method);
       } else {
         finalChannel = effectivePaymentChannel || getStandardChannelName(paymentMethod);
       }
@@ -3838,21 +3852,20 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         setIsPaid(false);
                       } else {
                         setIsPaid(true);
-                        if (ch === "Cash / COD") setPaymentMethod("cash");
-                        else if (ch === "Transfer" || ch === "PromptPay") setPaymentMethod("transfer");
-                        else if (ch === "Credit Card" || ch === "Gateway") setPaymentMethod("card");
-                        else if (ch === "Deduct Member" || ch === "HQ/Credit") setPaymentMethod("credit");
+                        const method = mapChannelNameToMethod(ch, activePaymentChannels);
+                        setPaymentMethod(method);
                       }
                     }}
                   >
                     <option value="">Select Channel</option>
-                    <option value="Cash / COD">Cash / COD</option>
-                    <option value="Transfer">Transfer</option>
-                    <option value="Credit Card">Credit Card</option>
-                    <option value="Gateway">Gateway</option>
-                    <option value="PromptPay">PromptPay</option>
-                    {selectedCustomer?.isMember && <option value="Deduct Member">Deduct Member</option>}
-                    <option value="HQ/Credit">HQ/Credit</option>
+                    {effectivePaymentChannel && !activePaymentChannels.some(c => c.name === effectivePaymentChannel) && (
+                      <option value={effectivePaymentChannel}>{effectivePaymentChannel}</option>
+                    )}
+                    {activePaymentChannels.map((c) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -4485,6 +4498,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 customerPhone: job.customerPhone,
                               });
                               setSelectedCustomer(customer || null);
+                              if (job.paymentChannel) {
+                                setPosPaymentChannel(job.paymentChannel);
+                              } else {
+                                setPosPaymentChannel("");
+                              }
 
 
                               setManualAdjustment(job.discount || 0);
