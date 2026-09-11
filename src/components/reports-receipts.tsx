@@ -480,7 +480,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   // --- CSV Export (Matching Loyverse Receipts Export Format) ---
   const handleExportCSV = () => {
     let csv = "\uFEFF"; // UTF-8 BOM for Thai characters in Excel
-    csv += "Date,Receipt number,Bill no.,Receipt type,Gross sales,Discounts,Net sales,Taxes,Total collected,Cost of goods,Gross profit,Payment type,Description,POS,Store,Cashier name,Customer name,Customer contacts,Status,Month\n";
+    csv += "Date,Receipt number,Bill no.,Receipt type,Gross sales,Discounts,Net sales,Taxes,Total collected,Payment type,Description,POS,Store,Cashier name,Customer name,Customer contacts,Status,Month\n";
 
     filteredReceipts.forEach(r => {
       // 1. Date & Month
@@ -493,8 +493,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       let netSales = 0;
       let taxes = 0;
       let totalCollected = r.total;
-      const costOfGoods = 0;
-      let grossProfit = 0;
       let paymentType = "Cash";
       let description = "";
       let posName = "POS 1";
@@ -508,7 +506,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         netSales = totalCollected;
         // 7% VAT included in price: netSales * 7 / 107
         taxes = (netSales * 7) / 107;
-        grossProfit = netSales - costOfGoods;
 
         // Payment Type
         const channel = job.paymentChannel || job.paymentMethod || "Cash";
@@ -549,7 +546,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         discounts = 0;
         netSales = totalCollected;
         taxes = (netSales * 7) / 107;
-        grossProfit = netSales;
         paymentType = topup.paymentChannel || "Cash";
         description = `1 x ${topup.packageName || "TOP UP MEMBER"}`;
         
@@ -566,7 +562,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         netSales = totalCollected;
         grossSales = totalCollected;
         taxes = (netSales * 7) / 107;
-        grossProfit = netSales;
       }
 
       // Escape quotes for CSV
@@ -582,8 +577,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         netSales.toFixed(2),
         taxes.toFixed(2),
         totalCollected.toFixed(2),
-        costOfGoods.toFixed(2),
-        grossProfit.toFixed(2),
         escape(paymentType),
         escape(description),
         escape(posName),
