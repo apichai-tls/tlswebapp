@@ -61,7 +61,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Sub-tabs state
-  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos" | "customer">("overview");
+  const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sale-report" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos" | "customer">("overview");
+  const [saleReportSubTab, setSaleReportSubTab] = useState<"item" | "category" | "employee" | "payment-type">("item");
 
   // Filters State
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
@@ -609,8 +610,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
           <p className="text-xs text-slate-500 font-semibold mt-1">Live business performance metrics, transaction analytics, and sales summaries</p>
         </div>
 
-        {/* Filter Toolbar Controls (Hidden when in Sales Summary, Sales by Item, Sales by Category, Sales by Employee, Sales by Payment Type, Receipts, or Taxes as they have dedicated toolbars) */}
-        {subTab !== "sales-summary" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && subTab !== "taxes" && (
+        {/* Filter Toolbar Controls (Hidden when in Sales Summary, Sale Report, Receipts, or Taxes as they have dedicated toolbars) */}
+        {subTab !== "sales-summary" && subTab !== "sale-report" && subTab !== "sales-by-item" && subTab !== "sales-by-category" && subTab !== "sales-by-employee" && subTab !== "sales-by-payment-type" && subTab !== "receipts" && subTab !== "taxes" && (
           <div className="flex flex-wrap items-center gap-2">
             {/* Branch Select */}
             <div className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-sm">
@@ -730,51 +731,15 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         </button>
 
         <button
-          onClick={() => setSubTab("sales-by-item")}
+          onClick={() => setSubTab("sale-report")}
           className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "sales-by-item"
+            subTab === "sale-report" || subTab === "sales-by-item" || subTab === "sales-by-category" || subTab === "sales-by-employee" || subTab === "sales-by-payment-type"
               ? "border-indigo-600 text-indigo-600"
               : "border-transparent text-slate-450 hover:text-slate-800"
           }`}
         >
           <ShoppingBag size={14} />
-          Sales by item
-        </button>
-
-        <button
-          onClick={() => setSubTab("sales-by-category")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "sales-by-category"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <LayoutGrid size={14} />
-          Sales by category
-        </button>
-
-        <button
-          onClick={() => setSubTab("sales-by-employee")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "sales-by-employee"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <User size={14} />
-          Sales by employee
-        </button>
-
-        <button
-          onClick={() => setSubTab("sales-by-payment-type")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
-            subTab === "sales-by-payment-type"
-              ? "border-indigo-600 text-indigo-600"
-              : "border-transparent text-slate-450 hover:text-slate-800"
-          }`}
-        >
-          <CreditCard size={14} />
-          Sales by payment type
+          SALE REPORT
         </button>
 
         <button
@@ -1045,40 +1010,105 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         />
       )}
 
-      {/* 2.1 SALES BY ITEM (Loyverse style) */}
-      {subTab === "sales-by-item" && (
-        <ReportsSalesByItem
-          jobs={jobs}
-          selectedBranch={selectedBranch}
-          onViewJob={onViewJob}
-        />
-      )}
+      {/* 2.1 SALE REPORT (Merged: Item, Category, Employee, Payment Type) */}
+      {(subTab === "sale-report" || subTab === "sales-by-item" || subTab === "sales-by-category" || subTab === "sales-by-employee" || subTab === "sales-by-payment-type") && (
+        <div className="space-y-4">
+          {/* Sub-navigation bar inside Sale Report */}
+          <div className="flex items-center gap-1.5 p-1 bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700/80 rounded-xl w-fit shadow-xs">
+            <button
+              onClick={() => {
+                setSubTab("sale-report");
+                setSaleReportSubTab("item");
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                (subTab === "sale-report" && saleReportSubTab === "item") || subTab === "sales-by-item"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750"
+              }`}
+            >
+              <ShoppingBag size={14} />
+              Sale by Item
+            </button>
 
-      {/* 2.2 SALES BY CATEGORY (Loyverse style) */}
-      {subTab === "sales-by-category" && (
-        <ReportsSalesByCategory
-          jobs={jobs}
-          selectedBranch={selectedBranch}
-          onViewJob={onViewJob}
-        />
-      )}
+            <button
+              onClick={() => {
+                setSubTab("sale-report");
+                setSaleReportSubTab("category");
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                (subTab === "sale-report" && saleReportSubTab === "category") || subTab === "sales-by-category"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750"
+              }`}
+            >
+              <LayoutGrid size={14} />
+              Category
+            </button>
 
-      {/* 2.3 SALES BY EMPLOYEE (Loyverse style) */}
-      {subTab === "sales-by-employee" && (
-        <ReportsSalesByEmployee
-          jobs={jobs}
-          selectedBranch={selectedBranch}
-          onViewJob={onViewJob}
-        />
-      )}
+            <button
+              onClick={() => {
+                setSubTab("sale-report");
+                setSaleReportSubTab("employee");
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                (subTab === "sale-report" && saleReportSubTab === "employee") || subTab === "sales-by-employee"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750"
+              }`}
+            >
+              <User size={14} />
+              Employee
+            </button>
 
-      {/* 2.4 SALES BY PAYMENT TYPE (Loyverse style) */}
-      {subTab === "sales-by-payment-type" && (
-        <ReportsSalesByPaymentType
-          jobs={jobs}
-          selectedBranch={selectedBranch}
-          onViewJob={onViewJob}
-        />
+            <button
+              onClick={() => {
+                setSubTab("sale-report");
+                setSaleReportSubTab("payment-type");
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                (subTab === "sale-report" && saleReportSubTab === "payment-type") || subTab === "sales-by-payment-type"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750"
+              }`}
+            >
+              <CreditCard size={14} />
+              Payment Type
+            </button>
+          </div>
+
+          {/* Sub-view Content */}
+          {((subTab === "sale-report" && saleReportSubTab === "item") || subTab === "sales-by-item") && (
+            <ReportsSalesByItem
+              jobs={jobs}
+              selectedBranch={selectedBranch}
+              onViewJob={onViewJob}
+            />
+          )}
+
+          {((subTab === "sale-report" && saleReportSubTab === "category") || subTab === "sales-by-category") && (
+            <ReportsSalesByCategory
+              jobs={jobs}
+              selectedBranch={selectedBranch}
+              onViewJob={onViewJob}
+            />
+          )}
+
+          {((subTab === "sale-report" && saleReportSubTab === "employee") || subTab === "sales-by-employee") && (
+            <ReportsSalesByEmployee
+              jobs={jobs}
+              selectedBranch={selectedBranch}
+              onViewJob={onViewJob}
+            />
+          )}
+
+          {((subTab === "sale-report" && saleReportSubTab === "payment-type") || subTab === "sales-by-payment-type") && (
+            <ReportsSalesByPaymentType
+              jobs={jobs}
+              selectedBranch={selectedBranch}
+              onViewJob={onViewJob}
+            />
+          )}
+        </div>
       )}
 
       {/* 2.5 RECEIPTS (Loyverse style) */}
