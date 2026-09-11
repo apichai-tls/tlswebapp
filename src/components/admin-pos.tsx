@@ -76,7 +76,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -85,7 +85,7 @@ const cleanRemarkForDisplay = (rawRemark: string | null | undefined) => {
   if (!rawRemark) return "";
   return rawRemark
     .split(" | ")
-    .filter(part => !part.startsWith("VAT:") && !part.startsWith("Express"))
+    .filter(part => !part.startsWith("VAT:") && !part.startsWith("Express") && !part.startsWith("Promo:") && !part.startsWith("Proforma:"))
     .join(" | ")
     .trim();
 };
@@ -1116,6 +1116,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setManualAdjustment(0);
     setDiscountPercent(0);
     setShowDiscount(false);
+    setPromoCodeInput("");
+    setAppliedPromo(null);
+    setPromoError(null);
     setDeliveryScheduledTime(getTomorrowDateTimeString());
     setReceivedCash("");
     setLocalDeliveryPrice("");
@@ -1180,6 +1183,19 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [vatType, setVatType] = useState<"none" | "inclusive" | "exclusive">("none");
   const [discountPercent, setDiscountPercent] = useState<number>(0);
   const [showDiscount, setShowDiscount] = useState<boolean>(false);
+  const [promoCodeInput, setPromoCodeInput] = useState<string>("");
+  const [appliedPromo, setAppliedPromo] = useState<{
+    code: string;
+    discountType: "PERCENTAGE" | "FIXED_AMOUNT";
+    discountTarget: "ALL" | "DELIVERY";
+    discountValue: number;
+    discountAmount: number;
+    netPayable: number;
+    maxDiscount?: number | null;
+    description?: string;
+  } | null>(null);
+  const [promoLoading, setPromoLoading] = useState<boolean>(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
 
   // Cashier Shift States
   const { activeShift, branchActiveShift, hasLoaded: hasLoadedShift } = useSyncExternalStore(
@@ -1739,25 +1755,143 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return (subtotal + expressSurcharge) * (discountPercent / 100);
   }, [subtotal, expressSurcharge, discountPercent]);
 
+  const promoDiscountAmount = useMemo(() => {
+    if (!appliedPromo) return 0;
+    if (appliedPromo.discountTarget === "DELIVERY") {
+      const fee = Number(localDeliveryPrice) || 0;
+      if (appliedPromo.discountType === "PERCENTAGE") {
+        let val = (fee * appliedPromo.discountValue) / 100;
+        if (appliedPromo.maxDiscount) val = Math.min(val, appliedPromo.maxDiscount);
+        return Math.max(0, Math.min(val, fee));
+      } else {
+        return Math.max(0, Math.min(appliedPromo.discountValue, fee));
+      }
+    }
+    const base = subtotal + expressSurcharge;
+    if (appliedPromo.discountType === "PERCENTAGE") {
+      let val = (base * appliedPromo.discountValue) / 100;
+      if (appliedPromo.maxDiscount) val = Math.min(val, appliedPromo.maxDiscount);
+      return Math.max(0, Math.min(val, base));
+    } else {
+      return Math.max(0, Math.min(appliedPromo.discountValue, base));
+    }
+  }, [appliedPromo, subtotal, expressSurcharge, localDeliveryPrice]);
+
+  const effectivePromoDiscount = (showDiscount && appliedPromo) ? promoDiscountAmount : 0;
+  const totalDiscount = discountAmount + effectivePromoDiscount;
+
   const vatAmount = useMemo(() => {
     if (vatType === "none" || vatRate <= 0) return 0;
-    // M2 Fix: VAT base = (subtotal + surcharge) - discount + manualAdjustment
+    // M2 Fix: VAT base = (subtotal + surcharge) - totalDiscount + manualAdjustment
     // manualAdjustment must be included so VAT reflects the actual billable amount
-    const baseForVat = subtotal + expressSurcharge - discountAmount + manualAdjustment;
+    const baseForVat = subtotal + expressSurcharge - totalDiscount + manualAdjustment;
     if (vatType === "inclusive") {
       return Math.max(0, baseForVat) * (vatRate / (100 + vatRate));
     } else {
       return Math.max(0, baseForVat) * (vatRate / 100);
     }
-  }, [vatType, vatRate, subtotal, expressSurcharge, discountAmount, manualAdjustment]);
+  }, [vatType, vatRate, subtotal, expressSurcharge, totalDiscount, manualAdjustment]);
 
   const total = useMemo(() => {
-    // Formula: (subtotal + surcharge) - discount + VAT
-    const baseTotal = subtotal + expressSurcharge - discountAmount;
+    // Formula: (subtotal + surcharge) - totalDiscount + VAT
+    const baseTotal = subtotal + expressSurcharge - totalDiscount;
     const vat = vatType === "exclusive" ? (baseTotal * (vatRate / 100)) : 0;
     const rawTotal = baseTotal + vat + manualAdjustment;
     return Math.max(0, Math.round(rawTotal * 100) / 100);
-  }, [subtotal, expressSurcharge, discountAmount, vatType, vatRate, manualAdjustment]);
+  }, [subtotal, expressSurcharge, totalDiscount, vatType, vatRate, manualAdjustment]);
+
+  const handleApplyPromo = async () => {
+    const code = promoCodeInput.trim().toUpperCase();
+    if (!code) return;
+
+    const custId = selectedCustomer?.id;
+    const custPhone = selectedCustomer?.phone?.trim();
+    const custName = selectedCustomer?.name?.trim();
+
+    if (!custId && !custPhone && !custName) {
+      setPromoError(currentLanguage === "en" ? "Please select a customer before using promo code" : "กรุณาเลือกลูกค้าหรือระบุข้อมูลลูกค้าก่อนใช้โค้ดส่วนลด");
+      toast.error(currentLanguage === "en" ? "Please select a customer before using promo code" : "กรุณาเลือกลูกค้าหรือระบุข้อมูลลูกค้าก่อนใช้โค้ดส่วนลด");
+      return;
+    }
+
+    setPromoLoading(true);
+    setPromoError(null);
+    setAppliedPromo(null);
+    try {
+      const orderTotal = Math.max(0, subtotal + expressSurcharge - discountAmount);
+      const deliveryFee = Number(localDeliveryPrice) || 0;
+      const grandTotalBeforePromo = Math.max(0, subtotal + expressSurcharge + deliveryFee - discountAmount);
+
+      const res = await fetch(`/api/pos/promo/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          orderTotal,
+          customerId: custId,
+          customerPhone: custPhone,
+          customerName: custName,
+          currentJobId: loadedJobId || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.valid) {
+        const isDeliveryOnly = data.discountTarget === "DELIVERY";
+        let calcDiscount = data.discountAmount;
+
+        if (isDeliveryOnly) {
+          if (data.discountType === "PERCENTAGE") {
+            calcDiscount = (deliveryFee * data.discountValue) / 100;
+          } else {
+            calcDiscount = Math.min(data.discountValue, deliveryFee);
+          }
+          if (data.maxDiscount != null && data.maxDiscount > 0) {
+            calcDiscount = Math.min(calcDiscount, data.maxDiscount);
+          }
+          calcDiscount = Math.max(0, Math.min(calcDiscount, deliveryFee));
+
+          if (deliveryFee <= 0) {
+            toast.warning(currentLanguage === "en" ? `Code ${data.code} is for delivery discount (Delivery fee is ฿0)` : `โค้ด ${data.code} เป็นส่วนลดค่าจัดส่ง (ออเดอร์นี้ไม่มีค่าจัดส่ง ฿0)`);
+          } else {
+            toast.success(currentLanguage === "en" ? `Code ${data.code} applied — Delivery discount ฿${calcDiscount.toFixed(2)}` : `✅ โค้ด ${data.code} — ส่วนลดค่าจัดส่ง ฿${calcDiscount.toFixed(2)}`);
+          }
+        } else {
+          toast.success(currentLanguage === "en" ? `Code ${data.code} applied — Discount ฿${calcDiscount.toFixed(2)}` : `✅ โค้ด ${data.code} — ลด ฿${calcDiscount.toFixed(2)}`);
+        }
+
+        setAppliedPromo({
+          code: data.code,
+          discountType: data.discountType,
+          discountTarget: isDeliveryOnly ? "DELIVERY" : "ALL",
+          discountValue: data.discountValue,
+          discountAmount: calcDiscount,
+          netPayable: Math.max(0, grandTotalBeforePromo - calcDiscount),
+          maxDiscount: data.maxDiscount ?? null,
+          description: data.description,
+        });
+      } else {
+        setPromoError(data.error || (currentLanguage === "en" ? "Invalid promo code" : "โค้ดไม่ถูกต้อง"));
+        toast.error(data.error || (currentLanguage === "en" ? "Invalid promo code" : "โค้ดส่วนลดไม่ถูกต้อง"));
+      }
+    } catch {
+      setPromoError(currentLanguage === "en" ? "Failed to connect to server" : "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้");
+      toast.error(currentLanguage === "en" ? "Failed to verify promo code, please try again" : "ไม่สามารถตรวจสอบโค้ดได้ กรุณาลองใหม่");
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const handleRedeemPromo = async (code: string, receiptNo: string, orderTotal: number, discountAmt: number) => {
+    try {
+      await fetch(`/api/pos/promo/redeem`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, receiptNo, orderTotal, discountAmount: discountAmt }),
+      });
+    } catch (e) {
+      console.warn("[PromoCode] Redeem failed (non-blocking):", e);
+    }
+  };
 
   const activePaymentChannels = useMemo(() => {
     return getActivePaymentChannels(settings, Boolean(selectedCustomer?.isMember));
@@ -1917,8 +2051,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       subtotal: subtotal,
       expressSurcharge: expressSurcharge,
       serviceSpeed: serviceSpeed,
-      discount: manualAdjustment + discountAmount,
+      discount: manualAdjustment + totalDiscount,
       discountPercent: discountPercent,
+      promoCode: appliedPromo?.code,
+      promoDiscount: effectivePromoDiscount,
+      promoTarget: appliedPromo?.discountTarget,
       total: total,
       isPaid: isPaid,
       paymentChannel: isPaid ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
@@ -1932,7 +2069,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       adminNotesJson: JSON.stringify({ payments: draftPayments }),
       deliveryFee: 0
     };
-  }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, discountAmount, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
+  }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, totalDiscount, effectivePromoDiscount, appliedPromo, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
 
 
   const handleCheckout = async () => {
@@ -2042,7 +2179,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               subtotal: subtotal,
               expressSurcharge: expressSurcharge,
               serviceSpeed: serviceSpeed,
-              discount: manualAdjustment + discountAmount,
+              discount: manualAdjustment + totalDiscount,
+              promoCode: appliedPromo?.code,
+              promoDiscount: effectivePromoDiscount,
+              promoTarget: appliedPromo?.discountTarget,
               total: total,
               isPaid: isPaid,
               paymentChannel: isPaid ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
@@ -2112,8 +2252,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const vatText = vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : "";
       const cleanBaseProforma = cleanProformaNumber(targetProformaNum);
       const proformaStr = cleanBaseProforma ? `Proforma: ${cleanBaseProforma}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "";
+      const promoStr = (showDiscount || appliedPromo || promoCodeInput.trim()) ? (
+        appliedPromo
+          ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${effectivePromoDiscount})`
+          : (promoCodeInput.trim() ? `Promo: ${promoCodeInput.trim().toUpperCase()}` : "")
+      ) : "";
       const finalRemark = [
         proformaStr,
+        promoStr,
         remark,
         expressText,
         vatText
@@ -2212,7 +2358,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
         await jobStore.updateJobDetails(loadedJobId, {
           totalAmount: total,
-          discount: manualAdjustment + discountAmount,
+          discount: manualAdjustment + totalDiscount,
           discountPercent: discountPercent,
           items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
           isPaid: isPaidFlag,
@@ -2246,7 +2392,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           pickupCoords: { lat: 13.7417, lng: 100.5526 }, // Shop coords
           dropoffCoords: { lat: 13.7417, lng: 100.5526 },
           totalAmount: total,
-          discount: manualAdjustment + discountAmount,
+          discount: manualAdjustment + totalDiscount,
           discountPercent: discountPercent,
           items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
           serviceType: (cart[0]?.id as ServiceType) || "wash_fold",
@@ -2328,6 +2474,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
       setLatestJob(finalJob);
+      if (appliedPromo && effectivePromoDiscount > 0 && finalJob?.id) {
+        handleRedeemPromo(
+          appliedPromo.code,
+          finalJob.id,
+          total + effectivePromoDiscount,
+          effectivePromoDiscount
+        );
+      }
       setShowReceipt(true);
       playAudioFeedback("success");
 
@@ -4088,32 +4242,82 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
 
  
-              {/* Discount % Input */}
+              {/* Discount & Promo Section */}
               {showDiscount && (
-                <div className="flex justify-between items-center text-xs font-semibold text-muted-foreground py-1 border-t border-border/60">
-                  <span>{currentLanguage === "en" ? "Discount (%)" : "ส่วนลด (%)"}</span>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="any"
-                      placeholder="0"
-                      className="h-6 w-14 text-[10px] font-bold bg-background border border-input rounded-md outline-none focus:border-primary text-center text-foreground"
-                      value={discountPercent || ""}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (isNaN(val)) {
-                          setDiscountPercent(0);
-                        } else {
-                          setDiscountPercent(Math.max(0, Math.min(100, val)));
-                        }
-                      }}
-                    />
-                    {discountAmount > 0 && (
-                      <span className="font-bold text-rose-500">
-                        -฿{discountAmount.toFixed(2)}
-                      </span>
+                <div className="space-y-1.5 py-1.5 border-t border-border/60">
+                  {/* Discount (%) Row */}
+                  <div className="flex justify-between items-center text-xs font-semibold text-muted-foreground">
+                    <span>{currentLanguage === "en" ? "Discount (%)" : "ส่วนลด (%)"}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="any"
+                        placeholder="0"
+                        className="h-6 w-14 text-[10px] font-bold bg-background border border-input rounded-md outline-none focus:border-primary text-center text-foreground"
+                        value={discountPercent || ""}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (isNaN(val)) {
+                            setDiscountPercent(0);
+                          } else {
+                            setDiscountPercent(Math.max(0, Math.min(100, val)));
+                          }
+                        }}
+                      />
+                      {discountAmount > 0 && (
+                        <span className="font-bold text-rose-500">
+                          -฿{discountAmount.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Promo Code Row */}
+                  <div className="border-t border-border/40 pt-1.5 space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide whitespace-nowrap">Promo</span>
+                      <input
+                        type="text"
+                        placeholder={currentLanguage === "en" ? "Enter promo code" : "กรอกโค้ดส่วนลด"}
+                        value={promoCodeInput}
+                        onChange={(e) => {
+                          setPromoCodeInput(e.target.value.toUpperCase());
+                          if (appliedPromo) { setAppliedPromo(null); setPromoError(null); }
+                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") handleApplyPromo(); }}
+                        className="flex-1 h-6 text-[10px] font-bold bg-background border border-input rounded-md outline-none focus:border-primary text-center text-foreground placeholder:text-muted-foreground uppercase"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleApplyPromo}
+                        disabled={promoLoading || !promoCodeInput.trim()}
+                        className="h-6 px-2 text-[9px] font-black rounded-md bg-amber-500 hover:bg-amber-400 text-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap cursor-pointer"
+                      >
+                        {promoLoading ? "..." : "Apply"}
+                      </button>
+                      {(appliedPromo || !!promoCodeInput.trim()) && (
+                        <button
+                          type="button"
+                          onClick={() => { setAppliedPromo(null); setPromoCodeInput(""); setPromoError(null); }}
+                          className="h-6 w-6 flex items-center justify-center rounded-md bg-muted hover:bg-rose-500/20 text-muted-foreground hover:text-rose-500 transition-colors text-xs font-black cursor-pointer shrink-0"
+                          title={currentLanguage === "en" ? "Clear code" : "ลบโค้ด"}
+                        >✕</button>
+                      )}
+                    </div>
+                    {/* Applied badge */}
+                    {appliedPromo && (
+                      <div className="flex justify-between items-center pt-0.5">
+                        <span className="text-[9px] text-amber-500 dark:text-amber-400 font-bold">
+                          🎟 {appliedPromo.code} {appliedPromo.discountTarget === "DELIVERY" ? (currentLanguage === "en" ? "(Delivery)" : "(ค่าส่ง)") : ""} {appliedPromo.discountType === "PERCENTAGE" ? `(${appliedPromo.discountValue}%${appliedPromo.maxDiscount ? ` max ฿${appliedPromo.maxDiscount}` : ""})` : ""}
+                        </span>
+                        <span className="text-[10px] font-black text-rose-500">-฿{effectivePromoDiscount.toFixed(2)}</span>
+                      </div>
+                    )}
+                    {/* Error */}
+                    {promoError && !appliedPromo && (
+                      <p className="text-[9px] text-rose-500 font-bold">{promoError}</p>
                     )}
                   </div>
                 </div>
@@ -4133,10 +4337,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         setShowDiscount(checked);
                         if (!checked) {
                           setDiscountPercent(0);
+                          setAppliedPromo(null);
+                          setPromoCodeInput("");
+                          setPromoError(null);
                         }
                       }}
                     />
-                    <span>{currentLanguage === "en" ? "% Discount" : "% ส่วนลด"}</span>
+                    <span>{currentLanguage === "en" ? "Discount" : "ส่วนลด"}</span>
                   </label>
                 </div>
                 <div className="text-right">
@@ -4505,9 +4712,48 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               }
 
 
-                              setManualAdjustment(job.discount || 0);
                               setDiscountPercent(job.discountPercent || 0);
-                              setShowDiscount(!!job.discountPercent && job.discountPercent > 0);
+
+                              const promoMatch = job.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+                              const hasValidPromo = Boolean(promoMatch && promoMatch[3] && parseFloat(promoMatch[3]) > 0);
+                              const hasRawPromo = Boolean(promoMatch && promoMatch[1]);
+                              setShowDiscount(Boolean((job.discountPercent && job.discountPercent > 0) || hasValidPromo || hasRawPromo));
+
+                              if (promoMatch && promoMatch[1]) {
+                                const pCode = promoMatch[1].trim().toUpperCase();
+                                setPromoCodeInput(pCode);
+                                if (hasValidPromo) {
+                                  const pTarget = (promoMatch[2] as "ALL" | "DELIVERY") || "ALL";
+                                  const pAmount = parseFloat(promoMatch[3]);
+                                  setAppliedPromo({
+                                    code: pCode,
+                                    discountType: "FIXED_AMOUNT",
+                                    discountTarget: pTarget,
+                                    discountValue: pAmount,
+                                    discountAmount: pAmount,
+                                    netPayable: Math.max(0, (job.totalAmount || 0)),
+                                    maxDiscount: null,
+                                  });
+                                } else {
+                                  setAppliedPromo(null);
+                                }
+                                setPromoError(null);
+                              } else {
+                                setPromoCodeInput("");
+                                setAppliedPromo(null);
+                                setPromoError(null);
+                              }
+
+                              const promoAmt = hasValidPromo ? parseFloat(promoMatch![3]) : 0;
+                              const baseTotalForDiscount = cartItems.reduce((sum, item) => {
+                                if (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item") return sum;
+                                return sum + (item.price * item.quantity);
+                              }, 0);
+                              const pctDiscountEstimated = (job.discountPercent && job.discountPercent > 0)
+                                ? Math.round(baseTotalForDiscount * (job.discountPercent / 100))
+                                : 0;
+                              const unaccountedDiscount = Math.max(0, (job.discount || 0) - pctDiscountEstimated - promoAmt);
+                              setManualAdjustment(unaccountedDiscount);
 
                               if (job.remark) {
                                 const expressMatch = job.remark.match(/Express\s*(\d+)%/i);
@@ -4535,6 +4781,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 const parts = job.remark.split(" | ").map(p => p.trim());
                                 const userParts = parts.filter(p => 
                                   !p.startsWith("Proforma:") && 
+                                  !p.startsWith("Promo:") && 
                                   !p.startsWith("Express") && 
                                   !p.startsWith("VAT:")
                                 );
