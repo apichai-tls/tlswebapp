@@ -33,6 +33,33 @@ const TABLES_TO_SYNC = [
   'WebsiteAdminUser'
 ];
 
+async function createConnectedClient(connectionString: string): Promise<Client> {
+  const prefersNoSsl = 
+    connectionString.includes('sslmode=disable') ||
+    connectionString.includes('127.0.0.1') || 
+    connectionString.includes('localhost') || 
+    connectionString.includes('/cloudsql');
+
+  if (prefersNoSsl) {
+    const client = new Client({ connectionString });
+    await client.connect();
+    return client;
+  }
+
+  try {
+    const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+    await client.connect();
+    return client;
+  } catch (err: any) {
+    if (err?.message?.includes('does not support SSL')) {
+      const fallbackClient = new Client({ connectionString });
+      await fallbackClient.connect();
+      return fallbackClient;
+    }
+    throw err;
+  }
+}
+
 export async function performProdToTestSync(): Promise<SyncSummary> {
   const startTime = Date.now();
   const prodUrl = process.env.PROD_DATABASE_URL || 'postgresql://postgres:%40K0tApq9R%40(CEQk%22@34.10.25.133:5432/postgres';
@@ -43,10 +70,10 @@ export async function performProdToTestSync(): Promise<SyncSummary> {
     throw new Error('Safety guard: Target database cannot be the Production database!');
   }
 
-  const prodClient = new Client({ connectionString: prodUrl, ssl: { rejectUnauthorized: false } });
-  const testClient = new Client({ connectionString: testUrl, ssl: { rejectUnauthorized: false } });
-
-  await Promise.all([prodClient.connect(), testClient.connect()]);
+  const [prodClient, testClient] = await Promise.all([
+    createConnectedClient(prodUrl),
+    createConnectedClient(testUrl),
+  ]);
 
   const syncedTables: Record<string, number> = {};
 
