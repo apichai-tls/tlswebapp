@@ -1731,7 +1731,7 @@ export default function AdminPage() {
 
     setEditingJobId(job.id);
     setBillNo(job.billNo || "");
-    let isTaxReq = Boolean(job.remark && (job.remark.includes("ขอใบกำกับภาษี") || job.remark.includes("Tax Invoice")));
+    let isTaxReq = Boolean(job.remark && (job.remark.includes("ขอใบกำกับภาษี") || job.remark.includes("Tax Invoice") || job.remark.includes("Req Tax Inv")));
     if (job.adminNotesJson) {
       try {
         const parsed = JSON.parse(job.adminNotesJson);
@@ -1823,7 +1823,7 @@ export default function AdminPage() {
 
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
     const customRemarks = oldRemarks.filter(r => 
-      !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up"].includes(r) &&
+      !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up", "ขอใบกำกับภาษี", "Tax Invoice", "Req Tax Inv"].includes(r) &&
       !r.startsWith("VAT:") &&
       !r.startsWith("Proforma:") &&
       !r.startsWith("Revision:") &&
@@ -2008,7 +2008,7 @@ export default function AdminPage() {
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
         dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
-        isTaxInvoiceRequested ? "ขอใบกำกับภาษี" : "",
+        isTaxInvoiceRequested ? "Req Tax Inv" : "",
         (showDialogDiscount || appliedPromo || promoCodeInput.trim()) ? (
           appliedPromo
             ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
@@ -4502,7 +4502,7 @@ export default function AdminPage() {
                                       className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer"
                                     />
                                     <FileText size={11} className={isTaxInvoiceRequested ? "text-amber-400" : "text-slate-400"} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">ขอใบกำกับภาษี</span>
+                                    <span className="text-[10px] font-bold uppercase tracking-wider">Req Tax Inv</span>
                                   </Label>
                                 )}
                                 {canSeeStuck && (
@@ -5476,7 +5476,7 @@ export default function AdminPage() {
                                     className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 h-3.5 w-3.5 cursor-pointer"
                                   />
                                   <FileText size={12} className={isTaxInvoiceRequested ? "text-amber-400" : "text-slate-400"} />
-                                  <span className="text-xs font-bold">ขอใบกำกับภาษี</span>
+                                  <span className="text-xs font-bold">Req Tax Inv</span>
                                 </Label>
                               )}
                               {canSeeStuck && (

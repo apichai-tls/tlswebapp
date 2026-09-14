@@ -760,7 +760,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           <span className="text-[11px] font-bold text-slate-700">
                             {job.paymentChannel || "Unspecified"}
                           </span>
-                          {(job.remark?.includes("ขอใบกำกับภาษี") || (job.remark && job.remark.includes("Tax Invoice"))) && (
+                          {(job.remark?.includes("ขอใบกำกับภาษี") || (job.remark && (job.remark.includes("Tax Invoice") || job.remark.includes("Req Tax Inv")))) && (
                             <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[8.5px] px-1 py-0 h-4 font-black tracking-wider shadow-none">
                               TAX REQ
                             </Badge>
