@@ -1,7 +1,7 @@
 import { api, registerOpenShiftsSyncCallback } from './api';
 
 export type JobStatus = "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return" | "topup";
-export type JobType = "pickup" | "delivery" | "full_service";
+export type JobType = "pickup" | "delivery" | "full_service" | "in_store";
 export type ServiceType = "wash_fold" | "wash_iron_fold" | "wash_iron_hanger";
 export type TripStatus = "pending" | "in_transit" | "completed";
 
@@ -99,6 +99,7 @@ export interface Job {
   pickupRoom?: string;
   dropoffLocation: string; // Shop location
   dropoffRoom?: string;
+  deliveryAddress?: string;
   pickupCoords: LatLng;
   dropoffCoords: LatLng;
   distance: number; // 1-way km

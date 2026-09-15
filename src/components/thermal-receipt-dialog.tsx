@@ -6,18 +6,84 @@ import { format } from "date-fns";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
-import { type Job, customerStore } from "@/lib/store";
+import { type Job, customerStore, shopStore, serviceStore, type ServiceItem } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
-
-
-
 
 export interface ReceiptItem {
   name: string;
   nameEn?: string | null;
   price: number;
   quantity: number;
+  category?: string | null;
+  unit?: string | null;
+  serviceId?: string | null;
+}
+
+export const CATEGORY_ORDER = [
+  "KILO",
+  "DRY CLEAN",
+  "IRON",
+  "PCS",
+  "LINENS",
+  "SHOES",
+  "OTHERS",
+  "PACKAGE",
+];
+
+export function getCategoryDisplayName(cat: string | null | undefined, currentLanguage: string = "en"): string {
+  if (!cat) return currentLanguage === "en" ? "OTHERS" : "อื่นๆ";
+  const upper = cat.trim().toUpperCase();
+  if (upper === "KILO") return currentLanguage === "en" ? "KILO" : "ซักอบพับ (KILO)";
+  if (upper === "DRY CLEAN" || upper === "DRYCLEAN") return currentLanguage === "en" ? "DRY CLEAN" : "ซักแห้ง (DRY CLEAN)";
+  if (upper === "IRON") return currentLanguage === "en" ? "IRON" : "รีด (IRON)";
+  if (upper === "PCS" || upper === "PIECE") return currentLanguage === "en" ? "PIECE (PCS)" : "ซักรายชิ้น (PCS)";
+  if (upper === "LINENS" || upper === "LINEN") return currentLanguage === "en" ? "LINENS" : "เครื่องนอน (LINENS)";
+  if (upper === "SHOES" || upper === "SHOE") return currentLanguage === "en" ? "SHOES" : "รองเท้า (SHOES)";
+  if (upper === "PACKAGE" || upper === "TOP UP" || upper === "TOPUP") return currentLanguage === "en" ? "PACKAGE" : "แพ็กเกจ (PACKAGE)";
+  if (upper === "OTHERS" || upper === "OTHER") return currentLanguage === "en" ? "OTHERS" : "อื่นๆ (OTHERS)";
+  return upper;
+}
+
+export function resolveItemCategory(
+  item: { name: string; nameEn?: string | null; category?: string | null; serviceId?: string | null; id?: string | null },
+  services: ServiceItem[] = []
+): string {
+  if (item.category && item.category.trim()) {
+    return item.category.trim().toUpperCase();
+  }
+  const sid = (item.serviceId || item.id || "").toLowerCase();
+  if (sid && Array.isArray(services)) {
+    const matched = services.find(s => s.id && s.id.toLowerCase() === sid);
+    if (matched?.category) return matched.category.toUpperCase();
+  }
+  const name = (item.name || item.nameEn || "").trim().toLowerCase();
+  if (name && Array.isArray(services)) {
+    const matchedByName = services.find(
+      s => (s.name && s.name.toLowerCase() === name) || (s.nameEn && s.nameEn.toLowerCase() === name)
+    );
+    if (matchedByName?.category) return matchedByName.category.toUpperCase();
+  }
+  // SKU prefix heuristics
+  const upperSid = (item.serviceId || item.id || "").toUpperCase();
+  if (upperSid.startsWith("DRY-")) return "DRY CLEAN";
+  if (upperSid.startsWith("IRO-")) return "IRON";
+  if (upperSid.startsWith("KIL-")) return "KILO";
+  if (upperSid.startsWith("LIN-")) return "LINENS";
+  if (upperSid.startsWith("PCS-")) return "PCS";
+  if (upperSid.startsWith("SHO-")) return "SHOES";
+  if (upperSid.startsWith("PKG-") || upperSid.startsWith("PAC-")) return "PACKAGE";
+  if (upperSid.startsWith("OTH-")) return "OTHERS";
+
+  // Keyword heuristics
+  if (name.includes("ซักพับ") || name.includes("wash/fold") || name.includes("wash & fold") || name.includes("kilo")) return "KILO";
+  if (name.includes("ซักแห้ง") || name.includes("dry clean")) return "DRY CLEAN";
+  if (name.includes("ซักรีด") || name.includes("รีด") || name.includes("iron")) return "IRON";
+  if (name.includes("ผ้าม่าน") || name.includes("curtain") || name.includes("bed") || name.includes("linen") || name.includes("ผ้าปู") || name.includes("ผ้านวม")) return "LINENS";
+  if (name.includes("รองเท้า") || name.includes("shoe")) return "SHOES";
+  if (name.includes("package") || name.includes("top up") || name.includes("topup")) return "PACKAGE";
+
+  return "OTHERS";
 }
 
 export interface ReceiptData {
@@ -27,6 +93,7 @@ export interface ReceiptData {
   customerName: string;
   customerPhone: string;
   customerId?: string;
+  deliveryAddress?: string | null;
   items: ReceiptItem[];
   subtotal: number;
   expressSurcharge: number;
@@ -211,16 +278,30 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     : (job.createdAt ? new Date(job.createdAt) : new Date());
 
 
+  const shops = typeof window !== "undefined" ? shopStore.getSnapshot() : [];
+  const rawDropoff = (job as any).dropoffLocation || (rawJob as any).dropoffLocation;
+  const isShopDropoff = shops.some(s => s.address === rawDropoff || s.name === rawDropoff);
+  const effectiveDeliveryAddress = (job as any).deliveryAddress 
+    || (!isShopDropoff && rawDropoff && String(rawDropoff).trim() !== "" ? String(rawDropoff).trim() : null)
+    || cust?.defaultAddress
+    || null;
+
+  const services = typeof window !== "undefined" ? serviceStore.getSnapshot() : [];
+
   return {
     id: displayId,
     createdAt: receiptDate,
     customerName: job.customerName || "Walk-In",
     customerPhone: job.customerPhone || "-",
-    items: jobItems.map((item: { name: string; nameEn?: string | null; quantity: number; price: number }) => ({
+    deliveryAddress: effectiveDeliveryAddress,
+    items: jobItems.map((item: any) => ({
       name: item.name,
       nameEn: item.nameEn || item.name,
       quantity: item.quantity,
-      price: item.price
+      price: item.price,
+      category: resolveItemCategory(item, services),
+      unit: item.unit || null,
+      serviceId: item.serviceId || item.id || null,
     })),
     subtotal: jobSubtotal,
     expressSurcharge: jobSurcharge,
@@ -503,6 +584,28 @@ export function ThermalReceiptDialog({
 
   // Receipt Content Render function
   const renderReceiptContent = (printMode: boolean = false, customId?: string) => {
+    const groupedItems = (() => {
+      if (!receiptData.items || receiptData.items.length === 0) return [];
+      const groupMap = new Map<string, ReceiptItem[]>();
+      for (const item of receiptData.items) {
+        const cat = resolveItemCategory(item);
+        if (!groupMap.has(cat)) groupMap.set(cat, []);
+        groupMap.get(cat)!.push(item);
+      }
+      const sortedCategories = Array.from(groupMap.keys()).sort((a, b) => {
+        const idxA = CATEGORY_ORDER.indexOf(a);
+        const idxB = CATEGORY_ORDER.indexOf(b);
+        const rankA = idxA === -1 ? 999 : idxA;
+        const rankB = idxB === -1 ? 999 : idxB;
+        return rankA - rankB;
+      });
+      return sortedCategories.map(cat => ({
+        category: cat,
+        displayName: getCategoryDisplayName(cat, currentLanguage),
+        items: groupMap.get(cat)!
+      }));
+    })();
+
     return (
       <div 
         ref={!printMode ? receiptRef : undefined}
@@ -625,6 +728,12 @@ export function ThermalReceiptDialog({
             <span>PHONE:</span>
             <span>{receiptData.customerPhone}</span>
           </div>
+          {receiptData.deliveryAddress && (
+            <div className="flex justify-between gap-2 text-left">
+              <span className="shrink-0">ADDRESS:</span>
+              <span className="text-right text-neutral-800 flex-1 break-words">{receiptData.deliveryAddress}</span>
+            </div>
+          )}
           {receiptData.deliveryScheduledAt && (() => {
             const isEdited = isCollectionDateEdited(receiptData.createdAt, receiptData.deliveryScheduledAt);
             return (
@@ -644,20 +753,25 @@ export function ThermalReceiptDialog({
             <span className="w-12 text-center">QTY</span>
             <span className="w-20 text-right">TOTAL</span>
           </div>
-          {receiptData.items.map((item: ReceiptItem, idx: number) => {
-            const rawName = (currentLanguage === "en" && item.nameEn) ? item.nameEn : item.name;
-            const maxLen = isA5 ? 60 : (isSmall ? 20 : 30);
-            const displayItemName = rawName.length > maxLen ? rawName.slice(0, maxLen - 3) + "..." : rawName;
-            return (
-              <div key={idx} className={`flex ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} leading-tight`}>
-                <span className="flex-1 min-w-0 truncate pr-3 text-left">{displayItemName}</span>
-                <span className="w-12 text-center">{item.quantity}</span>
-                <span className="w-20 text-right">฿{formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}</span>
-
-
+          {groupedItems.map((group, gIdx) => (
+            <div key={group.category || gIdx} className="space-y-1">
+              <div className={`font-bold uppercase tracking-wider text-neutral-700 border-b border-neutral-300 pb-0.5 pt-1 ${isA5 ? "text-xs" : (isSmall ? "text-[7.5px]" : "text-[8.5px]")}`}>
+                {group.displayName}
               </div>
-            );
-          })}
+              {group.items.map((item: ReceiptItem, idx: number) => {
+                const rawName = (currentLanguage === "en" && item.nameEn) ? item.nameEn : item.name;
+                const maxLen = isA5 ? 60 : (isSmall ? 20 : 30);
+                const displayItemName = rawName.length > maxLen ? rawName.slice(0, maxLen - 3) + "..." : rawName;
+                return (
+                  <div key={idx} className={`flex ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} leading-tight`}>
+                    <span className="flex-1 min-w-0 truncate pr-3 text-left pl-1.5">{displayItemName}</span>
+                    <span className="w-12 text-center">{item.quantity}</span>
+                    <span className="w-20 text-right">฿{formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
           <div className="border-t border-dashed border-neutral-400/50 my-2" />
         </div>
 

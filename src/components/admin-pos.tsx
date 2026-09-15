@@ -37,7 +37,9 @@ import {
   History,
   RefreshCw,
   Store,
-  Clock
+  Clock,
+  Truck,
+  MapPin
 } from "lucide-react";
 import { trousers, skirt, dress, socks } from "@lucide/lab";
 import { Button } from "@/components/ui/button";
@@ -1093,8 +1095,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   const [receivedCash, setReceivedCash] = useState("");
   const [localDeliveryPrice, setLocalDeliveryPrice] = useState("");
+  const [deliveryAddress, setDeliveryAddress] = useState("");
 
-  const isDeliveryEnabled = settings?.enableDeliveryService === "true";
+  const isDeliveryEnabled = true;
   const { deliveryItem, deliveryServiceType } = useMemo(() => {
     const item = cart.find(i => i.id === "delivery-pickup-service-item" || i.id === "delivery-only-service-item");
     const type = item 
@@ -1122,6 +1125,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setDeliveryScheduledTime(getTomorrowDateTimeString());
     setReceivedCash("");
     setLocalDeliveryPrice("");
+    setDeliveryAddress("");
     setProformaReceiptNumber("");
     setProformaRevision(0);
     setLastProformaCartHash("");
@@ -1554,6 +1558,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   useEffect(() => {
     if (preselectedCustomer) {
       setSelectedCustomer(preselectedCustomer);
+      if (preselectedCustomer.defaultAddress || preselectedCustomer.secondaryAddress) {
+        setDeliveryAddress(prev => prev || preselectedCustomer.defaultAddress || preselectedCustomer.secondaryAddress || "");
+      }
     }
     if (preselectedCategory) {
       if ((preselectedCategory === "Topup Member" || preselectedCategory === "PACKAGE") && isStandardPlan) {
@@ -1777,7 +1784,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
   }, [appliedPromo, subtotal, expressSurcharge, localDeliveryPrice]);
 
-  const effectivePromoDiscount = (showDiscount && appliedPromo) ? promoDiscountAmount : 0;
+  const effectivePromoDiscount = appliedPromo ? promoDiscountAmount : 0;
   const totalDiscount = discountAmount + effectivePromoDiscount;
 
   const vatAmount = useMemo(() => {
@@ -2009,6 +2016,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         createdAt: receiptDate,
         customerName: latestJob.customerName || "Walk-In",
         customerPhone: latestJob.customerPhone || "-",
+        deliveryAddress: (latestJob as any).deliveryAddress || (latestJob.dropoffLocation && latestJob.dropoffLocation !== activeShop?.name ? latestJob.dropoffLocation : undefined) || selectedCustomer?.defaultAddress || undefined,
         items: jobItems,
         subtotal: jobSubtotal,
         expressSurcharge: jobSurcharge,
@@ -2040,6 +2048,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     const cleanBaseProforma = cleanProformaNumber(proformaReceiptNumber);
     const displayProforma = formatProformaNumber(cleanBaseProforma, proformaRevision);
+    const isDelivery = Boolean(deliveryServiceType);
+    const resolvedDraftAddress = isDelivery 
+      ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined)
+      : undefined;
+    const resolvedDraftDeliveryFee = isDelivery ? (parseFloat(localDeliveryPrice) || 0) : 0;
 
     return {
       id: displayProforma,
@@ -2047,7 +2060,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       createdAt: draftDate,
       customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
       customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
-      items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
+      deliveryAddress: resolvedDraftAddress,
+      items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
       subtotal: subtotal,
       expressSurcharge: expressSurcharge,
       serviceSpeed: serviceSpeed,
@@ -2067,9 +2081,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       deliveryScheduledAt: new Date(deliveryScheduledTime),
       status: undefined,
       adminNotesJson: JSON.stringify({ payments: draftPayments }),
-      deliveryFee: 0
+      deliveryFee: resolvedDraftDeliveryFee
     };
-  }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, totalDiscount, effectivePromoDiscount, appliedPromo, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision]);
+  }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, totalDiscount, effectivePromoDiscount, appliedPromo, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision, deliveryAddress, localDeliveryPrice, deliveryServiceType]);
 
 
   const handleCheckout = async () => {
@@ -2168,6 +2182,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           const alreadyCaptured = capturedReceiptUrlsRef.current.some(url => url.includes(filename)) || sessionCapturedReceiptUrls.some(url => url.includes(filename));
 
           if (!alreadyCaptured) {
+            const isDelivery = Boolean(deliveryServiceType);
+            const resolvedTempAddress = isDelivery 
+              ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined)
+              : undefined;
+            const resolvedTempFee = isDelivery ? (parseFloat(localDeliveryPrice) || 0) : 0;
             const tempReceiptData: any = {
               id: effectiveProformaId,
               proformaId: cleanProformaNumber(targetProformaNum),
@@ -2175,7 +2194,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               createdAt: new Date(),
               customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
               customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
-              items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
+              deliveryAddress: resolvedTempAddress,
+              items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
               subtotal: subtotal,
               expressSurcharge: expressSurcharge,
               serviceSpeed: serviceSpeed,
@@ -2192,7 +2212,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               vatRate,
               vatAmount,
               deliveryScheduledAt: new Date(deliveryScheduledTime),
-              deliveryFee: 0
+              deliveryFee: resolvedTempFee
             };
             const blob = settings?.receiptPaperSize === "A5"
               ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(tempReceiptData, activeShop)
@@ -2342,6 +2362,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         ? JSON.stringify({ payments: finalPayments, notes: existingNotes })
         : JSON.stringify({ payments: finalPayments });
 
+      const isDelivery = Boolean(deliveryServiceType);
+      const resolvedDropoff = isDelivery
+        ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || activeShop?.address || "Customer Address")
+        : (activeShop?.name || "That Laundry Shop (Branch 1)");
+      const resolvedDropoffCoords = (isDelivery && selectedCustomer?.defaultCoords?.lat)
+        ? selectedCustomer.defaultCoords
+        : (activeShop?.coords || { lat: 13.7417, lng: 100.5526 });
+      const resolvedDeliveryFee = isDelivery ? (parseFloat(localDeliveryPrice) || 0) : 0;
+
       let finalJob = null;
       if (loadedJobId) {
         const loadedJob = jobs.find(j => j.id === loadedJobId);
@@ -2357,10 +2386,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const mergedBills = Array.from(new Set([...existingBills, ...allSessionUrls]));
 
         await jobStore.updateJobDetails(loadedJobId, {
+          type: isDelivery ? "delivery" : "in_store",
+          dropoffLocation: resolvedDropoff,
+          dropoffCoords: resolvedDropoffCoords,
+          deliveryAddress: isDelivery ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined) : undefined,
+          fee: resolvedDeliveryFee,
           totalAmount: total,
           discount: manualAdjustment + totalDiscount,
           discountPercent: discountPercent,
-          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
+          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
           isPaid: isPaidFlag,
           isShopPaid: isPaidFlag, // POS payment always marks shop as paid
           paymentMethod: isPaidFlag ? finalMethod : undefined,
@@ -2368,7 +2402,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           remark: finalRemark,
           adminNotesJson: paymentsJsonStr,
           status: hasPosPackage ? "topup" : undefined,
-          completedAt: isPaidFlag && isStandardPlan ? new Date() : undefined,
+          completedAt: !isDelivery && isPaidFlag && isStandardPlan ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
           shiftId: CASHIER_SHIFT_ENABLED ? (loadedJob?.shiftId || activeShift?.id || undefined) : undefined,
           billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
@@ -2384,21 +2418,23 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]));
         finalJob = await jobStore.addJob({
           source: "pos",
+          type: isDelivery ? "delivery" : "in_store",
           customerId: selectedCustomer?.id,
           customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
           customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
           pickupLocation: "POS Counter (Walk-in)",
-          dropoffLocation: activeShop?.name || "That Laundry Shop (Branch 1)",
-          pickupCoords: { lat: 13.7417, lng: 100.5526 }, // Shop coords
-          dropoffCoords: { lat: 13.7417, lng: 100.5526 },
+          dropoffLocation: resolvedDropoff,
+          deliveryAddress: isDelivery ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined) : undefined,
+          pickupCoords: activeShop?.coords || { lat: 13.7417, lng: 100.5526 }, // Shop coords
+          dropoffCoords: resolvedDropoffCoords,
           totalAmount: total,
           discount: manualAdjustment + totalDiscount,
           discountPercent: discountPercent,
-          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price })),
+          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
           serviceType: (cart[0]?.id as ServiceType) || "wash_fold",
           status: hasPosPackage ? "topup" : "billing",
-          completedAt: isStandardPlan && isPaidFlag ? new Date() : undefined,
-          fee: 0, 
+          completedAt: !isDelivery && isStandardPlan && isPaidFlag ? new Date() : undefined,
+          fee: resolvedDeliveryFee, 
           branchId: activeShop?.id || activeBranchId,
           shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || undefined) : undefined,
           isPaid: isPaidFlag,
@@ -3416,6 +3452,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               className="w-full text-left px-4 py-2 hover:bg-muted text-xs font-semibold text-foreground flex items-center justify-between transition-colors cursor-pointer"
                               onClick={() => {
                                 setSelectedCustomer(c);
+                                if (!deliveryAddress && (c.defaultAddress || c.secondaryAddress)) {
+                                  setDeliveryAddress(c.defaultAddress || c.secondaryAddress || "");
+                                }
                                 setCustomerSearch("");
                                 setIsCustomerDropdownOpen(false);
                                 playAudioFeedback("success");
@@ -3808,7 +3847,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               {/* วันที่นัดรับผ้า */}
               <div className="flex items-center justify-between">
                 <Label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest flex items-center gap-1">
-                  <CalendarIcon size={10} className="text-blue-500" /> {currentLanguage === "en" ? "Collection Date" : "วันที่นัดรับผ้า"}
+                  <CalendarIcon size={10} className="text-blue-500" /> {currentLanguage === "en" ? "Delivery Date" : "วันที่นัดรับผ้า"}
                 </Label>
                 <div className="flex items-center gap-1 mt-0.5 max-w-[210px] w-full">
                   {/* Date Selector */}
@@ -3877,94 +3916,134 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             </div>
           )}
  
-          {/* Delivery & Pickup Service Option (Enabled via Shop Settings) */}
-          {isDeliveryEnabled && !cart.some(item => item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") && (
-            <div className="px-4 py-2 bg-muted/30 border-t border-border flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-3">
-                {/* Option 1: Pickup & Delivery */}
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    id="delivery-both"
-                    checked={deliveryServiceType === "both"}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setCart(prev => {
-                          const filtered = prev.filter(item => item.id !== "delivery-only-service-item" && item.id !== "delivery-pickup-service-item");
-                          const price = parseFloat(localDeliveryPrice) || 0;
-                          return [...filtered, {
-                            id: "delivery-pickup-service-item",
-                            name: "บริการรับ-ส่ง",
-                            nameEn: "Pickup & Delivery Service",
-                            price: price,
-                            basePrice: price,
-                            quantity: 1
-                          }];
-                        });
-                      } else {
-                        setCart(prev => prev.filter(item => item.id !== "delivery-pickup-service-item"));
-                      }
-                    }}
-                    className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer shrink-0"
-                  />
-                  <label htmlFor="delivery-both" className="text-[11px] font-bold text-foreground cursor-pointer whitespace-nowrap">
-                    {currentLanguage === "en" ? "Pickup & Delivery" : "บริการรับ-ส่ง"}
-                  </label>
+          {/* Delivery & Pickup Service Option */}
+          {!cart.some(item => item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") && (
+            <div className="px-4 py-2.5 bg-muted/30 border-t border-border space-y-2 shrink-0">
+              <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
+                <div className="flex items-center gap-3 flex-wrap">
+                  {/* Option 1: Delivery Only */}
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      id="delivery-only"
+                      checked={deliveryServiceType === "delivery_only"}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          if (!deliveryAddress && (selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress)) {
+                            setDeliveryAddress(selectedCustomer.defaultAddress || selectedCustomer.secondaryAddress || "");
+                          }
+                          setCart(prev => {
+                            const filtered = prev.filter(item => item.id !== "delivery-only-service-item" && item.id !== "delivery-pickup-service-item");
+                            const price = parseFloat(localDeliveryPrice) || 0;
+                            return [...filtered, {
+                              id: "delivery-only-service-item",
+                              name: "บริการส่ง",
+                              nameEn: "Delivery Service",
+                              price: price,
+                              basePrice: price,
+                              quantity: 1
+                            }];
+                          });
+                        } else {
+                          setCart(prev => prev.filter(item => item.id !== "delivery-only-service-item"));
+                        }
+                      }}
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+                    />
+                    <label htmlFor="delivery-only" className="text-[11px] font-bold text-foreground cursor-pointer whitespace-nowrap flex items-center gap-1">
+                      <Truck size={12} className="text-blue-500" />
+                      {currentLanguage === "en" ? "Delivery" : "บริการส่ง (Delivery)"}
+                    </label>
+                  </div>
+
+                  {/* Option 2: Pickup & Delivery */}
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      id="delivery-both"
+                      checked={deliveryServiceType === "both"}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          if (!deliveryAddress && (selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress)) {
+                            setDeliveryAddress(selectedCustomer.defaultAddress || selectedCustomer.secondaryAddress || "");
+                          }
+                          setCart(prev => {
+                            const filtered = prev.filter(item => item.id !== "delivery-only-service-item" && item.id !== "delivery-pickup-service-item");
+                            const price = parseFloat(localDeliveryPrice) || 0;
+                            return [...filtered, {
+                              id: "delivery-pickup-service-item",
+                              name: "บริการรับ-ส่ง",
+                              nameEn: "Pickup & Delivery Service",
+                              price: price,
+                              basePrice: price,
+                              quantity: 1
+                            }];
+                          });
+                        } else {
+                          setCart(prev => prev.filter(item => item.id !== "delivery-pickup-service-item"));
+                        }
+                      }}
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer shrink-0"
+                    />
+                    <label htmlFor="delivery-both" className="text-[11px] font-bold text-muted-foreground hover:text-foreground cursor-pointer whitespace-nowrap">
+                      {currentLanguage === "en" ? "Pickup & Delivery" : "บริการรับ-ส่ง"}
+                    </label>
+                  </div>
                 </div>
 
-                {/* Option 2: Delivery Only */}
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    id="delivery-only"
-                    checked={deliveryServiceType === "delivery_only"}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setCart(prev => {
-                          const filtered = prev.filter(item => item.id !== "delivery-only-service-item" && item.id !== "delivery-pickup-service-item");
-                          const price = parseFloat(localDeliveryPrice) || 0;
-                          return [...filtered, {
-                            id: "delivery-only-service-item",
-                            name: "บริการส่ง",
-                            nameEn: "Delivery Service",
-                            price: price,
-                            basePrice: price,
-                            quantity: 1
-                          }];
-                        });
-                      } else {
-                        setCart(prev => prev.filter(item => item.id !== "delivery-only-service-item"));
-                      }
-                    }}
-                    className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer shrink-0"
-                  />
-                  <label htmlFor="delivery-only" className="text-[11px] font-bold text-foreground cursor-pointer whitespace-nowrap">
-                    {currentLanguage === "en" ? "Delivery" : "บริการส่ง"}
-                  </label>
-                </div>
+                {/* Price Input (Visible when any delivery type is selected) */}
+                {deliveryServiceType && (
+                  <div className="flex items-center gap-1 shrink-0 ml-auto">
+                    <span className="text-[10px] font-bold text-muted-foreground">{currentLanguage === "en" ? "Fee:" : "ค่าส่ง:"}</span>
+                    <div className="relative max-w-[80px] w-full shrink-0">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-muted-foreground">฿</span>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0.00"
+                        value={localDeliveryPrice}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setLocalDeliveryPrice(val);
+                          const price = parseFloat(val) || 0;
+                          setCart(prev => prev.map(item => {
+                            if (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item") {
+                              return { ...item, price, basePrice: price };
+                            }
+                            return item;
+                          }));
+                        }}
+                        className="w-full h-7 pl-5 pr-1.5 text-[11px] bg-card border border-border rounded-lg outline-none focus:border-primary font-bold text-foreground text-right"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Price Input (Visible when any delivery type is selected) */}
+              {/* Delivery Address Input (Visible when any delivery type is selected) */}
               {deliveryServiceType && (
-                <div className="relative max-w-[80px] w-full shrink-0">
-                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-muted-foreground">฿</span>
+                <div className="space-y-1 pt-1 border-t border-border/40">
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground font-semibold">
+                    <span className="flex items-center gap-1">
+                      <MapPin size={10} className="text-rose-500" />
+                      {currentLanguage === "en" ? "Delivery Address / Room" : "ที่อยู่จัดส่ง / คอนโด / เลขห้อง"}
+                    </span>
+                    {selectedCustomer?.defaultAddress && deliveryAddress !== selectedCustomer.defaultAddress && (
+                      <button
+                        type="button"
+                        onClick={() => setDeliveryAddress(selectedCustomer.defaultAddress || "")}
+                        className="text-[9px] text-blue-600 dark:text-blue-400 hover:underline font-normal cursor-pointer"
+                      >
+                        {currentLanguage === "en" ? "Use customer address" : "ใช้ที่อยู่ลูกค้า"}
+                      </button>
+                    )}
+                  </div>
                   <input
-                    type="number"
-                    min="0"
-                    placeholder="0.00"
-                    value={localDeliveryPrice}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setLocalDeliveryPrice(val);
-                      const price = parseFloat(val) || 0;
-                      setCart(prev => prev.map(item => {
-                        if (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item") {
-                          return { ...item, price, basePrice: price };
-                        }
-                        return item;
-                      }));
-                    }}
-                    className="w-full h-7 pl-5 pr-1.5 text-[11px] bg-card border border-border rounded-lg outline-none focus:border-primary font-bold text-foreground text-right"
+                    type="text"
+                    value={deliveryAddress}
+                    onChange={(e) => setDeliveryAddress(e.target.value)}
+                    placeholder={currentLanguage === "en" ? "Enter delivery address / room..." : "กรอกที่อยู่จัดส่ง, คอนโด/หมู่บ้าน, เลขห้อง..."}
+                    className="w-full h-7 px-2 text-[11px] bg-card border border-border rounded-lg outline-none focus:border-primary text-foreground placeholder:text-muted-foreground/60"
                   />
                 </div>
               )}
@@ -4705,6 +4784,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 customerPhone: job.customerPhone,
                               });
                               setSelectedCustomer(customer || null);
+
+                              const isJobDelivery = job.type === "delivery" || Boolean(deliveryCartItem) || ((job.fee || 0) > 0);
+                              if (isJobDelivery) {
+                                const addr = (job as any).deliveryAddress || (job.dropoffLocation && job.dropoffLocation !== activeShop?.name ? job.dropoffLocation : "") || customer?.defaultAddress || "";
+                                setDeliveryAddress(addr);
+                              } else {
+                                setDeliveryAddress("");
+                              }
+
                               if (job.paymentChannel) {
                                 setPosPaymentChannel(job.paymentChannel);
                               } else {
@@ -4866,6 +4954,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         customer={null}
         onSaved={(newCustomer) => {
           setSelectedCustomer(newCustomer);
+          if (!deliveryAddress && (newCustomer.defaultAddress || newCustomer.secondaryAddress)) {
+            setDeliveryAddress(newCustomer.defaultAddress || newCustomer.secondaryAddress || "");
+          }
           setIsAddCustomerOpen(false);
           toast.success(
             currentLanguage === "en"

@@ -469,11 +469,11 @@ export function ReportsSalesByItem({ jobs, selectedBranch = "all", onViewJob }: 
 
         if (isCancelled) {
           // If the order was cancelled, count as refunded
-          row.itemsRefunded += qty;
+          row.itemsRefunded = Math.round((row.itemsRefunded + qty) * 100) / 100;
         } else {
-          row.itemsSold += qty;
-          row.grossSales += lineGross;
-          row.netSales += lineGross;
+          row.itemsSold = Math.round((row.itemsSold + qty) * 100) / 100;
+          row.grossSales = Math.round((row.grossSales + lineGross) * 100) / 100;
+          row.netSales = Math.round((row.netSales + lineGross) * 100) / 100;
         }
       });
 
@@ -1189,7 +1189,9 @@ export function ReportsSalesByItem({ jobs, selectedBranch = "all", onViewJob }: 
                     {/* Items Sold */}
                     {visibleColumns.itemsSold && (
                       <td className="py-3 px-4 text-center tabular-nums">
-                        {row.itemsSold}
+                        {Number.isInteger(row.itemsSold) 
+                          ? row.itemsSold.toLocaleString("en-US") 
+                          : row.itemsSold.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                     )}
 
@@ -1203,7 +1205,9 @@ export function ReportsSalesByItem({ jobs, selectedBranch = "all", onViewJob }: 
                     {/* Items Refunded */}
                     {visibleColumns.itemsRefunded && (
                       <td className="py-3 px-4 text-center tabular-nums text-slate-500">
-                        {row.itemsRefunded}
+                        {Number.isInteger(row.itemsRefunded) 
+                          ? row.itemsRefunded.toLocaleString("en-US") 
+                          : row.itemsRefunded.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                     )}
 

@@ -96,6 +96,12 @@ export const ACTION_PERMISSIONS = [
     labelTh: "ปรับยอดเงินใน Wallet ลูกค้า",
     description: "สิทธิ์ในการเพิ่มหรือหักลดเงิน Wallet ลูกค้าแบบ Manual (สำหรับแก้ไขเคสหรือชดเชย)",
   },
+  {
+    id: "cso",
+    label: "CSO",
+    labelTh: "CSO",
+    description: "สิทธิ์การทำงาน CSO (กรอก/แก้ไขเลขบิล Bill No., ขอใบกำกับภาษี Req Tax Inv, Stuck, จัดการสถานะชำระเงินและออเดอร์)",
+  },
 ];
 
 /**

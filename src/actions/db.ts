@@ -316,7 +316,7 @@ export async function addJobAction(data: any) {
       pickupLng: data.pickupCoords?.lng || 0,
       dropoffLat: data.dropoffCoords?.lat || 0,
       dropoffLng: data.dropoffCoords?.lng || 0,
-      distance: data.distance || 0,
+      distance: data.distance || data.deliveryDistance || data.pickupDistance || 0,
       fee: Math.max(0, Number(data.fee) || 0),
       status: data.status,
       createdAt: data.createdAt,
@@ -536,6 +536,9 @@ export async function updateJobAction(id: string, updates: any) {
 
   if (updates.pickupDistance !== undefined) data.pickupDistance = updates.pickupDistance;
   if (updates.deliveryDistance !== undefined) data.deliveryDistance = updates.deliveryDistance;
+  if (updates.distance === undefined && (updates.deliveryDistance !== undefined || updates.pickupDistance !== undefined)) {
+    data.distance = updates.deliveryDistance || updates.pickupDistance || 0;
+  }
   if (updates.pickupCommission !== undefined) data.pickupCommission = updates.pickupCommission !== null ? Math.max(0, Number(updates.pickupCommission) || 0) : null;
   if (updates.deliveryCommission !== undefined) data.deliveryCommission = updates.deliveryCommission !== null ? Math.max(0, Number(updates.deliveryCommission) || 0) : null;
   if (updates.createdBy !== undefined) data.createdBy = updates.createdBy;

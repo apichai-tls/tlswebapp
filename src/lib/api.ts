@@ -415,8 +415,10 @@ export const api = {
     // CSO creates as TBA (hidden from Manager). All other roles create as Pending.
     // If a rider is already assigned during creation, always initialize as Pending.
     const creatorRole = (jobDetails as any).creatorRole;
+    const creatorPermissions = (jobDetails as any).creatorPermissions;
+    const isCsoCreator = creatorRole === 'cso' || (Array.isArray(creatorPermissions) && creatorPermissions.includes('cso'));
     const initialStatus = jobDetails.status || (isPOS ? "billing" : (
-      (creatorRole === 'cso' && !jobDetails.pickupRiderId && !jobDetails.deliveryRiderId)
+      (isCsoCreator && !jobDetails.pickupRiderId && !jobDetails.deliveryRiderId)
         ? 'tba'
         : 'pending'
     ));

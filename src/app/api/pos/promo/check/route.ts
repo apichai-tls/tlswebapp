@@ -16,11 +16,18 @@ export async function POST(req: NextRequest) {
 
     // 1. Anti-Reuse Validation: Check if this customer has already used this promo code in any non-canceled job
     const searchConditions: any[] = [];
-    if (customerId) searchConditions.push({ customerId });
-    if (customerPhone && typeof customerPhone === "string" && customerPhone.trim()) {
+    if (customerId) {
+      searchConditions.push({ customerId });
+    }
+
+    // Only match by phone if it contains at least 8 digits (ignoring placeholder/dummy numbers like '+66 --', '--', etc.)
+    const phoneDigits = (customerPhone || "").replace(/\D/g, "");
+    if (phoneDigits.length >= 8) {
       searchConditions.push({ customerPhone: customerPhone.trim() });
     }
-    if (customerName && typeof customerName === "string" && customerName.trim()) {
+
+    // Only fallback to customerName if customerId is NOT provided, avoiding collisions across different customers
+    if (!customerId && customerName && typeof customerName === "string" && customerName.trim().length >= 3) {
       searchConditions.push({ customerName: { equals: customerName.trim(), mode: "insensitive" } });
     }
 

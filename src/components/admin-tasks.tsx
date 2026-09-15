@@ -185,7 +185,8 @@ function extractJobImages(job: any): JobPhoto[] {
 
   if (job.adminNotesJson) {
     try {
-      const notes = JSON.parse(job.adminNotesJson);
+      const parsed = JSON.parse(job.adminNotesJson);
+      const notes = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === "object" && Array.isArray(parsed.notes) ? parsed.notes : []);
       if (Array.isArray(notes)) {
         notes.forEach((n: any) => {
           if (Array.isArray(n.imageUrls)) {

@@ -240,8 +240,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
               if (!productSales[name]) {
                 productSales[name] = { count: 0, revenue: 0 };
               }
-              productSales[name].count += qty;
-              productSales[name].revenue += rev;
+              productSales[name].count = Math.round((productSales[name].count + qty) * 100) / 100;
+              productSales[name].revenue = Math.round((productSales[name].revenue + rev) * 100) / 100;
             });
           }
         }
@@ -270,6 +270,289 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       topProducts
     };
   }, [filteredJobs]);
+
+  // --- Sales Trend & Operations Volume Chart States & Logic ---
+  const [trendMetric, setTrendMetric] = useState<"both" | "sales" | "volume">("both");
+  const [hoveredTrendIndex, setHoveredTrendIndex] = useState<number | null>(null);
+
+  // Time-bucket aggregation for Overview Chart
+  const trendBuckets = useMemo(() => {
+    const today = new Date();
+    interface Bucket {
+      id: string;
+      label: string;
+      subLabel: string;
+      sales: number;
+      volume: number;
+      dateStart: Date;
+      dateEnd: Date;
+    }
+    const buckets: Bucket[] = [];
+
+    if (dateRange === "today") {
+      // 12 two-hour intervals across today (00:00 - 24:00)
+      for (let h = 0; h < 24; h += 2) {
+        const s = new Date(today);
+        s.setHours(h, 0, 0, 0);
+        const e = new Date(today);
+        e.setHours(h + 1, 59, 59, 999);
+        const startStr = `${String(h).padStart(2, "0")}:00`;
+        const endStr = `${String(h + 2).padStart(2, "0")}:00`;
+        buckets.push({
+          id: `h-${h}`,
+          label: startStr,
+          subLabel: `${startStr} - ${endStr}`,
+          sales: 0,
+          volume: 0,
+          dateStart: s,
+          dateEnd: e,
+        });
+      }
+    } else if (dateRange === "7days") {
+      // 7 days up to today
+      for (let i = 6; i >= 0; i--) {
+        const d = subDays(today, i);
+        const s = startOfDay(d);
+        const e = endOfDay(d);
+        buckets.push({
+          id: `d-${format(d, "yyyy-MM-dd")}`,
+          label: format(d, "EEE d/M"),
+          subLabel: format(d, "EEEE, d MMM yyyy"),
+          sales: 0,
+          volume: 0,
+          dateStart: s,
+          dateEnd: e,
+        });
+      }
+    } else if (dateRange === "30days") {
+      // 30 days up to today
+      for (let i = 29; i >= 0; i--) {
+        const d = subDays(today, i);
+        const s = startOfDay(d);
+        const e = endOfDay(d);
+        buckets.push({
+          id: `d-${format(d, "yyyy-MM-dd")}`,
+          label: format(d, "d/M"),
+          subLabel: format(d, "EEEE, d MMM yyyy"),
+          sales: 0,
+          volume: 0,
+          dateStart: s,
+          dateEnd: e,
+        });
+      }
+    } else if (dateRange === "month") {
+      // Days in current month
+      const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+      for (let day = 1; day <= daysInMonth; day++) {
+        const d = new Date(today.getFullYear(), today.getMonth(), day);
+        const s = startOfDay(d);
+        const e = endOfDay(d);
+        buckets.push({
+          id: `d-${format(d, "yyyy-MM-dd")}`,
+          label: String(day),
+          subLabel: format(d, "EEEE, d MMM yyyy"),
+          sales: 0,
+          volume: 0,
+          dateStart: s,
+          dateEnd: e,
+        });
+      }
+    } else if (dateRange === "custom") {
+      const sDate = customStartDate ? new Date(customStartDate) : subDays(today, 30);
+      const eDate = customEndDate ? new Date(customEndDate) : today;
+      const sTime = startOfDay(sDate).getTime();
+      const eTime = endOfDay(eDate).getTime();
+      const diffDays = Math.max(1, Math.round((eTime - sTime) / (1000 * 60 * 60 * 24)));
+
+      if (diffDays <= 2) {
+        // Hourly (2-hour bins)
+        for (let h = 0; h < 24; h += 2) {
+          const s = new Date(sDate);
+          s.setHours(h, 0, 0, 0);
+          const e = new Date(sDate);
+          e.setHours(h + 1, 59, 59, 999);
+          const startStr = `${String(h).padStart(2, "0")}:00`;
+          const endStr = `${String(h + 2).padStart(2, "0")}:00`;
+          buckets.push({
+            id: `h-${h}`,
+            label: startStr,
+            subLabel: `${startStr} - ${endStr}`,
+            sales: 0,
+            volume: 0,
+            dateStart: s,
+            dateEnd: e,
+          });
+        }
+      } else if (diffDays <= 35) {
+        // Daily
+        for (let i = 0; i < diffDays; i++) {
+          const d = new Date(sTime + i * 24 * 60 * 60 * 1000);
+          buckets.push({
+            id: `d-${format(d, "yyyy-MM-dd")}`,
+            label: format(d, "d/M"),
+            subLabel: format(d, "EEEE, d MMM yyyy"),
+            sales: 0,
+            volume: 0,
+            dateStart: startOfDay(d),
+            dateEnd: endOfDay(d),
+          });
+        }
+      } else {
+        // Weekly
+        const numWeeks = Math.ceil(diffDays / 7);
+        for (let w = 0; w < numWeeks; w++) {
+          const s = new Date(sTime + w * 7 * 24 * 60 * 60 * 1000);
+          const e = new Date(Math.min(eTime, sTime + (w + 1) * 7 * 24 * 60 * 60 * 1000 - 1));
+          buckets.push({
+            id: `w-${w}`,
+            label: `W${w + 1}`,
+            subLabel: `${format(s, "d/M")} - ${format(e, "d/M/yy")}`,
+            sales: 0,
+            volume: 0,
+            dateStart: s,
+            dateEnd: e,
+          });
+        }
+      }
+    }
+
+    // Populate data from filteredJobs
+    filteredJobs.forEach((job) => {
+      if (job.status === "cancel") return;
+      if (!job.createdAt) return;
+      const jobTime = new Date(job.createdAt).getTime();
+
+      const b = buckets.find(
+        (b) => jobTime >= b.dateStart.getTime() && jobTime <= b.dateEnd.getTime()
+      );
+      if (b) {
+        b.volume += 1;
+        if (job.isPaid) {
+          b.sales += job.totalAmount || 0;
+        }
+      }
+    });
+
+    return buckets;
+  }, [filteredJobs, dateRange, customStartDate, customEndDate]);
+
+  // Calculations for chart scaling and coordinates
+  const trendChartStats = useMemo(() => {
+    let totalSales = 0;
+    let totalVolume = 0;
+    let maxSales = 0;
+    let maxVolume = 0;
+
+    trendBuckets.forEach((b) => {
+      totalSales += b.sales;
+      totalVolume += b.volume;
+      if (b.sales > maxSales) maxSales = b.sales;
+      if (b.volume > maxVolume) maxVolume = b.volume;
+    });
+
+    // Nice ceiling for sales (฿)
+    if (maxSales === 0) maxSales = 1000;
+    else {
+      const mag = Math.pow(10, Math.floor(Math.log10(maxSales)));
+      const step = mag / 2 || 1;
+      maxSales = Math.ceil((maxSales * 1.15) / step) * step;
+    }
+
+    // Nice ceiling for volume (orders)
+    if (maxVolume === 0) maxVolume = 5;
+    else {
+      if (maxVolume <= 5) maxVolume = 5;
+      else if (maxVolume <= 10) maxVolume = 10;
+      else if (maxVolume <= 20) maxVolume = 20;
+      else if (maxVolume <= 50) maxVolume = 50;
+      else {
+        const step = Math.pow(10, Math.floor(Math.log10(maxVolume)));
+        maxVolume = Math.ceil((maxVolume * 1.2) / step) * step;
+      }
+    }
+
+    const avgTicket = totalVolume > 0 ? totalSales / totalVolume : 0;
+
+    return {
+      totalSales,
+      totalVolume,
+      maxSales,
+      maxVolume,
+      avgTicket,
+    };
+  }, [trendBuckets]);
+
+  // SVG Chart Geometry for Overview Trend Chart
+  const chartW = 600;
+  const chartH = 200;
+  const pLeft = 52;
+  const pRight = 44;
+  const pTop = 16;
+  const pBottom = 30;
+  const plotW = chartW - pLeft - pRight;
+  const plotH = chartH - pTop - pBottom;
+  const baselineY = pTop + plotH;
+
+  const formatShortMoney = (amount: number) => {
+    if (amount >= 1000000) return `฿${(amount / 1000000).toFixed(1)}M`;
+    if (amount >= 1000) return `฿${(amount / 1000).toFixed(1)}k`;
+    return `฿${Math.round(amount)}`;
+  };
+
+  const trendPoints = useMemo(() => {
+    const n = trendBuckets.length;
+    return trendBuckets.map((b, i) => {
+      const x = pLeft + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2);
+      const ySales = pTop + plotH - (b.sales / trendChartStats.maxSales) * plotH;
+      const yVolume = pTop + plotH - (b.volume / trendChartStats.maxVolume) * plotH;
+      const barHeight = Math.max(0, (b.volume / trendChartStats.maxVolume) * plotH);
+      const barY = pTop + plotH - barHeight;
+      return {
+        ...b,
+        index: i,
+        x,
+        ySales,
+        yVolume,
+        barHeight,
+        barY,
+      };
+    });
+  }, [trendBuckets, plotW, plotH, pLeft, pTop, trendChartStats.maxSales, trendChartStats.maxVolume]);
+
+  const salesPath = useMemo(() => {
+    if (trendPoints.length === 0) return "";
+    if (trendPoints.length === 1) return `M ${trendPoints[0].x.toFixed(1)} ${trendPoints[0].ySales.toFixed(1)}`;
+    let d = `M ${trendPoints[0].x.toFixed(1)} ${trendPoints[0].ySales.toFixed(1)}`;
+    for (let i = 0; i < trendPoints.length - 1; i++) {
+      const p0 = trendPoints[i === 0 ? i : i - 1];
+      const p1 = trendPoints[i];
+      const p2 = trendPoints[i + 1];
+      const p3 = trendPoints[i + 2] || p2;
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.ySales + (p2.ySales - p0.ySales) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.ySales - (p3.ySales - p1.ySales) / 6;
+      d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.ySales.toFixed(1)}`;
+    }
+    return d;
+  }, [trendPoints]);
+
+  const salesAreaPath = useMemo(() => {
+    if (trendPoints.length === 0 || !salesPath) return "";
+    return `${salesPath} L ${trendPoints[trendPoints.length - 1].x.toFixed(1)} ${baselineY} L ${trendPoints[0].x.toFixed(1)} ${baselineY} Z`;
+  }, [salesPath, trendPoints, baselineY]);
+
+  const yTicks = useMemo(() => {
+    return [
+      { ratio: 1.0, y: pTop, labelSales: formatShortMoney(trendChartStats.maxSales), labelVolume: trendChartStats.maxVolume },
+      { ratio: 0.666, y: pTop + plotH * 0.334, labelSales: formatShortMoney(trendChartStats.maxSales * 0.666), labelVolume: Math.round(trendChartStats.maxVolume * 0.666) },
+      { ratio: 0.333, y: pTop + plotH * 0.667, labelSales: formatShortMoney(trendChartStats.maxSales * 0.333), labelVolume: Math.round(trendChartStats.maxVolume * 0.333) },
+      { ratio: 0.0, y: baselineY, labelSales: "฿0", labelVolume: 0 },
+    ];
+  }, [pTop, plotH, baselineY, trendChartStats.maxSales, trendChartStats.maxVolume]);
+
+  const barW = Math.max(3, Math.min(22, (plotW / Math.max(1, trendBuckets.length)) * 0.55));
+  const stepW = plotW / Math.max(1, trendBuckets.length);
 
   // 1. Shift Report calculations
   const shiftReportData = useMemo(() => {
@@ -360,16 +643,29 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   // 4. POS Report calculations (jobs linked to shifts or walk-in orders)
   const posReportData = useMemo(() => {
     const list = filteredJobs.filter(job => {
-      const isPosWalkIn = job.pickupLocation === "POS Counter (Walk-in)" || !!job.shiftId;
+      const isPosOrder = 
+        job.source === "pos" || 
+        job.type === "in_store" || 
+        Boolean(job.shiftId) || 
+        job.pickupLocation === "POS Counter (Walk-in)" ||
+        (typeof job.pickupLocation === "string" && (
+          job.pickupLocation.toLowerCase().includes("pos") ||
+          job.pickupLocation.toLowerCase().includes("walk-in") ||
+          job.pickupLocation.includes("That Laundry Shop")
+        ));
       
+      if (!isPosOrder) return false;
+
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const matchesId = job.id.toLowerCase().includes(query);
         const matchesName = job.customerName ? job.customerName.toLowerCase().includes(query) : false;
-        return isPosWalkIn && (matchesId || matchesName);
+        const matchesPhone = job.customerPhone ? job.customerPhone.toLowerCase().includes(query) : false;
+        const matchesProforma = (job as any).proformaNumber ? String((job as any).proformaNumber).toLowerCase().includes(query) : false;
+        return matchesId || matchesName || matchesPhone || matchesProforma;
       }
       
-      return isPosWalkIn;
+      return true;
     });
 
     let posRevenue = 0;
@@ -774,35 +1070,315 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 lg:col-span-2 shadow-sm">
-              <div className="flex justify-between items-center mb-6">
+            {/* Sales Trend & Operations Volume Chart */}
+            <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 lg:col-span-2 shadow-sm relative flex flex-col justify-between">
+              {/* Header with Title, Stats & Metric Toggles */}
+              <div className="flex flex-wrap justify-between items-start gap-3 mb-3">
                 <div>
-                  <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">Sales Trend & Operations Volume</h3>
-                  <p className="text-[10px] text-slate-400 font-semibold mt-0.5">Weekly volume performance projection</p>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+                      Sales Trend & Operations Volume
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200/50 dark:border-indigo-800/50">
+                      Real Data
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mt-1 flex flex-wrap items-center gap-x-2">
+                    <span>
+                      ยอดขาย:{" "}
+                      <span className="text-indigo-600 dark:text-indigo-400 font-mono font-black">
+                        ฿{trendChartStats.totalSales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </span>
+                    <span className="text-slate-300 dark:text-slate-700">•</span>
+                    <span>
+                      จำนวนงาน:{" "}
+                      <span className="text-emerald-600 dark:text-emerald-400 font-mono font-black">
+                        {trendChartStats.totalVolume.toLocaleString()} ออเดอร์
+                      </span>
+                    </span>
+                    {trendChartStats.totalVolume > 0 && (
+                      <>
+                        <span className="text-slate-300 dark:text-slate-700">•</span>
+                        <span>
+                          เฉลี่ย/บิล:{" "}
+                          <span className="text-slate-700 dark:text-slate-200 font-mono font-bold">
+                            ฿{trendChartStats.avgTicket.toFixed(2)}
+                          </span>
+                        </span>
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                {/* Metric Selector Buttons */}
+                <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200/60 dark:border-slate-700/60 text-[11px] font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setTrendMetric("both")}
+                    className={`px-2.5 py-1 rounded-lg transition-all ${
+                      trendMetric === "both"
+                        ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs font-black"
+                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                    }`}
+                  >
+                    รวม / Both
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTrendMetric("sales")}
+                    className={`px-2.5 py-1 rounded-lg transition-all flex items-center gap-1.5 ${
+                      trendMetric === "sales"
+                        ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs font-black"
+                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-indigo-600 inline-block" />
+                    ยอดขาย (Sales)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTrendMetric("volume")}
+                    className={`px-2.5 py-1 rounded-lg transition-all flex items-center gap-1.5 ${
+                      trendMetric === "volume"
+                        ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-xs font-black"
+                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                    จำนวนงาน (Volume)
+                  </button>
                 </div>
               </div>
-              <div className="h-56 w-full relative pt-2">
-                <svg viewBox="0 0 500 200" className="w-full h-full">
-                  <line x1="0" y1="40" x2="500" y2="40" stroke="#f1f5f9" strokeWidth="1" className="dark:stroke-slate-800" />
-                  <line x1="0" y1="90" x2="500" y2="90" stroke="#f1f5f9" strokeWidth="1" className="dark:stroke-slate-800" />
-                  <line x1="0" y1="140" x2="500" y2="140" stroke="#f1f5f9" strokeWidth="1" className="dark:stroke-slate-800" />
-                  <line x1="0" y1="190" x2="500" y2="190" stroke="#e2e8f0" strokeWidth="1.5" className="dark:stroke-slate-700" />
+
+              {/* Chart Visual Area */}
+              <div 
+                className="w-full relative pt-1 select-none"
+                onMouseLeave={() => setHoveredTrendIndex(null)}
+              >
+                {/* Floating Interactive Tooltip */}
+                {hoveredTrendIndex !== null && trendPoints[hoveredTrendIndex] && (
+                  <div
+                    className="absolute pointer-events-none z-30 bg-slate-900/95 dark:bg-slate-900/95 text-white px-3 py-2 rounded-xl shadow-xl border border-slate-700/80 backdrop-blur-md text-xs transition-all duration-75"
+                    style={{
+                      left: `${(trendPoints[hoveredTrendIndex].x / chartW) * 100}%`,
+                      top: "6px",
+                      transform:
+                        trendPoints[hoveredTrendIndex].x > 380
+                          ? "translateX(-105%)"
+                          : trendPoints[hoveredTrendIndex].x < 180
+                          ? "translateX(5%)"
+                          : "translateX(-50%)",
+                    }}
+                  >
+                    <p className="font-bold text-[11px] text-slate-300 pb-1 border-b border-slate-700/60 mb-1.5 flex items-center justify-between gap-3">
+                      <span>{trendPoints[hoveredTrendIndex].subLabel}</span>
+                    </p>
+                    <div className="space-y-1">
+                      {(trendMetric === "both" || trendMetric === "sales") && (
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="flex items-center gap-1.5 text-indigo-300 font-semibold">
+                            <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
+                            ยอดขาย (Sales):
+                          </span>
+                          <span className="font-mono font-black text-indigo-200">
+                            ฿{trendPoints[hoveredTrendIndex].sales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      )}
+                      {(trendMetric === "both" || trendMetric === "volume") && (
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="flex items-center gap-1.5 text-emerald-300 font-semibold">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                            จำนวนงาน (Volume):
+                          </span>
+                          <span className="font-mono font-black text-emerald-200">
+                            {trendPoints[hoveredTrendIndex].volume} ออเดอร์
+                          </span>
+                        </div>
+                      )}
+                      {trendPoints[hoveredTrendIndex].volume > 0 && (
+                        <div className="flex items-center justify-between gap-4 pt-1 border-t border-slate-700/50 text-[10px] text-slate-400">
+                          <span>เฉลี่ยต่อบิล:</span>
+                          <span className="font-mono font-semibold text-slate-300">
+                            ฿{(trendPoints[hoveredTrendIndex].sales / trendPoints[hoveredTrendIndex].volume).toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* SVG Chart */}
+                <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full h-auto overflow-visible">
                   <defs>
-                    <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.25" />
-                      <stop offset="100%" stopColor="#4f46e5" stopOpacity="0" />
+                    <linearGradient id="salesTrendGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.28" />
+                      <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.0" />
                     </linearGradient>
                   </defs>
-                  <path d="M 0 160 Q 50 120 100 130 T 200 90 T 300 70 T 400 40 T 500 25" fill="none" stroke="#4f46e5" strokeWidth="3.5" strokeLinecap="round" />
-                  <path d="M 0 160 Q 50 120 100 130 T 200 90 T 300 70 T 400 40 T 500 25 L 500 190 L 0 190 Z" fill="url(#chartGradient)" />
+
+                  {/* Horizontal Gridlines & Y-Axis Labels */}
+                  {yTicks.map((tick, idx) => (
+                    <g key={idx}>
+                      <line
+                        x1={pLeft}
+                        y1={tick.y}
+                        x2={pLeft + plotW}
+                        y2={tick.y}
+                        stroke={idx === yTicks.length - 1 ? "#cbd5e1" : "#f1f5f9"}
+                        strokeWidth={idx === yTicks.length - 1 ? "1.5" : "1"}
+                        className={idx === yTicks.length - 1 ? "dark:stroke-slate-700" : "dark:stroke-slate-800"}
+                      />
+                      {/* Left Y-axis (Sales ฿) */}
+                      {(trendMetric === "both" || trendMetric === "sales") && (
+                        <text
+                          x={pLeft - 8}
+                          y={tick.y + 3.5}
+                          textAnchor="end"
+                          className="fill-slate-400 dark:fill-slate-500 font-mono text-[9px] font-bold"
+                        >
+                          {tick.labelSales}
+                        </text>
+                      )}
+                      {/* Right Y-axis (Volume Orders) */}
+                      {(trendMetric === "both" || trendMetric === "volume") && (
+                        <text
+                          x={pLeft + plotW + 8}
+                          y={tick.y + 3.5}
+                          textAnchor="start"
+                          className="fill-emerald-600/70 dark:fill-emerald-400/70 font-mono text-[9px] font-bold"
+                        >
+                          {tick.labelVolume}
+                        </text>
+                      )}
+                    </g>
+                  ))}
+
+                  {/* Volume Bars (rendered in "both" or "volume" modes) */}
+                  {(trendMetric === "both" || trendMetric === "volume") &&
+                    trendPoints.map((p, i) => {
+                      if (p.volume === 0) return null;
+                      const isHovered = hoveredTrendIndex === i;
+                      return (
+                        <rect
+                          key={`bar-${p.id}`}
+                          x={p.x - barW / 2}
+                          y={p.barY}
+                          width={barW}
+                          height={p.barHeight}
+                          rx={Math.min(3, barW / 2)}
+                          className={`transition-all duration-150 ${
+                            isHovered
+                              ? "fill-emerald-500 opacity-90"
+                              : "fill-emerald-500/25 dark:fill-emerald-400/25 hover:fill-emerald-500/50"
+                          }`}
+                        />
+                      );
+                    })}
+
+                  {/* Sales Area Gradient & Smooth Line (rendered in "both" or "sales" modes) */}
+                  {(trendMetric === "both" || trendMetric === "sales") && salesAreaPath && (
+                    <path d={salesAreaPath} fill="url(#salesTrendGradient)" />
+                  )}
+                  {(trendMetric === "both" || trendMetric === "sales") && salesPath && (
+                    <path
+                      d={salesPath}
+                      fill="none"
+                      stroke="#4f46e5"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+
+                  {/* Data Points (dots) */}
+                  {(trendMetric === "both" || trendMetric === "sales") &&
+                    trendPoints.length <= 16 &&
+                    trendPoints.map((p, i) => (
+                      <circle
+                        key={`dot-${p.id}`}
+                        cx={p.x}
+                        cy={p.ySales}
+                        r={hoveredTrendIndex === i ? 5 : 3}
+                        className={`transition-all ${
+                          hoveredTrendIndex === i
+                            ? "fill-indigo-600 stroke-white dark:stroke-slate-900 stroke-2"
+                            : "fill-indigo-600 dark:fill-indigo-400"
+                        }`}
+                      />
+                    ))}
+
+                  {/* Active Hover Guideline & Point */}
+                  {hoveredTrendIndex !== null && trendPoints[hoveredTrendIndex] && (
+                    <g className="pointer-events-none">
+                      <line
+                        x1={trendPoints[hoveredTrendIndex].x}
+                        x2={trendPoints[hoveredTrendIndex].x}
+                        y1={pTop}
+                        y2={baselineY}
+                        stroke="#6366f1"
+                        strokeWidth="1.5"
+                        strokeDasharray="3,3"
+                        className="opacity-70"
+                      />
+                      {(trendMetric === "both" || trendMetric === "sales") && (
+                        <circle
+                          cx={trendPoints[hoveredTrendIndex].x}
+                          cy={trendPoints[hoveredTrendIndex].ySales}
+                          r={6}
+                          fill="#4f46e5"
+                          stroke="#ffffff"
+                          strokeWidth="2.5"
+                        />
+                      )}
+                    </g>
+                  )}
+
+                  {/* X-Axis Tick Labels */}
+                  {trendPoints.map((p, i) => {
+                    const showLabel =
+                      trendPoints.length <= 12 ||
+                      (trendPoints.length <= 20 && (i % 2 === 0 || i === trendPoints.length - 1)) ||
+                      (i % 5 === 0 || i === trendPoints.length - 1);
+                    if (!showLabel) return null;
+                    return (
+                      <text
+                        key={`lbl-${p.id}`}
+                        x={p.x}
+                        y={baselineY + 16}
+                        textAnchor="middle"
+                        className="fill-slate-400 dark:fill-slate-500 font-bold text-[9px]"
+                      >
+                        {p.label}
+                      </text>
+                    );
+                  })}
+
+                  {/* Invisible Hit Zones for Hover Tracking */}
+                  {trendPoints.map((p, i) => (
+                    <rect
+                      key={`hit-${p.id}`}
+                      x={p.x - stepW / 2}
+                      y={pTop}
+                      width={stepW}
+                      height={plotH + pBottom}
+                      fill="transparent"
+                      className="cursor-pointer"
+                      onMouseEnter={() => setHoveredTrendIndex(i)}
+                      onTouchStart={() => setHoveredTrendIndex(i)}
+                    />
+                  ))}
                 </svg>
-                <div className="flex justify-between text-[8px] font-bold text-slate-400 uppercase mt-2">
-                  <span>Week 1</span>
-                  <span>Week 2</span>
-                  <span>Week 3</span>
-                  <span>Week 4</span>
-                  <span>Week 5</span>
-                </div>
+
+                {/* Empty State Overlay if 0 sales & 0 volume */}
+                {trendChartStats.totalSales === 0 && trendChartStats.totalVolume === 0 && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-6">
+                    <div className="bg-slate-100/90 dark:bg-slate-800/90 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-xs font-bold shadow-xs">
+                      ไม่มีข้อมูลออเดอร์ในช่วงเวลาที่เลือก (No order data in this timeframe)
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -867,8 +1443,12 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                         <span className="w-5 h-5 bg-indigo-500/10 text-indigo-500 rounded-full flex items-center justify-center font-black text-[10px]">#{idx + 1}</span>
                         {p.name}
                       </td>
-                      <td className="py-3 text-center font-bold">{p.count}</td>
-                      <td className="py-3 text-right text-indigo-600 dark:text-indigo-400 font-black">฿{p.revenue.toLocaleString()}</td>
+                      <td className="py-3 text-center font-bold">
+                        {p.count.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-3 text-right text-indigo-600 dark:text-indigo-400 font-black">
+                        ฿{p.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1264,30 +1844,73 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                   <table className="w-full text-xs font-semibold text-left">
                     <thead>
                       <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black">
-                        <th className="pb-3">Bill ID</th>
+                        <th className="pb-3">Order / Bill ID</th>
                         <th className="pb-3">Customer</th>
+                        <th className="pb-3 text-center">Date / Time</th>
                         <th className="pb-3 text-right">Amount</th>
-                        <th className="pb-3 text-center">Method</th>
+                        <th className="pb-3 text-center">Payment</th>
                         <th className="pb-3 text-center">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
                       {posReportData.list.map((job) => (
-                        <tr key={job.id}>
-                          <td className="py-2.5 font-mono text-[10px] text-slate-400">{job.id.slice(-8).toUpperCase()}</td>
-                          <td className="py-2.5 font-bold">{job.customerName || "Walk-In"}</td>
-                          <td className="py-2.5 text-right font-black text-slate-850 dark:text-slate-100">฿{(job.totalAmount || 0).toFixed(2)}</td>
-                          <td className="py-2.5 text-center text-slate-400 text-[10px] uppercase">
-                             {(() => {
-                               const ch = job.paymentChannel || job.paymentMethod || "CASH";
-                               if (ch.toLowerCase() === "credit") return "Deduct Member";
-                               if (ch.toLowerCase() === "card") return "Credit Card";
-                               return ch;
-                             })()}
+                        <tr key={job.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                          <td className="py-2.5 font-mono text-[11px]">
+                            {onViewJob ? (
+                              <button
+                                type="button"
+                                onClick={() => onViewJob(job)}
+                                className="font-bold text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 underline underline-offset-2 cursor-pointer text-left"
+                              >
+                                {job.id}
+                              </button>
+                            ) : (
+                              <span className="font-bold text-slate-700 dark:text-slate-300">{job.id}</span>
+                            )}
+                            {(job as any).proformaNumber && (
+                              <span className="block text-[9px] text-slate-400 font-mono mt-0.5">
+                                {(job as any).proformaNumber}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5">
+                            <p className="font-bold text-slate-850 dark:text-slate-100 leading-none">{job.customerName || "Walk-In"}</p>
+                            {job.customerPhone && job.customerPhone !== "-" && (
+                              <p className="text-[10px] text-slate-400 font-mono mt-0.5">{job.customerPhone}</p>
+                            )}
+                          </td>
+                          <td className="py-2.5 text-center text-slate-400 font-mono text-[10px]">
+                            {job.createdAt ? format(new Date(job.createdAt), "dd/MM/yy HH:mm") : "-"}
+                          </td>
+                          <td className="py-2.5 text-right font-black text-slate-850 dark:text-slate-100 font-mono">
+                            ฿{(job.totalAmount || 0).toFixed(2)}
+                          </td>
+                          <td className="py-2.5 text-center">
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className="text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold">
+                                {(() => {
+                                  const ch = job.paymentChannel || job.paymentMethod || "CASH";
+                                  if (ch.toLowerCase() === "credit") return "Deduct Member";
+                                  if (ch.toLowerCase() === "card") return "Credit Card";
+                                  return ch;
+                                })()}
+                              </span>
+                              <span className={`px-1.5 py-0.2 rounded text-[8px] font-black uppercase ${
+                                job.isPaid
+                                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                  : "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                              }`}>
+                                {job.isPaid ? "Paid" : "Unpaid"}
+                              </span>
+                            </div>
                           </td>
                           <td className="py-2.5 text-center">
                             <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
-                              job.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-indigo-100 text-indigo-850"
+                              job.status === "completed" 
+                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300" 
+                                : job.status === "cancel" 
+                                ? "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300" 
+                                : "bg-indigo-100 text-indigo-850 dark:bg-indigo-950/60 dark:text-indigo-300"
                             }`}>
                               {job.status}
                             </span>

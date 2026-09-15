@@ -1,14 +1,16 @@
+"use client";
+
 import React, { useState, useEffect, useSyncExternalStore } from "react";
 import { format } from "date-fns";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Printer, X, Loader2, Wallet } from "lucide-react";
-import { ReceiptData } from "@/components/thermal-receipt-dialog";
+import { ReceiptData, ReceiptItem, getCategoryDisplayName, resolveItemCategory, CATEGORY_ORDER } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
 
-import { customerStore } from "@/lib/store";
+import { customerStore, serviceStore } from "@/lib/store";
 
 interface ShopInfo {
   id?: string;
@@ -420,6 +422,30 @@ export function A5ReceiptContent({
 
   const transportFeeItems = getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType);
 
+  const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
+
+  const groupedItems = React.useMemo(() => {
+    if (!receiptData?.items || receiptData.items.length === 0) return [];
+    const groupMap = new Map<string, ReceiptItem[]>();
+    for (const item of receiptData.items) {
+      const cat = resolveItemCategory(item, services);
+      if (!groupMap.has(cat)) groupMap.set(cat, []);
+      groupMap.get(cat)!.push(item);
+    }
+    const sortedCategories = Array.from(groupMap.keys()).sort((a, b) => {
+      const idxA = CATEGORY_ORDER.indexOf(a);
+      const idxB = CATEGORY_ORDER.indexOf(b);
+      const rankA = idxA === -1 ? 999 : idxA;
+      const rankB = idxB === -1 ? 999 : idxB;
+      return rankA - rankB;
+    });
+    return sortedCategories.map(cat => ({
+      category: cat,
+      displayName: getCategoryDisplayName(cat, currentLanguage),
+      items: groupMap.get(cat)!
+    }));
+  }, [receiptData?.items, currentLanguage, services]);
+
   // ── Dynamic Density & Auto-Compaction ─────────────────────────────────────────
   const itemCount = receiptData.items.length;
   const extraTotalsLines =
@@ -432,10 +458,11 @@ export function A5ReceiptContent({
   // ── Dynamic Adaptive Density / Compaction Calculation ───────────────────────
   // Step 1: Calculate total estimated height under 100% standard (Normal) styling
   const normalHeaderHeight = 125;
-  const normalCustomerHeight = receiptData.deliveryScheduledAt ? 58 : 48;
+  const normalCustomerHeight = 48 + (receiptData.deliveryAddress ? 16 : 0);
   const normalTableHeaderHeight = 26;
   const normalItemRowHeight = 25; // py-1 (8px) + line-height (16px) + border (1px)
-  const normalItemsHeight = receiptData.items.length * normalItemRowHeight;
+  const normalCategoryHeaderHeight = 18;
+  const normalItemsHeight = receiptData.items.length * normalItemRowHeight + groupedItems.length * normalCategoryHeaderHeight;
   const normalTotalsRowHeight = 20;
   const normalTotalsBaseHeight =
     56 +
@@ -490,6 +517,7 @@ export function A5ReceiptContent({
   const customerMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
   const tableMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
   const tableHeaderClass = isUltraCompact ? "py-0.5 px-1 text-[9px]" : isCompact ? "py-0.5 px-1 text-[9.5px]" : "py-1.5 px-1 text-[10px]";
+  const categoryHeaderClass = isUltraCompact ? "py-0.5 px-1.5 text-[8.5px]" : isCompact ? "py-0.5 px-2 text-[9px]" : "py-1 px-2.5 text-[9.5px]";
   const tableRowClass = isUltraCompact ? "py-0.5 px-1 text-[9.5px]" : isCompact ? "py-0.5 px-1 text-[10.5px]" : "py-1 px-1 text-xs";
   const totalsMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
   const totalsRowClass = isUltraCompact ? "py-0 text-[9.5px]" : isCompact ? "py-0.5 text-[10.5px]" : "py-0.5 text-xs";
@@ -503,12 +531,11 @@ export function A5ReceiptContent({
 
   // Step 2: Accurate height calculation based on chosen compaction mode
   const headerHeight = isUltraCompact ? 95 : isCompact ? 110 : normalHeaderHeight;
-  const customerHeight = receiptData.deliveryScheduledAt
-    ? (isUltraCompact ? 46 : isCompact ? 52 : normalCustomerHeight)
-    : (isUltraCompact ? 38 : isCompact ? 44 : normalCustomerHeight);
+  const customerHeight = (isUltraCompact ? 38 : isCompact ? 44 : normalCustomerHeight) + (receiptData.deliveryAddress ? (isUltraCompact ? 12 : isCompact ? 14 : 16) : 0);
   const tableHeaderHeight = isUltraCompact ? 18 : isCompact ? 22 : normalTableHeaderHeight;
+  const categoryHeaderHeight = isUltraCompact ? 13 : isCompact ? 15 : normalCategoryHeaderHeight;
   const itemRowHeight = isUltraCompact ? 16 : isCompact ? 19 : normalItemRowHeight;
-  const itemsHeight = receiptData.items.length * itemRowHeight;
+  const itemsHeight = receiptData.items.length * itemRowHeight + groupedItems.length * categoryHeaderHeight;
   const totalsRowHeight = isUltraCompact ? 14 : isCompact ? 17 : normalTotalsRowHeight;
   const totalsBaseHeight =
     (isUltraCompact ? 40 : isCompact ? 48 : 56) +
@@ -674,9 +701,9 @@ export function A5ReceiptContent({
 
           <hr className={`border-neutral-300 ${customerMargin}`} />
 
-          {/* Customer + Collection Date */}
+          {/* Customer + Delivery Date */}
           <div className={`flex justify-between ${customerMargin}`}>
-            <div className="flex-1">
+            <div className="flex-1 pr-4">
               <h3 className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-0.5">
                 {currentLanguage === "en" ? "BILLED TO" : "ลูกค้า"}
               </h3>
@@ -684,17 +711,19 @@ export function A5ReceiptContent({
                 {receiptData.customerName}
               </p>
               <p className="text-xs text-neutral-600 font-mono mt-0.5">{receiptData.customerPhone}</p>
+              {receiptData.deliveryAddress && (
+                <p className={`${isUltraCompact ? "text-[10px]" : "text-[11px]"} text-neutral-600 mt-0.5 leading-snug break-words`}>
+                  {receiptData.deliveryAddress}
+                </p>
+              )}
             </div>
             {receiptData.deliveryScheduledAt && (
               <div className="flex-1 text-right">
                 <h3 className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-0.5">
-                  {currentLanguage === "en" ? "COLLECTION DATE" : "วันรับผ้าคืน"}
+                  {currentLanguage === "en" ? "DELIVERY DATE" : "วันรับผ้าคืน"}
                 </h3>
                 <p className={`${isUltraCompact ? "text-xs" : "text-sm"} font-bold text-neutral-900 leading-tight`}>
                   {format(new Date(receiptData.deliveryScheduledAt), "dd/MM/yyyy")}
-                </p>
-                <p className="text-xs text-neutral-600">
-                  {format(new Date(receiptData.deliveryScheduledAt), "HH:mm")}
                 </p>
               </div>
             )}
@@ -719,17 +748,29 @@ export function A5ReceiptContent({
               </tr>
             </thead>
             <tbody className="text-neutral-800 font-medium">
-              {receiptData.items.map((item, idx) => (
-                <tr key={idx} className="border-b border-neutral-200">
-                  <td className={tableRowClass}>
-                    {currentLanguage === "en" ? item.nameEn || item.name : item.name}
-                  </td>
-                  <td className={`${tableRowClass} text-center font-mono`}>{item.quantity}</td>
-                  <td className={`${tableRowClass} text-right font-mono`}>{formatCurrency(item.price)}</td>
-                  <td className={`${tableRowClass} text-right font-mono`}>
-                    {formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}
-                  </td>
-                </tr>
+              {groupedItems.map((group, gIdx) => (
+                <React.Fragment key={group.category || gIdx}>
+                  <tr className="bg-neutral-100/90 border-t border-b border-neutral-300">
+                    <td
+                      colSpan={4}
+                      className={`${categoryHeaderClass} font-bold text-neutral-700 uppercase tracking-wider`}
+                    >
+                      {group.displayName}
+                    </td>
+                  </tr>
+                  {group.items.map((item, idx) => (
+                    <tr key={idx} className="border-b border-neutral-200">
+                      <td className={`${tableRowClass} pl-3.5`}>
+                        {currentLanguage === "en" ? item.nameEn || item.name : item.name}
+                      </td>
+                      <td className={`${tableRowClass} text-center font-mono`}>{item.quantity}</td>
+                      <td className={`${tableRowClass} text-right font-mono`}>{formatCurrency(item.price)}</td>
+                      <td className={`${tableRowClass} text-right font-mono`}>
+                        {formatCurrency(safeCeil((item.price || 0) * (item.quantity || 0)))}
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
               ))}
             </tbody>
           </table>

@@ -204,7 +204,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
       const fee = Number(job.fee) || 0;
       const totalAmount = Number(job.totalAmount) || 0;
-      const distance = Number(job.distance) || 0;
+      const pickupDistance = Number(job.pickupDistance) || 0;
+      const deliveryDistance = Number(job.deliveryDistance) || 0;
+      const distance = Number(job.distance) || deliveryDistance || pickupDistance || 0;
 
       // If no explicit discount amount in remark:
       if (!match || !match[3]) {
@@ -217,16 +219,35 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         }
       }
 
-      const originalFee = isEstimated ? discountAmount : (fee + discountAmount);
-      const netFee = fee;
-      const laundryAmount = Math.max(0, totalAmount - fee);
+      // In the database:
+      // job.fee is the standard delivery fee calculated for the order (e.g. 30, 115, etc.).
+      // discountAmount is the promo discount (e.g. 30 from Promo: OLFREE (DELIVERY:30)).
+      const originalFee = fee > 0 ? fee : (isEstimated ? discountAmount : calculateFee(distance));
+
+      // Net delivery fee collected from customer:
+      let netFee = 0;
+      let laundryAmount = 0;
+
+      if (campaignType === "DELIVERY") {
+        // Delivery discount applies to delivery fee
+        netFee = Math.max(0, originalFee - discountAmount);
+        laundryAmount = Math.max(0, totalAmount - netFee);
+      } else {
+        // ALL bill discount: delivery fee charged as-is, discount was on bill
+        netFee = originalFee;
+        laundryAmount = Math.max(0, totalAmount - netFee);
+      }
 
       const pickupComm = Number(job.pickupCommission) || 0;
       const deliveryComm = Number(job.deliveryCommission) || 0;
       const totalRiderComm = pickupComm + deliveryComm;
 
-      // Net Margin = Laundry Sales + Net Fee - Rider Commission
-      const netMargin = laundryAmount + netFee - totalRiderComm;
+      // Net Margin:
+      // For DELIVERY promo: Net Margin = Laundry Sales - Delivery Subsidy (discountAmount) - Rider Commission
+      // For ALL promo: Net Margin = totalAmount - Rider Commission
+      const netMargin = campaignType === "DELIVERY"
+        ? (laundryAmount - discountAmount - totalRiderComm)
+        : (totalAmount - totalRiderComm);
 
       // Customer info & badges
       const customer = (job.customerId && customerMap.get(job.customerId)) || (job.customerPhone && customerMap.get(job.customerPhone));
@@ -262,6 +283,8 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         isNewCustomer,
         customerBadges,
         distance,
+        pickupDistance,
+        deliveryDistance,
         laundryAmount,
         originalFee,
         promoCode: code,
@@ -487,7 +510,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
             Marketing & Analytics
           </h1>
           <p className="text-xs text-slate-500 font-semibold mt-1">
-            รายงานและสถิติประสิทธิภาพแคมเปญโปรโมชัน ยอดส่วนลด และผลตอบแทนทางการตลาด
+            รายงานและสถิติประสิทธิภาพแคมเปญโปรโมชัน ยอดส่วนลด และผลตอบแทนทางการตลาด (Campaign Performance, Discounts & Marketing ROI)
           </p>
         </div>
 
@@ -551,7 +574,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
           <button
             onClick={handleExportExcel}
             className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
-            title="ส่งออกรายงานเป็น Excel/CSV"
+            title="ส่งออกรายงานเป็น Excel/CSV (Export to Excel/CSV)"
           >
             <Download size={14} />
             Export CSV
@@ -638,16 +661,16 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
             {/* 3. Rider Commission Cost */}
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
               <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
-                <Truck size={70} className="text-amber-600" />
+                <Truck size={70} className="text-rose-600" />
               </div>
               <div className="flex justify-between items-start">
                 <div>
                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Rider Comm (ค่าคอม Rider)</span>
-                  <h3 className="text-xl font-black text-amber-600 dark:text-amber-400 mt-1">
+                  <h3 className="text-xl font-black text-rose-600 dark:text-rose-400 mt-1">
                     ฿{promoReportData.kpis.totalRiderCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </h3>
                 </div>
-                <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] font-bold">
+                <span className="p-1.5 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 text-[10px] font-bold">
                   Cost
                 </span>
               </div>
@@ -673,7 +696,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 mt-3 font-semibold">
-                Laundry + Net Fee − Comm
+                Laundry Sales − Subsidy − Comm
               </p>
             </div>
 
@@ -728,7 +751,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="ค้นหา Code, ลูกค้า, เบอร์, Job ID..."
+                  placeholder="ค้นหา Code, ลูกค้า, เบอร์, Job ID / Search Code, Customer, Phone..."
                   value={promoSearchQuery}
                   onChange={(e) => setPromoSearchQuery(e.target.value)}
                   className="w-full pl-8.5 pr-3 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
@@ -741,9 +764,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                 onChange={(e) => setPromoStatusFilter(e.target.value as any)}
                 className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer"
               >
-                <option value="paid">✅ ชำระแล้ว (Paid Only - แนะนำ)</option>
-                <option value="all">ทุกสถานะการชำระ (All)</option>
-                <option value="unpaid">⏳ ยังไม่ชำระ (Unpaid Only)</option>
+                <option value="paid">✅ ชำระแล้ว / Paid Only (Recommended)</option>
+                <option value="all">ทุกสถานะการชำระ / All Payment Statuses</option>
+                <option value="unpaid">⏳ ยังไม่ชำระ / Unpaid Only</option>
               </select>
 
               {/* Campaign Type Filter */}
@@ -796,11 +819,11 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                   สรุปประสิทธิภาพโปรโมชันแยกตามรหัส (Promotion Matrix)
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  ภาพรวมยอดขาย ยอดส่วนลด และค่าคอมมิชชัน Rider แยกตาม Promo Code
+                  ภาพรวมยอดขาย ยอดส่วนลด และค่าคอมมิชชัน Rider แยกตาม Promo Code / Sales, discounts & rider commission by promo code
                 </p>
               </div>
               <span className="text-xs font-bold text-slate-400">
-                พบ {promoReportData.codeSummaries.length} รหัสที่ถูกใช้งาน
+                พบ {promoReportData.codeSummaries.length} รหัสที่ถูกใช้งาน ({promoReportData.codeSummaries.length} Active Codes)
               </span>
             </div>
 
@@ -810,17 +833,17 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black bg-slate-50/50 dark:bg-slate-900/50">
                       <th className="py-3 px-3">Promo Code</th>
-                      <th className="py-3 px-2 text-center">ประเภท</th>
-                      <th className="py-3 px-2 text-center">ออเดอร์</th>
-                      <th className="py-3 px-2 text-right">ระยะทางรวม</th>
-                      <th className="py-3 px-3 text-right">ค่าส่งเดิม</th>
-                      <th className="py-3 px-3 text-right">ส่วนลดที่ให้</th>
-                      <th className="py-3 px-3 text-right">ค่าส่งเก็บจริง</th>
-                      <th className="py-3 px-3 text-right">ยอดงานซัก</th>
-                      <th className="py-3 px-3 text-right">ค่าคอม Rider</th>
-                      <th className="py-3 px-3 text-right">กำไรสุทธิ</th>
-                      <th className="py-3 px-2 text-center">ลูกค้าใหม่</th>
-                      <th className="py-3 px-3 text-center">ช่วงวันที่ใช้</th>
+                      <th className="py-3 px-2 text-center">ประเภท (Type)</th>
+                      <th className="py-3 px-2 text-center">ออเดอร์ (Orders)</th>
+                      <th className="py-3 px-2 text-right">ระยะทางรวม (Distance)</th>
+                      <th className="py-3 px-3 text-right">ค่าส่งเดิม (Orig. Fee)</th>
+                      <th className="py-3 px-3 text-right">ส่วนลดที่ให้ (Discount)</th>
+                      <th className="py-3 px-3 text-right">ค่าส่งเก็บจริง (Net Fee)</th>
+                      <th className="py-3 px-3 text-right">ยอดงานซัก (Laundry Sales)</th>
+                      <th className="py-3 px-3 text-right">ค่าคอม Rider (Rider Comm)</th>
+                      <th className="py-3 px-3 text-right">กำไรสุทธิ (Net Margin)</th>
+                      <th className="py-3 px-2 text-center">ลูกค้าใหม่ (New Cust)</th>
+                      <th className="py-3 px-3 text-center">ช่วงวันที่ใช้ (Date Range)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
@@ -842,7 +865,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                               ? "bg-sky-50 text-sky-700 border border-sky-200/60 dark:bg-sky-950/60 dark:text-sky-300 dark:border-sky-800"
                               : "bg-purple-50 text-purple-700 border border-purple-200/60 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800"
                           }`}>
-                            {sum.campaignType === "DELIVERY" ? "🚚 ค่าส่ง" : "📦 ทั้งบิล"}
+                            {sum.campaignType === "DELIVERY" ? "🚚 ค่าส่ง (Delivery)" : "📦 ทั้งบิล (Bill)"}
                           </span>
                         </td>
 
@@ -858,7 +881,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
                         {/* Original Fee */}
                         <td className="py-3 px-3 text-right font-mono text-slate-500 dark:text-slate-400">
-                          {sum.hasEstimatedValues && <span className="text-[10px] text-amber-500 mr-0.5" title="ประมาณการตามระยะทาง">~</span>}
+                          {sum.hasEstimatedValues && <span className="text-[10px] text-amber-500 mr-0.5" title="ประมาณการตามระยะทาง (Estimated from distance)">~</span>}
                           ฿{sum.originalFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
 
@@ -878,7 +901,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                         </td>
 
                         {/* Rider Comm */}
-                        <td className="py-3 px-3 text-right font-mono text-amber-600 dark:text-amber-400 font-bold">
+                        <td className="py-3 px-3 text-right font-mono text-rose-600 dark:text-rose-400 font-bold">
                           ฿{sum.riderCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
 
@@ -916,7 +939,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                   <tfoot>
                     <tr className="border-t-2 border-slate-300 dark:border-slate-700 font-black text-slate-900 dark:text-slate-100 bg-slate-50/80 dark:bg-slate-900/80">
                       <td className="py-3 px-3 font-black uppercase text-[11px]">
-                        รวมทั้งหมด ({promoReportData.codeSummaries.length} โค้ด)
+                        รวมทั้งหมด ({promoReportData.codeSummaries.length} โค้ด) / Total
                       </td>
                       <td className="py-3 px-2 text-center text-slate-400 text-[10px]">-</td>
                       <td className="py-3 px-2 text-center text-indigo-600 dark:text-indigo-400">
@@ -937,7 +960,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                       <td className="py-3 px-3 text-right font-mono text-indigo-650 dark:text-indigo-400">
                         ฿{promoReportData.kpis.totalLaundrySales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="py-3 px-3 text-right font-mono text-amber-600 dark:text-amber-400">
+                      <td className="py-3 px-3 text-right font-mono text-rose-600 dark:text-rose-400 font-bold">
                         ฿{promoReportData.kpis.totalRiderCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-3 px-3 text-right font-mono">
@@ -960,8 +983,8 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
             ) : (
               <div className="text-center py-10 text-slate-400">
                 <Gift size={32} className="mx-auto text-slate-300 dark:text-slate-700 mb-2 opacity-60" />
-                <p className="text-xs font-bold">ไม่พบข้อมูลการใช้งาน Promo Code ตามเงื่อนไขที่เลือก</p>
-                <p className="text-[10px] text-slate-400 mt-1">ลองเปลี่ยนช่วงเวลา, ตัวกรองสาขา หรือสถานะการชำระเงิน</p>
+                <p className="text-xs font-bold">ไม่พบข้อมูลการใช้งาน Promo Code ตามเงื่อนไขที่เลือก (No Promo Code Usage Found)</p>
+                <p className="text-[10px] text-slate-400 mt-1">ลองเปลี่ยนช่วงเวลา, ตัวกรองสาขา หรือสถานะการชำระเงิน (Try adjusting date range, branch, or payment filter)</p>
               </div>
             )}
           </div>
@@ -975,11 +998,11 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                   รายการออเดอร์ที่ใช้โปรโมชันทั้งหมด (Detailed Promo Order Log)
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  บันทึกประวัติการใช้อย่างละเอียดรายบิล พร้อมข้อมูล Rider Commission และกำไรสุทธิ
+                  บันทึกประวัติการใช้อย่างละเอียดรายบิล พร้อมข้อมูล Rider Commission และกำไรสุทธิ / Detailed order log with rider commission & net margin
                 </p>
               </div>
               <span className="text-xs font-bold text-slate-400">
-                แสดงผล {promoReportData.orderList.length} รายการ
+                แสดงผล {promoReportData.orderList.length} รายการ ({promoReportData.orderList.length} Orders)
               </span>
             </div>
 
@@ -989,18 +1012,18 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black bg-slate-50/50 dark:bg-slate-900/50">
                       <th className="py-3 px-3">Order ID</th>
-                      <th className="py-3 px-3">วันที่/เวลา</th>
+                      <th className="py-3 px-3">วันที่/เวลา (Date/Time)</th>
                       <th className="py-3 px-3">ลูกค้า (Customer)</th>
-                      <th className="py-3 px-2 text-center">ระยะทาง</th>
-                      <th className="py-3 px-3 text-right">ยอดงานซัก</th>
-                      <th className="py-3 px-3 text-right">ค่าส่งเดิม</th>
-                      <th className="py-3 px-3 text-center">โปรโมชันที่ใช้</th>
-                      <th className="py-3 px-3 text-right">ค่าส่งเก็บจริง</th>
-                      <th className="py-3 px-3 text-right">ยอดรวมบิล</th>
-                      <th className="py-3 px-3">Rider รับผ้า</th>
-                      <th className="py-3 px-3">Rider ส่งผ้า</th>
-                      <th className="py-3 px-3 text-right">กำไรสุทธิ</th>
-                      <th className="py-3 px-3 text-center">การชำระเงิน</th>
+                      <th className="py-3 px-2 text-center">ระยะทาง (Distance)</th>
+                      <th className="py-3 px-3 text-right">ยอดงานซัก (Laundry)</th>
+                      <th className="py-3 px-3 text-right">ค่าส่งเดิม (Orig. Fee)</th>
+                      <th className="py-3 px-3 text-center">โปรโมชันที่ใช้ (Promo Used)</th>
+                      <th className="py-3 px-3 text-right">ค่าส่งเก็บจริง (Net Fee)</th>
+                      <th className="py-3 px-3 text-right">ยอดรวมบิล (Total Bill)</th>
+                      <th className="py-3 px-3">Rider รับผ้า (Pickup)</th>
+                      <th className="py-3 px-3">Rider ส่งผ้า (Delivery)</th>
+                      <th className="py-3 px-3 text-right">กำไรสุทธิ (Net Margin)</th>
+                      <th className="py-3 px-3 text-center">การชำระเงิน (Payment)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
@@ -1054,7 +1077,15 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
                         {/* Distance */}
                         <td className="py-3 px-2 text-center font-mono text-slate-500 dark:text-slate-400">
-                          {item.distance > 0 ? `${item.distance.toFixed(1)} km` : "-"}
+                          {item.distance > 0 ? (
+                            item.pickupDistance > 0 && item.deliveryDistance > 0 && item.pickupDistance !== item.deliveryDistance ? (
+                              <span title={`รับผ้า: ${item.pickupDistance.toFixed(1)} km / ส่งผ้า: ${item.deliveryDistance.toFixed(1)} km`} className="cursor-help underline decoration-dotted">
+                                {item.distance.toFixed(1)} km
+                              </span>
+                            ) : (
+                              `${item.distance.toFixed(1)} km`
+                            )
+                          ) : "-"}
                         </td>
 
                         {/* Laundry Amount */}
@@ -1064,7 +1095,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
                         {/* Original Fee */}
                         <td className="py-3 px-3 text-right font-mono text-slate-500">
-                          {item.isEstimated && <span className="text-[10px] text-amber-500 mr-0.5" title="ประมาณการตามระยะทาง">~</span>}
+                          {item.isEstimated && <span className="text-[10px] text-amber-500 mr-0.5" title="ประมาณการตามระยะทาง (Estimated from distance)">~</span>}
                           ฿{item.originalFee.toFixed(2)}
                         </td>
 
@@ -1097,7 +1128,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                               {item.pickupRiderName}
                             </span>
                             {item.pickupCommission > 0 && (
-                              <span className="text-[10px] text-amber-600 dark:text-amber-400 font-mono font-bold">
+                              <span className="text-[10px] text-rose-600 dark:text-rose-400 font-mono font-bold">
                                 ฿{item.pickupCommission.toFixed(2)}
                               </span>
                             )}
@@ -1111,7 +1142,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                               {item.deliveryRiderName}
                             </span>
                             {item.deliveryCommission > 0 && (
-                              <span className="text-[10px] text-amber-600 dark:text-amber-400 font-mono font-bold">
+                              <span className="text-[10px] text-rose-600 dark:text-rose-400 font-mono font-bold">
                                 ฿{item.deliveryCommission.toFixed(2)}
                               </span>
                             )}
@@ -1152,7 +1183,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
             ) : (
               <div className="text-center py-10 text-slate-400">
                 <ClipboardList size={32} className="mx-auto text-slate-300 dark:text-slate-700 mb-2 opacity-60" />
-                <p className="text-xs font-bold">ไม่พบรายการออเดอร์ตามเงื่อนไขที่เลือก</p>
+                <p className="text-xs font-bold">ไม่พบรายการออเดอร์ตามเงื่อนไขที่เลือก (No Orders Found)</p>
               </div>
             )}
           </div>
@@ -1247,10 +1278,10 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                               type="button"
                               onClick={() => printImageUrl(url)}
                               className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
-                              title="พิมพ์รูปภาพนี้"
+                              title="พิมพ์รูปภาพนี้ (Print this image)"
                             >
                               <Printer size={14} />
-                              <span>พิมพ์</span>
+                              <span>พิมพ์ (Print)</span>
                             </button>
                           </div>
                         ));
@@ -1266,10 +1297,10 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                               type="button"
                               onClick={() => printImageUrl(selectedJobForView.billImageUrl)}
                               className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2.5 py-1 text-xs font-bold flex items-center gap-1 shadow-md transition-colors cursor-pointer"
-                              title="พิมพ์รูปภาพนี้"
+                              title="พิมพ์รูปภาพนี้ (Print this image)"
                             >
                               <Printer size={14} />
-                              <span>พิมพ์</span>
+                              <span>พิมพ์ (Print)</span>
                             </button>
                           </div>
                         );

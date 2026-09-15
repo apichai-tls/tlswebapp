@@ -101,6 +101,23 @@ import { useSyncExternalStore } from "react";
 
 
 
+function extractAdminNotes(jsonStr?: string | null): { notes: AdminNoteLog[]; rawObject: any } {
+  if (!jsonStr) return { notes: [], rawObject: null };
+  try {
+    const parsed = JSON.parse(jsonStr);
+    if (Array.isArray(parsed)) {
+      return { notes: parsed, rawObject: null };
+    }
+    if (parsed && typeof parsed === "object") {
+      return {
+        notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+        rawObject: parsed
+      };
+    }
+  } catch {}
+  return { notes: [], rawObject: null };
+}
+
 export interface RiderTask {
   taskId: string;
   job: Job;
@@ -485,18 +502,8 @@ export default function RiderPage() {
     if (selectedJob) {
       const freshJob = jobs.find(j => j.id === selectedJob.job.id);
       if (freshJob) {
-        let freshNotes: AdminNoteLog[] = [];
-        let currentNotes: AdminNoteLog[] = [];
-        try {
-          if (freshJob.adminNotesJson) {
-            freshNotes = JSON.parse(freshJob.adminNotesJson);
-          }
-        } catch {}
-        try {
-          if (selectedJob.job.adminNotesJson) {
-            currentNotes = JSON.parse(selectedJob.job.adminNotesJson);
-          }
-        } catch {}
+        const freshNotes = extractAdminNotes(freshJob.adminNotesJson).notes;
+        const currentNotes = extractAdminNotes(selectedJob.job.adminNotesJson).notes;
 
         // Check if there is a pending local note that hasn't synced to server yet
         const hasPendingLocalNote = currentNotes.length > 0 &&
@@ -638,15 +645,11 @@ export default function RiderPage() {
     // Optimistic update locally
     setRiderNoteInput("");
     if (selectedJob && selectedJob.job.id === jobId) {
-      let updatedLogs = [];
-      try {
-        if (selectedJob.job.adminNotesJson) {
-          updatedLogs = JSON.parse(selectedJob.job.adminNotesJson);
-        }
-      } catch(e) {}
-      updatedLogs.push(newLog);
-      
-      const newJson = JSON.stringify(updatedLogs);
+      const { notes: currentNotes, rawObject } = extractAdminNotes(selectedJob.job.adminNotesJson);
+      const updatedNotes = [...currentNotes, newLog];
+      const newJson = rawObject
+        ? JSON.stringify({ ...rawObject, notes: updatedNotes })
+        : JSON.stringify(updatedNotes);
       setSelectedJob({ ...selectedJob, job: { ...selectedJob.job, adminNotesJson: newJson } });
     }
 
@@ -706,14 +709,11 @@ export default function RiderPage() {
       // Optimistic update
       setRiderNoteInput("");
       if (selectedJob && selectedJob.job.id === jobId) {
-        let updatedLogs = [];
-        try {
-          if (selectedJob.job.adminNotesJson) {
-            updatedLogs = JSON.parse(selectedJob.job.adminNotesJson);
-          }
-        } catch(e) {}
-        updatedLogs.push(newLog);
-        const newJson = JSON.stringify(updatedLogs);
+        const { notes: currentNotes, rawObject } = extractAdminNotes(selectedJob.job.adminNotesJson);
+        const updatedNotes = [...currentNotes, newLog];
+        const newJson = rawObject
+          ? JSON.stringify({ ...rawObject, notes: updatedNotes })
+          : JSON.stringify(updatedNotes);
         setSelectedJob({ ...selectedJob, job: { ...selectedJob.job, adminNotesJson: newJson } });
       }
 
@@ -1736,12 +1736,7 @@ export default function RiderPage() {
                 : (r.startsWith('ไปส่ง:') || r.startsWith('Delivery:'))
             );
             
-            let notes: any[] = [];
-            try {
-              if (selectedJob.job.adminNotesJson) {
-                notes = JSON.parse(selectedJob.job.adminNotesJson);
-              }
-            } catch {}
+            const notes = extractAdminNotes(selectedJob.job.adminNotesJson).notes;
             
             return (
 
@@ -2012,12 +2007,7 @@ export default function RiderPage() {
 
           <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 flex flex-col">
             {selectedJob && (() => {
-              let notes: any[] = [];
-              try {
-                if (selectedJob.job.adminNotesJson) {
-                  notes = JSON.parse(selectedJob.job.adminNotesJson);
-                }
-              } catch {}
+              const notes = extractAdminNotes(selectedJob.job.adminNotesJson).notes;
               return notes.length > 0 ? notes.map((n: any, i: number) => {
                 const isMe = n.userId === user?.id;
                 return (

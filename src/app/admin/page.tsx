@@ -874,9 +874,10 @@ export default function AdminPage() {
   }, [selectedProfileCustomer, customerPhone, customerName, customers]);
 
 
-  const isCsoOrAdmin = user?.role === 'cso' || user?.role === 'admin';
-  const canSeeTaxInvoice = user?.role === 'cso' || user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'accounting';
-  const canSeeStuck = user?.role === 'admin' || user?.role === 'cso' || user?.role === 'superadmin';
+  const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
+  const isCsoOrAdmin = isCSO || user?.role === 'admin';
+  const canSeeTaxInvoice = isCSO || user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'accounting';
+  const canSeeStuck = user?.role === 'admin' || isCSO || user?.role === 'superadmin';
   // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
   const isPricingLocked = isPaidJob;
   const isCartLocked = isPaidJob;
@@ -1053,11 +1054,8 @@ export default function AdminPage() {
   }, [services]);
 
   const visibleCategories = useMemo(() => {
-    if (!activeShift && user?.role === 'cso') {
-      return [];
-    }
     return categories.filter(cat => cat !== 'PACKAGE');
-  }, [categories, activeShift, user?.role]);
+  }, [categories]);
   // Clean up isNew flags when the Edit Job dialog closes without saving
   useEffect(() => {
     if (!dialogOpen && editingJobId && !showReceipt && !isSubmitting) {
@@ -1849,6 +1847,7 @@ export default function AdminPage() {
       price: item.price,
       basePrice: item.basePrice,
       serviceId: item.id,
+      category: item.category,
       unit: item.unit || 'pcs' // M4 Fix: include unit field so reports can distinguish kg vs pcs
     }));
 
@@ -1862,7 +1861,7 @@ export default function AdminPage() {
 
     // Discount on (subtotal + surcharge), then subtract promo discount (only if applied via Apply button), then add fee and VAT
     const discountVal = showDialogDiscount ? (subtotal + surcharge) * (dialogDiscountPercent / 100) : 0;
-    const promoDisc = (showDialogDiscount && appliedPromo) ? promoDiscountAmount : 0;
+    const promoDisc = appliedPromo ? promoDiscountAmount : 0;
     const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
     const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
     const calculatedTotal = Math.max(0, baseTotal + vatVal);
@@ -1886,6 +1885,7 @@ export default function AdminPage() {
           price: laundryPrice || 0,
           basePrice: laundryPrice || 0,
           serviceId: "other",
+          category: "other",
           unit: "pcs"
         });
       }
@@ -1987,6 +1987,7 @@ export default function AdminPage() {
 
       pickupDistance: isPickup ? pickupDist : 0,
       deliveryDistance: isDelivery ? deliveryDist : 0,
+      distance: (isDelivery && deliveryDist) ? deliveryDist : (isPickup ? pickupDist : 0),
       shiftId: targetShiftId,
       pickupCommission: (isPickup && !selectedVIPLabel && !activeIsFreeDelivery) 
         ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
@@ -2067,7 +2068,7 @@ export default function AdminPage() {
       proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaRevision: targetProformaNum ? (effectiveProformaRevision || 0) : null,
       proformaCartHash: targetProformaNum ? effectiveProformaCartHash : null,
-      creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || user?.role) : user?.role,
+      creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || (user?.role === 'admin' ? 'admin' : (isCSO ? 'cso' : user?.role))) : (user?.role === 'admin' ? 'admin' : (isCSO ? 'cso' : user?.role)),
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
       cashPlaced: (paymentChannel === "Cash / COD" && paymentMethod === "unpaid") ? cashPlaced : false,
       actorId: user?.id,
@@ -2606,11 +2607,15 @@ export default function AdminPage() {
         createdAt: draftCreatedAt,
         customerName: customerName || "Walk-In",
         customerPhone: customerPhone || "-",
+        deliveryAddress: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || null),
+        dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || activeShop?.address || ""),
         items: dialogCart.map(item => ({
           name: item.name,
           nameEn: item.nameEn || item.name,
           quantity: item.quantity,
-          price: item.price
+          price: item.price,
+          category: item.category,
+          unit: item.unit,
         })),
         totalAmount: calculatedTotal,
         discount: discountVal,
@@ -2654,7 +2659,7 @@ export default function AdminPage() {
       return formatted;
     }
     return null;
-  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt, deliveryScheduledTime, appliedPromo, promoDiscountAmount]);
+  }, [showReceipt, isDraftPreview, dialogCart, serviceSpeed, fee, isFreeDelivery, proformaReceiptNumber, proformaRevision, editingJobId, customerName, customerPhone, isDelivery, deliveryLoc, deliveryRoom, selectedProfileCustomer, paymentMethod, paymentChannel, editingSubStatus, activeJob, dialogDiscountPercent, dialogDiscountAmount, isPaymentEvent, draftCreatedAt, deliveryScheduledTime, appliedPromo, promoDiscountAmount]);
 
 
   const handleEditFullJobRef = useRef(handleEditFullJob);
@@ -4353,32 +4358,30 @@ export default function AdminPage() {
                                       {cat}
                                     </Button>
                                   ))}
-                                  {user?.role !== 'cso' && (
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      disabled={isPricingLocked}
-                                      className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
-                                      onClick={() => {
-                                        handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
-                                        setDialogCart(prev => {
-                                          if (prev.some(x => x.id === "other")) return prev;
-                                          return [...prev, {
-                                            id: "other",
-                                            name: "Other (Custom Price)",
-                                            nameEn: "Other (Custom Price)",
-                                            quantity: 1,
-                                            price: laundryPrice || 0,
-                                            basePrice: laundryPrice || 0,
-                                            category: "other",
-                                            unit: "piece"
-                                          }];
-                                        });
-                                      }}
-                                    >
-                                      Other (Custom Price)
-                                    </Button>
-                                  )}
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={isPricingLocked}
+                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
+                                    onClick={() => {
+                                      handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
+                                      setDialogCart(prev => {
+                                        if (prev.some(x => x.id === "other")) return prev;
+                                        return [...prev, {
+                                          id: "other",
+                                          name: "Other (Custom Price)",
+                                          nameEn: "Other (Custom Price)",
+                                          quantity: 1,
+                                          price: laundryPrice || 0,
+                                          basePrice: laundryPrice || 0,
+                                          category: "other",
+                                          unit: "piece"
+                                        }];
+                                      });
+                                    }}
+                                  >
+                                    Other (Custom Price)
+                                  </Button>
                                 </div>
                               )
                             ) : (
@@ -4989,7 +4992,7 @@ export default function AdminPage() {
                                     <Receipt size={11} className="text-amber-400" />
                                     Bill No.
                                   </span>
-                                  {!(user?.role === 'admin' || user?.role === 'cso') && (
+                                  {!(user?.role === 'admin' || isCSO) && (
                                     <span className="flex items-center gap-0.5 text-[8px] text-amber-400 font-medium">
                                       <LockIcon size={8} /> View
                                     </span>
@@ -4998,14 +5001,14 @@ export default function AdminPage() {
                                 <Input
                                   id="pos-bill-no"
                                   value={billNo}
-                                  readOnly={!(user?.role === 'admin' || user?.role === 'cso')}
+                                  readOnly={!(user?.role === 'admin' || isCSO)}
                                   onChange={(e) => {
-                                    if (user?.role === 'admin' || user?.role === 'cso') {
+                                    if (user?.role === 'admin' || isCSO) {
                                       setBillNo(e.target.value);
                                     }
                                   }}
                                   placeholder="e.g. B-1024"
-                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') ? 'cursor-not-allowed opacity-60' : ''}`}
+                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || isCSO) ? 'cursor-not-allowed opacity-60' : ''}`}
                                 />
                               </div>
                             </div>
@@ -5630,7 +5633,7 @@ export default function AdminPage() {
                                     <CreditCard size={12} className="text-slate-500" />
                                     BILL NO.
                                   </span>
-                                  {!(user?.role === 'admin' || user?.role === 'cso') && (
+                                  {!(user?.role === 'admin' || isCSO) && (
                                     <span className="flex items-center gap-0.5 text-[9px] text-amber-400 font-medium">
                                       <LockIcon size={10} /> View Only
                                     </span>
@@ -5639,14 +5642,14 @@ export default function AdminPage() {
                                 <Input
                                   id="bill-no"
                                   value={billNo}
-                                  readOnly={!(user?.role === 'admin' || user?.role === 'cso')}
+                                  readOnly={!(user?.role === 'admin' || isCSO)}
                                   onChange={(e) => {
-                                    if (user?.role === 'admin' || user?.role === 'cso') {
+                                    if (user?.role === 'admin' || isCSO) {
                                       setBillNo(e.target.value);
                                     }
                                   }}
                                   placeholder="Enter Bill No."
-                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'cso') ? 'cursor-not-allowed opacity-60' : ''}`}
+                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || isCSO) ? 'cursor-not-allowed opacity-60' : ''}`}
                                 />
                               </div>
                             </div>

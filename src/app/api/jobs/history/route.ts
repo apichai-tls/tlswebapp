@@ -86,6 +86,14 @@ export async function GET(req: NextRequest) {
         createdBy: true,
         cashPlaced: true,
         isStuck: true,
+        shiftId: true,
+        billNo: true,
+        isShopPaid: true,
+        csoPaidAt: true,
+        shopPaidAt: true,
+        proformaNumber: true,
+        proformaRevision: true,
+        proformaCartHash: true,
       }
     });
     // Map Raw DB data back to the format expected by the frontend (consistent with /api/db)

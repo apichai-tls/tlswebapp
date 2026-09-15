@@ -122,6 +122,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [activeKanbanColumn, setActiveKanbanColumn] = useState<JobStatus>("pickup");
   
   const { user } = useAuth();
+  const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const customers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
 
@@ -147,6 +148,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const checkIsPinned = (j: Job, u: any) => {
     if (j.status !== 'completed') return false;
     const isAdmin = u?.role === 'admin' || u?.role === 'superadmin';
+    const isCSOUser = u?.role === 'cso' || Boolean(u?.permissions?.includes('cso'));
     const walkIn = j.source === 'pos' || (j.type as string) === 'in_store';
     const missingBill = !j.billNo || j.billNo.trim() === '';
     
@@ -156,7 +158,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       if (walkIn) return !isPaid || missingBill;
       else return !j.isPaid || !isPaid || missingBill;
     }
-    if (u?.role === 'cso') {
+    if (isCSOUser) {
       if (walkIn) return !isPaid || missingBill;
       else return !j.isPaid || missingBill;
     }
@@ -169,7 +171,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
   const visibleKanbanColumns = KANBAN_COLUMNS.filter(
     status => {
-      if (user?.role === 'manager' && status === 'tba') return false;
+      if (user?.role === 'manager' && !isCSO && status === 'tba') return false;
       if (status === 'completed' && !showCompleted) return false;
       if (status === 'cancel' && !showCancelled) return false;
       return true;
@@ -229,7 +231,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   // Filter Logic
   const filteredJobs = jobs.filter((job) => {
     // 0. Manager Role Filter
-    if (user?.role === 'manager') {
+    if (user?.role === 'manager' && !isCSO) {
       if (job.status === 'tba') return false;
     }
 
@@ -822,7 +824,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               </Badge>
                             </div>
                           )}
-                          <div className="text-[10px] text-slate-400 mt-0.5">{job.distance} km</div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            {(job.distance || job.deliveryDistance || job.pickupDistance || 0)} km
+                          </div>
                         </div>
                       </TableCell>
 
@@ -859,7 +863,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
                       <TableCell className="align-middle py-2 text-center" onClick={(e) => e.stopPropagation()}>
                         <div className="print:hidden">
-                          {(user?.role === 'admin' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) ? (
+                          {(user?.role === 'admin' || isCSO || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard')) ? (
                             <select 
                               value={job.status}
                               onChange={(e) => {
@@ -1042,7 +1046,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             key={job.id}
                             draggable={
                               user?.role === 'admin' || 
-                              user?.role === 'cso' || 
+                              isCSO || 
                               user?.permissions?.includes('jobs') || 
                               user?.permissions?.includes('dashboard')
                             }
@@ -1051,7 +1055,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               e.dataTransfer.effectAllowed = 'move';
                             }}
                             onClick={() => onEditJob && onEditJob(job)}
-                            className={`${cardBgClass} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || user?.role === 'cso' || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
+                            className={`${cardBgClass} p-3 rounded-lg border shadow-sm hover:shadow-md cursor-pointer transition-shadow ${user?.role === 'admin' || isCSO || user?.permissions?.includes('jobs') || user?.permissions?.includes('dashboard') ? 'active:cursor-grabbing' : ''}`}
                           >
                             <div className="flex items-start justify-between mb-2">
                               <div className="flex flex-col gap-1 w-full">
