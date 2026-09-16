@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffect } from "react";
-import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight, XCircle, Printer } from "lucide-react";
+import { UploadCloud, Loader2, X, Image as ImageIcon, ChevronLeft, ChevronRight, XCircle, Printer, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -365,7 +365,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
         onPaste={handlePaste}
       >
         {/* Drop Zone */}
-        {(value.length + pendingFiles.length) < maxFiles && (
+        {(value.length + pendingFiles.length) < maxFiles ? (
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -407,6 +407,16 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
               Browse
             </Button>
           </div>
+        ) : (
+          !readOnly && (
+            <div className="w-full py-1.5 px-3 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/80 text-slate-500 text-[10px]">
+              <span className="font-semibold text-slate-600 flex items-center gap-1.5">
+                <CheckCircle2 size={13} className="text-emerald-500" />
+                อัปโหลดครบ {maxFiles} รูปแล้ว (Max {maxFiles} reached)
+              </span>
+              <span className="text-[9px] text-slate-400">ลบรูปเดิมออกหากต้องการเปลี่ยน</span>
+            </div>
+          )
         )}
 
         {/* Image Grid */}

@@ -4266,7 +4266,7 @@ export default function AdminPage() {
                               subType="bills"
                               value={billImageUrls}
                               onValueChange={setBillImageUrls}
-                              maxFiles={4}
+                              maxFiles={10}
                             />
                           </div>
 
@@ -5318,7 +5318,7 @@ export default function AdminPage() {
                               subType="bills"
                               value={billImageUrls}
                               onValueChange={setBillImageUrls}
-                              maxFiles={4}
+                              maxFiles={10}
                             />
                           </div>
 
