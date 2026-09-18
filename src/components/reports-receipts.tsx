@@ -29,8 +29,9 @@ import {
 } from "date-fns";
 import { shopStore, jobStore, type Job } from "@/lib/store";
 import { useSyncExternalStore } from "react";
-import { getTopUpTransactionsAction } from "@/actions/db";
+import { getTopUpTransactionsAction, getJobRefundsAction } from "@/actions/db";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { cleanProformaNumber, formatJobDisplayId, generateCreditNoteNumber } from "@/lib/utils";
 
 export interface TopUpTransaction {
   id: string;
@@ -76,7 +77,11 @@ export interface ReceiptItem {
   total: number;
   rawJob?: Job;
   rawTopUp?: TopUpTransaction;
+  rawRefund?: any;
   isTopUp?: boolean;
+  isCreditNote?: boolean;
+  isRefunded?: boolean;
+  isCorrected?: boolean;
 }
 
 export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: ReportsReceiptsProps) {
@@ -100,6 +105,10 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   // --- Top-Up Data State ---
   const [topups, setTopups] = useState<TopUpTransaction[]>([]);
   const [isLoadingTopups, setIsLoadingTopups] = useState(false);
+
+  // --- Job Refunds Data State ---
+  const [refunds, setRefunds] = useState<any[]>([]);
+  const [isLoadingRefunds, setIsLoadingRefunds] = useState(false);
 
   // --- Pagination State ---
   const [page, setPage] = useState(1);
@@ -227,6 +236,31 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     };
   }, [startDate, endDate]);
 
+  // Load Job Refunds
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoadingRefunds(true);
+    getJobRefundsAction({
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+    })
+      .then((res) => {
+        if (isMounted) {
+          setRefunds(res || []);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load refunds for receipts:", err);
+      })
+      .finally(() => {
+        if (isMounted) setIsLoadingRefunds(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [startDate, endDate]);
+
   // Helper to identify payee / cashier
   const getJobPayee = (job: Job): string | null => {
     if (job.adminNotesJson) {
@@ -256,7 +290,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     return null;
   };
 
-  // Distinct employees for the employee dropdown (only shop-paid jobs + topups)
+  // Distinct employees for the employee dropdown (only shop-paid jobs + topups + refunds)
   const employeeList = useMemo(() => {
     const set = new Set<string>();
     jobs.forEach(j => {
@@ -270,6 +304,11 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         set.add(t.createdBy.trim());
       }
     });
+    refunds.forEach(r => {
+      if (r.createdByName && r.createdByName.trim()) {
+        set.add(r.createdByName.trim());
+      }
+    });
     if (set.size === 0) {
       jobs.forEach(j => {
         if (j.isShopPaid && j.createdBy && j.createdBy.trim()) {
@@ -278,7 +317,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       });
     }
     return Array.from(set).sort();
-  }, [jobs, topups]);
+  }, [jobs, topups, refunds]);
 
   // Time range filter helper
   const isInTimeRange = (date: Date, range: string) => {
@@ -294,8 +333,18 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   // Format Receipt Number nicely matching Loyverse (e.g. 1-36849 or TU-2608-00001)
   const formatReceiptNumber = (job: Job): string => {
     if ((job as any).receiptNumber) return (job as any).receiptNumber;
-    if ((job as any).proformaNumber) return (job as any).proformaNumber;
-    if ((job as any).proformaReceiptNumber) return (job as any).proformaReceiptNumber;
+    const isRf = Boolean(job.id && job.id.startsWith("RF-"));
+    const pNum = (job as any).proformaNumber || (job as any).proformaReceiptNumber;
+    if (pNum) {
+      const cleanP = cleanProformaNumber(pNum);
+      const rev = Number((job as any).proformaRevision) || (isRf ? 1 : 0);
+      return rev > 0 ? `${cleanP}-R${rev}` : cleanP;
+    }
+    if (isRf) {
+      const cleanId = formatJobDisplayId(job.id).replace(/^RF-/i, "");
+      const rev = Number((job as any).proformaRevision) || 1;
+      return `PR-${cleanId}-R${rev}`;
+    }
     if (job.id.startsWith("RE-") || job.id.startsWith("PR-") || job.id.includes("-")) return job.id;
     return `1-${job.id.slice(-5)}`;
   };
@@ -347,8 +396,10 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       const store = getStoreName(job.branchId);
       const customerName = (job.customerName && job.customerName !== "ลูกค้าทั่วไป") ? job.customerName.trim() : "";
       const customerPhone = job.customerPhone || "";
-      const billNo = job.billNo && job.billNo.trim() ? job.billNo.trim() : "";
+      const billNo = job.billNo ? String(job.billNo).replace(/-R\d+$/i, "").trim() : "";
       const total = Number(job.totalAmount) || 0;
+      const isRefunded = Boolean((job as any).refundId);
+      const isCorrected = Boolean((job as any).refundedFromId);
 
       list.push({
         id: job.id,
@@ -365,6 +416,8 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         total,
         rawJob: job,
         isTopUp: false,
+        isRefunded,
+        isCorrected,
       });
     });
 
@@ -412,11 +465,62 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       });
     });
 
+    // 3. Process Job Refunds (Accounting Reversal Credit Notes)
+    refunds.forEach(ref => {
+      if (!ref.createdAt) return;
+      const rDate = new Date(ref.createdAt);
+      if (rDate < startDate || rDate > endDate) return;
+
+      if (selectedStore !== "all" && ref.branchId && ref.branchId !== selectedStore) {
+        return;
+      }
+      if (!isInTimeRange(rDate, selectedTimeRange)) {
+        return;
+      }
+      const creator = (ref.createdByName || "Staff").trim();
+      if (selectedEmployee !== "all" && creator !== selectedEmployee) {
+        return;
+      }
+
+      let parsedData: any = {};
+      try {
+        if (ref.creditNoteData) parsedData = JSON.parse(ref.creditNoteData);
+      } catch {}
+
+      const store = getStoreName(ref.branchId);
+      const origAmt = Number(ref.originalAmount) || 0;
+      const corrAmt = Number(ref.correctedAmount) || 0;
+      const isAdditional = corrAmt > origAmt;
+      const total = -(Number(ref.refundAmount) || 0);
+      const type: "Sale" | "Refund" = isAdditional ? "Sale" : "Refund";
+
+      const cleanJobId = ref.jobId ? formatJobDisplayId(ref.jobId).replace(/^RF-/i, "") : "";
+      const displayCreditNoteNo = cleanJobId ? generateCreditNoteNumber(cleanJobId) : ref.creditNoteNumber;
+      const originalBillNo = parsedData.originalBillNo ? String(parsedData.originalBillNo).replace(/-R\d+$/i, "").trim() : "";
+
+      list.push({
+        id: ref.id,
+        receiptNo: displayCreditNoteNo,
+        billNo: originalBillNo,
+        date: rDate,
+        dateStr: format(rDate, "MMM dd, yyyy hh:mm a"),
+        store,
+        storeId: ref.branchId || undefined,
+        employee: creator,
+        customerName: parsedData.customerName || "",
+        customerPhone: parsedData.customerPhone || "",
+        type,
+        total,
+        rawRefund: ref,
+        isCreditNote: true,
+      });
+    });
+
     // Sort descending by date (newest receipts first)
     list.sort((a, b) => b.date.getTime() - a.date.getTime());
 
     return list;
-  }, [jobs, topups, startDate, endDate, selectedStore, selectedTimeRange, selectedEmployee, shops]);
+  }, [jobs, topups, refunds, startDate, endDate, selectedStore, selectedTimeRange, selectedEmployee, shops]);
 
   // --- Top Summary Stats Counts ---
   const stats = useMemo(() => {
@@ -558,6 +662,19 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         }
 
         status = topup.status === "cancelled" ? "Refund" : "Closed";
+      } else if (r.rawRefund) {
+        const ref = r.rawRefund;
+        const origAmt = Number(ref.originalAmount) || 0;
+        const corrAmt = Number(ref.correctedAmount) || 0;
+        const isAdditional = corrAmt > origAmt;
+        totalCollected = -(Number(ref.refundAmount) || 0);
+        grossSales = totalCollected;
+        discounts = 0;
+        taxes = (totalCollected * 7) / 107;
+        beforeTaxes = totalCollected - taxes;
+        paymentType = ref.refundChannel || ref.originalChannel || (isAdditional ? "Additional Payment" : "Refund");
+        description = isAdditional ? `Adjustment: ${ref.reason || "Additional Payment"}` : `Credit Note: ${ref.reason || "Refund"}`;
+        status = isAdditional ? "Closed" : "Refund";
       } else {
         grossSales = totalCollected;
         taxes = (totalCollected * 7) / 107;
@@ -876,7 +993,24 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
                   >
                     {/* Receipt no. */}
                     <td className="py-3.5 px-4 font-semibold text-slate-850 dark:text-slate-100 text-left">
-                      {receipt.receiptNo}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span>{receipt.receiptNo}</span>
+                        {receipt.isCreditNote && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                            Credit Note
+                          </span>
+                        )}
+                        {receipt.isRefunded && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 border border-rose-200">
+                            REFUNDED
+                          </span>
+                        )}
+                        {receipt.isCorrected && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200">
+                            CORRECTED
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Bill no. */}
@@ -1054,6 +1188,56 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
                   </span>
                 </div>
               </div>
+
+              {/* Credit Note / Adjustment Details if available */}
+              {selectedReceiptForModal.rawRefund && (() => {
+                const ref = selectedReceiptForModal.rawRefund;
+                const isAdd = (Number(ref.correctedAmount) || 0) > (Number(ref.originalAmount) || 0);
+                return (
+                  <div className={`p-3.5 rounded-xl space-y-2 border ${
+                    isAdd 
+                      ? "bg-indigo-50 dark:bg-indigo-950/40 border-indigo-200 dark:border-indigo-800"
+                      : "bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800"
+                  }`}>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">{isAdd ? "เหตุผลปรับยอดเพิ่ม:" : "เหตุผล Refund:"}</span>
+                      <span className={`font-bold ${isAdd ? "text-indigo-700 dark:text-indigo-300" : "text-rose-700 dark:text-rose-300"}`}>
+                        {ref.reason}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">ยอดชำระเดิม:</span>
+                      <span className="font-medium text-slate-800 dark:text-slate-200">
+                        ฿{Number(ref.originalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">{isAdd ? "ยอดที่แก้ไขใหม่:" : "ยอดเงินคืนเต็มจำนวน:"}</span>
+                      <span className={`font-bold ${isAdd ? "text-slate-800 dark:text-slate-200" : "text-rose-600 dark:text-rose-400"}`}>
+                        ฿{Number(isAdd ? (ref.correctedAmount || 0) : (ref.refundAmount || ref.originalAmount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">{isAdd ? "ช่องทางชำระเงินส่วนเพิ่ม:" : "ช่องทางคืนเงิน:"}</span>
+                      <span className="font-bold text-slate-800 dark:text-slate-200 uppercase">{ref.refundChannel}</span>
+                    </div>
+                    {ref.correctedJobId && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Job สำเนาที่ออกใหม่:</span>
+                        <span className="font-mono font-bold text-blue-600 dark:text-blue-400">#{ref.correctedJobId}</span>
+                      </div>
+                    )}
+                    {ref.slipImageUrl && (
+                      <div className={`pt-2 border-t ${isAdd ? "border-indigo-200 dark:border-indigo-800" : "border-rose-200 dark:border-rose-800"}`}>
+                        <span className="text-slate-500 block mb-1">{isAdd ? "หลักฐานการชำระเพิ่ม:" : "หลักฐานการคืนเงิน:"}</span>
+                        <a href={ref.slipImageUrl} target="_blank" rel="noreferrer">
+                          <img src={ref.slipImageUrl} alt="Proof" className="w-20 h-20 object-cover rounded border" />
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Items in Job if available */}
               {selectedReceiptForModal.rawJob?.items && selectedReceiptForModal.rawJob.items.length > 0 && (

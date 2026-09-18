@@ -12,6 +12,8 @@ export function cleanProformaNumber(raw: string | null | undefined): string {
   cleaned = cleaned.replace(/(-R\d+)+$/i, "");
   // Replace invalid characters (brackets, parentheses etc.)
   cleaned = cleaned.replace(/[^A-Z0-9-]/gi, "");
+  // Strip RF- if attached to PR- e.g. PR-RF-2026004284 -> PR-2026004284
+  cleaned = cleaned.replace(/^PR-RF-/i, "PR-");
   // Collapse multiple hyphens
   cleaned = cleaned.replace(/-+/g, "-");
   return cleaned;
@@ -24,6 +26,36 @@ export function formatProformaNumber(rawBase: string | null | undefined, revisio
 }
 
 /**
+ * Format a number as Thai Baht currency with two decimals.
+ */
+export function formatCurrency(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined || isNaN(amount)) return "0.00";
+  return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
+ * Format a job ID for display.
+ * Handles RF- prefix, UUIDs (shows first 8 chars), and sequential annual IDs (shows full ID).
+ * e.g. "RF-2026004284" -> "RF-2026004284"
+ * e.g. "2026004284" -> "2026004284"
+ * e.g. "891d5f55-xxxx" -> "891D5F55"
+ * e.g. "RF-891d5f55-xxxx" -> "RF-891D5F55"
+ */
+export function formatJobDisplayId(id: string | null | undefined): string {
+  if (!id) return "";
+  const upper = String(id).toUpperCase();
+  if (upper.startsWith("RF-")) {
+    const withoutRf = upper.slice(3);
+    const short = withoutRf.includes("-") ? withoutRf.split("-")[0] : withoutRf;
+    return `RF-${short}`;
+  }
+  if (upper.startsWith("JOB-")) {
+    return upper;
+  }
+  return upper.split("-")[0];
+}
+
+/**
  * Generate a receipt number from a job ID.
  * Format: RE-{jobId}  e.g. RE-2026002711
  */
@@ -33,11 +65,46 @@ export function generateReceiptNumber(jobId: string): string {
 
 /**
  * Generate a proforma base number from a job ID.
- * Format: PR-{jobId}  e.g. PR-2026002711
+ * Format: PR-{cleanJobId}  e.g. PR-2026002711 (always strips RF- prefix)
  * Append -R{n} with formatProformaNumber() when revision > 0.
  */
 export function generateProformaBaseNumber(jobId: string): string {
-  return `PR-${jobId}`;
+  const cleanId = formatJobDisplayId(jobId).replace(/^RF-/i, "");
+  return `PR-${cleanId}`;
+}
+
+/**
+ * Compute a deterministic hash of the cart and order state to detect changes
+ * between proforma revisions.
+ */
+export function computeCartHash(data: {
+  items?: Array<{ id?: string; serviceId?: string; name?: string; quantity?: number; price?: number }>;
+  serviceSpeed?: string | null;
+  fee?: number;
+  discountPercent?: number;
+  vatType?: string | null;
+  vatRate?: number;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  deliveryAt?: string | Date | null;
+}): string {
+  return JSON.stringify({
+    items: (data.items || [])
+      .map(i => ({
+        key: String(i.serviceId || i.name || i.id || "").trim(),
+        qty: Number(i.quantity) || 1,
+        price: Number(i.price) || 0,
+      }))
+      .sort((a, b) => a.key.localeCompare(b.key)),
+    speed: data.serviceSpeed || "standard",
+    fee: Number(data.fee) || 0,
+    disc: Number(data.discountPercent) || 0,
+    vatType: data.vatType || "none",
+    vatRate: Number(data.vatRate) || 0,
+    name: (data.customerName || "").trim(),
+    phone: (data.customerPhone || "").trim(),
+    deliveryAt: data.deliveryAt ? String(data.deliveryAt) : "",
+  });
 }
 
 /**
@@ -54,6 +121,27 @@ export const generateTopUpReceiptNumber = (counter: number, date: Date = new Dat
   const mm = String(date.getMonth() + 1).padStart(2, '0');
   const seq = String(counter).padStart(5, '0');
   return `TU-${yy}${mm}-${seq}`;
+};
+
+/**
+ * Global Credit Note sequence key stored in the Setting table.
+ */
+export const CREDIT_NOTE_SEQ_KEY = "creditNoteSeq_global";
+
+/**
+ * Generate a Credit Note number.
+ * If a job/receipt ID is passed: Format: CN-{jobId} e.g. CN-2026004284
+ * If a sequential counter is passed: Format: CN-{YYMM}-{00001} e.g. CN-2609-00001
+ */
+export const generateCreditNoteNumber = (counterOrJobId: number | string, date: Date = new Date()): string => {
+  if (typeof counterOrJobId === "string") {
+    const cleanId = formatJobDisplayId(counterOrJobId).replace(/^RF-/i, "");
+    return `CN-${cleanId}`;
+  }
+  const yy = String(date.getFullYear()).slice(-2);
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const seq = String(counterOrJobId).padStart(5, '0');
+  return `CN-${yy}${mm}-${seq}`;
 };
 
 export interface TransportFeeItem {

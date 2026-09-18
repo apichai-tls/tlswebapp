@@ -22,14 +22,13 @@ import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { format, isPast, isToday } from "date-fns";
 import {
-  getTasks, createTask, updateTask, deleteTask, addTaskNote, deleteTaskNote,
+  getTasks, getTasksInitialData, getArchivedTasks, createTask, updateTask, deleteTask, addTaskNote, deleteTaskNote,
   getLinkedJobDetails, archiveTask, unarchiveTask, archiveAllDoneTasks,
   toggleTaskChecklistItem, addChecklistItem, deleteChecklistItem,
   type TaskItem, type TaskPriority, type TaskStatus, type TaskNote, type TaskAttachment, type TaskChecklistItem,
 } from "@/actions/tasks";
 import { getUsers } from "@/actions/users";
 import { getDepartments, type DepartmentItem } from "@/actions/departments";
-import { getRoles, type RoleItem } from "@/actions/roles";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -4372,19 +4371,45 @@ export function TaskUserDashboard({
 
 // ─── Module Level Cache for Instant Tab Switching ────────────────────────────
 let cachedTasks: TaskItem[] | null = null;
+let cachedArchivedTasks: TaskItem[] | null = null;
 let cachedAdminUsers: AdminUser[] | null = null;
+let cachedDepartments: DepartmentItem[] | null = null;
+let cachedArchivedCount = 0;
+
+export async function prefetchTasksData(viewer?: {
+  id?: string;
+  role?: string;
+  isDepartmentHead?: boolean;
+  department?: string | null;
+}) {
+  if (cachedTasks && cachedTasks.length > 0) return;
+  try {
+    const res = await getTasksInitialData(viewer, { includeArchived: false });
+    if (res.success && res.data) {
+      cachedTasks = res.data.tasks;
+      cachedAdminUsers = res.data.adminUsers as AdminUser[];
+      cachedDepartments = res.data.departments as DepartmentItem[];
+      cachedArchivedCount = res.data.archivedCount;
+    }
+  } catch {
+    // silent background prefetch
+  }
+}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function AdminTasks() {
   const { user } = useAuth();
   const [tasks, setTasks] = useState<TaskItem[]>(() => cachedTasks || []);
+  const [archivedTasks, setArchivedTasks] = useState<TaskItem[]>(() => cachedArchivedTasks || []);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>(() => cachedAdminUsers || []);
-  const [departments, setDepartments] = useState<DepartmentItem[]>([]);
-  const [roles, setRoles] = useState<RoleItem[]>([]);
+  const [departments, setDepartments] = useState<DepartmentItem[]>(() => cachedDepartments || []);
+  const [archivedCount, setArchivedCount] = useState<number>(() => cachedArchivedCount || 0);
   const [loading, setLoading] = useState(() => !cachedTasks);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingArchived, setLoadingArchived] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const isFetchingRef = useRef(false);
+  const requestIdRef = useRef(0);
   const [viewMode, setViewMode] = useState<"board" | "list" | "dashboard">("board");
   const [filterStatus, setFilterStatus] = useState<"all" | "mine" | "open" | "overdue" | "due_today" | "archived">("all");
   const [filterDepartment, setFilterDepartment] = useState<string>(() => {
@@ -4412,28 +4437,37 @@ export function AdminTasks() {
   const currentUserName = (user as any)?.name ?? user?.email ?? "Admin";
 
   const loadTasks = async (silent = false) => {
-    if (isFetchingRef.current) return;
-    isFetchingRef.current = true;
+    const currentReqId = ++requestIdRef.current;
     if (!silent) setIsSyncing(true);
+    setLoadError(null);
     try {
-      const res = await getTasks(
-        user
-          ? {
-              id: user.id,
-              role: user.role,
-              isDepartmentHead: user.isDepartmentHead,
-              department: user.department,
-            }
-          : undefined
-      );
+      const viewer = user
+        ? {
+            id: user.id,
+            role: user.role,
+            isDepartmentHead: user.isDepartmentHead,
+            department: user.department,
+          }
+        : undefined;
+
+      const res = await getTasksInitialData(viewer, { includeArchived: false });
+      if (currentReqId !== requestIdRef.current) return;
+
       if (res.success && res.data) {
-        cachedTasks = res.data;
-        setTasks(res.data);
+        cachedTasks = res.data.tasks;
+        cachedAdminUsers = res.data.adminUsers as AdminUser[];
+        cachedDepartments = res.data.departments as DepartmentItem[];
+        cachedArchivedCount = res.data.archivedCount;
+
+        setTasks(res.data.tasks);
+        if (res.data.adminUsers) setAdminUsers(res.data.adminUsers as AdminUser[]);
+        if (res.data.departments) setDepartments(res.data.departments as DepartmentItem[]);
+        if (typeof res.data.archivedCount === "number") setArchivedCount(res.data.archivedCount);
 
         // If a task modal is currently open, keep editingTask fresh with live updates
         setEditingTask((prev) => {
           if (!prev) return null;
-          const updated = res.data!.find((t) => t.id === prev.id);
+          const updated = res.data!.tasks.find((t) => t.id === prev.id);
           if (!updated) return prev;
           const isSame =
             updated.updatedAt === prev.updatedAt &&
@@ -4451,40 +4485,28 @@ export function AdminTasks() {
 
           return isSame ? prev : updated;
         });
+      } else {
+        if (!cachedTasks || cachedTasks.length === 0) {
+          setLoadError(res.error || "Failed to load tasks");
+        }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to load tasks:", e);
+      if (currentReqId === requestIdRef.current) {
+        if (!cachedTasks || cachedTasks.length === 0) {
+          setLoadError(e?.message || "Failed to connect to server");
+        }
+      }
     } finally {
-      isFetchingRef.current = false;
-      if (!silent) setIsSyncing(false);
+      if (currentReqId === requestIdRef.current) {
+        if (!silent) setIsSyncing(false);
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (!cachedTasks) setLoading(true);
-      await Promise.all([
-        loadTasks(true),
-        getUsers().then((res) => {
-          if (res.success && res.data && mounted) {
-            cachedAdminUsers = res.data as AdminUser[];
-            setAdminUsers(res.data as AdminUser[]);
-          }
-        }),
-        getDepartments().then((res) => {
-          if (res.success && res.data && mounted) {
-            setDepartments(res.data as DepartmentItem[]);
-          }
-        }),
-        getRoles().then((res) => {
-          if (res.success && res.data && mounted) {
-            setRoles(res.data as RoleItem[]);
-          }
-        }),
-      ]);
-      if (mounted) setLoading(false);
-    })();
+    loadTasks(!cachedTasks ? false : true);
 
     // 🔄 Auto-Sync: Poll tasks in background every 10 seconds when tab is active
     const interval = setInterval(() => {
@@ -4493,7 +4515,6 @@ export function AdminTasks() {
       }
     }, 10000);
 
-    // 🔄 Auto-Sync: Immediately refresh when user switches back to this tab or focus
     const handleVisibility = () => {
       if (!document.hidden) {
         loadTasks(true);
@@ -4511,7 +4532,6 @@ export function AdminTasks() {
     window.addEventListener("tasks-changed", handleTasksChanged);
 
     return () => {
-      mounted = false;
       clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("focus", handleFocus);
@@ -4519,12 +4539,43 @@ export function AdminTasks() {
     };
   }, [user?.id, user?.role, user?.isDepartmentHead, user?.department]);
 
+  // Load archived tasks on-demand when switching to archived filter
+  useEffect(() => {
+    if (filterStatus === "archived" && archivedTasks.length === 0 && archivedCount > 0) {
+      let active = true;
+      setLoadingArchived(true);
+      const viewer = user
+        ? {
+            id: user.id,
+            role: user.role,
+            isDepartmentHead: user.isDepartmentHead,
+            department: user.department,
+          }
+        : undefined;
+
+      getArchivedTasks(viewer)
+        .then((res) => {
+          if (active && res.success && res.data) {
+            cachedArchivedTasks = res.data;
+            setArchivedTasks(res.data);
+          }
+        })
+        .finally(() => {
+          if (active) setLoadingArchived(false);
+        });
+
+      return () => {
+        active = false;
+      };
+    }
+  }, [filterStatus, archivedCount, user?.id, user?.role, user?.department, user?.isDepartmentHead]);
+
   // Listen to external navigation events from NotificationBell
   useEffect(() => {
     const handleOpenTask = (e: any) => {
       const taskId = e.detail?.taskId;
       if (taskId) {
-        const target = tasks.find((t) => t.id === taskId);
+        const target = tasks.find((t) => t.id === taskId) || archivedTasks.find((t) => t.id === taskId);
         if (target) {
           setEditingTask(target);
           setModalOpen(true);
@@ -4554,7 +4605,7 @@ export function AdminTasks() {
     };
     window.addEventListener("open-task-modal", handleOpenTask);
     return () => window.removeEventListener("open-task-modal", handleOpenTask);
-  }, [tasks, user?.id, user?.role, user?.isDepartmentHead, user?.department]);
+  }, [tasks, archivedTasks, user?.id, user?.role, user?.isDepartmentHead, user?.department]);
 
   const overdueCount = useMemo(() => {
     return tasks.filter((t) => !t.isArchived && t.status !== "done" && t.dueDate && isPast(new Date(t.dueDate)) && !isToday(new Date(t.dueDate))).length;
@@ -4567,8 +4618,9 @@ export function AdminTasks() {
   const filteredTasks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const terms = q ? q.split(/\s+/).filter(Boolean) : [];
+    const sourceList = filterStatus === "archived" ? archivedTasks : tasks;
 
-    return tasks.filter((t) => {
+    return sourceList.filter((t) => {
       // 1. Status / archive filter
       if (filterStatus === "archived") {
         if (t.isArchived !== true) return false;
@@ -4591,8 +4643,8 @@ export function AdminTasks() {
         }
       }
 
-      // 2. Department filter
-      if (filterDepartment !== "all") {
+      // 2. Department filter (only filter if adminUsers list is loaded to prevent false negatives)
+      if (filterDepartment !== "all" && adminUsers.length > 0) {
         const assigneeIds = t.assignedToId ? t.assignedToId.split(",").map((s) => s.trim()) : [];
         const assignedUsers = adminUsers.filter((u) => assigneeIds.includes(u.id));
         const hasMatchingAssignee = assignedUsers.some((u) => (u.department || 'branch_ops') === filterDepartment);
@@ -4649,14 +4701,14 @@ export function AdminTasks() {
 
       return terms.every((term) => searchableBlob.includes(term));
     });
-  }, [tasks, filterStatus, filterDepartment, adminUsers, user?.id, searchQuery]);
+  }, [tasks, archivedTasks, filterStatus, filterDepartment, adminUsers, user?.id, searchQuery]);
 
   const pendingCount = tasks.filter((t) => !t.isArchived && t.status !== "done").length;
-  const archivedCount = tasks.filter((t) => t.isArchived).length;
   const doneUnarchivedCount = tasks.filter((t) => !t.isArchived && t.status === "done").length;
 
   const handleTaskUpdate = (updated: TaskItem) => {
     setTasks((ts) => ts.map((t) => t.id === updated.id ? updated : t));
+    setArchivedTasks((ats) => ats.map((t) => t.id === updated.id ? updated : t));
     if (editingTask && editingTask.id === updated.id) {
       setEditingTask(updated);
     }
@@ -4713,7 +4765,10 @@ export function AdminTasks() {
     const res = await archiveTask(id, { id: currentUserId, name: currentUserName, role: user?.role });
     if (res.success && res.data) {
       toast.success("Task archived");
-      handleTaskUpdate(res.data);
+      setTasks((ts) => ts.filter((t) => t.id !== id));
+      setArchivedTasks((ats) => [res.data!, ...ats]);
+      setArchivedCount((c) => c + 1);
+      cachedTasks = cachedTasks ? cachedTasks.filter((t) => t.id !== id) : null;
       if (editingTask?.id === id) setModalOpen(false);
     } else {
       toast.error(res.error || "Failed to archive task");
@@ -4724,7 +4779,10 @@ export function AdminTasks() {
     const res = await unarchiveTask(id, { id: currentUserId, name: currentUserName, role: user?.role });
     if (res.success && res.data) {
       toast.success("Task unarchived");
-      handleTaskUpdate(res.data);
+      setArchivedTasks((ats) => ats.filter((t) => t.id !== id));
+      setTasks((ts) => [res.data!, ...ts]);
+      setArchivedCount((c) => Math.max(0, c - 1));
+      cachedTasks = cachedTasks ? [res.data!, ...cachedTasks] : null;
       if (editingTask?.id === id) setModalOpen(false);
     } else {
       toast.error(res.error || "Failed to unarchive task");
@@ -4755,13 +4813,43 @@ export function AdminTasks() {
 
   if (loading && tasks.length === 0) {
     return (
-      <div className="flex-1 flex flex-col min-h-0 bg-slate-50/50 p-6 animate-pulse">
-        <div className="h-10 bg-slate-200/70 rounded-xl w-64 mb-6" />
-        <div className="grid grid-cols-3 gap-4 flex-1">
-          <div className="bg-slate-200/50 rounded-xl p-4 h-64 border border-slate-200/60" />
-          <div className="bg-slate-200/50 rounded-xl p-4 h-64 border border-slate-200/60" />
-          <div className="bg-slate-200/50 rounded-xl p-4 h-64 border border-slate-200/60" />
-        </div>
+      <div className="flex-1 flex flex-col items-center justify-center min-h-[400px] p-6 bg-slate-50/50">
+        {loadError ? (
+          <div className="max-w-md w-full bg-white rounded-2xl border border-red-200 p-6 shadow-sm text-center flex flex-col items-center gap-3">
+            <div className="w-12 h-12 rounded-full bg-red-50 text-red-600 flex items-center justify-center">
+              <AlertTriangle size={24} />
+            </div>
+            <h3 className="text-base font-bold text-slate-800">ไม่สามารถโหลดข้อมูล Tasks ได้</h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              {loadError || "เกิดข้อผิดพลาดในการเชื่อมต่อ กรุณาลองใหม่อีกครั้ง"}
+            </p>
+            <Button
+              onClick={() => {
+                setLoading(true);
+                loadTasks(false);
+              }}
+              className="mt-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-4 py-2 rounded-xl flex items-center gap-2 cursor-pointer"
+            >
+              <RotateCw size={14} />
+              ลองใหม่อีกครั้ง (Retry)
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className="relative">
+              <div className="w-12 h-12 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shadow-2xs">
+                <ClipboardCheck size={24} />
+              </div>
+              <div className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-2xs">
+                <Loader2 size={16} className="text-indigo-600 animate-spin" />
+              </div>
+            </div>
+            <div>
+              <p className="text-sm font-bold text-slate-700">กำลังโหลดกระดานงาน (Tasks)...</p>
+              <p className="text-xs text-slate-400 mt-0.5">ดึงข้อมูลรายการงานและข้อมูลล่าสุด</p>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -5194,7 +5282,15 @@ export function AdminTasks() {
                 </thead>
                 <tbody>
                   <AnimatePresence>
-                    {filteredTasks.length === 0 && (
+                    {loadingArchived && (
+                      <tr>
+                        <td colSpan={11} className="text-center text-slate-500 py-12 text-xs">
+                          <Loader2 size={16} className="animate-spin inline mr-2 text-indigo-600" />
+                          Loading archived tasks...
+                        </td>
+                      </tr>
+                    )}
+                    {!loadingArchived && filteredTasks.length === 0 && (
                       <tr>
                         <td colSpan={11} className="text-center text-slate-400 py-12 text-sm">
                           {filterStatus === "archived" ? "No archived tasks" : "No tasks found"}

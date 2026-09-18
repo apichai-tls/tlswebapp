@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
 import { refreshDb, api } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -49,9 +49,10 @@ import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
 import { AdminReports } from "@/components/admin-reports";
 import { AdminMarketing } from "@/components/admin-marketing";
-import { AdminTasks } from "@/components/admin-tasks";
+import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
+import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -118,6 +119,7 @@ import {
   Wallet,
   Save,
   FileText,
+  RotateCcw,
 } from "lucide-react";
 
 import Link from "next/link";
@@ -237,11 +239,34 @@ export default function AdminPage() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
   const [topUpCustomer, setTopUpCustomer] = useState<Customer | null>(null);
+  const [refundJob, setRefundJob] = useState<Job | null>(null);
+  const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
+  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin' || user?.role === 'manager');
+  const canRefund = Boolean(user?.permissions?.includes('refund-job') || user?.role === 'admin');
+
+  useEffect(() => {
+    walletApprovalStore.refreshPendingMap().catch(() => {});
+  }, []);
+
+  // Pre-warm tasks data in background after login/hydration to ensure 0ms instant tab opening
+  useEffect(() => {
+    if (user) {
+      const timer = setTimeout(() => {
+        prefetchTasksData({
+          id: user.id,
+          role: user.role,
+          isDepartmentHead: user.isDepartmentHead,
+          department: user.department,
+        }).catch(() => {});
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [user?.id, user?.role, user?.department, user?.isDepartmentHead]);
 
   // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "reports", "marketing"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "reports", "marketing", "tasks"];
 
     if (validTabs.includes(hash)) {
       // Honour explicit URL hash (e.g. bookmarks / direct links)
@@ -1468,13 +1493,15 @@ export default function AdminPage() {
     setDialogCart(mappedCart);
 
     // ── Load proforma versioning from DB fields (primary) ──────────────────────────────
+    const isRfJob = Boolean(job.id && String(job.id).toUpperCase().startsWith("RF-"));
+
     // Priority 1: dedicated DB fields added in migration add_proforma_fields
     let loadedProformaNum: string | null = (job as any).proformaNumber || null;
     let loadedRevision: number = (job as any).proformaRevision ?? null;
     let loadedCartHash: string | null = (job as any).proformaCartHash || null;
 
     // Priority 2: legacy fallback — parse from remark (old jobs before DB fields)
-    if (!loadedProformaNum) {
+    if (!loadedProformaNum && !isRfJob) {
       const existingProformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
       const existingRevisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
       loadedProformaNum = cleanProformaNumber((job as any).proformaReceiptNumber || (existingProformaMatch ? existingProformaMatch[1] : null)) || null;
@@ -1484,7 +1511,7 @@ export default function AdminPage() {
     }
 
     // Priority 3: legacy fallback — parse from billImageUrl filenames (very old jobs)
-    if (!loadedProformaNum && job.billImageUrl) {
+    if (!loadedProformaNum && job.billImageUrl && !isRfJob) {
       try {
         const billUrls: string[] = JSON.parse(job.billImageUrl);
         for (const url of billUrls) {
@@ -1501,17 +1528,36 @@ export default function AdminPage() {
       } catch {}
     }
 
+    // If RF job, ensure proforma number matches clean original ID and revision defaults to at least 1
+    if (isRfJob) {
+      if (!loadedProformaNum) {
+        loadedProformaNum = generateProformaBaseNumber(job.id);
+      }
+      if (loadedRevision === null || loadedRevision === 0) {
+        loadedRevision = 1;
+      }
+    }
+
     if (loadedRevision === null) loadedRevision = 0;
 
     setProformaReceiptNumber(loadedProformaNum);
     setProformaRevision(loadedRevision);
 
-    // Use DB-stored cart hash (no more localStorage).
-    // If proformaCartHash is null (legacy jobs that predate the DB field), set to null so that
-    // the next Proforma press always triggers a bump — the DB will then be populated correctly.
-    // Do NOT fall back to initialCartHash: initialCartHash reflects current DB items, so if items
-    // were added after the last proforma, the hashes would incorrectly match → no bump.
-    setLastProformaCartHash(loadedCartHash);
+    // Initial cart hash: if loadedCartHash is null, compute from loaded cart items so that
+    // subsequent modifications are accurately detected.
+    const initialLoadedCartHash = computeCartHash({
+      items: mappedCart,
+      serviceSpeed: (job.remark?.match(/Express\s*(\d+)%/i) ? `express_${job.remark?.match(/Express\s*(\d+)%/i)![1]}` : "standard"),
+      fee: job.fee || 0,
+      discountPercent: job.discountPercent || 0,
+      vatType: (job as any).vatType,
+      vatRate: (job as any).vatRate || 0,
+      customerName: job.customerName,
+      customerPhone: job.customerPhone,
+      deliveryAt: job.deliveryScheduledAt,
+    });
+
+    setLastProformaCartHash(loadedCartHash || initialLoadedCartHash);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
@@ -1911,28 +1957,52 @@ export default function AdminPage() {
       }
     }
 
-    const currentCartHash = JSON.stringify({
-      items: dialogCart.map(item => ({ id: item.id, qty: item.quantity, price: item.price })),
-      discount: dialogDiscountPercent,
-      vatType: dialogVatType,
-      vatRate: dialogVatRate,
+    const currentCartHash = computeCartHash({
+      items: dialogCart,
       serviceSpeed,
       fee,
-      customerName: customerName.trim(),
-      customerPhone: customerPhone.trim(),
-      deliveryAt: deliveryScheduledTime || "",
+      discountPercent: dialogDiscountPercent,
+      vatType: dialogVatType,
+      vatRate: dialogVatRate,
+      customerName,
+      customerPhone,
+      deliveryAt: deliveryScheduledTime,
     });
 
     // Proforma should only be preserved/used if it was explicitly generated/exists
-    const existingProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT")
-      ? proformaReceiptNumber
+    let existingProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT")
+      ? cleanProformaNumber(proformaReceiptNumber)
       : (existingJob ? (cleanProformaNumber((existingJob as any).proformaNumber) || null) : null);
+
+    const isRfJob = Boolean(targetEditingJobId && targetEditingJobId.startsWith("RF-"));
+    const cleanOriginalId = targetEditingJobId ? formatJobDisplayId(targetEditingJobId).replace(/^RF-/i, "") : "";
+
+    if (targetEditingJobId && isRfJob) {
+      existingProformaNum = existingProformaNum || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(targetEditingJobId));
+    }
 
     const isNewJobProformaRequested = !editingJobId && (proformaReceiptNumber === "DRAFT" || proformaPressedSinceLastEdit);
 
     let targetProformaNum: string | null = existingProformaNum || null;
-    let effectiveProformaRevision = targetProformaNum ? proformaRevision : 0;
-    let effectiveProformaCartHash = targetProformaNum ? lastProformaCartHash : null;
+    if (!targetProformaNum && targetEditingJobId) {
+      targetProformaNum = generateProformaBaseNumber(targetEditingJobId);
+    }
+
+    const isCartChangedFromLastProforma = Boolean(
+      targetEditingJobId && lastProformaCartHash && currentCartHash !== lastProformaCartHash
+    );
+
+    let effectiveProformaRevision = targetProformaNum 
+      ? (isRfJob ? Math.max(1, proformaRevision || 1) : proformaRevision) 
+      : 0;
+    let effectiveProformaCartHash = targetProformaNum ? (lastProformaCartHash || currentCartHash) : null;
+
+    if (targetEditingJobId && targetProformaNum && isCartChangedFromLastProforma && !proformaPressedSinceLastEdit) {
+      effectiveProformaRevision = (effectiveProformaRevision || (isRfJob ? 1 : 0)) + 1;
+      effectiveProformaCartHash = currentCartHash;
+      setProformaRevision(effectiveProformaRevision);
+      setLastProformaCartHash(currentCartHash);
+    }
     const cannotDeduct = !isAlreadyPaidJob && isPayment && paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal) || isWalletExpired(selectedProfileCustomer));
 
 
@@ -2209,39 +2279,55 @@ export default function AdminPage() {
           }
         }
 
-        // [AUTO-PROFORMA] If paying and no proforma was generated yet → auto-assign + capture in background
+        // [AUTO-PROFORMA] If paying, ensure proforma is synchronized, saved, and captured
         if (isPayment) {
-          const existingProformaNum = proformaReceiptNumber || (existingJob as any)?.proformaNumber;
-          const finalProformaNum = existingProformaNum
-            ? generateProformaBaseNumber(targetEditingJobId) === existingProformaNum
-              ? existingProformaNum
-              : existingProformaNum
-            : generateProformaBaseNumber(targetEditingJobId);
+          let finalProformaNum = proformaReceiptNumber || (existingJob as any)?.proformaNumber;
+          if (targetEditingJobId.startsWith("RF-")) {
+            finalProformaNum = cleanProformaNumber(finalProformaNum) || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(targetEditingJobId));
+          } else if (!finalProformaNum) {
+            finalProformaNum = generateProformaBaseNumber(targetEditingJobId);
+          }
+          finalProformaNum = cleanProformaNumber(finalProformaNum);
+          const finalRevision = isRfJob ? Math.max(1, effectiveProformaRevision || 1) : effectiveProformaRevision;
+          const finalCartHash = effectiveProformaCartHash;
 
-          if (!existingProformaNum) {
-            // First time paying without prior Proforma — save proformaNumber to DB
-            await api.updateJob(targetEditingJobId, {
-              proformaNumber: finalProformaNum,
-              proformaRevision: 0,
-              proformaCartHash: currentCartHash,
-            } as any);
-            setProformaReceiptNumber(finalProformaNum);
-            setProformaRevision(0);
+          // Always ensure proforma details are saved to DB
+          await api.updateJob(targetEditingJobId, {
+            proformaNumber: finalProformaNum,
+            proformaRevision: finalRevision,
+            proformaCartHash: finalCartHash,
+          } as any);
+          setProformaReceiptNumber(finalProformaNum);
+          setProformaRevision(finalRevision);
+          setLastProformaCartHash(finalCartHash);
+          if (existingJob) {
+            (existingJob as any).proformaNumber = finalProformaNum;
+            (existingJob as any).proformaRevision = finalRevision;
+            (existingJob as any).proformaCartHash = finalCartHash;
           }
 
-          // Fire background capture of Proforma image (fire-and-forget, non-blocking)
-          // This ensures proforma-PR-XXXX-rev0.png exists in billImageUrl alongside receipt
-          if (!existingProformaNum) {
+          // Fire background capture of Proforma image if not yet captured for this revision
+          const proformaFilename = `proforma-${finalProformaNum}-rev${finalRevision}.png`;
+          const existingBillUrls: string[] = (() => {
+            try {
+              return existingJob?.billImageUrl ? JSON.parse(existingJob.billImageUrl) : [];
+            } catch { return []; }
+          })();
+          const alreadyHasThisRev = existingBillUrls.some(u => u.includes(proformaFilename));
+
+          if (!alreadyHasThisRev) {
             const proformaCapData = {
               ...formatJobToReceiptData({
                 ...existingJob,
+                id: targetEditingJobId,
                 proformaNumber: finalProformaNum,
-                proformaRevision: 0,
+                proformaRevision: finalRevision,
                 remark: (newJobData.remark !== undefined ? newJobData.remark : existingJob?.remark),
                 totalAmount: calculatedTotal,
               } as any),
               isDraft: true,
-              proformaRevision: 0,
+              proformaRevision: finalRevision,
+              proformaId: finalProformaNum,
               jobId: targetEditingJobId,
               autoCapture: false,
             };
@@ -2251,7 +2337,7 @@ export default function AdminPage() {
                 const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
                 const proformaBlob = await generateA5ReceiptImage(proformaCapData, activeShop);
                 if (proformaBlob) {
-                  const proformaFilename = `proforma-${finalProformaNum}-rev0.png`;
+                  const proformaFilename = `proforma-${finalProformaNum}-rev${finalRevision}.png`;
                   let proformaUrl: string | null = null;
                   try {
                     const signRes = await fetch("/api/upload-url", {
@@ -2650,6 +2736,10 @@ export default function AdminPage() {
     } else if (activeJob) {
       const formatted = formatJobToReceiptData(activeJob);
       formatted.autoCapture = isPaymentEvent;
+      if (proformaReceiptNumber) {
+        formatted.proformaId = cleanProformaNumber(proformaReceiptNumber);
+        formatted.proformaRevision = proformaRevision;
+      }
       // Pass promo info for payment receipts too
       if (appliedPromo) {
         formatted.promoCode = appliedPromo.code;
@@ -2766,8 +2856,22 @@ export default function AdminPage() {
                 className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
                 title="Customers (CRM)"
               >
-                <Users size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Customers (CRM)</span>}
+                <div className="relative shrink-0">
+                  <Users size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                  {isSidebarCollapsed && canApproveWallet && pendingWalletMap.total > 0 && (
+                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse border border-white" />
+                  )}
+                </div>
+                {!isSidebarCollapsed && (
+                  <div className="flex items-center justify-between flex-1 min-w-0">
+                    <span className="truncate">Customers (CRM)</span>
+                    {canApproveWallet && pendingWalletMap.total > 0 && (
+                      <span className="ml-auto px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-white animate-pulse">
+                        {pendingWalletMap.total}
+                      </span>
+                    )}
+                  </div>
+                )}
               </motion.a>
             )}
             
@@ -2872,8 +2976,12 @@ export default function AdminPage() {
                 className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "reports" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
                 title="Reports & Analytics"
               >
-                <BarChart3 size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
+                <div className="relative shrink-0">
+                  <BarChart3 size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+                </div>
+                {!isSidebarCollapsed && (
+                  <span className="truncate">Reports & Analytics</span>
+                )}
               </motion.a>
             )}
 
@@ -3062,7 +3170,12 @@ export default function AdminPage() {
                       }`}
                     >
                       <Users size={18} />
-                      <span>Customers (CRM)</span>
+                      <span className="flex-1">Customers (CRM)</span>
+                      {canApproveWallet && pendingWalletMap.total > 0 && (
+                        <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-white animate-pulse">
+                          {pendingWalletMap.total}
+                        </span>
+                      )}
                     </a>
                   )}
 
@@ -3190,7 +3303,7 @@ export default function AdminPage() {
                         setIsMobileMenuOpen(false);
                       }}
                       className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "reports" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                        activeTab === "reports" ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-500 hover:bg-slate-50"
                       }`}
                     >
                       <BarChart3 size={18} />
@@ -3323,6 +3436,24 @@ export default function AdminPage() {
             </h1>
             
             <div className="flex items-center gap-3">
+              {canApproveWallet && pendingWalletMap.total > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    handleTabChange("customers");
+                    window.dispatchEvent(new CustomEvent("open-crm-tab", { detail: { tab: "wallet_approvals" } }));
+                  }}
+                  className="h-9 px-2.5 bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 flex items-center gap-1.5 rounded-xl text-xs font-bold shadow-xs animate-pulse cursor-pointer"
+                  title="Pending wallet approvals"
+                >
+                  <Wallet size={14} className="text-amber-600 shrink-0" />
+                  <span className="hidden sm:inline">Wallet Approvals</span>
+                  <span className="px-1.5 py-0.2 bg-amber-600 text-white rounded-full text-[10px] font-black">
+                    {pendingWalletMap.total}
+                  </span>
+                </Button>
+              )}
               <NotificationBell
                 onSelectTask={(taskId) => {
                   handleTabChange("tasks");
@@ -3400,8 +3531,18 @@ export default function AdminPage() {
                       {editingJobId && (
                         <div className="flex items-center gap-2 ml-6">
                           <span className="text-slate-500 font-mono text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                            Order ID: #{editingJobId.split('-')[0].toUpperCase()}
+                            Order ID: #{formatJobDisplayId(editingJobId)}
                           </span>
+                          {activeJob?.refundId && (
+                            <Badge variant="outline" className="bg-rose-100 text-rose-800 border-rose-300 font-bold text-[10px]">
+                              REFUNDED
+                            </Badge>
+                          )}
+                          {activeJob?.refundedFromId && (
+                            <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-300 font-bold text-[10px]">
+                              CORRECTED
+                            </Badge>
+                          )}
                           {hasAccess("activity-logs") && (
                             <Button
                               type="button"
@@ -5166,32 +5307,35 @@ export default function AdminPage() {
                               variant="outline"
                               disabled={dialogCart.length === 0 || !editingJobId}
                               onClick={() => {
-                                const cartHash = JSON.stringify({
-                                  items: dialogCart.map(it => ({ id: it.id, q: it.quantity, p: it.price })),
-                                  speed: serviceSpeed,
-                                  fee: fee,
-                                  freeDelivery: activeIsFreeDelivery,
-                                  disc: dialogDiscountPercent,
+                                const cartHash = computeCartHash({
+                                  items: dialogCart,
+                                  serviceSpeed,
+                                  fee,
+                                  discountPercent: dialogDiscountPercent,
                                   vatType: dialogVatType,
                                   vatRate: dialogVatRate,
-                                  customerName: customerName || "",
-                                  customerPhone: customerPhone || "",
-                                  deliveryAt: deliveryScheduledTime || "",
+                                  customerName,
+                                  customerPhone,
+                                  deliveryAt: deliveryScheduledTime,
                                 });
 
-                                let targetProformaNum = proformaReceiptNumber;
+                                const cleanOriginalId = editingJobId ? formatJobDisplayId(editingJobId).replace(/^RF-/i, "") : "";
+                                let targetProformaNum = proformaReceiptNumber ? cleanProformaNumber(proformaReceiptNumber) : null;
+                                if (editingJobId && editingJobId.startsWith("RF-")) {
+                                  targetProformaNum = targetProformaNum || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(editingJobId));
+                                }
                                 let targetRevision = proformaRevision;
 
-                                if (!targetProformaNum) {
+                                if (!targetProformaNum || targetProformaNum === "DRAFT") {
                                   if (editingJobId) {
                                     targetProformaNum = generateProformaBaseNumber(editingJobId);
-                                    targetRevision = 0;
+                                    targetRevision = editingJobId.startsWith("RF-") ? 1 : 0;
                                     setProformaReceiptNumber(targetProformaNum);
-                                    setProformaRevision(0);
+                                    setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
                                     jobStore.updateJobDetails(editingJobId, {
                                       proformaNumber: targetProformaNum,
-                                      proformaRevision: 0,
+                                      proformaRevision: targetRevision,
                                       proformaCartHash: cartHash,
                                     } as any);
                                   } else {
@@ -5200,7 +5344,7 @@ export default function AdminPage() {
                                   }
                                 } else {
                                   if (cartHash !== lastProformaCartHash) {
-                                    targetRevision = proformaRevision + 1;
+                                    targetRevision = (proformaRevision || (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
                                     if (editingJobId) {
@@ -5210,6 +5354,9 @@ export default function AdminPage() {
                                         proformaCartHash: cartHash,
                                       } as any);
                                     }
+                                  } else if (editingJobId?.startsWith("RF-") && (targetRevision === null || targetRevision === 0)) {
+                                    targetRevision = 1;
+                                    setProformaRevision(1);
                                   }
                                 }
 
@@ -5779,29 +5926,59 @@ export default function AdminPage() {
                           </Button>
                         </div>
                       )}
-                      <div className="flex justify-end gap-3 w-full">
-                        <Button variant="outline" className="px-5 cursor-pointer" onClick={() => { setDialogOpen(false); resetDialogForm(); }} disabled={isSubmitting}>
-                          Cancel
-                        </Button>
-                        <Button 
-                          className="px-6 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer" 
-                          onClick={() => handleCreate(false)}
-                          disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
-                        >
-                          {isSubmitting ? (
-                            <>
-                              <Loader2 size={16} className="animate-spin mr-2" />
-                              Uploading & Saving...
-                            </>
-                          ) : isDetailLoading ? (
-                            <>
-                              <Loader2 size={16} className="animate-spin mr-2" />
-                              Loading details...
-                            </>
-                          ) : (
-                            editingJobId ? "Save Changes" : "Create Job"
+                      <div className="flex items-center justify-between gap-3 w-full flex-wrap">
+                        {/* Left: Refund & Reissue Action Button (Temporarily disabled for business flow discussion) */}
+                        <div>
+                          {/* Temporarily disabled:
+                          {editingJobId && activeJob && isJobFullyPaid(activeJob) && !activeJob.refundId && canRefund && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100 hover:text-rose-800 h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs"
+                              onClick={() => {
+                                setRefundJob(activeJob);
+                              }}
+                              title="ยกเลิกบิลเดิม คืนเงิน และสร้าง Job สำเนาเพื่อแก้ไขรายการและชำระใหม่"
+                            >
+                              <RotateCcw size={14} className="text-rose-600" />
+                              <span>Refund & Reissue (คืนเงิน/ออกบิลใหม่)</span>
+                            </Button>
                           )}
-                        </Button>
+                          */}
+                          {editingJobId && activeJob?.refundId && (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-bold border border-rose-200">
+                              <span className="w-2 h-2 rounded-full bg-rose-500" />
+                              <span>บิลนี้ผ่านการ Refund & Reissue แล้ว</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Right: Cancel and Save Changes */}
+                        <div className="flex items-center gap-3 ml-auto">
+                          <Button variant="outline" className="px-5 cursor-pointer" onClick={() => { setDialogOpen(false); resetDialogForm(); }} disabled={isSubmitting}>
+                            Cancel
+                          </Button>
+                          <Button 
+                            className="px-6 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer" 
+                            onClick={() => handleCreate(false)}
+                            disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
+                          >
+                            {isSubmitting ? (
+                              <>
+                                <Loader2 size={16} className="animate-spin mr-2" />
+                                Uploading & Saving...
+                              </>
+                            ) : isDetailLoading ? (
+                              <>
+                                <Loader2 size={16} className="animate-spin mr-2" />
+                                Loading details...
+                              </>
+                            ) : (
+                              editingJobId ? "Save Changes" : "Create Job"
+                            )}
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </DialogFooter>
@@ -5954,7 +6131,14 @@ export default function AdminPage() {
 
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
-          {activeTab === "jobs" && hasAccess("jobs") && <AdminAllJobs jobs={jobs} onEditJob={stableHandleEditFullJob} onCreateJob={stableHandleCreateNewJob} savingJobIds={savingJobIds} />}
+          {activeTab === "jobs" && hasAccess("jobs") && (
+            <AdminAllJobs 
+              jobs={jobs} 
+              onEditJob={stableHandleEditFullJob} 
+              onCreateJob={stableHandleCreateNewJob} 
+              savingJobIds={savingJobIds} 
+            />
+          )}
           {activeTab === "dispatch" && hasAccess("dispatch") && <AdminDispatch onEditJob={stableHandleEditFullJob} />}
           {activeTab === "riders" && hasAccess("riders") && <AdminRiders />}
           {activeTab === "map" && hasAccess("map") && <AdminLiveMap />}
@@ -6124,6 +6308,39 @@ export default function AdminPage() {
         }}
         onSuccess={(receiptNo) => {
           console.log("[TopUp] Created receipt:", receiptNo);
+        }}
+      />
+
+      {/* Refund & Correct Dialog */}
+      <RefundCorrectDialog
+        open={!!refundJob}
+        job={refundJob}
+        onClose={() => setRefundJob(null)}
+        onSuccess={async (result) => {
+          console.log("[Refund] Processed refund:", result);
+          setRefundJob(null);
+          setDialogOpen(false);
+          resetDialogForm();
+          await refreshDb();
+
+          if (result?.duplicatedJobId) {
+            setTimeout(async () => {
+              try {
+                const allJobs = [...jobs, ...jobStore.getSnapshot()];
+                let dupJob = allJobs.find(j => j.id === result.duplicatedJobId);
+                if (!dupJob) {
+                  const fetchedJobs = await api.getJobs();
+                  dupJob = fetchedJobs.find((j: Job) => j.id === result.duplicatedJobId);
+                }
+                if (dupJob) {
+                  handleEditFullJob(dupJob);
+                  toast.info(`📝 เปิด Job สำเนา #${dupJob.id} เรียบร้อย — ปลด lock รายการและราคาแล้ว สามารถแก้ไขและชำระเงินใหม่ได้ทันที`);
+                }
+              } catch (err) {
+                console.error("Auto-open duplicate job error:", err);
+              }
+            }, 400);
+          }
         }}
       />
 

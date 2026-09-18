@@ -159,6 +159,8 @@ export interface Job {
   cashPlaced?: boolean;
   isStuck?: boolean;
   shiftId?: string | null;
+  refundId?: string | null;
+  refundedFromId?: string | null;
 }
 
 export interface AdminNoteLog {
@@ -276,14 +278,18 @@ export const customerStore = {
     emitCustomerChange();
     return newCustomer;
   },
-  async updateCustomer(id: string, updates: Partial<Customer>) {
+  async updateCustomer(id: string, updates: Partial<Customer> & Record<string, any>) {
     const updated = await api.updateCustomer(id, updates);
     emitCustomerChange();
+    if (updates.creditBalanceDelta !== undefined || updates.creditBalance !== undefined) {
+      walletApprovalStore.refreshPendingMap().catch(() => {});
+    }
     return updated;
   },
   async topUpCustomer(data: Parameters<typeof api.topUpCustomer>[0]) {
     const result = await api.topUpCustomer(data);
     emitCustomerChange();
+    walletApprovalStore.refreshPendingMap().catch(() => {});
     return result;
   },
   async deleteCustomer(id: string) {
@@ -787,6 +793,7 @@ if (typeof window !== 'undefined') {
       branchActiveShift = parsed.branchActiveShift ?? null;
       hasLoadedActiveShift = true; // skip spinner — we have a cached value
       lastShiftFetchTime = parsed.cachedAt ?? 0;
+      currentUserId = parsed.userId ?? null;
     }
   } catch (e) {
     // ignore — corrupted cache is fine, will re-fetch
@@ -814,13 +821,19 @@ export const shiftStore = {
     currentUserId = userId;     // store for poll sync
     currentBranchId = branchId; // store for poll sync
 
+    // Invalidate stale in-memory cache if user switched
+    if (prevUserId && prevUserId !== userId && activeShift?.userId !== userId) {
+      activeShift = null;
+      hasLoadedActiveShift = false;
+    }
+
     // Skip if already fetching the SAME userId+branchId combination — prevents duplicate DB hits
     // But allow through if branchId changed (second useEffect call with real branchId)
     if (isFetchingShift && prevUserId === userId && prevBranchId === branchId) return activeShift;
 
     // Skip if result is fresh enough (TTL) — prevents repeated useEffect triggers hitting DB
-    // Only skip if branchId didn't change (stale cache with a different branch is not valid)
-    if (!force && hasLoadedActiveShift && prevBranchId === branchId && (Date.now() - lastShiftFetchTime) < SHIFT_FETCH_TTL_MS) {
+    // Only skip if both userId and branchId match
+    if (!force && hasLoadedActiveShift && prevUserId === userId && prevBranchId === branchId && (Date.now() - lastShiftFetchTime) < SHIFT_FETCH_TTL_MS) {
       return activeShift;
     }
     isFetchingShift = true;
@@ -853,12 +866,15 @@ export const shiftStore = {
       try {
         if (typeof window !== 'undefined') {
           localStorage.setItem(SHIFT_CACHE_KEY, JSON.stringify({
+            userId,
             activeShift,
             branchActiveShift,
             cachedAt: lastShiftFetchTime,
           }));
         }
-      } catch (e) { /* ignore quota errors */ }
+      } catch (e) {
+        // ignore localStorage quota errors
+      }
 
       emitShiftChange();
       return activeShift;
@@ -985,3 +1001,90 @@ export const shiftStore = {
 
 // Register poll sync callback — after every /api/db refresh, shift state is updated from memory (no extra DB call)
 registerOpenShiftsSyncCallback((openShifts) => shiftStore.syncFromPoll(openShifts));
+
+// ─── WALLET APPROVAL STORE ──────────────────────────────────────────────────
+export interface WalletTransactionItem {
+  id: string;
+  customerId: string;
+  customerName: string;
+  type: string;
+  amount: number;
+  direction: string;
+  balanceBefore: number;
+  balanceAfter: number;
+  referenceId?: string | null;
+  referenceType?: string | null;
+  reason?: string | null;
+  slipImageUrl?: string | null;
+  packageName?: string | null;
+  bonusAmount?: number | null;
+  paymentChannel?: string | null;
+  originalTxId?: string | null;
+  createdById?: string | null;
+  createdByName?: string | null;
+  branchId?: string | null;
+  approvalStatus: string;
+  approvedById?: string | null;
+  approvedByName?: string | null;
+  approvedAt?: Date | string | null;
+  rejectReason?: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface PendingWalletMap {
+  total: number;
+  byCustomer: Record<string, number>;
+}
+
+const walletApprovalListeners: Set<Listener> = new Set();
+function emitWalletApprovalChange() {
+  walletApprovalListeners.forEach((l) => l());
+}
+
+let pendingWalletState: PendingWalletMap = { total: 0, byCustomer: {} };
+
+export const walletApprovalStore = {
+  subscribe(listener: Listener): () => void {
+    walletApprovalListeners.add(listener);
+    return () => walletApprovalListeners.delete(listener);
+  },
+  getSnapshot(): PendingWalletMap {
+    return pendingWalletState;
+  },
+  async refreshPendingMap() {
+    try {
+      const res = await api.getPendingWalletMap();
+      pendingWalletState = res;
+      emitWalletApprovalChange();
+      return res;
+    } catch (e) {
+      console.error("Failed to load pending wallet approvals:", e);
+      return pendingWalletState;
+    }
+  },
+  async getTransactions(filters?: Parameters<typeof api.getWalletTransactions>[0]) {
+    return api.getWalletTransactions(filters);
+  },
+  async approve(id: string, userId: string, userName: string) {
+    const res = await api.approveWalletTransaction({ id, approvedById: userId, approvedByName: userName });
+    await this.refreshPendingMap();
+    return res;
+  },
+  async reject(id: string, userId: string, userName: string, rejectReason: string) {
+    const res = await api.rejectWalletTransaction({ id, approvedById: userId, approvedByName: userName, rejectReason });
+    await this.refreshPendingMap();
+    return res;
+  },
+  async bulkApprove(ids: string[], userId: string, userName: string) {
+    const res = await api.bulkApproveWallet({ ids, approvedById: userId, approvedByName: userName });
+    await this.refreshPendingMap();
+    return res;
+  },
+  async createTransaction(data: Parameters<typeof api.createWalletTransaction>[0]) {
+    const res = await api.createWalletTransaction(data);
+    await this.refreshPendingMap();
+    return res;
+  }
+};
+

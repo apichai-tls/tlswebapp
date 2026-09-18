@@ -97,6 +97,18 @@ export const ACTION_PERMISSIONS = [
     description: "สิทธิ์ในการเพิ่มหรือหักลดเงิน Wallet ลูกค้าแบบ Manual (สำหรับแก้ไขเคสหรือชดเชย)",
   },
   {
+    id: "approve-wallet",
+    label: "Approve Wallet Transactions",
+    labelTh: "อนุมัติรายการ Wallet",
+    description: "สิทธิ์ในการ Approve / Reject รายการ Wallet ของลูกค้า Member",
+  },
+  {
+    id: "refund-job",
+    label: "Refund & Correct Jobs",
+    labelTh: "Refund & แก้ไขยอด Job",
+    description: "สิทธิ์ในการ Refund และแก้ไขยอดชำระเงินของ Job ที่ชำระแล้ว",
+  },
+  {
     id: "cso",
     label: "CSO",
     labelTh: "CSO",
@@ -985,7 +997,7 @@ export function AdminUsers() {
                                 All Access
                               </span>
                             ) : (
-                              perms.filter((p) => p !== "adjust-wallet").map((p) => {
+                              perms.filter((p) => !ACTION_PERMISSIONS.some((ap) => ap.id === p)).map((p) => {
                                 const label = MENU_PERMISSIONS.find((mp) => mp.id === p)?.label || p;
                                 return (
                                   <span
@@ -1000,6 +1012,21 @@ export function AdminUsers() {
                             {perms.includes("adjust-wallet") && (
                               <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300 shadow-2xs flex items-center gap-0.5">
                                 <span>⚡</span> Adjust Wallet
+                              </span>
+                            )}
+                            {perms.includes("approve-wallet") && (
+                              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300 shadow-2xs flex items-center gap-0.5">
+                                <span>✅</span> Approve Wallet
+                              </span>
+                            )}
+                            {perms.includes("refund-job") && (
+                              <span className="text-[10px] font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded-full border border-rose-300 shadow-2xs flex items-center gap-0.5">
+                                <span>↩️</span> Refund Job
+                              </span>
+                            )}
+                            {perms.includes("cso") && (
+                              <span className="text-[10px] font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded-full border border-blue-300 shadow-2xs flex items-center gap-0.5">
+                                <span>💼</span> CSO
                               </span>
                             )}
                             {user.role !== "admin" && perms.length === 0 && (

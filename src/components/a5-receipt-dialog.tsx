@@ -8,7 +8,7 @@ import { Printer, X, Loader2, Wallet } from "lucide-react";
 import { ReceiptData, ReceiptItem, getCategoryDisplayName, resolveItemCategory, CATEGORY_ORDER } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber } from "@/lib/utils";
 
 import { customerStore, serviceStore } from "@/lib/store";
 
@@ -655,6 +655,10 @@ export function A5ReceiptContent({
                   ? currentLanguage === "en"
                     ? "PROFORMA INVOICE"
                     : "ใบแจ้งหนี้ชั่วคราว"
+                  : (receiptData as any).isCreditNote || receiptData.id?.startsWith("CN-") || receiptData.receiptNumber?.startsWith("CN-")
+                  ? currentLanguage === "en"
+                    ? "CREDIT NOTE"
+                    : "ใบลดหนี้ (CREDIT NOTE)"
                   : receiptData.status === "cancel"
                   ? currentLanguage === "en"
                     ? "VOID RECEIPT"
@@ -672,9 +676,13 @@ export function A5ReceiptContent({
                 <>
                   {!receiptData.status?.includes("cancel") && (
                     <div className="text-[11px] mb-0.5">
-                      <span className="font-bold text-neutral-700 mr-1">RECEIPT NO:</span>
+                      <span className="font-bold text-neutral-700 mr-1">
+                        {receiptData.id?.startsWith("CN-") || receiptData.receiptNumber?.startsWith("CN-") || (receiptData as any).isCreditNote
+                          ? "CREDIT NOTE NO:"
+                          : "RECEIPT NO:"}
+                      </span>
                       <span className="font-mono font-medium text-neutral-900">
-                        {receiptData.receiptNumber || `RE-${receiptData.id}`}
+                        {receiptData.receiptNumber || generateReceiptNumber(formatJobDisplayId(receiptData.id))}
                       </span>
                     </div>
                   )}

@@ -842,5 +842,37 @@ export const api = {
   },
   async getOpenCashierShifts() {
     return dbActions.getOpenShiftsAction();
+  },
+
+  // --- WALLET APPROVALS & TRANSACTIONS ---
+  async createWalletTransaction(data: Parameters<typeof dbActions.createWalletTransactionAction>[0]) {
+    return dbActions.createWalletTransactionAction(data);
+  },
+  async getWalletTransactions(filters?: Parameters<typeof dbActions.getWalletTransactionsAction>[0]) {
+    return dbActions.getWalletTransactionsAction(filters);
+  },
+  async getPendingWalletCount(customerId?: string) {
+    return dbActions.getPendingWalletCountAction(customerId);
+  },
+  async getPendingWalletMap() {
+    return dbActions.getPendingWalletMapAction();
+  },
+  async approveWalletTransaction(data: Parameters<typeof dbActions.approveWalletTransactionAction>[0]) {
+    return dbActions.approveWalletTransactionAction(data);
+  },
+  async rejectWalletTransaction(data: Parameters<typeof dbActions.rejectWalletTransactionAction>[0]) {
+    return dbActions.rejectWalletTransactionAction(data);
+  },
+  async bulkApproveWallet(data: Parameters<typeof dbActions.bulkApproveWalletAction>[0]) {
+    return dbActions.bulkApproveWalletAction(data);
+  },
+
+  // --- REFUND & CORRECT ---
+  async processRefundAndCorrect(data: Parameters<typeof dbActions.processRefundAndCorrectAction>[0]) {
+    return dbActions.processRefundAndCorrectAction(data);
+  },
+  async getJobRefunds(filters?: Parameters<typeof dbActions.getJobRefundsAction>[0]) {
+    return dbActions.getJobRefundsAction(filters);
   }
 };
+

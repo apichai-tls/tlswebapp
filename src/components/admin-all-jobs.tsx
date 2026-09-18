@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
-import { isJobFullyPaid, findMatchingCustomer } from "@/lib/utils";
+import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
@@ -134,7 +134,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         status: "cancel", 
         remark: `${cancellingJob.remark || ''} | Cancelled Reason: ${cancelReason.trim()}`.trim() 
       }, actorDetails);
-      toast.success(`Job #${cancellingJob.id.split('-')[0].toUpperCase()} has been cancelled.`);
+      toast.success(`Job #${formatJobDisplayId(cancellingJob.id)} has been cancelled.`);
       setCancellingJob(null);
       setCancelReason("");
     } catch (e: any) {
@@ -384,7 +384,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       const customer = customers.find(c => c.id === job.customerId);
       const branch = shopLocations.find(s => s.id === job.branchId);
       return {
-        "Job ID": job.id.split('-')[0].toUpperCase(),
+        "Job ID": formatJobDisplayId(job.id),
         "Bill No": job.billNo || "-",
         "Date": format(new Date(job.createdAt), "dd MMM yyyy, HH:mm"),
         "Month": format(new Date(job.createdAt), "MM"),
@@ -654,7 +654,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       <TableCell className="align-middle py-2">
                         <div className="flex flex-col gap-1 mb-1.5">
                           <div className="font-mono text-xs font-semibold text-slate-900 flex items-center gap-1.5">
-                            <span>#{job.id.split('-')[0].toUpperCase()}</span>
+                            <span>#{formatJobDisplayId(job.id)}</span>
                             {job.branchId && (() => {
                               const shop = shopLocations.find(s => s.id === job.branchId);
                               const shortName = getBranchShortName(shop?.name);
@@ -679,6 +679,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           {job.source === 'pos' && (
                             <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">
                               POS
+                            </Badge>
+                          )}
+                          {job.refundId && (
+                            <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border-rose-200">
+                              {job.status === "cancel" ? "CANCELLED (REFUNDED)" : "REFUNDED"}
+                            </Badge>
+                          )}
+                          {(job.refundedFromId || job.id.startsWith("RF-")) && (
+                            <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-blue-100 text-blue-700 border-blue-200">
+                              REISSUED
                             </Badge>
                           )}
                           {job.cashPlaced && (
@@ -1060,7 +1070,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             <div className="flex items-start justify-between mb-2">
                               <div className="flex flex-col gap-1 w-full">
                                 <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="font-mono text-xs font-bold text-slate-900">#{job.id.split('-')[0].toUpperCase()}</span>
+                                  <span className="font-mono text-xs font-bold text-slate-900">#{formatJobDisplayId(job.id)}</span>
                                   {job.branchId && (() => {
                                     const shop = shopLocations.find(s => s.id === job.branchId);
                                     const shortName = getBranchShortName(shop?.name);
@@ -1093,6 +1103,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 )}
                                 {job.source === 'pos' && (
                                   <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
+                                )}
+                                {job.refundId && (
+                                  <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border-rose-200">
+                                    {job.status === "cancel" ? "CANCELLED (REFUNDED)" : "REFUNDED"}
+                                  </Badge>
+                                )}
+                                {(job.refundedFromId || job.id.startsWith("RF-")) && (
+                                  <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-blue-100 text-blue-700 border-blue-200">
+                                    REISSUED
+                                  </Badge>
                                 )}
                                 {job.cashPlaced && (
                                   <span title="วางเงินแล้ว" className="w-4 h-4 rounded flex items-center justify-center bg-emerald-100 text-emerald-700 border border-emerald-200 animate-in fade-in duration-200">
@@ -1184,7 +1204,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             )}
 
                             <div className="flex flex-col gap-1.5 mb-2">
-                              <div className="flex items-center gap-1.5 text-[10px]">
+                              <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
                                 <Banknote size={12} className="text-slate-400" />
                                 <span className="font-bold">฿{job.totalAmount || 0}</span>
                                 {job.source === 'pos' || (job.type as string) === 'in_store' ? (
@@ -1240,7 +1260,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Cancel Job {cancellingJob ? `#${cancellingJob.id.split('-')[0].toUpperCase()}` : ""}</DialogTitle>
+            <DialogTitle>Cancel Job {cancellingJob ? `#${formatJobDisplayId(cancellingJob.id)}` : ""}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">

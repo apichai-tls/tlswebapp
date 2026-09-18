@@ -83,7 +83,101 @@ export interface TaskItem {
   updatedAt: Date;
 }
 
-export async function getTasks(viewer?: {
+export interface TasksInitialData {
+  tasks: TaskItem[];
+  adminUsers: any[];
+  departments: any[];
+  archivedCount: number;
+}
+
+export async function getTasksInitialData(
+  viewer?: {
+    id?: string;
+    role?: string;
+    isDepartmentHead?: boolean;
+    department?: string | null;
+  },
+  options?: {
+    includeArchived?: boolean;
+  }
+): Promise<{ success: boolean; data?: TasksInitialData; error?: string }> {
+  try {
+    const isAdmin = viewer?.role === "admin";
+    const isDeptHead = viewer?.isDepartmentHead === true;
+    const dept = viewer?.department;
+    const viewerId = viewer?.id;
+
+    const baseWhereClause: any = {};
+    if (!isAdmin && viewerId) {
+      if (isDeptHead && dept) {
+        const deptStaff = await prisma.adminUser.findMany({
+          where: { department: dept, isActive: true },
+          select: { id: true },
+        });
+        const deptStaffIds = Array.from(new Set([viewerId, ...deptStaff.map((u) => u.id)]));
+
+        baseWhereClause.OR = [
+          { createdById: { in: deptStaffIds } },
+          ...deptStaffIds.map((sid) => ({ assignedToId: { contains: sid } })),
+        ];
+      } else {
+        baseWhereClause.OR = [
+          { createdById: viewerId },
+          { assignedToId: { contains: viewerId } },
+        ];
+      }
+    }
+
+    const taskWhere = options?.includeArchived
+      ? baseWhereClause
+      : { ...baseWhereClause, isArchived: false };
+
+    const [tasks, usersRes, deptsRes, archivedCount] = await Promise.all([
+      prisma.task.findMany({
+        where: taskWhere,
+        orderBy: [{ createdAt: "desc" }],
+      }),
+      prisma.adminUser.findMany({
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          area: true,
+          department: true,
+          isDepartmentHead: true,
+          permissions: true,
+          isActive: true,
+          createdAt: true,
+        },
+        where: { isActive: true },
+        orderBy: { name: "asc" },
+      }),
+      prisma.department.findMany({
+        where: { isActive: true },
+        orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+      }),
+      prisma.task.count({
+        where: { ...baseWhereClause, isArchived: true },
+      }),
+    ]);
+
+    return {
+      success: true,
+      data: {
+        tasks: tasks as TaskItem[],
+        adminUsers: usersRes,
+        departments: deptsRes,
+        archivedCount,
+      },
+    };
+  } catch (error: any) {
+    console.error("Failed to fetch initial tasks data:", error);
+    return { success: false, error: "Failed to load tasks data" };
+  }
+}
+
+export async function getArchivedTasks(viewer?: {
   id?: string;
   role?: string;
   isDepartmentHead?: boolean;
@@ -95,7 +189,59 @@ export async function getTasks(viewer?: {
     const dept = viewer?.department;
     const viewerId = viewer?.id;
 
+    const baseWhereClause: any = { isArchived: true };
+    if (!isAdmin && viewerId) {
+      if (isDeptHead && dept) {
+        const deptStaff = await prisma.adminUser.findMany({
+          where: { department: dept, isActive: true },
+          select: { id: true },
+        });
+        const deptStaffIds = Array.from(new Set([viewerId, ...deptStaff.map((u) => u.id)]));
+
+        baseWhereClause.OR = [
+          { createdById: { in: deptStaffIds } },
+          ...deptStaffIds.map((sid) => ({ assignedToId: { contains: sid } })),
+        ];
+      } else {
+        baseWhereClause.OR = [
+          { createdById: viewerId },
+          { assignedToId: { contains: viewerId } },
+        ];
+      }
+    }
+
+    const tasks = await prisma.task.findMany({
+      where: baseWhereClause,
+      orderBy: [{ archivedAt: "desc" }, { createdAt: "desc" }],
+    });
+    return { success: true, data: tasks as TaskItem[] };
+  } catch (error: any) {
+    console.error("Failed to fetch archived tasks:", error);
+    return { success: false, error: "Failed to load archived tasks" };
+  }
+}
+
+export async function getTasks(
+  viewer?: {
+    id?: string;
+    role?: string;
+    isDepartmentHead?: boolean;
+    department?: string | null;
+  },
+  options?: {
+    includeArchived?: boolean;
+  }
+) {
+  try {
+    const isAdmin = viewer?.role === "admin";
+    const isDeptHead = viewer?.isDepartmentHead === true;
+    const dept = viewer?.department;
+    const viewerId = viewer?.id;
+
     const whereClause: any = {};
+    if (options?.includeArchived === false) {
+      whereClause.isArchived = false;
+    }
     if (!isAdmin && viewerId) {
       if (isDeptHead && dept) {
         // Query all staff IDs in the same department

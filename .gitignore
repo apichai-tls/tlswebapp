@@ -52,3 +52,4 @@ public/uploads/
 .agents/
 skills-lock.json
 backups/
+scripts/clone_test_to_local.js

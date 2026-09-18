@@ -62,6 +62,7 @@ import {
   shopStore,
   settingsStore,
   shiftStore,
+  walletApprovalStore,
   type Customer, 
   type ServiceType,
   type ServiceItem,
@@ -78,7 +79,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -952,6 +953,7 @@ const getCategoryStyles = (category: string) => {
 
 export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPreselected }: AdminPOSProps = {}) {
   const { user } = useAuth();
+  const canRefund = Boolean(user?.role === 'admin' || user?.permissions?.includes('refund-job'));
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const allShops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   
@@ -975,6 +977,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const isStandardPlan = false;
   const settings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
+  const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
   
   const currentLanguage = settings?.language || "th";
 
@@ -1015,6 +1018,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isMemberRate, setIsMemberRate] = useState(false);
+
+  useEffect(() => {
+    walletApprovalStore.refreshPendingMap().catch(() => {});
+  }, []);
 
   // Auto-sync selectedCustomer with latest customerStore state when credit balance or member status changes
   useEffect(() => {
@@ -1345,7 +1352,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const fetchClosedShifts = async () => {
     setIsLoadingClosedShifts(true);
     try {
-      const shifts = await shiftStore.getClosedShifts();
+      const targetBranchId = activeShop?.id || activeBranchId;
+      const shifts = await shiftStore.getClosedShifts(targetBranchId);
       const twoDaysAgo = new Date();
       twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
       twoDaysAgo.setHours(0, 0, 0, 0);
@@ -1419,8 +1427,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             hasPaymentLog = true;
             for (const pay of parsed.payments) {
               const payTime = new Date(pay.timestamp).getTime();
-              // Check if payment was made during this shift
-              if (payTime >= shiftOpenTime && payTime <= shiftCloseTime) {
+              // Check if payment belongs to this shift (shiftId match takes precedence, otherwise fallback to timestamp)
+              const belongsToShift = (pay.shiftId && pay.shiftId === activeShift.id) ||
+                (!pay.shiftId && payTime >= shiftOpenTime && payTime <= shiftCloseTime);
+              if (belongsToShift) {
                 const method = pay.method?.toLowerCase();
                 const amount = pay.amount || 0;
                 if (method === 'cash') {
@@ -1999,19 +2009,30 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         ? paymentTime
         : (latestJob.createdAt ? new Date(latestJob.createdAt) : new Date());
 
+      const isRfJob = Boolean(latestJob.id && String(latestJob.id).toUpperCase().startsWith("RF-"));
+      const cleanOriginalId = latestJob.id ? formatJobDisplayId(latestJob.id).replace(/^RF-/i, "") : "";
       const proformaMatch = latestJob.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
-      const rawProformaId = latestJob.proformaReceiptNumber || (proformaMatch ? proformaMatch[1] : undefined);
-      const cleanBaseProforma = cleanProformaNumber(rawProformaId);
+      let rawProformaId = latestJob.proformaReceiptNumber || (latestJob as any).proformaNumber;
+      if (!rawProformaId && !isRfJob && proformaMatch) {
+        rawProformaId = proformaMatch[1];
+      }
+      if (isRfJob) {
+        rawProformaId = cleanProformaNumber(rawProformaId) || (cleanOriginalId ? `PR-${cleanOriginalId}` : undefined);
+      } else if (!rawProformaId) {
+        rawProformaId = (latestJob.id ? generateProformaBaseNumber(latestJob.id) : undefined);
+      }
+      const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (latestJob.id ? generateProformaBaseNumber(latestJob.id) : "");
       const revisionMatch = latestJob.remark?.match(/Revision:\s*(\d+)/i);
-      const jobProformaRevision = latestJob.proformaRevision !== undefined ? latestJob.proformaRevision : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
-      const effectiveProformaNumber = cleanBaseProforma 
-        ? formatProformaNumber(cleanBaseProforma, jobProformaRevision)
-        : undefined;
+      const parsedRev = latestJob.proformaRevision !== undefined ? Number(latestJob.proformaRevision) : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
+      const jobProformaRevision = isRfJob ? Math.max(1, parsedRev || 1) : parsedRev;
+
+      const displayId = latestJob.id ? formatJobDisplayId(latestJob.id) : "";
 
       return {
-        id: latestJob.id ? latestJob.id.split('-')[0].toUpperCase() : "",
+        id: displayId,
+        receiptNumber: (latestJob as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined),
         jobId: latestJob.id,
-        proformaId: effectiveProformaNumber,
+        proformaId: cleanBaseProforma,
         proformaRevision: jobProformaRevision,
         createdAt: receiptDate,
         customerName: latestJob.customerName || "Walk-In",
@@ -2404,7 +2425,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           status: hasPosPackage ? "topup" : undefined,
           completedAt: !isDelivery && isPaidFlag && isStandardPlan ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
-          shiftId: CASHIER_SHIFT_ENABLED ? (loadedJob?.shiftId || activeShift?.id || undefined) : undefined,
+          shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || loadedJob?.shiftId || undefined) : undefined,
           billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
           proformaReceiptNumber: targetProformaNum || undefined,
           proformaNumber: targetProformaNum || undefined,
@@ -2478,7 +2499,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
       if (balanceAdjustment !== 0 && selectedCustomer) {
-        const updates: Partial<Customer> & { creditBalanceDelta?: number } = { creditBalanceDelta: balanceAdjustment };
+        const isDeduct = balanceAdjustment < 0;
+        const updates: Partial<Customer> & Record<string, any> = { 
+          creditBalanceDelta: balanceAdjustment,
+          walletTxType: isDeduct ? 'DEDUCT' : 'ADJUST_ADD',
+          walletRefId: finalJob?.id || null,
+          walletRefType: 'job',
+          actorId: user?.id || null,
+          actorName: user?.name || user?.email || 'POS Staff',
+          branchId: activeBranchId || activeShop?.id || null,
+        };
         
         if (balanceAdjustment > 0) {
           updates.isMember = true;
@@ -3400,11 +3430,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 >
                   <div className="min-w-0 flex-1">
                     <p className="text-[11px] font-bold text-accent-foreground truncate">{selectedCustomer.name}</p>
-                    <p className="text-[9px] text-primary font-semibold truncate">
-                      {selectedCustomer.phone}
-                      <span className="text-emerald-600 dark:text-emerald-400 font-bold ml-1.5">
+                    <p className="text-[9px] text-primary font-semibold truncate flex items-center flex-wrap gap-1">
+                      <span>{selectedCustomer.phone}</span>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-bold">
                         (฿{(selectedCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })})
                       </span>
+                      {pendingWalletMap.byCustomer[selectedCustomer.id] > 0 && (
+                        <span className="inline-flex items-center px-1 py-0 rounded text-[8px] font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300 animate-pulse">
+                          Pending Approval ({pendingWalletMap.byCustomer[selectedCustomer.id]})
+                        </span>
+                      )}
                     </p>
                   </div>
                   {selectedCustomer.isMember && (
@@ -3552,7 +3587,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             <div className="bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-900/30 px-4 py-2 flex items-center justify-between shrink-0 text-amber-800 dark:text-amber-300 text-[11px] font-semibold">
               <span className="flex items-center gap-1.5 flex-wrap">
                 <FolderOpen size={12} className="text-amber-500 shrink-0" />
-                <span>{currentLanguage === "en" ? "Editing Saved Order" : "กำลังแก้ไขบิล"} #{loadedJobId.split('-')[0].toUpperCase()}</span>
+                <span>{currentLanguage === "en" ? "Editing Saved Order" : "กำลังแก้ไขบิล"} #{formatJobDisplayId(loadedJobId)}</span>
                 {(() => {
                   const job = jobs.find(j => j.id === loadedJobId);
                   if (job && job.adminNotesJson) {
@@ -3575,20 +3610,27 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 })()}
               </span>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const job = jobs.find(j => j.id === loadedJobId);
-                    if (job) {
-                      setPosCancellingJob(job);
-                      setPosCancelReason("");
-                    }
-                  }}
-                  className="text-red-500 hover:text-red-700 font-bold hover:underline cursor-pointer text-[10px]"
-                >
-                  {currentLanguage === "en" ? "Cancel Order" : "ยกเลิกบิล"}
-                </button>
-                <span className="text-muted-foreground/30">|</span>
+                {(() => {
+                  const job = jobs.find(j => j.id === loadedJobId);
+                  if (job?.isPaid) return null;
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (job) {
+                            setPosCancellingJob(job);
+                            setPosCancelReason("");
+                          }
+                        }}
+                        className="text-red-500 hover:text-red-700 font-bold hover:underline cursor-pointer text-[10px]"
+                      >
+                        {currentLanguage === "en" ? "Cancel Order" : "ยกเลิกบิล"}
+                      </button>
+                      <span className="text-muted-foreground/30">|</span>
+                    </>
+                  );
+                })()}
                 <button
                   type="button"
                   onClick={() => {
@@ -4187,8 +4229,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
                       }`}
                     >
-                      {currentLanguage === "en" ? "Current Balance" : "ยอดเงินปัจจุบัน"}: ฿{(selectedCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      <br />
+                      <div className="flex items-center justify-between">
+                        <span>{currentLanguage === "en" ? "Current Balance" : "ยอดเงินปัจจุบัน"}: ฿{(selectedCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        {pendingWalletMap.byCustomer[selectedCustomer.id] > 0 && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300">
+                            Pending Approval ({pendingWalletMap.byCustomer[selectedCustomer.id]})
+                          </span>
+                        )}
+                      </div>
                       {isWalletExpired(selectedCustomer) ? (
                         <span className="text-rose-500 dark:text-rose-400 font-extrabold flex items-center gap-1 mt-0.5">
                           ⚠️ {currentLanguage === "en" ? "Wallet Expired (Top Up to re-activate)" : "Wallet หมดอายุแล้ว (กรุณา Top Up เพื่อต่ออายุ)"}
@@ -4617,7 +4665,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               }}
               className={`flex-1 py-1.5 text-xs font-black rounded-lg transition-all cursor-pointer text-center ${recallTab === "ready" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
             >
-              {currentLanguage === "en" ? "Paid / Return" : "ชำระแล้ว / คืนผ้า & คืนเงิน"}
+              {currentLanguage === "en" ? "Paid / Pickup" : "ชำระแล้ว / ส่งมอบผ้า"}
             </button>
           </div>
 
@@ -4689,7 +4737,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-xs font-black text-foreground">
-                          #{job.id.split('-')[0].toUpperCase()}
+                          #{formatJobDisplayId(job.id)}
                         </span>
                         <Badge variant="outline" className={`text-[8.5px] uppercase font-bold py-0.5 px-1.5 border-none shadow-none ${
                           job.subStatus === 'ready' 
@@ -4889,7 +4937,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               setLoadedJobId(job.id);
                               setIsRecallOpen(false);
                               playAudioFeedback("success");
-                              toast.success(currentLanguage === "en" ? `Loaded order #${job.id.split('-')[0].toUpperCase()} into cart` : `โหลดรายการ #${job.id.split('-')[0].toUpperCase()} เข้าตะกร้าเรียบร้อย`);
+                              toast.success(currentLanguage === "en" ? `Loaded order #${formatJobDisplayId(job.id)} into cart` : `โหลดรายการ #${formatJobDisplayId(job.id)} เข้าตะกร้าเรียบร้อย`);
                             }}
                             disabled={isSpectatorMode}
                             className={`h-8 font-bold text-xs bg-primary hover:bg-primary/95 text-white rounded-lg px-3 cursor-pointer shrink-0 ${isSpectatorMode ? "opacity-50 pointer-events-none" : ""}`}
@@ -4914,7 +4962,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           </>
                         )}
 
-                        {job.status !== "completed" && job.status !== "cancel" && !isSpectatorMode && (
+                        {!job.isPaid && job.status !== "completed" && job.status !== "cancel" && !isSpectatorMode && (
                           <Button
                             variant="ghost"
                             size="icon"
@@ -4923,8 +4971,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               setPosCancellingJob(job);
                               setPosCancelReason("");
                             }}
-                            className="h-8 w-8 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg cursor-pointer shrink-0"
-                            title={currentLanguage === "en" ? (job.isPaid ? "Cancel & Refund" : "Cancel Order") : (job.isPaid ? "คืนผ้า & คืนเงิน" : "ยกเลิกบิล")}
+                            className="h-8 w-8 rounded-lg shrink-0 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/20 cursor-pointer"
+                            title={currentLanguage === "en" ? "Cancel Order" : "ยกเลิกบิล"}
                           >
                             <XCircle size={15} />
                           </Button>
@@ -4976,7 +5024,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 {posCancellingJob?.isPaid
                   ? (currentLanguage === "en" ? "Cancel & Refund Paid Order" : "คืนผ้า & คืนเงิน (ยกเลิกบิลที่จ่ายแล้ว)")
                   : (currentLanguage === "en" ? "Cancel Unpaid Order" : "ยกเลิกใบสั่งซื้อค้างชำระ")}
-                {" "}#{posCancellingJob?.id.split('-')[0].toUpperCase()}
+                {" "}#{formatJobDisplayId(posCancellingJob?.id)}
               </span>
             </DialogTitle>
           </DialogHeader>
@@ -5061,6 +5109,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 disabled={!posCancelReason.trim()}
                 onClick={async () => {
                   if (!posCancellingJob) return;
+                  if (posCancellingJob.isPaid && !canRefund) {
+                    toast.error(currentLanguage === "en" ? "You do not have permission to refund paid orders" : "คุณไม่มีสิทธิ์ในการ Refund บิลที่ชำระเงินแล้ว");
+                    return;
+                  }
                   try {
                     const isPaidOrder = posCancellingJob.isPaid;
                     const isWalletRefund = refundMethod === "credit" && posCancellingJob.customerId;
@@ -5087,7 +5139,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                             parsed.payments.push({
                               method: refundMethod,
                               amount: -(posCancellingJob.totalAmount || 0),
-                              timestamp: new Date().toISOString()
+                              timestamp: new Date().toISOString(),
+                              shiftId: CASHIER_SHIFT_ENABLED ? activeShift?.id : undefined
                             });
                             updatedNotesJson = JSON.stringify(parsed);
                           }
@@ -5115,8 +5168,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
                     toast.success(
                       currentLanguage === "en"
-                        ? `Order #${posCancellingJob.id.split('-')[0].toUpperCase()} cancelled and refunded successfully.`
-                        : `คืนผ้าและยกเลิกบิล #${posCancellingJob.id.split('-')[0].toUpperCase()} เรียบร้อยแล้ว${refundSuccessMsg}`
+                        ? `Order #${formatJobDisplayId(posCancellingJob.id)} cancelled and refunded successfully.`
+                        : `คืนผ้าและยกเลิกบิล #${formatJobDisplayId(posCancellingJob.id)} เรียบร้อยแล้ว${refundSuccessMsg}`
                     );
 
                     // Create the full updated job object to display in the receipt
@@ -5156,8 +5209,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           <div className="space-y-4">
             <p className="text-xs text-muted-foreground font-semibold leading-relaxed">
               {currentLanguage === "en"
-                ? `Are you sure you want to mark Order #${confirmReturnJob?.id.split('-')[0].toUpperCase()} as returned? This will set its status to Completed.`
-                : `คุณแน่ใจหรือไม่ที่จะทำรายการคืนผ้าสำหรับใบสั่งซื้อ #${confirmReturnJob?.id.split('-')[0].toUpperCase()}? การดำเนินการนี้จะตั้งค่าสถานะเป็น 'เสร็จสิ้น' (Completed)`}
+                ? `Are you sure you want to mark Order #${formatJobDisplayId(confirmReturnJob?.id)} as returned? This will set its status to Completed.`
+                : `คุณแน่ใจหรือไม่ที่จะทำรายการคืนผ้าสำหรับใบสั่งซื้อ #${formatJobDisplayId(confirmReturnJob?.id)}? การดำเนินการนี้จะตั้งค่าสถานะเป็น 'เสร็จสิ้น' (Completed)`}
             </p>
 
             <DialogFooter className="pt-2 border-t border-border gap-2">
@@ -5178,8 +5231,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     await jobStore.completeJob(confirmReturnJob.id);
                     toast.success(
                       currentLanguage === "en"
-                        ? `Order #${confirmReturnJob.id.split('-')[0].toUpperCase()} marked as completed (returned).`
-                        : `ทำรายการคืนผ้าสำหรับใบสั่งซื้อ #${confirmReturnJob.id.split('-')[0].toUpperCase()} เรียบร้อยแล้ว`
+                        ? `Order #${formatJobDisplayId(confirmReturnJob.id)} marked as completed (returned).`
+                        : `ทำรายการคืนผ้าสำหรับใบสั่งซื้อ #${formatJobDisplayId(confirmReturnJob.id)} เรียบร้อยแล้ว`
                     );
                     setConfirmReturnJob(null);
                   } catch (e) {

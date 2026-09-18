@@ -20,7 +20,7 @@ export async function createNotification(data: {
   taskId?: string;
   title: string;
   message: string;
-  type: "overdue" | "due_today" | "assigned" | "note" | "system";
+  type: "overdue" | "due_today" | "assigned" | "note" | "system" | "wallet_approval";
 }) {
   try {
     const notif = await prisma.notification.create({

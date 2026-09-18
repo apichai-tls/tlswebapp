@@ -5,7 +5,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X } from "lucide-react";
 
 import { format } from "date-fns";
-import { type Customer, shopStore } from "@/lib/store";
+import { type Customer, shopStore, walletApprovalStore } from "@/lib/store";
+import { api } from "@/lib/api";
 import { useSyncExternalStore, useState, useEffect, useMemo } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { motion } from "framer-motion";
@@ -72,10 +73,15 @@ export function AdminCustomerProfileModal({
   const activeShop = shops[0];
   const isStandardPlan = activeShop?.plan === 'standard';
 
+  const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
+  const pendingCount = customer?.id ? (pendingWalletMap.byCustomer[customer.id] || 0) : 0;
+
   // History Tab: "orders" | "topup"
   const [historyTab, setHistoryTab] = useState<"orders" | "topup">("orders");
   const [topUpTxs, setTopUpTxs] = useState<any[]>([]);
   const [isLoadingTopUps, setIsLoadingTopUps] = useState(false);
+  const [walletTxs, setWalletTxs] = useState<any[]>([]);
+  const [isLoadingWallet, setIsLoadingWallet] = useState(false);
 
   // Receipt Preview
   const [previewReceipt, setPreviewReceipt] = useState<ReceiptData | null>(null);
@@ -90,10 +96,16 @@ export function AdminCustomerProfileModal({
   useEffect(() => {
     if (open && customer?.id) {
       setIsLoadingTopUps(true);
+      setIsLoadingWallet(true);
       getTopUpTransactionsAction(customer.id)
         .then(txs => setTopUpTxs(txs || []))
         .catch(err => console.error("Failed to load customer top-up transactions:", err))
         .finally(() => setIsLoadingTopUps(false));
+
+      api.getWalletTransactions({ customerId: customer.id })
+        .then(txs => setWalletTxs(txs || []))
+        .catch(err => console.error("Failed to load customer wallet transactions:", err))
+        .finally(() => setIsLoadingWallet(false));
     }
   }, [open, customer?.id]);
 
@@ -279,6 +291,13 @@ export function AdminCustomerProfileModal({
                 <div className={`text-xl font-black ${customer.isMember && isCustomerExpired ? "text-rose-600" : "text-emerald-600"}`}>
                   ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </div>
+                {pendingCount > 0 && (
+                  <div className="mt-1 flex justify-end">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                      Pending Approval ({pendingCount})
+                    </span>
+                  </div>
+                )}
                 {customer.isMember && (
                   <div className={`text-[9px] font-bold mt-0.5 ${
                     resolvedExpiryDate 
@@ -518,17 +537,29 @@ export function AdminCustomerProfileModal({
                   }`}
                 >
                   <Coins size={13} className="text-emerald-600" />
-                  <span>Top-up & Wallet</span>
+                  <span>Wallet Ledger & Top-up</span>
+                  {pendingCount > 0 && (
+                    <span className="text-[9px] px-1.5 py-0.2 bg-amber-100 text-amber-800 border border-amber-300 rounded-full font-bold animate-pulse">
+                      Pending ({pendingCount})
+                    </span>
+                  )}
                   <span className="text-[10px] px-1.5 py-0.2 bg-emerald-50 text-emerald-700 rounded-full font-bold">
-                    {topUpTxs.length}
+                    {walletTxs.length > 0 ? walletTxs.length : topUpTxs.length}
                   </span>
                 </button>
               </div>
 
               {historyTab === "topup" && (
-                <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
-                  Current Balance: ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                    Current Balance: ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                  {pendingCount > 0 && (
+                    <span className="text-[11px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-lg animate-pulse">
+                      Pending Approval ({pendingCount})
+                    </span>
+                  )}
+                </div>
               )}
             </div>
 
@@ -611,24 +642,104 @@ export function AdminCustomerProfileModal({
                     <TableHeader className="bg-emerald-50/70 sticky top-0 z-10 shadow-sm">
                       <TableRow>
                         <TableHead className="w-[120px] text-xs font-bold py-3 text-emerald-950 pl-4">Date & Time</TableHead>
-                        <TableHead className="text-xs font-bold py-3 text-emerald-950">Receipt No</TableHead>
-                        <TableHead className="text-xs font-bold py-3 text-emerald-950">Package Description</TableHead>
-                        <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Paid (฿)</TableHead>
-                        <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Credit (฿)</TableHead>
+                        <TableHead className="text-xs font-bold py-3 text-emerald-950">Type & Details</TableHead>
+                        <TableHead className="text-xs font-bold py-3 text-emerald-950">Status</TableHead>
+                        <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Amount (฿)</TableHead>
+                        <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Balance</TableHead>
                         <TableHead className="text-right text-xs font-bold py-3 text-emerald-950 pr-4">Action</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {isLoadingTopUps ? (
+                      {isLoadingWallet || isLoadingTopUps ? (
                         <TableRow>
                           <TableCell colSpan={6} className="text-center h-24 text-slate-400 text-xs font-semibold">
-                            Loading top-up history...
+                            Loading wallet history...
                           </TableCell>
                         </TableRow>
+                      ) : walletTxs.length > 0 ? (
+                        walletTxs.map(tx => {
+                          const isCredit = tx.direction === 'CREDIT';
+                          const typeLabelMap: Record<string, { label: string; cls: string }> = {
+                            TOPUP: { label: "Top-Up เติมเงิน", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+                            DEDUCT: { label: "POS หักชำระ", cls: "bg-blue-50 text-blue-700 border-blue-200" },
+                            ADJUST_ADD: { label: "ปรับยอด (+)", cls: "bg-purple-50 text-purple-700 border-purple-200" },
+                            ADJUST_DEDUCT: { label: "ปรับยอด (-)", cls: "bg-amber-50 text-amber-700 border-amber-200" },
+                            REVERSAL: { label: "ดึงยอดคืน (Reversal)", cls: "bg-rose-50 text-rose-700 border-rose-200" },
+                            REFUND_CREDIT: { label: "คืนเงิน AllJob", cls: "bg-indigo-50 text-indigo-700 border-indigo-200" }
+                          };
+                          const meta = typeLabelMap[tx.type] || { label: tx.type, cls: "bg-slate-50 text-slate-700 border-slate-200" };
+
+                          return (
+                            <TableRow key={tx.id} className="hover:bg-emerald-50/30 transition-colors border-b border-slate-100">
+                              <TableCell className="text-[11px] font-bold text-slate-500 whitespace-nowrap pl-4 py-3">
+                                {format(new Date(tx.createdAt), 'dd/MM/yyyy HH:mm')}
+                              </TableCell>
+                              <TableCell className="py-3">
+                                <div className="flex flex-col gap-0.5">
+                                  <Badge variant="outline" className={`w-fit text-[10px] font-bold ${meta.cls}`}>
+                                    {meta.label}
+                                  </Badge>
+                                  {(tx.packageName || tx.reason || tx.referenceId) && (
+                                    <span className="text-[10px] text-slate-500 truncate max-w-[180px]">
+                                      {tx.packageName || tx.reason || `Ref: ${tx.referenceId}`}
+                                    </span>
+                                  )}
+                                  <span className="text-[9px] text-slate-400">
+                                    by {tx.createdByName || "System"}
+                                  </span>
+                                </div>
+                              </TableCell>
+                              <TableCell className="py-3">
+                                {tx.approvalStatus === "PENDING" && (
+                                  <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[9px] font-black animate-pulse">
+                                    Pending
+                                  </Badge>
+                                )}
+                                {tx.approvalStatus === "APPROVED" && (
+                                  <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-200 text-[9px] font-black">
+                                    Approved
+                                  </Badge>
+                                )}
+                                {tx.approvalStatus === "REJECTED" && (
+                                  <Badge className="bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-black" title={tx.rejectReason || "Rejected"}>
+                                    Rejected
+                                  </Badge>
+                                )}
+                              </TableCell>
+                              <TableCell className={`text-right font-black py-3 text-xs ${isCredit ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {isCredit ? '+' : '-'}฿{Number(tx.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-right text-[11px] font-mono font-bold text-slate-600 py-3 whitespace-nowrap">
+                                ฿{Number(tx.balanceBefore || 0).toLocaleString(undefined, { minimumFractionDigits: 0 })} → ฿{Number(tx.balanceAfter || 0).toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                              </TableCell>
+                              <TableCell className="text-right pr-4 py-3">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {tx.slipImageUrl && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px] font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1 rounded-lg"
+                                      onClick={() => {
+                                        setPreviewSlipUrl(tx.slipImageUrl);
+                                        setPreviewSlipTitle(`${customer?.name || "Customer"} — Tx ${tx.id}`);
+                                        setPreviewSlipModalOpen(true);
+                                      }}
+                                      title="ดูรูปสลิปหลักฐาน"
+                                    >
+                                      <ImageIcon size={12} />
+                                      Slip
+                                    </Button>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
                       ) : topUpTxs.length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={6} className="text-center h-24 text-slate-400 text-xs font-semibold">
-                            No top-up transactions found for this customer
+                            No wallet transactions found for this customer
                           </TableCell>
                         </TableRow>
                       ) : (

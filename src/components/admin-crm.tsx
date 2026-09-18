@@ -6,18 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
-import { customerStore, priceListStore, poiStore, shopStore, type Customer } from "@/lib/store";
+import { customerStore, priceListStore, poiStore, shopStore, walletApprovalStore, type Customer, type WalletTransactionItem } from "@/lib/store";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
 import { getTopUpTransactionsAction, updateTopUpTransactionSlipAction } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer } from "@/lib/utils";
 
@@ -168,9 +169,23 @@ export function AdminCRM({
   const canAdjustBalance = Boolean(user?.permissions?.includes('adjust-wallet') || user?.role === 'admin');
   // Everyone except Rider can see Top Up button
   const canTopUp = user?.role !== 'rider';
+  // Wallet Approval permission: Admin, Manager, or users with 'approve-wallet' permission
+  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin' || user?.role === 'manager');
+  const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
+
+  useEffect(() => {
+    walletApprovalStore.refreshPendingMap();
+    const handleOpenTab = (e: any) => {
+      if (e.detail?.tab) {
+        setActiveTab(e.detail.tab);
+      }
+    };
+    window.addEventListener("open-crm-tab", handleOpenTab);
+    return () => window.removeEventListener("open-crm-tab", handleOpenTab);
+  }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -901,6 +916,26 @@ export function AdminCRM({
               <Receipt size={14} className={activeTab === "topup_history" ? "text-white" : "text-emerald-600"} />
               Top-up History ({allTopUpTxs.length})
             </button>
+            {canApproveWallet && (
+              <button
+                onClick={() => setActiveTab("wallet_approvals")}
+                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                  activeTab === "wallet_approvals"
+                    ? "bg-amber-600 text-white shadow-sm"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <ShieldCheck size={14} className={activeTab === "wallet_approvals" ? "text-white" : "text-amber-600"} />
+                <span>Wallet Approvals</span>
+                {pendingWalletMap.total > 0 && (
+                  <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
+                    activeTab === "wallet_approvals" ? "bg-white text-amber-700" : "bg-amber-100 text-amber-800"
+                  }`}>
+                    {pendingWalletMap.total}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               onClick={() => setActiveTab("customer_report")}
               className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
@@ -1463,8 +1498,11 @@ export function AdminCRM({
                   )}
                 </AnimatePresence>
               </TableBody>
-
             </Table>
+          </div>
+        ) : activeTab === "wallet_approvals" ? (
+          <div className="p-1">
+            <ReportsWalletApprovals />
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -1594,6 +1632,11 @@ export function AdminCRM({
                                 }`}>
                                   ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                 </span>
+                                {pendingWalletMap.byCustomer[customer.id] > 0 && (
+                                  <span className="text-[9px] font-bold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded-full ml-1">
+                                    Pending Approval ({pendingWalletMap.byCustomer[customer.id]})
+                                  </span>
+                                )}
                                 {customer.isMember && isWalletExpired(customer) && (
                                   <span className="text-[9px] text-rose-500 font-bold bg-rose-50 px-1 rounded border border-rose-200">
                                     หมดอายุ
@@ -2343,7 +2386,7 @@ export function AdminCRM({
           </DialogContent>
         </Dialog>
       )}
+
     </div>
   );
 }
-

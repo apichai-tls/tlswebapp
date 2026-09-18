@@ -7,7 +7,7 @@ import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, Plus, Minus, Building } from "lucide-react";
-import { customerStore, priceListStore, poiStore, type Customer } from "@/lib/store";
+import { customerStore, priceListStore, poiStore, walletApprovalStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { LocationInput } from "@/components/location-input";
 import { toast } from "sonner";
@@ -42,6 +42,8 @@ export function AdminCustomerDialog({
 
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
+  const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
+  const pendingCount = customer?.id ? (pendingWalletMap.byCustomer[customer.id] || 0) : 0;
 
   const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,7 +79,9 @@ export function AdminCustomerDialog({
         reason: adjustReason.trim() || undefined,
         actorId: user?.id,
         actorName: user?.name || user?.email || "Admin",
-        actorRole: user?.role
+        actorRole: user?.role,
+        walletTxType: isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT',
+        walletRefType: 'manual',
       } as any);
 
       const actualNewBalance = updated?.creditBalance ?? newBalance;
@@ -202,6 +206,11 @@ export function AdminCustomerDialog({
                 <span className="text-sm font-black text-emerald-800">
                   ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </span>
+                {pendingCount > 0 && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                    Pending Approval ({pendingCount})
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1.5">
                 {canTopUp && customer?.isMember && (
@@ -362,7 +371,14 @@ export function AdminCustomerDialog({
                 {/* Current Balance */}
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Balance</span>
-                  <span className="text-2xl font-black text-slate-900">฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl font-black text-slate-900">฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    {pendingCount > 0 && (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                        Pending Approval ({pendingCount})
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Adjustment Mode (+ / - Buttons) */}

@@ -16,6 +16,7 @@ import {
   priceListStore,
   shopStore,
   settingsStore,
+  walletApprovalStore,
   type Customer,
   type ServiceItem,
 } from "@/lib/store";
@@ -120,6 +121,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [step, setStep] = useState<"customer" | "package" | "payment">("customer");
@@ -590,6 +592,11 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                           <div className="flex items-center gap-1.5 shrink-0">
                             <Badge variant="outline" className={`text-[9px] py-0 px-1.5 ${tb.className}`}>{tb.label}</Badge>
                             <span className="text-xs font-bold text-emerald-600">฿{formatCurrency(c.creditBalance || 0)}</span>
+                            {pendingWalletMap.byCustomer[c.id] > 0 && (
+                              <span className="text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded px-1 py-0.2 animate-pulse">
+                                Pending ({pendingWalletMap.byCustomer[c.id]})
+                              </span>
+                            )}
                           </div>
                         </button>
                       );
@@ -614,7 +621,14 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                     </div>
                     <div className="text-right">
                       <p className="text-[10px] text-slate-400 uppercase tracking-wide">Current Balance</p>
-                      <p className="text-sm font-bold text-emerald-600">฿{formatCurrency(selectedCustomer.creditBalance || 0)}</p>
+                      <div className="flex items-center justify-end gap-1">
+                        <p className="text-sm font-bold text-emerald-600">฿{formatCurrency(selectedCustomer.creditBalance || 0)}</p>
+                        {pendingWalletMap.byCustomer[selectedCustomer.id] > 0 && (
+                          <span className="text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded px-1 py-0.2 animate-pulse">
+                            Pending ({pendingWalletMap.byCustomer[selectedCustomer.id]})
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <button onClick={() => { setSelectedCustomer(null); setCart([]); setStep("customer"); }} className="text-slate-400 hover:text-slate-600">
                       <X size={14} />

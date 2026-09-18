@@ -637,7 +637,7 @@ export default function BillingPage() {
     });
   }, []);
 
-  // Filter: show all jobs that do not have a bill image uploaded (only in billing, delivery, or completed status)
+  // Filter: show all jobs that do not have a bill number entered (only in billing, delivery, or completed status)
   const billingJobs = jobs
     .filter((j) => {
       // Only allow billing, delivery, and completed statuses
@@ -647,8 +647,8 @@ export default function BillingPage() {
       // Hide if the user manually finished it in this session
       if (hiddenJobIds.includes(j.id)) return false;
 
-      // Hide jobs that already have bill uploaded (unless uploaded in this session)
-      if (j.billImageUrl && !sessionUploadedJobIds.has(j.id)) {
+      // Hide jobs that already have a bill number entered
+      if (j.billNo && j.billNo.trim() !== "") {
         return false;
       }
 

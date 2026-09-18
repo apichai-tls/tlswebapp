@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
 import { useRiders } from "@/lib/use-riders";
-import { shopStore, shiftStore, jobStore, type CashierShift } from "@/lib/store";
+import { shopStore, shiftStore, jobStore, walletApprovalStore, type CashierShift } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -59,6 +59,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const customers = useCustomers();
   const riders = useRiders();
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
 
   // Sub-tabs state
   const [subTab, setSubTab] = useState<"overview" | "sales-summary" | "sale-report" | "sales-by-item" | "sales-by-category" | "sales-by-employee" | "sales-by-payment-type" | "receipts" | "taxes" | "shift" | "order" | "pos">("overview");
@@ -100,6 +101,17 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       });
     }
   }, [subTab]);
+
+  // Listen for open-reports-tab custom event (e.g. from top header notification button)
+  useEffect(() => {
+    const handleOpenTab = (e: any) => {
+      if (e.detail?.tab) {
+        setSubTab(e.detail.tab);
+      }
+    };
+    window.addEventListener("open-reports-tab", handleOpenTab);
+    return () => window.removeEventListener("open-reports-tab", handleOpenTab);
+  }, []);
 
   // Load historical jobs based on selected timeframe / date range
   useEffect(() => {

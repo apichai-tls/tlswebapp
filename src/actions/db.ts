@@ -2,7 +2,8 @@
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
-import { calculateWalletExpiryDate } from '@/lib/utils';
+import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId } from '@/lib/utils';
+import { createTask, addTaskNote } from '@/actions/tasks';
 
 // CUSTOMERS
 export async function addCustomerAction(data: any) {
@@ -189,6 +190,30 @@ export async function updateCustomerAction(id: string, updates: any) {
           }
         });
         console.log(`[ActivityLog] Adjusted wallet for customer ${id} (${currentCustomer.name}): ฿${balBefore} → ฿${balAfter}`);
+
+        // Create WalletTransaction record for Post-Approval Tracking
+        if (!updates.skipWalletTx) {
+          const txType = updates.walletTxType || (isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT');
+          const refType = updates.walletRefType || (txType === 'DEDUCT' ? 'job' : 'manual');
+          await prisma.walletTransaction.create({
+            data: {
+              customerId: id,
+              customerName: currentCustomer.name,
+              type: txType,
+              amount: Math.abs(diff),
+              direction: isAdd ? 'CREDIT' : 'DEBIT',
+              balanceBefore: balBefore,
+              balanceAfter: balAfter,
+              reason: updates.adjustReason || updates.reason || null,
+              referenceId: updates.walletRefId || null,
+              referenceType: refType,
+              createdById: updates.actorId || null,
+              createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
+              branchId: updates.branchId || null,
+              approvalStatus: 'PENDING',
+            }
+          });
+        }
       }
 
       // If other profile fields changed besides creditBalance, write the general update log
@@ -509,6 +534,7 @@ export async function updateJobAction(id: string, updates: any) {
       data.csoPaidAt = null;
     }
   }
+  if ((updates as any).csoPaidAt !== undefined) data.csoPaidAt = (updates as any).csoPaidAt;
   if (updates.fee !== undefined) data.fee = Math.max(0, Number(updates.fee) || 0);
   if (updates.discount !== undefined) data.discount = updates.discount;
   if (updates.discountPercent !== undefined) data.discountPercent = updates.discountPercent;
@@ -989,8 +1015,8 @@ export async function resolveJobDiscrepancyAction(
 export async function getShiftStatusAction(userId: string, branchId?: string) {
   try {
     const [userShift, branchShift] = await Promise.all([
-      prisma.cashierShift.findFirst({ where: { userId, status: 'open' } }),
-      branchId ? prisma.cashierShift.findFirst({ where: { branchId, status: 'open' } }) : Promise.resolve(null)
+      prisma.cashierShift.findFirst({ where: { userId, status: 'open' }, orderBy: { openedAt: 'desc' } }),
+      branchId ? prisma.cashierShift.findFirst({ where: { branchId, status: 'open' }, orderBy: { openedAt: 'desc' } }) : Promise.resolve(null)
     ]);
     return { userShift, branchShift };
   } catch (e) {
@@ -999,13 +1025,17 @@ export async function getShiftStatusAction(userId: string, branchId?: string) {
   }
 }
 
-function calculateShiftSales(shift: { id: string; startingCash: number }, jobs: Array<{
-  totalAmount: number | null;
-  paymentChannel: string | null;
-  status: string;
-  isPaid: boolean;
-  adminNotesJson: string | null;
-}>) {
+function calculateShiftSales(
+  shift: { id: string; startingCash: number },
+  jobs: Array<{
+    totalAmount: number | null;
+    paymentChannel: string | null;
+    status: string;
+    isPaid: boolean;
+    adminNotesJson: string | null;
+  }>,
+  cashRefunds: number = 0
+) {
   let cashSales = 0, transferSales = 0, cardSales = 0, creditSales = 0;
   let totalOrders = 0, cashOrders = 0, transferOrders = 0, cardOrders = 0, creditOrders = 0;
 
@@ -1058,12 +1088,13 @@ function calculateShiftSales(shift: { id: string; startingCash: number }, jobs: 
     }
   }
 
-  const expectedCash = shift.startingCash + cashSales;
+  const expectedCash = Math.max(0, shift.startingCash + cashSales - cashRefunds);
   return {
     cashSales,
     transferSales,
     cardSales,
     creditSales,
+    cashRefunds,
     expectedCash,
     totalOrders,
     cashOrders,
@@ -1076,16 +1107,27 @@ function calculateShiftSales(shift: { id: string; startingCash: number }, jobs: 
 export async function getOpenShiftAction(userId: string) {
   try {
     const shift = await prisma.cashierShift.findFirst({
-      where: { userId, status: 'open' }
+      where: { userId, status: 'open' },
+      orderBy: { openedAt: 'desc' }
     });
     if (!shift) return null;
 
-    const jobs = await prisma.job.findMany({
-      where: { shiftId: shift.id },
-      select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, adminNotesJson: true }
-    });
+    const [jobs, refunds] = await Promise.all([
+      prisma.job.findMany({
+        where: { shiftId: shift.id },
+        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, adminNotesJson: true }
+      }),
+      prisma.jobRefund.findMany({
+        where: { shiftId: shift.id, shiftAffected: true },
+        select: { refundAmount: true, refundChannel: true, originalChannel: true }
+      })
+    ]);
 
-    const stats = calculateShiftSales(shift, jobs);
+    const cashRefunds = refunds
+      .filter(r => r.refundChannel === 'cash' || (!r.refundChannel && r.originalChannel === 'Cash / COD'))
+      .reduce((s, r) => s + (r.refundAmount || 0), 0);
+
+    const stats = calculateShiftSales(shift, jobs, cashRefunds);
 
     return {
       ...shift,
@@ -1100,16 +1142,27 @@ export async function getOpenShiftAction(userId: string) {
 export async function getBranchOpenShiftAction(branchId: string) {
   try {
     const shift = await prisma.cashierShift.findFirst({
-      where: { branchId, status: 'open' }
+      where: { branchId, status: 'open' },
+      orderBy: { openedAt: 'desc' }
     });
     if (!shift) return null;
 
-    const jobs = await prisma.job.findMany({
-      where: { shiftId: shift.id },
-      select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, adminNotesJson: true }
-    });
+    const [jobs, refunds] = await Promise.all([
+      prisma.job.findMany({
+        where: { shiftId: shift.id },
+        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, adminNotesJson: true }
+      }),
+      prisma.jobRefund.findMany({
+        where: { shiftId: shift.id, shiftAffected: true },
+        select: { refundAmount: true, refundChannel: true, originalChannel: true }
+      })
+    ]);
 
-    const stats = calculateShiftSales(shift, jobs);
+    const cashRefunds = refunds
+      .filter(r => r.refundChannel === 'cash' || (!r.refundChannel && r.originalChannel === 'Cash / COD'))
+      .reduce((s, r) => s + (r.refundAmount || 0), 0);
+
+    const stats = calculateShiftSales(shift, jobs, cashRefunds);
 
     return {
       ...shift,
@@ -1126,7 +1179,8 @@ export async function openShiftAction(data: { userId: string, userName: string, 
     return await prisma.$transaction(async (tx) => {
       // Check if there is already an open shift for this user
       const existingUserOpen = await tx.cashierShift.findFirst({
-        where: { userId: data.userId, status: 'open' }
+        where: { userId: data.userId, status: 'open' },
+        orderBy: { openedAt: 'desc' }
       });
       if (existingUserOpen) {
         throw new Error("You already have an open shift.");
@@ -1134,7 +1188,8 @@ export async function openShiftAction(data: { userId: string, userName: string, 
 
       // Check if there is already an open shift for this branch
       const existingBranchOpen = await tx.cashierShift.findFirst({
-        where: { branchId: data.branchId, status: 'open' }
+        where: { branchId: data.branchId, status: 'open' },
+        orderBy: { openedAt: 'desc' }
       });
       if (existingBranchOpen) {
         throw new Error(`Branch already has an active shift opened by ${existingBranchOpen.userName}.`);
@@ -1172,20 +1227,41 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
         throw new Error("Shift is already closed");
       }
 
-      // Fetch all jobs linked to this shift
-      const jobs = await tx.job.findMany({
-        where: { shiftId: data.shiftId },
-        select: {
-          totalAmount: true,
-          paymentChannel: true,
-          status: true,
-          isPaid: true,
-          adminNotesJson: true,
-        }
-      });
+      // Fetch all jobs and cash refunds linked to this shift
+      const [jobs, refunds] = await Promise.all([
+        tx.job.findMany({
+          where: { shiftId: data.shiftId },
+          select: {
+            totalAmount: true,
+            paymentChannel: true,
+            status: true,
+            isPaid: true,
+            adminNotesJson: true,
+          }
+        }),
+        tx.jobRefund.findMany({
+          where: { shiftId: data.shiftId, shiftAffected: true },
+          select: {
+            refundAmount: true,
+            refundChannel: true,
+            originalChannel: true,
+          }
+        })
+      ]);
 
-      const stats = calculateShiftSales(shift, jobs);
+      const cashRefunds = refunds
+        .filter(r => r.refundChannel === 'cash' || (!r.refundChannel && r.originalChannel === 'Cash / COD'))
+        .reduce((s, r) => s + (r.refundAmount || 0), 0);
+
+      const stats = calculateShiftSales(shift, jobs, cashRefunds);
       const shortageOverage = data.actualCash - stats.expectedCash;
+
+      // Preserve opening notes when closing shift
+      const existingNotes = shift.notes ? shift.notes.trim() : "";
+      const closingNotes = data.notes ? data.notes.trim() : "";
+      const combinedNotes = closingNotes 
+        ? (existingNotes ? `${existingNotes} | [Closing]: ${closingNotes}` : `[Closing]: ${closingNotes}`)
+        : (existingNotes || null);
 
       let closedShift;
       try {
@@ -1201,7 +1277,7 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
             expectedCash: stats.expectedCash,
             shortageOverage,
             status: 'closed',
-            notes: data.notes || null,
+            notes: combinedNotes,
             totalOrders: stats.totalOrders,
             cashOrders: stats.cashOrders,
             transferOrders: stats.transferOrders,
@@ -1224,7 +1300,7 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
               expectedCash: stats.expectedCash,
               shortageOverage,
               status: 'closed',
-              notes: data.notes || null,
+              notes: combinedNotes,
             }
           });
         } else {
@@ -1285,6 +1361,16 @@ export async function syncRiderCommissionsForJob(jobId: string) {
   try {
     const job = await prisma.job.findUnique({ where: { id: jobId } });
     if (!job) return;
+
+    // If the job was refunded (has refundId), the rider already did the physical trip — protect their earned commission from being reverted
+    if (job.refundId) {
+      return;
+    }
+
+    // If this is a reissued job (has refundedFromId), the commission was already earned on the original job — do not award duplicate commission
+    if (job.refundedFromId) {
+      return;
+    }
 
     const isEligible = await checkIsPaymentEligible(job);
 
@@ -1516,6 +1602,29 @@ export async function processTopUpAction(data: {
         }),
         userId: data.actorId || null,
         userName: data.actorName || null,
+      }
+    });
+
+    // 6. Create WalletTransaction for Post-Approval Tracking
+    await tx.walletTransaction.create({
+      data: {
+        customerId: data.customerId,
+        customerName: currentCust.name,
+        type: 'TOPUP',
+        amount: data.totalCredit,
+        direction: 'CREDIT',
+        balanceBefore: balBefore,
+        balanceAfter: balAfter,
+        referenceId: data.receiptNumber,
+        referenceType: 'topup_receipt',
+        packageName: data.packageName || 'TOPUP',
+        bonusAmount: data.bonusAmount || 0,
+        paymentChannel: data.paymentChannel,
+        slipImageUrl: data.slipImageUrl || null,
+        createdById: data.actorId || null,
+        createdByName: data.actorName || 'Staff',
+        branchId: data.branchId || null,
+        approvalStatus: 'PENDING',
       }
     });
 
@@ -1768,11 +1877,698 @@ export async function getCustomerTodayTopUpAction(customerId: string) {
       packageName: parsedDesc.packageName,
       createdBy: parsedDesc.createdBy || 'Staff',
       createdAt: todayTx.createdAt.toISOString(),
-
     };
   } catch (err: any) {
     console.error("Failed to check today's top-up transaction:", err.message);
     return null;
   }
 }
+
+// ─── WALLET TRANSACTION APPROVALS ──────────────────────────────────────────
+
+export async function createWalletTransactionAction(data: {
+  customerId: string;
+  customerName: string;
+  type: string;
+  amount: number;
+  direction: string;
+  balanceBefore: number;
+  balanceAfter: number;
+  referenceId?: string | null;
+  referenceType?: string | null;
+  reason?: string | null;
+  slipImageUrl?: string | null;
+  packageName?: string | null;
+  bonusAmount?: number | null;
+  paymentChannel?: string | null;
+  originalTxId?: string | null;
+  createdById?: string | null;
+  createdByName?: string | null;
+  branchId?: string | null;
+}) {
+  return await prisma.walletTransaction.create({
+    data: {
+      customerId: data.customerId,
+      customerName: data.customerName,
+      type: data.type,
+      amount: Math.abs(data.amount),
+      direction: data.direction,
+      balanceBefore: data.balanceBefore,
+      balanceAfter: data.balanceAfter,
+      referenceId: data.referenceId || null,
+      referenceType: data.referenceType || null,
+      reason: data.reason || null,
+      slipImageUrl: data.slipImageUrl || null,
+      packageName: data.packageName || null,
+      bonusAmount: data.bonusAmount || null,
+      paymentChannel: data.paymentChannel || null,
+      originalTxId: data.originalTxId || null,
+      createdById: data.createdById || null,
+      createdByName: data.createdByName || 'Staff',
+      branchId: data.branchId || null,
+      approvalStatus: 'PENDING',
+    }
+  });
+}
+
+export async function getWalletTransactionsAction(filters?: {
+  customerId?: string;
+  approvalStatus?: string;
+  type?: string;
+  startDate?: string;
+  endDate?: string;
+  branchId?: string;
+}) {
+  const where: any = {};
+  if (filters?.customerId) where.customerId = filters.customerId;
+  if (filters?.approvalStatus && filters.approvalStatus !== 'all') where.approvalStatus = filters.approvalStatus;
+  if (filters?.type && filters.type !== 'all') where.type = filters.type;
+  if (filters?.branchId && filters.branchId !== 'all') where.branchId = filters.branchId;
+
+  if (filters?.startDate || filters?.endDate) {
+    where.createdAt = {};
+    if (filters.startDate) where.createdAt.gte = new Date(filters.startDate);
+    if (filters.endDate) where.createdAt.lte = new Date(filters.endDate);
+  }
+
+  return await prisma.walletTransaction.findMany({
+    where,
+    orderBy: { createdAt: 'desc' }
+  });
+}
+
+export async function getPendingWalletCountAction(customerId?: string) {
+  const where: any = { approvalStatus: 'PENDING' };
+  if (customerId) where.customerId = customerId;
+  return await prisma.walletTransaction.count({ where });
+}
+
+export async function getPendingWalletMapAction() {
+  const pendingTxs = await prisma.walletTransaction.findMany({
+    where: { approvalStatus: 'PENDING' },
+    select: { customerId: true }
+  });
+
+  const countMap: Record<string, number> = {};
+  for (const tx of pendingTxs) {
+    countMap[tx.customerId] = (countMap[tx.customerId] || 0) + 1;
+  }
+
+  return {
+    total: pendingTxs.length,
+    byCustomer: countMap,
+  };
+}
+
+export async function approveWalletTransactionAction(data: {
+  id: string;
+  approvedById: string;
+  approvedByName: string;
+}) {
+  const tx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
+  if (!tx) throw new Error("Transaction not found");
+  if (tx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${tx.approvalStatus}`);
+
+  const updated = await prisma.walletTransaction.update({
+    where: { id: data.id },
+    data: {
+      approvalStatus: 'APPROVED',
+      approvedById: data.approvedById,
+      approvedByName: data.approvedByName,
+      approvedAt: new Date(),
+    }
+  });
+
+  await prisma.activityLog.create({
+    data: {
+      entityId: tx.customerId,
+      entityType: 'wallet',
+      action: 'WALLET_APPROVED',
+      details: JSON.stringify({
+        transactionId: tx.id,
+        customerName: tx.customerName,
+        type: tx.type,
+        amount: tx.amount,
+        approvedBy: data.approvedByName,
+      }),
+      userId: data.approvedById,
+      userName: data.approvedByName,
+    }
+  });
+
+  return { success: true, transaction: updated };
+}
+
+export async function rejectWalletTransactionAction(data: {
+  id: string;
+  approvedById: string;
+  approvedByName: string;
+  rejectReason: string;
+}) {
+  const originalTx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
+  if (!originalTx) throw new Error("Transaction not found");
+  if (originalTx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${originalTx.approvalStatus}`);
+
+  // 1. Create a follow-up Task so staff can investigate, resolve, and discuss
+  const cleanJobId = originalTx.referenceType === 'job' || originalTx.referenceId?.startsWith('RF-') || originalTx.type === 'DEDUCT'
+    ? originalTx.referenceId || undefined
+    : undefined;
+
+  const taskTitle = `[Wallet Rejected] ${originalTx.type} ฿${originalTx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} - ${originalTx.customerName || "Customer"}`;
+
+  const taskDescription = [
+    `### ⚠️ Wallet Transaction Rejected`,
+    `- **Transaction Type:** ${originalTx.type}`,
+    `- **Amount:** ฿${originalTx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
+    `- **Customer:** ${originalTx.customerName || "-"} (ID: ${originalTx.customerId || "-"})`,
+    cleanJobId ? `- **Linked Job:** #${cleanJobId}` : null,
+    originalTx.referenceId && !cleanJobId ? `- **Reference:** ${originalTx.referenceId}` : null,
+    `- **Created By:** ${originalTx.createdByName || "Staff"}`,
+    `- **Rejected By:** ${data.approvedByName}`,
+    `- **Reject Reason:** ${data.rejectReason}`,
+    ``,
+    `---`,
+    `**Action Required:**`,
+    `รายการนี้ถูก Reject โดยไม่ปรับยอดเงินกลับ กรุณาตรวจสอบและดำเนินการแก้ไข (เช่น ติดต่อลูกค้า, ขอสลิปใหม่, หรือเปลี่ยนช่องทางชำระเงิน) และพูดคุยอัปเดตความคืบหน้าผ่านกล่องข้อความด้านล่างนี้`
+  ].filter(Boolean).join("\n");
+
+  const attachments = originalTx.slipImageUrl ? [
+    {
+      id: Math.random().toString(36).slice(2, 9),
+      name: "transfer-slip.jpg",
+      url: originalTx.slipImageUrl,
+      type: "image/jpeg",
+      uploadedAt: new Date().toISOString(),
+    }
+  ] : undefined;
+
+  let createdTaskId: string | null = null;
+  try {
+    const taskRes = await createTask({
+      title: taskTitle,
+      description: taskDescription,
+      priority: "high",
+      jobId: cleanJobId || undefined,
+      assignedToId: originalTx.createdById || undefined,
+      assignedToName: originalTx.createdByName || undefined,
+      attachments,
+      createdById: data.approvedById,
+      createdByName: data.approvedByName,
+    });
+
+    if (taskRes.success && taskRes.data?.id) {
+      createdTaskId = taskRes.data.id;
+      // Add initial reject comment from the rejecter
+      await addTaskNote(createdTaskId, {
+        text: `[Rejection Reason]\n${data.rejectReason}\n\nPlease follow up on this transaction and update here.`,
+        userId: data.approvedById,
+        userName: data.approvedByName,
+      });
+    }
+  } catch (err) {
+    console.warn("Failed to create auto task for rejected wallet tx:", err);
+  }
+
+  // 2. Update original transaction to REJECTED (with linked Task reference)
+  const storedRejectReason = createdTaskId
+    ? `${data.rejectReason} [Task: ${createdTaskId}]`
+    : data.rejectReason;
+
+  const updatedTx = await prisma.walletTransaction.update({
+    where: { id: data.id },
+    data: {
+      approvalStatus: 'REJECTED',
+      approvedById: data.approvedById,
+      approvedByName: data.approvedByName,
+      approvedAt: new Date(),
+      rejectReason: storedRejectReason,
+    }
+  });
+
+  // 3. Write ActivityLog
+  try {
+    await prisma.activityLog.create({
+      data: {
+        entityId: originalTx.customerId,
+        entityType: 'wallet',
+        action: 'WALLET_REJECTED',
+        details: JSON.stringify({
+          originalTxId: originalTx.id,
+          customerName: originalTx.customerName,
+          type: originalTx.type,
+          amount: originalTx.amount,
+          rejectReason: data.rejectReason,
+          rejectedBy: data.approvedByName,
+          taskId: createdTaskId,
+        }),
+        userId: data.approvedById,
+        userName: data.approvedByName,
+      }
+    });
+  } catch (e) {
+    console.warn("Failed to write ActivityLog on wallet reject:", e);
+  }
+
+  return {
+    success: true,
+    originalTx: updatedTx,
+    balanceAfter: originalTx.balanceAfter,
+    taskId: createdTaskId,
+  };
+}
+
+export async function bulkApproveWalletAction(data: {
+  ids: string[];
+  approvedById: string;
+  approvedByName: string;
+}) {
+  const count = await prisma.walletTransaction.updateMany({
+    where: {
+      id: { in: data.ids },
+      approvalStatus: 'PENDING',
+    },
+    data: {
+      approvalStatus: 'APPROVED',
+      approvedById: data.approvedById,
+      approvedByName: data.approvedByName,
+      approvedAt: new Date(),
+    }
+  });
+
+  try {
+    await prisma.activityLog.create({
+      data: {
+        entityId: data.ids[0] || 'bulk',
+        entityType: 'wallet',
+        action: 'WALLET_BULK_APPROVED',
+        details: JSON.stringify({
+          count: count.count,
+          approvedIds: data.ids,
+          approvedBy: data.approvedByName,
+        }),
+        userId: data.approvedById,
+        userName: data.approvedByName,
+      }
+    });
+  } catch (e) {
+    console.warn("Failed to write ActivityLog on bulk wallet approve:", e);
+  }
+
+  return { success: true, count: count.count };
+}
+
+// ─── REFUND & CORRECT ACTIONS ──────────────────────────────────────────────
+
+export async function processRefundAndCorrectAction(data: {
+  jobId: string;
+  correctedAmount?: number;
+  reason: string;
+  refundChannel: string; // "original" | "wallet" | "cash"
+  slipImageUrl?: string | null;
+  actorId?: string | null;
+  actorName?: string | null;
+  branchId?: string | null;
+}) {
+  const result = await prisma.$transaction(async (tx) => {
+    const job = await tx.job.findUnique({
+      where: { id: data.jobId },
+      include: { customer: true, shift: true }
+    });
+
+    if (!job) {
+      throw new Error("Job not found");
+    }
+
+    if (job.refundId) {
+      throw new Error("Job has already been refunded");
+    }
+
+    // Check actor permission if actorId provided
+    if (data.actorId) {
+      const actor = await tx.adminUser.findUnique({ where: { id: data.actorId } });
+      if (actor) {
+        let perms: string[] = [];
+        try { perms = JSON.parse(actor.permissions || "[]"); } catch {}
+        const canRefund = actor.role === 'admin' || perms.includes('refund-job');
+        if (!canRefund) {
+          throw new Error("คุณไม่มีสิทธิ์ในการ Refund Job (ต้องมีสิทธิ์ refund-job หรือสิทธิ์ Admin)");
+        }
+      }
+    }
+
+    const originalAmount = Number(job.totalAmount) || 0;
+    const refundAmount = originalAmount;
+
+    // 1. Generate Credit Note sequence
+    const seqSetting = await tx.setting.findUnique({
+      where: { key: CREDIT_NOTE_SEQ_KEY }
+    });
+    const currentSeq = parseInt(seqSetting?.value || "0", 10);
+    const nextSeq = currentSeq + 1;
+    const creditNoteNumber = generateCreditNoteNumber(job.id);
+
+    // 2. Prepare credit note receipt data JSON (Full Cancellation of original job)
+    const creditNoteData = JSON.stringify({
+      creditNoteNumber,
+      jobId: job.id,
+      originalBillNo: job.billNo,
+      customerName: job.customerName,
+      customerPhone: job.customerPhone,
+      originalAmount,
+      correctedAmount: 0,
+      refundAmount,
+      additionalAmount: 0,
+      adjustmentType: "FULL_CANCELLATION_REISSUE",
+      refundChannel: data.refundChannel,
+      originalChannel: job.paymentChannel,
+      reason: data.reason,
+      slipImageUrl: data.slipImageUrl,
+      issuedBy: data.actorName || "Staff",
+      createdAt: new Date().toISOString(),
+    });
+
+    // Find active shift that actually pays out this cash refund
+    let activeShiftForRefund = null;
+    const isCashRefund = data.refundChannel === "cash" || (!data.refundChannel && job.paymentChannel === "Cash / COD");
+    if (isCashRefund) {
+      if (data.actorId) {
+        activeShiftForRefund = await tx.cashierShift.findFirst({
+          where: { userId: data.actorId, status: "open" },
+          orderBy: { openedAt: "desc" }
+        });
+      }
+      const targetBranchId = data.branchId || job.branchId;
+      if (!activeShiftForRefund && targetBranchId) {
+        activeShiftForRefund = await tx.cashierShift.findFirst({
+          where: { branchId: targetBranchId, status: "open" },
+          orderBy: { openedAt: "desc" }
+        });
+      }
+    }
+    const effectiveShiftId = activeShiftForRefund?.id || (job.shift?.status === "open" ? job.shiftId : null);
+    const isShiftAffected = Boolean(isCashRefund && effectiveShiftId);
+
+    // 3. Create JobRefund record
+    const jobRefund = await tx.jobRefund.create({
+      data: {
+        jobId: job.id,
+        originalAmount,
+        correctedAmount: 0,
+        refundAmount,
+        originalChannel: job.paymentChannel || "Unspecified",
+        refundChannel: data.refundChannel,
+        reason: data.reason,
+        slipImageUrl: data.slipImageUrl || null,
+        creditNoteNumber,
+        creditNoteData,
+        walletAffected: data.refundChannel === "wallet" && !!job.customerId,
+        shiftAffected: isShiftAffected,
+        shiftId: effectiveShiftId,
+        createdById: data.actorId || null,
+        createdByName: data.actorName || "Staff",
+        branchId: data.branchId || job.branchId || null,
+      }
+    });
+
+    // 4. Update Original Job -> status: 'cancel'
+    const refundRemark = `[CANCELLED & REFUNDED ฿${originalAmount.toLocaleString()} via ${creditNoteNumber}: ${data.reason}]`;
+    await tx.job.update({
+      where: { id: job.id },
+      data: {
+        refundId: jobRefund.id,
+        remark: job.remark ? `${job.remark} | ${refundRemark}` : refundRemark,
+        status: "cancel",
+      }
+    });
+
+    // 5. Duplicate Job with RF- prefix and unlocked paid status
+    const cleanId = job.id.replace(/^RF-/, "");
+    let newJobId = `RF-${cleanId}`;
+    const existingJobWithId = await tx.job.findUnique({ where: { id: newJobId } });
+    if (existingJobWithId) {
+      newJobId = `RF-${cleanId}-${Date.now().toString().slice(-4)}`;
+    }
+
+    // Keep original billNo exactly as requested (remove any -R suffix)
+    const newBillNo = job.billNo ? String(job.billNo).replace(/-R\d+$/i, "").trim() : null;
+
+    // Clean adminNotesJson to keep communication notes but wipe out payments
+    let cleanAdminNotesJson: string | null = null;
+    if (job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (typeof parsed === "object" && parsed !== null) {
+          cleanAdminNotesJson = JSON.stringify({
+            ...parsed,
+            payments: []
+          });
+        }
+      } catch {
+        cleanAdminNotesJson = null;
+      }
+    }
+
+    // Clean billImageUrl: keep user photos (bills/bag), but filter out old proforma/receipt generated proofs
+    let cleanBillImageUrl: string | null = null;
+    if (job.billImageUrl) {
+      try {
+        const urls: string[] = JSON.parse(job.billImageUrl);
+        if (Array.isArray(urls)) {
+          const filtered = urls.filter(u => !u.includes("/proofs/proforma-") && !u.includes("/proofs/receipt-"));
+          cleanBillImageUrl = filtered.length > 0 ? JSON.stringify(filtered) : null;
+        }
+      } catch {
+        cleanBillImageUrl = null;
+      }
+    }
+
+    // Clean old remark to strip previous Proforma and Revision tags from cancelled job
+    const oldRemarks = (job.remark || "")
+      .split(" | ")
+      .map(r => r.trim())
+      .filter(r => !r.startsWith("Proforma:") && !r.startsWith("Revision:") && !r.startsWith("[REISSUED"));
+
+    const cleanOriginalId = formatJobDisplayId(job.id).replace(/^RF-/i, "");
+    const newProformaBase = `PR-${cleanOriginalId}`;
+    const newRevision = 1;
+    let initialCartHash: string | null = null;
+    try {
+      const items = job.itemsJson ? JSON.parse(job.itemsJson) : [];
+      initialCartHash = computeCartHash({
+        items,
+        serviceSpeed: (job.remark?.match(/Express\s*(\d+)%/i) ? `express_${job.remark?.match(/Express\s*(\d+)%/i)![1]}` : "standard"),
+        fee: job.fee || 0,
+        discountPercent: job.discountPercent || 0,
+        vatType: (job as any).vatType,
+        vatRate: (job as any).vatRate || 0,
+        customerName: job.customerName,
+        customerPhone: job.customerPhone,
+        deliveryAt: job.deliveryScheduledAt,
+      });
+    } catch {}
+
+    const reissuedRemark = [
+      `[REISSUED from #${job.id} (CN: ${creditNoteNumber})]`,
+      `Proforma: ${newProformaBase}-R${newRevision}`,
+      `Revision: ${newRevision}`,
+      ...oldRemarks
+    ].filter(Boolean).join(" | ").trim();
+
+    const duplicatedJob = await tx.job.create({
+      data: {
+        id: newJobId,
+        type: job.type,
+        customerId: job.customerId,
+        customerName: job.customerName,
+        customerPhone: job.customerPhone,
+        pickupLocation: job.pickupLocation,
+        dropoffLocation: job.dropoffLocation,
+        pickupLat: job.pickupLat,
+        pickupLng: job.pickupLng,
+        dropoffLat: job.dropoffLat,
+        dropoffLng: job.dropoffLng,
+        distance: job.distance,
+        fee: job.fee,
+        status: "completed",
+        scheduledAt: job.scheduledAt || new Date(),
+        completedAt: job.completedAt || new Date(),
+        source: job.source || "pos",
+        totalAmount: originalAmount,
+        paymentMethod: job.paymentMethod,
+        paymentChannel: job.paymentChannel,
+        isPaid: Boolean(job.isPaid),
+        isShopPaid: false,
+        shopPaidAt: null,
+        csoPaidAt: job.csoPaidAt,
+        discount: job.discount || 0,
+        discountPercent: job.discountPercent || 0,
+        pickupDistance: job.pickupDistance,
+        deliveryDistance: job.deliveryDistance,
+        pickupCommission: job.pickupCommission,
+        deliveryCommission: job.deliveryCommission,
+        pickupScheduledAt: job.pickupScheduledAt,
+        pickupScheduledEndAt: job.pickupScheduledEndAt,
+        deliveryScheduledAt: job.deliveryScheduledAt,
+        deliveryScheduledEndAt: job.deliveryScheduledEndAt,
+        pickupRiderId: job.pickupRiderId,
+        deliveryRiderId: job.deliveryRiderId,
+        itemsJson: job.itemsJson,
+        legsJson: job.legsJson,
+        remark: reissuedRemark,
+        billNo: newBillNo,
+        adminNotesJson: cleanAdminNotesJson,
+        branchId: job.branchId,
+        subStatus: null,
+        laundryTypes: job.laundryTypes,
+        createdBy: data.actorName || job.createdBy,
+        cashPlaced: Boolean(job.cashPlaced),
+        isStuck: false,
+        shiftId: null,
+        walletBalanceAfter: null,
+        proformaNumber: newProformaBase,
+        proformaRevision: newRevision,
+        proformaCartHash: initialCartHash,
+        refundId: null,
+        refundedFromId: job.id,
+        bagImageUrl: job.bagImageUrl,
+        billImageUrl: cleanBillImageUrl,
+        serviceType: job.serviceType,
+        proofImageUrl: job.proofImageUrl,
+        pickupProofImageUrl: job.pickupProofImageUrl,
+        deliveryProofImageUrl: job.deliveryProofImageUrl,
+        riderId: job.riderId,
+      }
+    });
+
+    await tx.jobRefund.update({
+      where: { id: jobRefund.id },
+      data: { correctedJobId: duplicatedJob.id }
+    });
+
+    // 6. Handle Wallet refund if refundChannel is 'wallet'
+    if (data.refundChannel === "wallet" && job.customerId) {
+      const currentCust = await tx.customer.findUnique({ where: { id: job.customerId } });
+      if (currentCust) {
+        const balBefore = currentCust.creditBalance || 0;
+        const balAfter = Math.round((balBefore + refundAmount) * 100) / 100;
+
+        await tx.customer.update({
+          where: { id: job.customerId },
+          data: { creditBalance: balAfter }
+        });
+
+        // Create WalletTransaction record
+        const walletTx = await tx.walletTransaction.create({
+          data: {
+            customerId: job.customerId,
+            customerName: currentCust.name,
+            type: "REFUND",
+            amount: refundAmount,
+            direction: "CREDIT",
+            balanceBefore: balBefore,
+            balanceAfter: balAfter,
+            referenceId: creditNoteNumber,
+            referenceType: "refund",
+            reason: `Full Refund from Job #${job.id} (CN: ${creditNoteNumber}): ${data.reason}`,
+            createdById: data.actorId || null,
+            createdByName: data.actorName || "Staff",
+            branchId: data.branchId || job.branchId || null,
+            approvalStatus: "PENDING",
+          }
+        });
+
+        await tx.jobRefund.update({
+          where: { id: jobRefund.id },
+          data: { walletTxId: walletTx.id }
+        });
+      }
+    }
+
+    // 7. Handle CashierShift if refundChannel is 'cash' and active open shift exists
+    if (effectiveShiftId && isShiftAffected) {
+      const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
+      if (shift && shift.status === "open") {
+        await tx.cashierShift.update({
+          where: { id: effectiveShiftId },
+          data: {
+            cashSales: Math.max(0, (shift.cashSales || 0) - refundAmount),
+            expectedCash: Math.max(0, (shift.expectedCash || 0) - refundAmount),
+          }
+        });
+      }
+    }
+
+    // 8. Log ActivityLog
+    await tx.activityLog.create({
+      data: {
+        entityId: job.id,
+        entityType: "job",
+        action: "REFUND_AND_REISSUE",
+        details: JSON.stringify({
+          jobId: job.id,
+          creditNoteNumber,
+          originalAmount,
+          refundAmount,
+          refundChannel: data.refundChannel,
+          reason: data.reason,
+          duplicatedJobId: duplicatedJob.id,
+        }),
+        userId: data.actorId || null,
+        userName: data.actorName || "Staff",
+      }
+    });
+
+    return {
+      success: true,
+      jobRefund,
+      creditNoteNumber,
+      duplicatedJobId: duplicatedJob.id,
+      duplicatedJob,
+      correctedJob: duplicatedJob,
+    };
+  });
+
+  // 9. Void promo redemption on upstream marketing server if applicable (fire-and-forget)
+  if (result?.jobRefund) {
+    try {
+      const originalJob = await prisma.job.findUnique({ where: { id: data.jobId } });
+      const promoMatch = originalJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+      if (promoMatch && promoMatch[1]) {
+        const pCode = promoMatch[1].trim().toUpperCase();
+        const promoBase = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
+        const promoKey = process.env.TLS_PROMO_API_KEY || "tls_pos_live_4cd242ae264a906fd734de04396617407bdb59f74d67bcac";
+        fetch(`${promoBase}/api/pos/promo/void`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-tls-pos-key": promoKey },
+          body: JSON.stringify({ code: pCode, receiptNo: data.jobId }),
+        }).catch((e) => console.warn("[PromoCode] Void failed (non-blocking):", e));
+      }
+    } catch {}
+  }
+
+  return result;
+}
+
+export async function getJobRefundsAction(filters?: {
+  jobId?: string;
+  startDate?: string;
+  endDate?: string;
+  branchId?: string;
+}) {
+  const where: any = {};
+  if (filters?.jobId) where.jobId = filters.jobId;
+  if (filters?.branchId && filters.branchId !== 'all') where.branchId = filters.branchId;
+
+  if (filters?.startDate || filters?.endDate) {
+    where.createdAt = {};
+    if (filters.startDate) where.createdAt.gte = new Date(filters.startDate);
+    if (filters.endDate) where.createdAt.lte = new Date(filters.endDate);
+  }
+
+  return await prisma.jobRefund.findMany({
+    where,
+    orderBy: { createdAt: 'desc' }
+  });
+}
+
 

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { type Job, customerStore, shopStore, serviceStore, type ServiceItem } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, formatJobDisplayId, generateReceiptNumber, getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
 
 export interface ReceiptItem {
   name: string;
@@ -224,19 +224,30 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     jobVatAmount = baseTotal * (jobVatRate / 100);
   }
 
+  const isRfJob = Boolean(job.id && String(job.id).toUpperCase().startsWith("RF-"));
+  const cleanOriginalId = job.id ? formatJobDisplayId(job.id).replace(/^RF-/i, "") : "";
   const proformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
-  const rawProformaId = (job as any).proformaReceiptNumber || (job as any).proformaNumber || (proformaMatch ? proformaMatch[1] : undefined) || (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : undefined);
+  let rawProformaId = (job as any).proformaReceiptNumber || (job as any).proformaNumber;
+  if (!rawProformaId && !isRfJob && proformaMatch) {
+    rawProformaId = proformaMatch[1];
+  }
+  if (isRfJob) {
+    rawProformaId = cleanProformaNumber(rawProformaId) || (cleanOriginalId ? `PR-${cleanOriginalId}` : undefined);
+  } else if (!rawProformaId) {
+    rawProformaId = (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : undefined);
+  }
   const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : "");
   const revisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
-  const proformaRevision = ((job as any).proformaRevision != null && (job as any).proformaRevision !== "")
+  const parsedRevision = ((job as any).proformaRevision != null && (job as any).proformaRevision !== "")
     ? Number((job as any).proformaRevision)
     : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
+  const proformaRevision = isRfJob ? Math.max(1, parsedRevision || 1) : parsedRevision;
 
   const effectiveProformaNumber = cleanBaseProforma 
     ? formatProformaNumber(cleanBaseProforma, proformaRevision)
     : (job.id && job.id !== "DRAFT" ? formatProformaNumber(generateProformaBaseNumber(job.id), proformaRevision) : undefined);
 
-  let displayId = job.id && job.id !== "DRAFT" ? job.id.split('-')[0].toUpperCase() : "";
+  let displayId = job.id && job.id !== "DRAFT" ? formatJobDisplayId(job.id) : "";
   if (!displayId || displayId === "DRAFT") {
     displayId = effectiveProformaNumber || "DRAFT";
   }
@@ -290,6 +301,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
 
   return {
     id: displayId,
+    receiptNumber: (job as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined),
     createdAt: receiptDate,
     customerName: job.customerName || "Walk-In",
     customerPhone: job.customerPhone || "-",
@@ -656,11 +668,15 @@ export function ThermalReceiptDialog({
 
         {/* Receipt Header */}
         <div className="text-center space-y-1 pt-3">
-          {receiptData.status === "cancel" && (
+          {(receiptData.id?.startsWith("CN-") || receiptData.receiptNumber?.startsWith("CN-") || (receiptData as any).isCreditNote) ? (
+            <div className="bg-rose-700 text-white font-sans font-black text-[9px] py-1 px-2 rounded uppercase tracking-wider mb-2 border border-rose-700 inline-block">
+              {currentLanguage === "en" ? "CREDIT NOTE" : "ใบลดหนี้ (CREDIT NOTE)"}
+            </div>
+          ) : receiptData.status === "cancel" ? (
             <div className="bg-black text-white font-sans font-black text-[9px] py-1 px-2 rounded uppercase tracking-wider mb-2 border border-black inline-block">
               {currentLanguage === "en" ? "VOID / CANCELLED SLIP" : "ใบยกเลิกรายการ / คืนเงิน"}
             </div>
-          )}
+          ) : null}
           {(activeShop?.logoUrl || true) && (
             <div className="flex justify-center mb-2">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -687,14 +703,22 @@ export function ThermalReceiptDialog({
           {receiptData.isDraft ? (
             <div className="flex justify-between font-bold text-neutral-900">
               <span>{currentLanguage === "en" ? "PROFORMA NO:" : "เลขที่ใบชั่วคราว:"}</span>
-              <span data-proforma-number="true">{receiptData.proformaId || "DRAFT"}</span>
+              <span data-proforma-number="true">
+                {receiptData.proformaRevision && receiptData.proformaRevision > 0
+                  ? `${receiptData.proformaId || "DRAFT"}-R${receiptData.proformaRevision}`
+                  : receiptData.proformaId || "DRAFT"}
+              </span>
             </div>
           ) : (
             <>
               {!receiptData.status?.includes("cancel") && (
                 <div className="flex justify-between font-bold text-neutral-900">
-                  <span>{currentLanguage === "en" ? "RECEIPT NO:" : "เลขที่ใบเสร็จ:"}</span>
-                  <span>{receiptData.receiptNumber || `RE-${receiptData.id}`}</span>
+                  <span>
+                    {receiptData.id?.startsWith("CN-") || receiptData.receiptNumber?.startsWith("CN-") || (receiptData as any).isCreditNote
+                      ? (currentLanguage === "en" ? "CREDIT NOTE NO:" : "เลขที่ใบลดหนี้:")
+                      : (currentLanguage === "en" ? "RECEIPT NO:" : "เลขที่ใบเสร็จ:")}
+                  </span>
+                  <span>{receiptData.receiptNumber || generateReceiptNumber(formatJobDisplayId(receiptData.id))}</span>
                 </div>
               )}
               {receiptData.proformaId && (

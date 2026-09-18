@@ -120,6 +120,10 @@ model Job {
   proformaRevision       Int?      // current revision: 0, 1, 2 ...
   proformaCartHash       String?   // JSON hash of cart when last proforma was generated
 
+  // Refund & Correct linkage
+  refundId               String?   // Points to JobRefund.id if this job was refunded
+  refundedFromId         String?   // Points to original Job.id if this is a corrected job
+
   @@index([shiftId])
 }
 
@@ -455,3 +459,84 @@ model website_admin_users {
   updatedAt    DateTime
   Booking      Booking[]
 }
+
+model WalletTransaction {
+  id              String    @id @default(uuid())
+  customerId      String
+  customerName    String
+
+  // Type: TOPUP | DEDUCT | ADJUST_ADD | ADJUST_DEDUCT | REFUND | REVERSAL
+  type            String
+  amount          Float     // Absolute amount
+  direction       String    // CREDIT (+) or DEBIT (-)
+  balanceBefore   Float
+  balanceAfter    Float
+
+  // References
+  referenceId     String?   // Job ID, Receipt No, Transaction ID, etc.
+  referenceType   String?   // "job" | "topup_receipt" | "manual" | "refund"
+  reason          String?
+  slipImageUrl    String?
+  packageName     String?
+  bonusAmount     Float?
+  paymentChannel  String?
+
+  // Reversal linkage
+  originalTxId    String?   // Points to original WalletTransaction if this is REVERSAL
+
+  // Actors
+  createdById     String?
+  createdByName   String?
+  branchId        String?
+
+  // Approval status: PENDING | APPROVED | REJECTED
+  approvalStatus  String    @default("PENDING")
+  approvedById    String?
+  approvedByName  String?
+  approvedAt      DateTime?
+  rejectReason    String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([customerId, createdAt])
+  @@index([approvalStatus])
+  @@index([type])
+  @@index([originalTxId])
+}
+
+model JobRefund {
+  id                String    @id @default(uuid())
+
+  jobId             String
+  originalAmount    Float
+  correctedAmount   Float     // 0 if full cancellation
+  refundAmount      Float     // originalAmount - correctedAmount
+
+  originalChannel   String
+  refundChannel     String    // "original" | "wallet" | "cash"
+
+  reason            String
+  slipImageUrl      String?
+  correctedJobId    String?
+
+  creditNoteNumber  String    // e.g. CN-TLS-00001
+  creditNoteData    String?   @db.Text
+
+  walletAffected    Boolean   @default(false)
+  walletTxId        String?
+  shiftAffected     Boolean   @default(false)
+  shiftId           String?
+
+  createdById       String?
+  createdByName     String?
+  branchId          String?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([createdAt])
+  @@index([creditNoteNumber])
+}
+
