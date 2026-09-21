@@ -660,12 +660,13 @@ export function AdminCustomerProfileModal({
                         walletTxs.map(tx => {
                           const isCredit = tx.direction === 'CREDIT';
                           const typeLabelMap: Record<string, { label: string; cls: string }> = {
-                            TOPUP: { label: "Top-Up เติมเงิน", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-                            DEDUCT: { label: "POS หักชำระ", cls: "bg-blue-50 text-blue-700 border-blue-200" },
-                            ADJUST_ADD: { label: "ปรับยอด (+)", cls: "bg-purple-50 text-purple-700 border-purple-200" },
-                            ADJUST_DEDUCT: { label: "ปรับยอด (-)", cls: "bg-amber-50 text-amber-700 border-amber-200" },
-                            REVERSAL: { label: "ดึงยอดคืน (Reversal)", cls: "bg-rose-50 text-rose-700 border-rose-200" },
-                            REFUND_CREDIT: { label: "คืนเงิน AllJob", cls: "bg-indigo-50 text-indigo-700 border-indigo-200" }
+                            TOPUP: { label: "Top-Up", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+                            DEDUCT: { label: "POS Payment", cls: "bg-blue-50 text-blue-700 border-blue-200" },
+                            ADJUST_ADD: { label: "Manual Adjust (+)", cls: "bg-purple-50 text-purple-700 border-purple-200" },
+                            ADJUST_DEDUCT: { label: "Manual Adjust (-)", cls: "bg-amber-50 text-amber-700 border-amber-200" },
+                            REVERSAL: { label: "Reversal", cls: "bg-rose-50 text-rose-700 border-rose-200" },
+                            REFUND: { label: "Refund", cls: "bg-indigo-50 text-indigo-700 border-indigo-200" },
+                            REFUND_CREDIT: { label: "Refund", cls: "bg-indigo-50 text-indigo-700 border-indigo-200" }
                           };
                           const meta = typeLabelMap[tx.type] || { label: tx.type, cls: "bg-slate-50 text-slate-700 border-slate-200" };
 

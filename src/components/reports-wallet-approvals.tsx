@@ -49,6 +49,47 @@ import { formatCurrency, formatJobDisplayId } from "@/lib/utils";
 type DatePreset = "today" | "yesterday" | "7days" | "30days" | "thisMonth" | "lastMonth" | "custom";
 type ApprovalStatusFilter = "all" | "PENDING" | "APPROVED" | "REJECTED";
 
+export const getWalletTypeConfig = (type: string) => {
+  switch (type) {
+    case "TOPUP":
+      return {
+        label: "Top-Up",
+        cls: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800",
+      };
+    case "DEDUCT":
+      return {
+        label: "POS Payment",
+        cls: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800",
+      };
+    case "ADJUST_ADD":
+      return {
+        label: "Manual Adjust (+)",
+        cls: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800",
+      };
+    case "ADJUST_DEDUCT":
+      return {
+        label: "Manual Adjust (-)",
+        cls: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800",
+      };
+    case "REFUND":
+    case "REFUND_CREDIT":
+      return {
+        label: "Refund",
+        cls: "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800",
+      };
+    case "REVERSAL":
+      return {
+        label: "Reversal",
+        cls: "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800",
+      };
+    default:
+      return {
+        label: type,
+        cls: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700",
+      };
+  }
+};
+
 interface ReportsWalletApprovalsProps {
   selectedBranch?: string;
 }
@@ -366,12 +407,12 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
               className="bg-transparent border-none outline-none font-bold cursor-pointer text-xs"
             >
               <option value="all">All Types</option>
-              <option value="TOPUP">Top-up (TOPUP)</option>
-              <option value="DEDUCT">POS Payment (DEDUCT)</option>
-              <option value="ADJUST_ADD">Adjust Add (+)</option>
-              <option value="ADJUST_DEDUCT">Adjust Deduct (-)</option>
-              <option value="REFUND">Refund (REFUND)</option>
-              <option value="REVERSAL">Reversal (REVERSAL)</option>
+              <option value="TOPUP">Top-Up</option>
+              <option value="DEDUCT">POS Payment</option>
+              <option value="ADJUST_ADD">Manual Adjust (+)</option>
+              <option value="ADJUST_DEDUCT">Manual Adjust (-)</option>
+              <option value="REFUND">Refund</option>
+              <option value="REVERSAL">Reversal</option>
             </select>
           </div>
 
@@ -665,33 +706,69 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
                       </TableCell>
 
                       {/* Type & Ref */}
-                      <TableCell className="py-3.5">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <Badge
-                            className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded-md border ${
-                              tx.type === "TOPUP"
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                : tx.type === "DEDUCT"
-                                ? "bg-blue-50 text-blue-700 border-blue-200"
-                                : tx.type === "REFUND"
-                                ? "bg-purple-50 text-purple-700 border-purple-200"
-                                : tx.type === "REVERSAL"
-                                ? "bg-rose-50 text-rose-700 border-rose-200"
-                                : "bg-amber-50 text-amber-800 border-amber-200"
-                            }`}
-                          >
-                            {tx.type}
-                          </Badge>
-                          {tx.referenceId && (
-                            <span
-                              className="text-[10px] font-mono font-bold text-slate-600 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 max-w-[130px] truncate"
-                              title={tx.referenceId}
-                            >
-                              {tx.referenceId.startsWith("RF-") || tx.referenceType === "job"
-                                ? `#${formatJobDisplayId(tx.referenceId)}`
-                                : tx.referenceId}
-                            </span>
-                          )}
+                      <TableCell className="py-3.5 min-w-[140px]">
+                        <div className="flex flex-col items-start gap-1">
+                          {/* Line 1: Type Badge with distinct color and clean English wording */}
+                          {(() => {
+                            const typeConfig = getWalletTypeConfig(tx.type);
+                            return (
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border tracking-wide shadow-2xs ${typeConfig.cls}`}
+                              >
+                                {typeConfig.label}
+                              </Badge>
+                            );
+                          })()}
+
+                          {/* Line 2: Reference */}
+                          {(() => {
+                            const isJob = tx.referenceType === "job" || tx.type === "DEDUCT" || (tx.referenceId && tx.referenceId.startsWith("RF-"));
+                            const isManual = tx.referenceType === "manual" || tx.type.startsWith("ADJUST");
+
+                            if (isJob && tx.referenceId) {
+                              return (
+                                <div className="flex items-center gap-1 text-[11px] font-mono text-slate-600 dark:text-slate-300">
+                                  <span className="text-slate-400 font-sans text-[10px] font-medium">Ref:</span>
+                                  <span
+                                    className="font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 px-1.5 py-0.5 rounded text-[10px] max-w-[130px] truncate"
+                                    title={`Job ID: ${tx.referenceId}`}
+                                  >
+                                    #{formatJobDisplayId(tx.referenceId)}
+                                  </span>
+                                </div>
+                              );
+                            }
+
+                            if (isManual) {
+                              return (
+                                <div className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
+                                  <span className="text-slate-400 text-[10px] font-medium">Ref:</span>
+                                  <span className="font-semibold italic text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-800/40 px-1.5 py-0.5 rounded text-[10px]">
+                                    Manual
+                                  </span>
+                                </div>
+                              );
+                            }
+
+                            if (tx.referenceId) {
+                              return (
+                                <div className="flex items-center gap-1 text-[11px] font-mono text-slate-600 dark:text-slate-300">
+                                  <span className="text-slate-400 font-sans text-[10px] font-medium">Ref:</span>
+                                  <span
+                                    className="font-semibold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded text-[10px] max-w-[130px] truncate"
+                                    title={tx.referenceId}
+                                  >
+                                    {tx.referenceId}
+                                  </span>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <span className="text-[10px] text-slate-400 italic">No ref</span>
+                            );
+                          })()}
                         </div>
                       </TableCell>
 
