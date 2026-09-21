@@ -92,9 +92,10 @@ export const getWalletTypeConfig = (type: string) => {
 
 interface ReportsWalletApprovalsProps {
   selectedBranch?: string;
+  onViewJob?: (job: any, walletTx?: WalletTransactionItem) => void;
 }
 
-export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWalletApprovalsProps) {
+export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: ReportsWalletApprovalsProps) {
   const { user } = useAuth();
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
@@ -102,7 +103,6 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
   // Permission check
   const canApproveWallet = Boolean(
     user?.role === "admin" ||
-    user?.role === "manager" ||
     user?.permissions?.includes("approve-wallet")
   );
 
@@ -131,6 +131,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
   const [txToReject, setTxToReject] = useState<WalletTransactionItem | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [inspectTx, setInspectTx] = useState<WalletTransactionItem | null>(null);
 
   // Update internal branch filter when prop changes
   useEffect(() => {
@@ -244,6 +245,36 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
       totalDebit,
     };
   }, [filteredTransactions]);
+
+  // --- Pagination States ---
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, typeFilter, branchFilter, startDate, endDate, searchQuery]);
+
+  const totalPages = Math.ceil(filteredTransactions.length / pageSize) || 1;
+  const paginatedTransactions = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredTransactions.slice(start, start + pageSize);
+  }, [filteredTransactions, currentPage, pageSize]);
+
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (currentPage > 3) pages.push("...");
+      const start = Math.max(2, currentPage - 1);
+      const end = Math.min(totalPages - 1, currentPage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (currentPage < totalPages - 2) pages.push("...");
+      pages.push(totalPages);
+    }
+    return pages;
+  };
 
   // --- Handlers ---
   const handleSingleApprove = async (tx: WalletTransactionItem) => {
@@ -360,6 +391,28 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
     a.download = `wallet-approvals-${format(new Date(), "yyyyMMdd-HHmm")}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleRowClick = (tx: WalletTransactionItem) => {
+    const isJob = tx.referenceType === "job" 
+      || tx.type === "DEDUCT" 
+      || tx.type === "REFUND"
+      || (tx.referenceId && (tx.referenceId.startsWith("RF-") || tx.referenceId.startsWith("TLS-")));
+
+    if (isJob && tx.referenceId && onViewJob) {
+      const job = jobStore.getSnapshot().find(
+        (j) => j.id === tx.referenceId || j.billNo === tx.referenceId
+      );
+      if (job) {
+        onViewJob(job, tx);
+        return;
+      }
+      toast.info("Job นี้ไม่อยู่ใน session ปัจจุบัน — กรุณาค้นหาจากหน้า Jobs");
+      return;
+    }
+
+    // TOPUP or ADJUST or any other transaction -> Open Inspect Detail Dialog
+    setInspectTx(tx);
   };
 
   return (
@@ -662,7 +715,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredTransactions.map((tx) => {
+                paginatedTransactions.map((tx) => {
                   const isPending = tx.approvalStatus === "PENDING";
                   const isApproved = tx.approvalStatus === "APPROVED";
                   const isRejected = tx.approvalStatus === "REJECTED";
@@ -676,7 +729,8 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
                   return (
                     <TableRow
                       key={tx.id}
-                      className="border-b border-slate-100 hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors"
+                      onClick={() => handleRowClick(tx)}
+                      className="border-b border-slate-100 hover:bg-amber-50/50 dark:hover:bg-amber-950/20 cursor-pointer transition-colors"
                     >
                       {/* Date & Time */}
                       <TableCell className="pl-6 py-3.5 text-xs text-slate-600 font-medium">
@@ -800,7 +854,10 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
                           {tx.slipImageUrl && (
                             <button
                               type="button"
-                              onClick={() => setPreviewSlipUrl(tx.slipImageUrl || null)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPreviewSlipUrl(tx.slipImageUrl || null);
+                              }}
                               className="w-8 h-8 rounded-lg overflow-hidden border border-slate-200 hover:ring-2 hover:ring-indigo-400 shrink-0 cursor-pointer"
                               title="Click to view transfer slip"
                             >
@@ -857,7 +914,8 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
                             {linkedTaskId && (
                               <button
                                 type="button"
-                                onClick={() => {
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   window.location.hash = "#tasks";
                                   window.dispatchEvent(new CustomEvent("open-task-modal", { detail: { taskId: linkedTaskId } }));
                                 }}
@@ -879,7 +937,10 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
                             <Button
                               type="button"
                               size="sm"
-                              onClick={() => handleSingleApprove(tx)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSingleApprove(tx);
+                              }}
                               disabled={isProcessingAction}
                               className="h-7 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-2xs rounded-lg cursor-pointer"
                             >
@@ -889,7 +950,8 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
                               type="button"
                               size="sm"
                               variant="outline"
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 setTxToReject(tx);
                                 setRejectReason("");
                                 setRejectModalOpen(true);
@@ -911,6 +973,86 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
             </TableBody>
           </Table>
         </div>
+
+        {/* Pagination Controls */}
+        {filteredTransactions.length > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
+            <div className="flex items-center gap-4 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              <span>
+                Showing {Math.min(filteredTransactions.length, (currentPage - 1) * pageSize + 1)}-{Math.min(filteredTransactions.length, currentPage * pageSize)} of {filteredTransactions.length} transactions
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400">Show:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="h-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-0 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs focus:outline-none cursor-pointer"
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 rounded-lg border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                >
+                  <span className="sr-only">Previous Page</span>
+                  <ChevronLeft size={14} />
+                </Button>
+
+                {getPageNumbers().map((p, idx) => {
+                  if (p === "...") {
+                    return (
+                      <span key={`ell-${idx}`} className="px-2 text-xs font-semibold text-slate-400">
+                        ...
+                      </span>
+                    );
+                  }
+                  const isSelected = p === currentPage;
+                  return (
+                    <Button
+                      key={`page-${p}`}
+                      type="button"
+                      variant={isSelected ? "default" : "outline"}
+                      className={`h-8 min-w-[32px] px-2.5 text-xs font-bold rounded-lg transition-all ${
+                        isSelected
+                          ? "bg-indigo-600 hover:bg-indigo-700 text-white border-transparent shadow-xs"
+                          : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      }`}
+                      onClick={() => setCurrentPage(Number(p))}
+                    >
+                      {p}
+                    </Button>
+                  );
+                })}
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 rounded-lg border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages}
+                >
+                  <span className="sr-only">Next Page</span>
+                  <ChevronRight size={14} />
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 4. Slip Image Preview Modal */}
@@ -1057,6 +1199,209 @@ export function ReportsWalletApprovals({ selectedBranch = "all" }: ReportsWallet
               Confirm Approve All
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 7. Inspect Detail Dialog (Row-Click on TOPUP / ADJUST) */}
+      <Dialog open={!!inspectTx} onOpenChange={(open) => { if (!open) setInspectTx(null); }}>
+        <DialogContent className="sm:max-w-lg w-[95vw] rounded-2xl p-0 overflow-hidden border border-slate-200 dark:border-slate-800 shadow-2xl bg-white dark:bg-slate-900">
+          {inspectTx && (() => {
+            const isTopUp = inspectTx.type === "TOPUP";
+            const isPending = inspectTx.approvalStatus === "PENDING";
+            const isApproved = inspectTx.approvalStatus === "APPROVED";
+            const isRejected = inspectTx.approvalStatus === "REJECTED";
+            const branchObj = shops.find((s) => s.id === inspectTx.branchId);
+            const cleanReject = inspectTx.rejectReason?.replace(/\s*\[Task:\s*[^\]]+\]/i, "").trim() || "";
+
+            return (
+              <div className="flex flex-col max-h-[85vh]">
+                {/* Header */}
+                <div className="px-6 py-4 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className={`p-2 rounded-xl ${isTopUp ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                      {isTopUp ? <Receipt size={18} /> : <ShieldCheck size={18} />}
+                    </div>
+                    <div>
+                      <DialogTitle className="text-base font-bold text-slate-900 dark:text-slate-100">
+                        {isTopUp ? "รายละเอียดการเติมเงิน (Top-Up Details)" : "รายละเอียดการปรับยอด (Adjustment Details)"}
+                      </DialogTitle>
+                      <div className="text-[11px] text-slate-500 font-mono">
+                        Ref ID: #{inspectTx.id.slice(0, 8)} • {format(new Date(inspectTx.createdAt), "dd MMM yyyy HH:mm")}
+                      </div>
+                    </div>
+                  </div>
+                  <Badge className={`text-xs font-bold ${
+                    isPending ? "bg-amber-100 text-amber-800 border-amber-200" :
+                    isApproved ? "bg-emerald-100 text-emerald-800 border-emerald-200" :
+                    "bg-rose-100 text-rose-800 border-rose-200"
+                  }`}>
+                    {inspectTx.approvalStatus}
+                  </Badge>
+                </div>
+
+                {/* Body */}
+                <div className="p-6 overflow-y-auto space-y-4 text-sm">
+                  {/* Customer & Branch info card */}
+                  <div className="grid grid-cols-2 gap-3 bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                    <div>
+                      <div className="text-[11px] font-medium text-slate-400">ลูกค้า (Customer)</div>
+                      <div className="font-bold text-slate-800 dark:text-slate-200">{inspectTx.customerName}</div>
+                      <div className="text-[11px] text-slate-400 font-mono">ID: {inspectTx.customerId ? inspectTx.customerId.slice(0, 8) : "-"}</div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-medium text-slate-400">สาขา (Branch)</div>
+                      <div className="font-bold text-slate-800 dark:text-slate-200">{branchObj?.name || "-"}</div>
+                      <div className="text-[11px] text-slate-400">โดย: {inspectTx.createdByName || "System"}</div>
+                    </div>
+                  </div>
+
+                  {/* Financial Details */}
+                  <div className="bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 space-y-2.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 text-xs">ประเภทรายการ:</span>
+                      <Badge variant="outline" className={`text-xs font-bold ${getWalletTypeConfig(inspectTx.type).cls}`}>
+                        {getWalletTypeConfig(inspectTx.type).label}
+                      </Badge>
+                    </div>
+
+                    {isTopUp && inspectTx.packageName && (
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-500">แพ็กเกจ (Package):</span>
+                        <span className="font-bold text-indigo-600">{inspectTx.packageName}</span>
+                      </div>
+                    )}
+
+                    {isTopUp && (
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-500">ช่องทางชำระเงิน:</span>
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">{inspectTx.paymentChannel || "Transfer"}</span>
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-center pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
+                      <span className="text-slate-600 text-xs font-semibold">ยอดเงินทำรายการ:</span>
+                      <span className={`text-base font-black ${inspectTx.direction === "CREDIT" ? "text-emerald-600" : "text-rose-600"}`}>
+                        {inspectTx.direction === "CREDIT" ? "+" : "-"}฿{formatCurrency(inspectTx.amount)}
+                      </span>
+                    </div>
+
+                    {isTopUp && inspectTx.bonusAmount ? (
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-500">โบนัสแถม (Bonus):</span>
+                        <span className="font-bold text-emerald-600">+฿{formatCurrency(inspectTx.bonusAmount)}</span>
+                      </div>
+                    ) : null}
+
+                    {/* Balance Before -> After */}
+                    <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
+                      <span className="text-slate-500">ยอดคงเหลือ Wallet:</span>
+                      <div className="inline-flex items-center gap-1 font-mono font-semibold">
+                        <span>฿{formatCurrency(inspectTx.balanceBefore)}</span>
+                        <span className="text-slate-300">→</span>
+                        <span className="font-bold text-slate-900 dark:text-slate-100">฿{formatCurrency(inspectTx.balanceAfter)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Reason / Adjustment notes */}
+                  {inspectTx.reason && (
+                    <div className="p-3 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/60 rounded-xl">
+                      <div className="text-[11px] font-bold text-amber-800 dark:text-amber-400 mb-1">
+                        เหตุผลในการทำรายการ (Reason):
+                      </div>
+                      <div className="text-xs text-amber-950 dark:text-amber-200 font-medium">
+                        {inspectTx.reason}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Slip Image if present */}
+                  {inspectTx.slipImageUrl && (
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                        หลักฐานสลิปโอนเงิน (Transfer Slip):
+                      </div>
+                      <div 
+                        className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 max-h-64 flex items-center justify-center bg-slate-900/5 cursor-pointer group relative"
+                        onClick={() => setPreviewSlipUrl(inspectTx.slipImageUrl || null)}
+                      >
+                        <img
+                          src={inspectTx.slipImageUrl}
+                          alt="Slip Preview"
+                          className="max-h-64 w-auto object-contain rounded-lg transition-transform group-hover:scale-[1.02]"
+                        />
+                        <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold gap-1">
+                          <Eye size={16} /> คลิกเพื่อดูภาพเต็ม
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Status Details if already Approved or Rejected */}
+                  {isApproved && (
+                    <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 rounded-xl text-xs text-emerald-800 dark:text-emerald-300">
+                      <div className="font-bold">อนุมัติแล้ว (Approved)</div>
+                      <div>โดย: {inspectTx.approvedByName || "Admin"} • {inspectTx.approvedAt ? format(new Date(inspectTx.approvedAt), "dd MMM yyyy HH:mm") : "-"}</div>
+                    </div>
+                  )}
+
+                  {isRejected && (
+                    <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 rounded-xl text-xs text-rose-800 dark:text-rose-300">
+                      <div className="font-bold">ปฏิเสธแล้ว (Rejected)</div>
+                      <div>เหตุผล: {cleanReject || inspectTx.rejectReason || "-"}</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer with Approve / Reject buttons */}
+                <div className="px-6 py-4 bg-slate-50 dark:bg-slate-850 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setInspectTx(null)}
+                    className="text-xs font-bold rounded-xl"
+                  >
+                    ปิด (Close)
+                  </Button>
+
+                  {isPending && canApproveWallet && (
+                    <>
+                      <Button
+                        type="button"
+                        disabled={isProcessingAction}
+                        onClick={async () => {
+                          const target = inspectTx;
+                          setInspectTx(null);
+                          await handleSingleApprove(target);
+                        }}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold gap-1.5 cursor-pointer shadow-xs rounded-xl"
+                      >
+                        <CheckCircle2 size={14} />
+                        <span>Approve (อนุมัติ)</span>
+                      </Button>
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={isProcessingAction}
+                        onClick={() => {
+                          const target = inspectTx;
+                          setInspectTx(null);
+                          setTxToReject(target);
+                          setRejectReason("");
+                          setRejectModalOpen(true);
+                        }}
+                        className="text-rose-600 border-rose-200 hover:bg-rose-50 text-xs font-bold gap-1.5 cursor-pointer rounded-xl"
+                      >
+                        <XCircle size={14} />
+                        <span>Reject (ปฏิเสธ)</span>
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </div>

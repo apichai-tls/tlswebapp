@@ -169,8 +169,8 @@ export function AdminCRM({
   const canAdjustBalance = Boolean(user?.permissions?.includes('adjust-wallet') || user?.role === 'admin');
   // Everyone except Rider can see Top Up button
   const canTopUp = user?.role !== 'rider';
-  // Wallet Approval permission: Admin, Manager, or users with 'approve-wallet' permission
-  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin' || user?.role === 'manager');
+  // Wallet Approval permission: Admin, or users with 'approve-wallet' permission
+  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin');
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
 
   useEffect(() => {
@@ -952,8 +952,8 @@ export function AdminCRM({
             </button>
           </div>
 
-          {/* Search bar inside the bar (shown when not on customer report) */}
-          {activeTab !== "customer_report" && (
+          {/* Search bar inside the bar (shown when not on customer report or wallet approvals) */}
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && (
             <div className="relative w-full lg:w-80">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <Input 
@@ -1505,7 +1505,7 @@ export function AdminCRM({
           </div>
         ) : activeTab === "wallet_approvals" ? (
           <div className="p-1">
-            <ReportsWalletApprovals />
+            <ReportsWalletApprovals onViewJob={onViewJob} />
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -1806,11 +1806,11 @@ export function AdminCRM({
         )}
 
         {/* Pagination Controls */}
-        {activeTab !== "customer_report" && totalItems > 0 && (
+        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && totalItems > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>
-                Showing {Math.min(totalItems, (currentPage - 1) * pageSize + 1)}-{Math.min(totalItems, currentPage * pageSize)} of {totalItems} customers
+                Showing {Math.min(totalItems, (currentPage - 1) * pageSize + 1)}-{Math.min(totalItems, currentPage * pageSize)} of {totalItems} {activeTab === "topup_history" ? "transactions" : "customers"}
               </span>
               <div className="flex items-center gap-1.5">
                 <span className="text-slate-400">Show:</span>

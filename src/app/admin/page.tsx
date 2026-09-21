@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, shiftStore } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, type WalletTransactionItem, shiftStore } from "@/lib/store";
 import { refreshDb, api } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
@@ -241,7 +241,7 @@ export default function AdminPage() {
   const [topUpCustomer, setTopUpCustomer] = useState<Customer | null>(null);
   const [refundJob, setRefundJob] = useState<Job | null>(null);
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
-  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin' || user?.role === 'manager');
+  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin');
   const canRefund = Boolean(user?.permissions?.includes('refund-job') || user?.role === 'admin');
 
   useEffect(() => {
@@ -924,6 +924,12 @@ export default function AdminPage() {
   const [savingJobIds, setSavingJobIds] = useState<Set<string>>(new Set());
   const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
 
+  // Wallet Approval review context — set when opening Edit Job from Wallet Approvals table
+  const [reviewingWalletTx, setReviewingWalletTx] = useState<WalletTransactionItem | null>(null);
+  const [walletRejectModalOpen, setWalletRejectModalOpen] = useState(false);
+  const [walletRejectReason, setWalletRejectReason] = useState("");
+  const [isWalletActionProcessing, setIsWalletActionProcessing] = useState(false);
+
   // Promo Code states
   const [promoCodeInput, setPromoCodeInput] = useState<string>("");
   const [appliedPromo, setAppliedPromo] = useState<{
@@ -1182,6 +1188,7 @@ export default function AdminPage() {
   const resetDialogForm = () => {
     originalJobRef.current = null;
     setEditingJobId(null);
+    setReviewingWalletTx(null);
     setBillNo("");
     setIsTaxInvoiceRequested(false);
     setDialogSelectedCategory(null);
@@ -2789,9 +2796,49 @@ export default function AdminPage() {
 
   const handleEditFullJobRef = useRef(handleEditFullJob);
   handleEditFullJobRef.current = handleEditFullJob;
-  const stableHandleEditFullJob = useCallback((job: Job) => {
+  const stableHandleEditFullJob = useCallback((job: Job, walletTx?: any) => {
+    setReviewingWalletTx(walletTx || null);
     handleEditFullJobRef.current(job);
   }, []);
+
+  const handleApproveFromJobDialog = async () => {
+    if (!reviewingWalletTx) return;
+    setIsWalletActionProcessing(true);
+    try {
+      await walletApprovalStore.approve(
+        reviewingWalletTx.id,
+        user?.id || "system",
+        user?.name || user?.email || "Admin"
+      );
+      toast.success(`Approved ${reviewingWalletTx.type} ฿${reviewingWalletTx.amount.toLocaleString()} สำเร็จ`);
+      setReviewingWalletTx(null);
+    } catch (e: any) {
+      toast.error("ไม่สามารถอนุมัติได้: " + e.message);
+    } finally {
+      setIsWalletActionProcessing(false);
+    }
+  };
+
+  const handleConfirmWalletReject = async () => {
+    if (!reviewingWalletTx || !walletRejectReason.trim()) return;
+    setIsWalletActionProcessing(true);
+    try {
+      await walletApprovalStore.reject(
+        reviewingWalletTx.id,
+        user?.id || "system",
+        user?.name || user?.email || "Admin",
+        walletRejectReason.trim()
+      );
+      toast.success(`Rejected #${reviewingWalletTx.id.slice(0, 8)} สำเร็จ`);
+      setReviewingWalletTx(null);
+      setWalletRejectModalOpen(false);
+      setWalletRejectReason("");
+    } catch (e: any) {
+      toast.error("ไม่สามารถปฏิเสธได้: " + e.message);
+    } finally {
+      setIsWalletActionProcessing(false);
+    }
+  };
 
   const handleCreateNewJobRef = useRef(handleCreateNewJob);
   handleCreateNewJobRef.current = handleCreateNewJob;
@@ -3857,6 +3904,53 @@ export default function AdminPage() {
                     )}
                   </div>
                 </DialogHeader>
+
+                {/* Wallet Approval Review Banner */}
+                {reviewingWalletTx && (
+                  <div className="mx-3 mt-2 px-4 py-2.5 bg-amber-500 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md rounded-xl shrink-0">
+                    <div className="flex items-center gap-2 text-xs font-bold min-w-0">
+                      <ShieldCheck size={18} className="text-white shrink-0" />
+                      <span className="truncate">
+                        รออนุมัติ Wallet: {reviewingWalletTx.type === "DEDUCT" ? "ตัดเงินค่าออเดอร์" : (reviewingWalletTx.type === "REFUND" ? "คืนเงินออเดอร์" : reviewingWalletTx.type)} 
+                        {" "}฿{reviewingWalletTx.amount.toLocaleString()} 
+                        {reviewingWalletTx.createdByName && ` (โดย: ${reviewingWalletTx.createdByName})`}
+                      </span>
+                    </div>
+                    {reviewingWalletTx.approvalStatus === "PENDING" && (
+                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
+                          onClick={handleApproveFromJobDialog}
+                          disabled={isWalletActionProcessing}
+                        >
+                          <CheckCircle2 size={13} />
+                          <span>Approve (อนุมัติ)</span>
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-3 bg-rose-600 hover:bg-rose-700 text-white border-none font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
+                          onClick={() => {
+                            setWalletRejectReason("");
+                            setWalletRejectModalOpen(true);
+                          }}
+                          disabled={isWalletActionProcessing}
+                        >
+                          <X size={13} />
+                          <span>Reject (ปฏิเสธ)</span>
+                        </Button>
+                      </div>
+                    )}
+                    {reviewingWalletTx.approvalStatus !== "PENDING" && (
+                      <Badge className={`text-xs font-bold shrink-0 ${reviewingWalletTx.approvalStatus === "APPROVED" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
+                        {reviewingWalletTx.approvalStatus}
+                      </Badge>
+                    )}
+                  </div>
+                )}
 
                 {/* Main Content Grid */}
                 <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3">
@@ -6021,6 +6115,69 @@ export default function AdminPage() {
                 </DialogContent>
               </Dialog>
             )}
+
+            {/* Wallet Approval Reject Reason Dialog */}
+            <Dialog open={walletRejectModalOpen} onOpenChange={(open) => {
+              if (!isWalletActionProcessing) {
+                setWalletRejectModalOpen(open);
+                if (!open) setWalletRejectReason("");
+              }
+            }}>
+              <DialogContent className="sm:max-w-md w-[95vw] rounded-2xl p-0 overflow-hidden border border-slate-200 shadow-2xl bg-white">
+                <DialogHeader className="p-4 bg-rose-600 text-white">
+                  <DialogTitle className="flex items-center gap-2 text-base font-bold text-white">
+                    <AlertCircle size={18} />
+                    <span>ระบุเหตุผลการปฏิเสธ (Reject Wallet Transaction)</span>
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="p-4 space-y-3">
+                  <p className="text-xs text-slate-600">
+                    กรุณาระบุเหตุผลการปฏิเสธรายการ เพื่อแจ้งเตือนและบันทึกประวัติ Task ติดตามงาน:
+                  </p>
+                  <Input
+                    value={walletRejectReason}
+                    onChange={(e) => setWalletRejectReason(e.target.value)}
+                    placeholder="เช่น สลิปไม่ตรง, ยอดเงินผิด, ตะกร้าสินค้าไม่ถูกต้อง"
+                    className="text-xs h-9"
+                    autoFocus
+                  />
+                </div>
+                <DialogFooter className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setWalletRejectModalOpen(false);
+                      setWalletRejectReason("");
+                    }}
+                    disabled={isWalletActionProcessing}
+                    className="text-xs font-bold rounded-xl cursor-pointer"
+                  >
+                    ยกเลิก
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer"
+                    onClick={handleConfirmWalletReject}
+                    disabled={!walletRejectReason.trim() || isWalletActionProcessing}
+                  >
+                    {isWalletActionProcessing ? (
+                      <>
+                        <Loader2 size={13} className="animate-spin mr-1" />
+                        <span>กำลังบันทึก...</span>
+                      </>
+                    ) : (
+                      <>
+                        <X size={13} className="mr-1" />
+                        <span>ยืนยัน Reject</span>
+                      </>
+                    )}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             {/* Admin Note Logs Expanded Dialog */}
             <Dialog open={noteLogsModalOpen} onOpenChange={setNoteLogsModalOpen}>
