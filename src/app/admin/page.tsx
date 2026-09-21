@@ -2264,7 +2264,18 @@ export default function AdminPage() {
           const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
           if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
           if (balAdj !== 0) {
-            const upd: Partial<Customer> & { creditBalanceDelta?: number } = { creditBalanceDelta: balAdj };
+            const isDeduct = balAdj < 0;
+            const refDisplay = (existingJob as any)?.billNo || targetEditingJobId;
+            const upd: Partial<Customer> & Record<string, any> = { 
+              creditBalanceDelta: balAdj,
+              walletTxType: isDeduct ? 'DEDUCT' : 'ADJUST_ADD',
+              walletRefId: targetEditingJobId,
+              walletRefType: 'job',
+              actorId: user?.id || null,
+              actorName: user?.name || user?.email || 'Staff',
+              branchId: (existingJob as any)?.branchId || activeShop?.id || null,
+              reason: isDeduct ? `Order Payment #${refDisplay}` : `Package Top-Up #${refDisplay}`,
+            };
             if (balAdj > 0 && !selectedProfileCustomer.isMember) {
               upd.isMember = true;
               const pls = priceListStore.getSnapshot();
@@ -2435,7 +2446,7 @@ export default function AdminPage() {
         // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Create
         const isShopPaidNow_new = isPayment;
         let preDeductedBalance: number | null = null;
-        let walletUpdates: Partial<Customer> & { creditBalanceDelta?: number } | null = null;
+        let walletUpdates: (Partial<Customer> & Record<string, any>) | null = null;
 
         if (isShopPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member") {
           // Validate balance is sufficient before proceeding
@@ -2445,10 +2456,7 @@ export default function AdminPage() {
             setIsSubmitting(false);
             return;
           }
-          walletUpdates = { creditBalanceDelta: -calculatedTotal };
-          // Deduct wallet first — if this fails, we abort before creating the job
-          const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
-          preDeductedBalance = updatedCust?.creditBalance ?? Math.max(0, currentBalance - calculatedTotal);
+          preDeductedBalance = Math.max(0, currentBalance - calculatedTotal);
         }
 
         // Also handle topup packages (balance increase — safe to do after job creation)
@@ -2462,6 +2470,23 @@ export default function AdminPage() {
 
         const job = await jobStore.addJob(jobDataWithWallet as any);
         savedJobId = job.id;
+
+        // Perform atomic wallet deduction with job reference now that job is created
+        if (isShopPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member" && savedJobId) {
+          const refDisplay = (job as any)?.billNo || savedJobId;
+          walletUpdates = { 
+            creditBalanceDelta: -calculatedTotal,
+            walletTxType: 'DEDUCT',
+            walletRefId: savedJobId,
+            walletRefType: 'job',
+            actorId: user?.id || null,
+            actorName: user?.name || user?.email || 'Staff',
+            branchId: (job as any)?.branchId || activeShop?.id || null,
+            reason: `Order Payment #${refDisplay}`,
+          };
+          const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
+          preDeductedBalance = updatedCust?.creditBalance ?? preDeductedBalance;
+        }
 
         // If user explicitly previewed proforma before creating this new job, assign the real proforma number now
         if (isNewJobProformaRequested && savedJobId) {
@@ -2603,7 +2628,17 @@ export default function AdminPage() {
 
         // Handle topup package wallet top-up (after job creation — low risk, topup adds money)
         if (isShopPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
-          const upd: Partial<Customer> & { creditBalanceDelta?: number } = { creditBalanceDelta: packageTotal };
+          const refDisplay = (job as any)?.billNo || savedJobId;
+          const upd: Partial<Customer> & Record<string, any> = { 
+            creditBalanceDelta: packageTotal,
+            walletTxType: 'ADJUST_ADD',
+            walletRefId: savedJobId,
+            walletRefType: 'job',
+            actorId: user?.id || null,
+            actorName: user?.name || user?.email || 'Staff',
+            branchId: (job as any)?.branchId || activeShop?.id || null,
+            reason: `Package Top-Up #${refDisplay}`,
+          };
           if (!selectedProfileCustomer.isMember) {
             upd.isMember = true;
             const pls = priceListStore.getSnapshot();

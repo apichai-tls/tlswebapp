@@ -5126,7 +5126,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         if (customer) {
                           const refundAmount = posCancellingJob.totalAmount || 0;
                           const newBalance = (customer.creditBalance || 0) + refundAmount;
-                          await customerStore.updateCustomer(customer.id, { creditBalance: newBalance });
+                          await customerStore.updateCustomer(customer.id, { 
+                            creditBalance: newBalance,
+                            creditBalanceDelta: refundAmount,
+                            walletTxType: 'REFUND',
+                            walletRefId: posCancellingJob.id,
+                            walletRefType: 'job',
+                            actorId: user?.id || null,
+                            actorName: user?.name || user?.email || 'POS Staff',
+                            branchId: activeBranchId || activeShop?.id || null,
+                            reason: `Refund Order #${formatJobDisplayId(posCancellingJob.id)}: ${posCancelReason.trim()}`,
+                          } as any);
                           refundSuccessMsg = ` และคืนเงิน ฿${refundAmount.toFixed(2)} เข้ากระเป๋าสมาชิกสำเร็จ`;
                         }
                       }

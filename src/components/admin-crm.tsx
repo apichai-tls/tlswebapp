@@ -432,6 +432,9 @@ export function AdminCRM({
     try {
       await customerStore.updateCustomer(topUpCustomer.id, {
         creditBalance: newBalance,
+        creditBalanceDelta: delta,
+        walletTxType: isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT',
+        walletRefType: 'manual',
         adjustReason: adjustReason.trim() || undefined,
         reason: adjustReason.trim() || undefined,
         actorId: user?.id,
