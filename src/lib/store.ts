@@ -59,10 +59,43 @@ export interface PriceList {
   servicePrices: Record<string, number>; // maps serviceId -> price
 }
 
+export interface CustomerAddress {
+  id: string;
+  customerId: string;
+  label: string;
+  placeId?: string | null;
+  placeName?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  googleMapsUrl?: string | null;
+  address: string;
+  roomNumber?: string | null;
+  subDistrict?: string | null;
+  district: string;
+  province?: string | null;
+  postalCode?: string | null;
+  contactName?: string | null;
+  contactPhone?: string | null;
+  leaveWithJuristic?: boolean;
+  deliveryNote?: string | null;
+  isPrimary?: boolean;
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
+}
+
 export interface Customer {
   id: string;
   name: string;
   phone: string;
+  brand?: string;
+  gender?: string | null;
+  nickName?: string | null;
+  secondaryPhone?: string | null;
+  isSecondaryWhatsapp?: boolean;
+  isVerified?: boolean;
+  verifiedVia?: string | null;
+  sourceSystem?: string | null;
+  addresses?: CustomerAddress[];
   defaultAddress: string;
   defaultCoords: LatLng;
   priceListId?: string;
@@ -124,6 +157,7 @@ export interface Job {
   serviceSpeed?: string;
   laundryTypes?: string[];
   source?: "app" | "pos";
+  brand?: string | null;
   totalAmount?: number; // Customer price
   paymentMethod?: "cash" | "transfer" | "credit" | "card";
   paymentChannel?: string;

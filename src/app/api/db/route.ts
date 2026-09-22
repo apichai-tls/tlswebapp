@@ -61,6 +61,7 @@ export async function GET() {
           serviceType: true,
           laundryTypes: true,
           source: true,
+          brand: true,
           totalAmount: true,
           paymentMethod: true,
           discount: true,

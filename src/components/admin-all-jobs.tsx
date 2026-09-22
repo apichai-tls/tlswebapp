@@ -94,6 +94,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
+  const [selectedBrand, setSelectedBrand] = useState<"ALL" | "that_laundry_shop" | "noname_laundry">("ALL");
   const [paymentChannelFilter, setPaymentChannelFilter] = useState<string>("ALL");
   const [startDate, setStartDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
   const [endDate, setEndDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
@@ -233,6 +234,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     // 0. Manager Role Filter
     if (user?.role === 'manager' && !isCSO) {
       if (job.status === 'tba') return false;
+    }
+
+    // 0.1 Brand Filter
+    if (selectedBrand !== "ALL") {
+      const jobBrand = job.brand || "that_laundry_shop";
+      if (jobBrand !== selectedBrand) return false;
     }
 
     const searchLower = searchTerm.toLowerCase().trim();
@@ -573,6 +580,18 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               <option value="return">Returned</option>
             </select>
           </div>
+
+          <div className="relative">
+            <select
+              value={selectedBrand}
+              onChange={(e) => setSelectedBrand(e.target.value as any)}
+              className="h-9 px-3 text-sm font-bold border border-slate-200 rounded-lg hover:bg-slate-50 bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+            >
+              <option value="ALL">All Brands</option>
+              <option value="that_laundry_shop">That Laundry Shop</option>
+              <option value="noname_laundry">Noname Laundry</option>
+            </select>
+          </div>
           
           {dateFilter === "custom" && (
             <div className="flex items-center gap-2">
@@ -718,6 +737,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           {job.remark?.includes("Express 100%") && (
                             <Badge className="text-[9px] font-bold px-1.5 py-0 h-4 bg-red-50 text-red-600 border-red-200">
                               EXP 100%
+                            </Badge>
+                          )}
+                          {job.brand === "noname_laundry" && (
+                            <Badge className="text-[9px] font-black px-1.5 py-0 h-4 bg-amber-100 text-amber-900 border-amber-300">
+                              Noname
                             </Badge>
                           )}
                           </div>
@@ -1109,6 +1133,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 )}
                                 {job.source === 'pos' && (
                                   <Badge className="text-[9px] uppercase font-bold px-1 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">POS</Badge>
+                                )}
+                                {job.brand === "noname_laundry" && (
+                                  <Badge className="text-[9px] uppercase font-black px-1.5 py-0 h-4 bg-amber-100 text-amber-900 border-amber-300">Noname</Badge>
                                 )}
                                 {job.refundId && (
                                   <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border-rose-200">

@@ -635,10 +635,14 @@ export function A5ReceiptContent({
                 />
               </div>
               <h1 className={`${isUltraCompact ? "text-xs" : "text-sm"} font-black text-neutral-900 uppercase tracking-tight leading-tight`}>
-                {activeShop?.name || "That Laundry Shop"}
+                {receiptData.brand === "noname_laundry"
+                  ? "Noname Laundry"
+                  : (activeShop?.name || "That Laundry Shop")}
               </h1>
               <p className="text-[10px] text-neutral-600 max-w-[260px] mt-0.5 whitespace-pre-line leading-tight">
-                {activeShop?.addressFull || activeShop?.address || "123 Sukhumvit Road, Bangkok"}
+                {receiptData.brand === "noname_laundry"
+                  ? "Online Laundry & Dry Clean Service\nWeb: nonamelaundry.com"
+                  : (activeShop?.addressFull || activeShop?.address || "123 Sukhumvit Road, Bangkok")}
               </p>
               <p className="text-[10px] text-neutral-600 mt-0.5">
                 Tel: {activeShop?.phone || "081-111-2222"}

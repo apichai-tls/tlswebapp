@@ -122,6 +122,7 @@ export interface ReceiptData {
   jobId?: string;
   proformaRevision?: number;
   autoCapture?: boolean;
+  brand?: string | null;
 }
 
 export interface ShopInfo {
@@ -341,7 +342,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     walletBalance,
     proformaId: cleanBaseProforma || rawProformaId,  // base number only — display layers append -R{n}
     proformaRevision: proformaRevision,
-    jobId: job.id
+    jobId: job.id,
+    brand: (job as any).brand || (rawJob as any).brand || cust?.brand || null,
   };
 }
 
@@ -688,11 +690,21 @@ export function ThermalReceiptDialog({
             </div>
           )}
           <h3 className={`${isA5 ? "text-lg" : (isSmall ? "text-[10px]" : "text-xs")} font-black tracking-tight text-neutral-900 uppercase`}>
-            {activeShop?.name || "That Laundry Shop"}
+            {receiptData.brand === "noname_laundry"
+              ? "Noname Laundry"
+              : (activeShop?.name || "That Laundry Shop")}
           </h3>
-          <p className={`${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} text-neutral-600 font-medium`}>{activeShop?.address || "123 Sukhumvit Road, Bangkok"}</p>
-          <p className={`${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} text-neutral-600 font-medium`}>Tel: {activeShop?.phone || "081-111-2222"}</p>
-          {activeShop?.taxId && (
+          <p className={`${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} text-neutral-600 font-medium`}>
+            {receiptData.brand === "noname_laundry"
+              ? "Online Laundry & Dry Clean Service"
+              : (activeShop?.address || "123 Sukhumvit Road, Bangkok")}
+          </p>
+          <p className={`${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")} text-neutral-600 font-medium`}>
+            {receiptData.brand === "noname_laundry"
+              ? "Web: nonamelaundry.com"
+              : `Tel: ${activeShop?.phone || "081-111-2222"}`}
+          </p>
+          {receiptData.brand !== "noname_laundry" && activeShop?.taxId && (
             <p className={`${isA5 ? "text-xs" : (isSmall ? "text-[7.5px]" : "text-[8.5px]")} text-neutral-600 font-bold uppercase tracking-tight`}>TAX ID: {activeShop.taxId}</p>
           )}
           <div className="border-t border-dashed border-neutral-400/50 my-2" />

@@ -186,6 +186,7 @@ export function AdminCRM({
 
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals">("all");
+  const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -382,13 +383,13 @@ export function AdminCRM({
     fetchTopUps();
   }, []);
 
-  // Reset page to 1 when search or tab filters change
+  // Reset page to 1 when search, tab, or brand filters change
   useEffect(() => {
     setCurrentPage(1);
     if (activeTab === "topup_history") {
       fetchTopUps();
     }
-  }, [searchTerm, activeTab]);
+  }, [searchTerm, activeTab, selectedBrand]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 
@@ -546,9 +547,23 @@ export function AdminCRM({
     };
   }, [customers]);
 
-  // Combined search & tag filtering
+  const brandStats = useMemo(() => {
+    return {
+      all: customers.length,
+      tls: customers.filter(c => (c.brand || "that_laundry_shop") === "that_laundry_shop").length,
+      noname: customers.filter(c => c.brand === "noname_laundry").length
+    };
+  }, [customers]);
+
+  // Combined search, brand & tag filtering
   const filteredCustomers = useMemo(() => {
     return customers.filter(c => {
+      // 0. Brand filter
+      if (selectedBrand !== "all") {
+        const custBrand = c.brand || "that_laundry_shop";
+        if (custBrand !== selectedBrand) return false;
+      }
+
       // 1. Search filter
       const searchLower = searchTerm.toLowerCase();
       const matchSearch = 
@@ -568,7 +583,7 @@ export function AdminCRM({
       
       return true;
     });
-  }, [customers, searchTerm, activeTab]);
+  }, [customers, searchTerm, activeTab, selectedBrand]);
 
   // Sort by LTV descending (highest spent first)
   const sortedCustomers = useMemo(() => {
@@ -851,8 +866,47 @@ export function AdminCRM({
       <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           
-          {/* Quick Filters Tab Layout */}
-          <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Brand Filter Selector */}
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
+              <span className="text-slate-400 px-2 py-1 text-[11px] uppercase tracking-wider font-bold">Brand:</span>
+              <button
+                type="button"
+                onClick={() => setSelectedBrand("all")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                  selectedBrand === "all"
+                    ? "bg-white text-indigo-700 shadow-sm"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                All ({brandStats.all})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedBrand("that_laundry_shop")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                  selectedBrand === "that_laundry_shop"
+                    ? "bg-white text-blue-700 shadow-sm"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                TLS ({brandStats.tls})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedBrand("noname_laundry")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                  selectedBrand === "noname_laundry"
+                    ? "bg-white text-amber-700 shadow-sm"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Noname ({brandStats.noname})
+              </button>
+            </div>
+
+            {/* Quick Filters Tab Layout */}
+            <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
             <button
               onClick={() => setActiveTab("all")}
               className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
@@ -950,6 +1004,7 @@ export function AdminCRM({
               <FileText size={14} className={activeTab === "customer_report" ? "text-white" : "text-indigo-600"} />
               Customer Report
             </button>
+          </div>
           </div>
 
           {/* Search bar inside the bar (shown when not on customer report or wallet approvals) */}
@@ -1576,6 +1631,15 @@ export function AdminCRM({
                                       NEW
                                     </Badge>
                                   ) : null}
+                                  {customer.brand === "noname_laundry" ? (
+                                    <Badge className="bg-amber-100 text-amber-900 border border-amber-300 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
+                                      Noname
+                                    </Badge>
+                                  ) : (
+                                    <Badge className="bg-slate-100 text-slate-600 border border-slate-200 py-0 px-1.5 h-4.5 text-[9px] font-bold uppercase tracking-wider rounded-md">
+                                      TLS
+                                    </Badge>
+                                  )}
                                 </div>
 
                                 <div className="flex flex-col gap-0.5 text-slate-500 text-[11px] font-medium">

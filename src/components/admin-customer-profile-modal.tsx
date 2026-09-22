@@ -261,6 +261,15 @@ export function AdminCustomerProfileModal({
                       <Building size={8} className="text-indigo-500" /> B2B
                     </Badge>
                   )}
+                  {customer.brand === "noname_laundry" ? (
+                    <Badge className="bg-amber-100 text-amber-900 border border-amber-300 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
+                      Noname
+                    </Badge>
+                  ) : (
+                    <Badge className="bg-slate-200 text-slate-700 border border-slate-300 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-bold uppercase tracking-wider rounded-md">
+                      TLS
+                    </Badge>
+                  )}
                   {!isStandardPlan && customer.isMember && !customer.isVIP && (
                     <Badge className="bg-gradient-to-r from-slate-200 via-slate-100 to-slate-300 text-slate-700 border border-slate-300 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
                       <Crown size={8} className="text-slate-700" /> MEMBER
