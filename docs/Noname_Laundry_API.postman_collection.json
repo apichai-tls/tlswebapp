@@ -1,0 +1,485 @@
+{
+  "info": {
+    "_postman_id": "noname-laundry-api-v1",
+    "name": "Noname Laundry - External API Collection (V1)",
+    "description": "Postman Collection for Noname Laundry Web App integration with That Laundry Shop (TLS) Multi-Brand Backend.\n\n### Setup\n1. Set `baseUrl` variable (e.g. `http://localhost:3000` or Cloud Run Test URL)\n2. Set `apiKey` (default: `noname_secret_api_key_2026`)\n3. Run **1. Register** or **2. Login** - the collection will automatically save the `authToken` into collection variables for subsequent calls.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "noname_secret_api_key_2026",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "customerId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "addressId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "orderId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Authentication & Profile",
+      "item": [
+        {
+          "name": "Register Customer (with initial address)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.token) {",
+                  "    pm.collectionVariables.set('authToken', res.token);",
+                  "    console.log('Saved authToken:', res.token);",
+                  "}",
+                  "if (res.customer && res.customer.id) {",
+                  "    pm.collectionVariables.set('customerId', res.customer.id);",
+                  "}",
+                  "if (res.customer && res.customer.addresses && res.customer.addresses.length > 0) {",
+                  "    pm.collectionVariables.set('addressId', res.customer.addresses[0].id);",
+                  "    console.log('Saved initial addressId:', res.customer.addresses[0].id);",
+                  "}",
+                  "pm.test('Status code is 201 or 200', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-brand",
+                "value": "noname_laundry"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Alex Mercer\",\n  \"phone\": \"0891112233\",\n  \"password\": \"Password123!\",\n  \"email\": \"alex.mercer@example.com\",\n  \"nickName\": \"Alex\",\n  \"gender\": \"Male\",\n  \"address\": {\n    \"label\": \"Home Condo\",\n    \"placeName\": \"Ashton Asoke\",\n    \"placeId\": \"ChIJb8W8k3Ge4jAR9...\",\n    \"latitude\": 13.736717,\n    \"longitude\": 100.560633,\n    \"googleMapsUrl\": \"https://maps.google.com/?q=13.736717,100.560633\",\n    \"address\": \"88 Sukhumvit 21, Khlong Toei Nuea, Watthana, Bangkok 10110\",\n    \"roomNumber\": \"2504\",\n    \"subDistrict\": \"Khlong Toei Nuea\",\n    \"district\": \"Watthana\",\n    \"province\": \"Bangkok\",\n    \"postalCode\": \"10110\",\n    \"leaveWithJuristic\": true,\n    \"deliveryNote\": \"Leave with Juristic Office Tower A\",\n    \"isPrimary\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Customer Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.token) {",
+                  "    pm.collectionVariables.set('authToken', res.token);",
+                  "    console.log('Saved authToken:', res.token);",
+                  "}",
+                  "if (res.customer && res.customer.id) {",
+                  "    pm.collectionVariables.set('customerId', res.customer.id);",
+                  "}",
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-brand",
+                "value": "noname_laundry"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"0891112233\",\n  \"password\": \"Password123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "profile"]
+            }
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nickName\": \"Alex M.\",\n  \"gender\": \"Male\",\n  \"secondaryPhone\": \"0819998877\",\n  \"isSecondaryWhatsapp\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "profile"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Address Book",
+      "item": [
+        {
+          "name": "List Addresses",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/addresses",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "addresses"]
+            }
+          }
+        },
+        {
+          "name": "Add New Address",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.address && res.address.id) {",
+                  "    pm.collectionVariables.set('addressId', res.address.id);",
+                  "    console.log('Saved new addressId:', res.address.id);",
+                  "}",
+                  "pm.test('Address created', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Office\",\n  \"placeName\": \"GMM Grammy Place\",\n  \"latitude\": 13.7431,\n  \"longitude\": 100.5632,\n  \"googleMapsUrl\": \"https://maps.app.goo.gl/sample\",\n  \"address\": \"50 Sukhumvit 21, Khlong Toei Nuea, Watthana, Bangkok\",\n  \"roomNumber\": \"Floor 18\",\n  \"district\": \"Watthana\",\n  \"province\": \"Bangkok\",\n  \"postalCode\": \"10110\",\n  \"contactName\": \"Alex Mercer\",\n  \"contactPhone\": \"0891112233\",\n  \"leaveWithJuristic\": false,\n  \"deliveryNote\": \"Call upon arrival\",\n  \"isPrimary\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/addresses",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "addresses"]
+            }
+          }
+        },
+        {
+          "name": "Update Address",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{addressId}}\",\n  \"roomNumber\": \"Room 2508\",\n  \"deliveryNote\": \"Please leave at door outside\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/addresses",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "addresses"]
+            }
+          }
+        },
+        {
+          "name": "Delete Address",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/addresses?id={{addressId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "addresses"],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "{{addressId}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Orders & Booking",
+      "item": [
+        {
+          "name": "Create Laundry Booking",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.order && res.order.id) {",
+                  "    pm.collectionVariables.set('orderId', res.order.id);",
+                  "    console.log('Saved orderId:', res.order.id);",
+                  "}",
+                  "pm.test('Booking created', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"addressId\": \"{{addressId}}\",\n  \"scheduledDate\": \"2026-09-25\",\n  \"timeSlot\": \"10:00 - 12:00\",\n  \"servicePreferences\": [\"wash_fold\", \"dry_cleaning\"],\n  \"customerNote\": \"Please separate white shirts and use mild softener\",\n  \"leaveWithJuristic\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/orders/booking",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "orders", "booking"]
+            }
+          }
+        },
+        {
+          "name": "List Customer Orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/orders?limit=20&page=1&status=all",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "orders"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "status",
+                  "value": "all"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Order Details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/orders/{{orderId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "orders", "{{orderId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Digital Receipt",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/orders/{{orderId}}/receipt",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "orders", "{{orderId}}", "receipt"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Beam Checkout Webhook (Mock Test)",
+      "item": [
+        {
+          "name": "Simulate Beam Payment Webhook",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"charge.succeeded\",\n  \"data\": {\n    \"reference_id\": \"{{orderId}}\",\n    \"transaction_id\": \"beam_test_txn_998877\",\n    \"amount\": 300.00,\n    \"currency\": \"THB\",\n    \"payment_method\": \"promptpay\",\n    \"paid_at\": \"2026-09-25T11:00:00Z\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/external/payments/beam-webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "external", "payments", "beam-webhook"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
