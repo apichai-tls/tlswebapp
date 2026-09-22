@@ -9,7 +9,7 @@ import { addJobLogAction, updateJobAction } from "@/actions/db";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, Job, type AdminNoteLog } from "@/lib/store";
 import { Input } from "@/components/ui/input";
-import { findMatchingCustomer } from "@/lib/utils";
+import { findMatchingCustomer, isJobFullyPaid } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { MiniMap } from "@/components/map-loader";
 import { Badge } from "@/components/ui/badge";
@@ -406,12 +406,19 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
           
           <div className="flex flex-col items-end gap-1 shrink-0">
             <div className="flex items-center gap-1">
-              {job.cashPlaced && (
-                <span className="flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200">
-                  <Banknote size={10} className="text-red-500" />
-                  เก็บเงินสด
-                </span>
-              )}
+              {(() => {
+                const isPaidEffective = isJobFullyPaid(job) || Boolean(job.isPaid);
+                const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
+                if (isCash && !isPaidEffective) {
+                  return (
+                    <span className="flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200">
+                      <Banknote size={10} className="text-red-500" />
+                      เก็บเงินสด{job.totalAmount ? ` ฿${Math.round(job.totalAmount).toLocaleString()}` : ""}
+                    </span>
+                  );
+                }
+                return null;
+              })()}
               <span
                 className={`flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}
               >
@@ -1775,15 +1782,22 @@ export default function RiderPage() {
                       </Button>
                       <div className="flex flex-col items-end gap-1.5">
                         <div className="flex items-center gap-1">
-                          {selectedJob.job.cashPlaced && (
-                            <Badge
-                              variant="outline"
-                              className="gap-1.5 text-xs py-1 px-2 bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200"
-                            >
-                              <Banknote size={14} className="text-red-500" />
-                              เก็บเงินสด
-                            </Badge>
-                          )}
+                          {(() => {
+                            const isPaidEffective = isJobFullyPaid(selectedJob.job) || Boolean(selectedJob.job.isPaid);
+                            const isCash = selectedJob.job.paymentChannel === "Cash / COD" || (selectedJob.job.paymentMethod || "").toLowerCase() === "cash";
+                            if (isCash && !isPaidEffective) {
+                              return (
+                                <Badge
+                                  variant="outline"
+                                  className="gap-1.5 text-xs py-1 px-2 bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200"
+                                >
+                                  <Banknote size={14} className="text-red-500" />
+                                  เก็บเงินสด{selectedJob.job.totalAmount ? ` ฿${Math.round(selectedJob.job.totalAmount).toLocaleString()}` : ""}
+                                </Badge>
+                              );
+                            }
+                            return null;
+                          })()}
                           <Badge
                             variant="outline"
                             className={`gap-1.5 text-xs py-1 px-2 ${legType === 'pickup' ? 'bg-amber-100 text-amber-700 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'}`}

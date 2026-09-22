@@ -266,6 +266,7 @@ function emitCustomerChange() {
   customerListeners.forEach((l) => l());
 }
 export const customerStore = {
+  notify: emitCustomerChange,
   subscribe(listener: Listener): () => void {
     customerListeners.add(listener);
     return () => customerListeners.delete(listener);

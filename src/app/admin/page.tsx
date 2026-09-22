@@ -56,7 +56,7 @@ import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
-import { addJobLogAction } from "@/actions/db";
+import { addJobLogAction, unlockPaidJobAction } from "@/actions/db";
 import { createTaxInvoiceTaskForJobAction } from "@/actions/tasks";
 import { useRiders } from "@/lib/use-riders";
 import {
@@ -120,6 +120,7 @@ import {
   Save,
   FileText,
   RotateCcw,
+  LockOpen,
 } from "lucide-react";
 
 import Link from "next/link";
@@ -929,6 +930,11 @@ export default function AdminPage() {
   const [walletRejectModalOpen, setWalletRejectModalOpen] = useState(false);
   const [walletRejectReason, setWalletRejectReason] = useState("");
   const [isWalletActionProcessing, setIsWalletActionProcessing] = useState(false);
+
+  // Unlock Paid states
+  const [unlockPaidDialogOpen, setUnlockPaidDialogOpen] = useState(false);
+  const [unlockPaidReason, setUnlockPaidReason] = useState("");
+  const [isUnlockingPaid, setIsUnlockingPaid] = useState(false);
 
   // Promo Code states
   const [promoCodeInput, setPromoCodeInput] = useState<string>("");
@@ -2035,6 +2041,10 @@ export default function AdminPage() {
         if (!isAlreadyCompleted && editingSubStatus === 'ready') {
           return (isWalkIn && !isDelivery) ? 'completed' : 'delivery';
         }
+        // If creating a new Delivery-only job, start directly in Process (billing)
+        if (!editingJobId && !isPickup && isDelivery) {
+          return 'billing';
+        }
         // For existing jobs, keep current status. For new jobs, let api.ts decide (tba vs pending based on creatorRole)
         return (editingJobId && existingJob) ? existingJob.status : undefined;
       })(),
@@ -2749,8 +2759,8 @@ export default function AdminPage() {
         discount: discountVal,
         discountPercent: dialogDiscountPercent,
         fee,
-        isPaid: shopPaymentMethod === 'paid' || paymentMethod === 'paid',
-        paymentChannel: paymentChannel || null,
+        isPaid: editingJobId ? isPaidJob : false,
+        paymentChannel: (editingJobId && isPaidJob) ? (paymentChannel || null) : null,
         remark: remarkParts.join(" | ") || null,
         status: editingSubStatus || "billing",
         laundryTypes: derivedLaundryTypes,
@@ -2758,12 +2768,17 @@ export default function AdminPage() {
         proformaRevision,
         vatType: dialogVatType,
         vatRate: dialogVatRate,
-        deliveryScheduledAt: deliveryScheduledTime ? new Date(deliveryScheduledTime) : undefined
+        deliveryScheduledAt: deliveryScheduledTime ? new Date(deliveryScheduledTime) : undefined,
+        adminNotesJson: editingJobId ? (jobs.find(j => j.id === editingJobId)?.adminNotesJson || null) : null,
       };
       
       const formatted = formatJobToReceiptData(mockJob);
       formatted.isDraft = true; // Mark as draft preview
       formatted.proformaRevision = proformaRevision;
+      formatted.isPaid = editingJobId ? isPaidJob : false;
+      if (!editingJobId || !isPaidJob) {
+        formatted.paymentChannel = undefined;
+      }
       // Promo code discount
       if (appliedPromo) {
         formatted.promoCode = appliedPromo.code;
@@ -2837,6 +2852,70 @@ export default function AdminPage() {
       toast.error("ไม่สามารถปฏิเสธได้: " + e.message);
     } finally {
       setIsWalletActionProcessing(false);
+    }
+  };
+
+  const handleUnlockPaid = async () => {
+    if (!editingJobId || !unlockPaidReason.trim()) return;
+    setIsUnlockingPaid(true);
+    try {
+      const result = await unlockPaidJobAction({
+        jobId: editingJobId,
+        reason: unlockPaidReason.trim(),
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
+        actorRole: user?.role,
+      });
+
+      if (!result.success) {
+        toast.error(result.error || "ไม่สามารถ Unlock ได้");
+        return;
+      }
+
+      // 1. Reset dialog payment states immediately
+      setPaymentMethod("unpaid");
+      setShopPaymentMethod("unpaid");
+
+      // 2. Update originalJobRef.current so OCC (field-level diffing) doesn't re-save stale isPaid: true
+      if (originalJobRef.current) {
+        originalJobRef.current.isPaid = false;
+        originalJobRef.current.isShopPaid = false;
+        originalJobRef.current.shopPaidAt = null;
+        originalJobRef.current.csoPaidAt = null;
+        originalJobRef.current.adminNotesJson = result.updatedJob?.adminNotesJson;
+      }
+
+      // 3. Update in-memory job store (Kanban & Edit Dialog unlock immediately)
+      api.optimisticUpdate(editingJobId, {
+        isPaid: false,
+        isShopPaid: false,
+        shopPaidAt: null,
+        csoPaidAt: null,
+        adminNotesJson: result.updatedJob?.adminNotesJson,
+      } as any);
+
+      // 4. Update in-memory customer wallet & dialog customer badge if refund occurred
+      if (result.walletRefundAmount && result.walletRefundAmount > 0 && selectedProfileCustomer) {
+        const newBal = (selectedProfileCustomer.creditBalance || 0) + result.walletRefundAmount;
+        setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBal } : null);
+        api.optimisticUpdateCustomer(selectedProfileCustomer.id, {
+          creditBalance: newBal,
+        });
+        customerStore.notify();
+      }
+
+      toast.success(
+        `🔓 ปลดล็อค Job สำเร็จ${result.walletRefundAmount && result.walletRefundAmount > 0 
+          ? ` — คืน Wallet ฿${result.walletRefundAmount.toLocaleString()}` 
+          : ""}`
+      );
+
+      setUnlockPaidDialogOpen(false);
+      setUnlockPaidReason("");
+    } catch (err: any) {
+      toast.error(err?.message || "เกิดข้อผิดพลาดในการปลดล็อค");
+    } finally {
+      setIsUnlockingPaid(false);
     }
   };
 
@@ -5338,19 +5417,6 @@ export default function AdminPage() {
                                         {isPaidJob && paymentMethod === 'paid' ? '✓ Paid' : 'Paid'}
                                       </span>
                                     </Label>
-                                    {/* cashPlaced checkbox: show when Cash/COD + CSO Unpaid */}
-                                    {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                      <Label className={`flex items-center gap-1 text-[10px] animate-in fade-in duration-200 ${isCsoOrAdmin ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                                        <input
-                                          type="checkbox"
-                                          checked={cashPlaced}
-                                          onChange={(e) => { if (isCsoOrAdmin) setCashPlaced(e.target.checked); }}
-                                          onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
-                                          className={`rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-2.5 w-2.5 ${!isCsoOrAdmin ? 'cursor-not-allowed' : ''}`}
-                                        />
-                                        <span className="font-medium text-amber-400 whitespace-nowrap">วางเงิน</span>
-                                      </Label>
-                                    )}
                                   </div>
                                 </div>
                               ) : <div />}
@@ -5956,17 +6022,6 @@ export default function AdminPage() {
                                   />
                                   <span className="font-medium text-emerald-400">Paid</span>
                                 </Label>
-                                {paymentChannel === "Cash / COD" && paymentMethod === "unpaid" && (
-                                  <Label className="flex items-center gap-1.5 cursor-pointer text-[11px] ml-2 animate-in fade-in duration-200">
-                                    <input 
-                                      type="checkbox" 
-                                      checked={cashPlaced} 
-                                      onChange={(e) => setCashPlaced(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 h-3 w-3"
-                                    />
-                                    <span className="font-medium text-amber-400">เธงเธฒเธเน€เธเธดเธเนเธฅเนเธง</span>
-                                  </Label>
-                                )}
                               </div>
                             </div>
                           </div>
@@ -6056,25 +6111,24 @@ export default function AdminPage() {
                         </div>
                       )}
                       <div className="flex items-center justify-between gap-3 w-full flex-wrap">
-                        {/* Left: Refund & Reissue Action Button (Temporarily disabled for business flow discussion) */}
-                        <div>
-                          {/* Temporarily disabled:
-                          {editingJobId && activeJob && isJobFullyPaid(activeJob) && !activeJob.refundId && canRefund && (
+                        {/* Left: Unlock Paid & Refund Action Buttons */}
+                        <div className="flex items-center gap-2">
+                          {editingJobId && isPaidJob && isCsoOrAdmin && !activeJob?.refundId && (
                             <Button
                               type="button"
                               variant="outline"
                               size="sm"
-                              className="border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100 hover:text-rose-800 h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs"
+                              className="border-amber-400 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800 h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs"
                               onClick={() => {
-                                setRefundJob(activeJob);
+                                setUnlockPaidReason("");
+                                setUnlockPaidDialogOpen(true);
                               }}
-                              title="ยกเลิกบิลเดิม คืนเงิน และสร้าง Job สำเนาเพื่อแก้ไขรายการและชำระใหม่"
+                              title="ปลดล็อค Job ที่ชำระแล้ว เพื่อแก้ไขรายการและชำระใหม่"
                             >
-                              <RotateCcw size={14} className="text-rose-600" />
-                              <span>Refund & Reissue (คืนเงิน/ออกบิลใหม่)</span>
+                              <LockOpen size={14} className="text-amber-600" />
+                              <span>Unlock Paid (ปลดล็อค)</span>
                             </Button>
                           )}
-                          */}
                           {editingJobId && activeJob?.refundId && (
                             <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-bold border border-rose-200">
                               <span className="w-2 h-2 rounded-full bg-rose-500" />
@@ -6172,6 +6226,130 @@ export default function AdminPage() {
                       <>
                         <X size={13} className="mr-1" />
                         <span>ยืนยัน Reject</span>
+                      </>
+                    )}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* Unlock Paid Confirmation Dialog */}
+            <Dialog open={unlockPaidDialogOpen} onOpenChange={(open) => {
+              if (!isUnlockingPaid) {
+                setUnlockPaidDialogOpen(open);
+                if (!open) setUnlockPaidReason("");
+              }
+            }}>
+              <DialogContent className="sm:max-w-md w-[95vw] rounded-2xl p-0 overflow-hidden border border-slate-200 shadow-2xl bg-white">
+                <DialogHeader className="p-4 bg-amber-500 text-white">
+                  <DialogTitle className="flex items-center gap-2 text-base font-bold text-white">
+                    <LockOpen size={18} />
+                    <span>ยืนยันการปลดล็อคการชำระเงิน (Unlock Paid)</span>
+                  </DialogTitle>
+                </DialogHeader>
+
+                <div className="p-5 space-y-4 text-xs">
+                  {/* Warning message */}
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 leading-relaxed space-y-1">
+                    <div className="font-bold flex items-center gap-1.5 text-amber-800">
+                      <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+                      <span>ข้อควรทราบในการ Unlock:</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-800/90 pl-1">
+                      <li>ประวัติการชำระเงินเดิมทั้งหมดจะถูกลบออก เพื่อให้คิดเงินและชำระใหม่เต็มยอด</li>
+                      <li>ตะกร้าสินค้าและราคาจะปลดล็อคทันที สามารถเพิ่ม/ลดผ้าและแก้ไขราคาได้</li>
+                    </ul>
+                  </div>
+
+                  {/* Summary of payments to be cleared */}
+                  {(() => {
+                    let payments: any[] = [];
+                    if (activeJob?.adminNotesJson) {
+                      try {
+                        const parsed = JSON.parse(activeJob.adminNotesJson);
+                        payments = Array.isArray(parsed.payments) ? parsed.payments : [];
+                      } catch {}
+                    }
+                    const totalPaid = payments.length > 0 
+                      ? payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+                      : (activeJob?.totalAmount || 0);
+
+                    const walletAmount = payments
+                      .filter(p => (p.method || "").toLowerCase() === "credit")
+                      .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+                    const cashAmount = payments
+                      .filter(p => (p.method || "").toLowerCase() === "cash")
+                      .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+                    return (
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5">
+                        <div className="flex justify-between items-center font-bold text-slate-800">
+                          <span>ยอดชำระเดิมที่จะถูกล้าง:</span>
+                          <span className="font-mono text-sm text-slate-900">฿{totalPaid.toLocaleString()}</span>
+                        </div>
+                        {walletAmount > 0 && (
+                          <div className="flex justify-between items-center text-[11px] text-emerald-700 font-semibold bg-emerald-50 px-2 py-1 rounded">
+                            <span>• คืนเงินเข้า Wallet ลูกค้าทันที:</span>
+                            <span>+฿{walletAmount.toLocaleString()}</span>
+                          </div>
+                        )}
+                        {cashAmount > 0 && (
+                          <div className="flex justify-between items-center text-[11px] text-blue-700 font-semibold bg-blue-50 px-2 py-1 rounded">
+                            <span>• ปรับลดยอดเงินสดในกะ (Shift):</span>
+                            <span>-฿{cashAmount.toLocaleString()}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Mandatory Reason Input */}
+                  <div className="space-y-1.5">
+                    <label className="font-bold text-slate-700 flex items-center gap-1">
+                      <span>ระบุเหตุผลในการ Unlock</span>
+                      <span className="text-rose-500">*</span>
+                    </label>
+                    <Input
+                      value={unlockPaidReason}
+                      onChange={(e) => setUnlockPaidReason(e.target.value)}
+                      placeholder="เช่น ลูกค้าเพิ่มผ้า 2 ชิ้น / แก้ไขยอดเงินผิด / คิดราคาผิด"
+                      className="text-xs h-9"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                <DialogFooter className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setUnlockPaidDialogOpen(false);
+                      setUnlockPaidReason("");
+                    }}
+                    disabled={isUnlockingPaid}
+                    className="text-xs font-bold rounded-xl cursor-pointer"
+                  >
+                    ยกเลิก
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer gap-1"
+                    onClick={handleUnlockPaid}
+                    disabled={!unlockPaidReason.trim() || isUnlockingPaid}
+                  >
+                    {isUnlockingPaid ? (
+                      <>
+                        <Loader2 size={13} className="animate-spin mr-1" />
+                        <span>กำลังปลดล็อค...</span>
+                      </>
+                    ) : (
+                      <>
+                        <LockOpen size={13} className="mr-1" />
+                        <span>ยืนยัน Unlock</span>
                       </>
                     )}
                   </Button>

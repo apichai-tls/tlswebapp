@@ -63,12 +63,16 @@ import {
   settingsStore,
   shiftStore,
   walletApprovalStore,
+  poiStore,
+  getDirectDistance,
   type Customer, 
   type ServiceType,
   type ServiceItem,
   type Job,
-  type CashierShift
+  type CashierShift,
+  type LatLng
 } from "@/lib/store";
+import { getRoute } from "@/lib/map-api";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { useSyncExternalStore } from "react";
@@ -956,6 +960,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const canRefund = Boolean(user?.role === 'admin' || user?.permissions?.includes('refund-job'));
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
   const allShops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const allPois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   
   const shops = useMemo(() => {
     if (!user) return [];
@@ -1112,6 +1117,105 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       : null;
     return { deliveryItem: item, deliveryServiceType: type };
   }, [cart]);
+
+  const calculateAutoDeliveryFee = async (
+    type: "both" | "delivery_only" | string,
+    customer: Customer | null = selectedCustomer,
+    addressStr: string = deliveryAddress
+  ): Promise<number | null> => {
+    if (type !== "both" && type !== "delivery_only") return null;
+    const shopCoords = activeShop?.coords || ((activeShop as any)?.lat ? { lat: (activeShop as any).lat, lng: (activeShop as any).lng } : { lat: 13.7417, lng: 100.5526 });
+    
+    // 1. Resolve Target Coordinates & Distance
+    let targetCoords: LatLng | null = null;
+    let dist: number | null = null;
+
+    // A. Check customer coords
+    const cLat = customer?.defaultCoords?.lat ?? (customer as any)?.defaultLat;
+    const cLng = customer?.defaultCoords?.lng ?? (customer as any)?.defaultLng;
+    if (cLat && cLng && cLat > 0 && cLng > 0) {
+      targetCoords = { lat: cLat, lng: cLng };
+    }
+
+    // B. Check POI matching
+    const searchTarget = (addressStr || customer?.defaultAddress || customer?.name || "").toLowerCase().trim();
+    if (searchTarget && allPois.length > 0) {
+      const matchedPoi = allPois.find(p => {
+        const pName = p.name.toLowerCase().trim();
+        const pAddr = p.address.toLowerCase().trim();
+        return searchTarget.includes(pName) || pName.includes(searchTarget) || (pAddr && (searchTarget.includes(pAddr) || pAddr.includes(searchTarget)));
+      });
+      if (matchedPoi) {
+        if (!targetCoords && matchedPoi.coords) {
+          targetCoords = matchedPoi.coords;
+        }
+        if (matchedPoi.distanceKm && matchedPoi.distanceKm > 0 && (!matchedPoi.closestShopId || matchedPoi.closestShopId === activeShop?.id)) {
+          dist = matchedPoi.distanceKm;
+        }
+      }
+    }
+
+    // C. Route or direct distance calculation
+    if (dist === null && targetCoords && shopCoords) {
+      try {
+        const route = await getRoute(shopCoords, targetCoords);
+        if (route && route.distanceKm > 0) {
+          dist = route.distanceKm;
+        }
+      } catch (e) {
+        console.warn("Failed to get route distance:", e);
+      }
+      if (dist === null) {
+        dist = Math.round(getDirectDistance(shopCoords, targetCoords) * 10) / 10;
+      }
+    }
+
+    if (dist === null || dist <= 0) {
+      return null;
+    }
+
+    // 2. Compute fee using tuned formula
+    const roundHalfUp = (val: number) => Math.ceil(val * 2) / 2;
+    const isVip = Boolean(customer?.isVIP);
+    const ratePerKm = isVip ? 4 : 10;
+    
+    let computed = 0;
+    if (type === "both") {
+      computed = roundHalfUp(dist * 2) * ratePerKm + roundHalfUp(dist) * ratePerKm;
+    } else {
+      computed = roundHalfUp(dist) * ratePerKm;
+    }
+    
+    return Math.max(30, computed);
+  };
+
+  const applyDeliveryFee = async (
+    type: "both" | "delivery_only" | string,
+    customer: Customer | null = selectedCustomer,
+    addressStr: string = deliveryAddress
+  ) => {
+    if (type !== "both" && type !== "delivery_only") return 0;
+    const fee = await calculateAutoDeliveryFee(type, customer, addressStr);
+    const resolvedPrice = fee !== null ? fee : (parseFloat(localDeliveryPrice) || 0);
+    if (fee !== null && fee > 0) {
+      setLocalDeliveryPrice(String(fee));
+    }
+    setCart(prev => {
+      const filtered = prev.filter(item => item.id !== "delivery-only-service-item" && item.id !== "delivery-pickup-service-item");
+      const itemId = type === "both" ? "delivery-pickup-service-item" : "delivery-only-service-item";
+      const name = type === "both" ? "บริการรับ-ส่ง" : "บริการส่ง";
+      const nameEn = type === "both" ? "Pickup & Delivery Service" : "Delivery Service";
+      return [...filtered, {
+        id: itemId,
+        name,
+        nameEn,
+        price: resolvedPrice,
+        basePrice: resolvedPrice,
+        quantity: 1
+      }];
+    });
+    return resolvedPrice;
+  };
 
   const resetCartForm = () => {
     setCart([]);
@@ -2059,11 +2163,20 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       };
     }
 
-    // For Draft Preview, construct simulated payment logs using exact proformaCreatedAt
+    // For Draft Preview, only include real existing payments if this is a recalled job that has them in DB
     const draftDate = proformaCreatedAt || new Date();
-    const draftPayments: any[] = [];
-    const timestamp = draftDate.toISOString();
-    draftPayments.push({ amount: total, method: paymentMethod, timestamp });
+    let draftPayments: any[] = [];
+    if (loadedJobId) {
+      const loadedJob = jobs.find(j => j.id === loadedJobId);
+      if (loadedJob?.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(loadedJob.adminNotesJson);
+          if (parsed && Array.isArray(parsed.payments)) {
+            draftPayments = parsed.payments;
+          }
+        } catch {}
+      }
+    }
 
     const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
 
@@ -2092,8 +2205,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       promoDiscount: effectivePromoDiscount,
       promoTarget: appliedPromo?.discountTarget,
       total: total,
-      isPaid: isPaid,
-      paymentChannel: isPaid ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
+      isPaid: loadedJobId ? isPaidJob : false,
+      paymentChannel: (loadedJobId && isPaidJob) ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
       remark: [remark, expressText, vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : ""].filter(Boolean).join(" | ") || undefined,
       isDraft: true,
       vatType: vatType,
@@ -2101,7 +2214,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       vatAmount: vatAmount,
       deliveryScheduledAt: new Date(deliveryScheduledTime),
       status: undefined,
-      adminNotesJson: JSON.stringify({ payments: draftPayments }),
+      adminNotesJson: draftPayments.length > 0 ? JSON.stringify({ payments: draftPayments }) : undefined,
       deliveryFee: resolvedDraftDeliveryFee
     };
   }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, totalDiscount, effectivePromoDiscount, appliedPromo, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision, deliveryAddress, localDeliveryPrice, deliveryServiceType]);
@@ -2384,12 +2497,23 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         : JSON.stringify({ payments: finalPayments });
 
       const isDelivery = Boolean(deliveryServiceType);
+      const isPickupAndDelivery = deliveryServiceType === "both";
+      const isDeliveryOnly = deliveryServiceType === "delivery_only";
       const resolvedDropoff = isDelivery
         ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || activeShop?.address || "Customer Address")
         : (activeShop?.name || "That Laundry Shop (Branch 1)");
-      const resolvedDropoffCoords = (isDelivery && selectedCustomer?.defaultCoords?.lat)
-        ? selectedCustomer.defaultCoords
-        : (activeShop?.coords || { lat: 13.7417, lng: 100.5526 });
+      let resolvedDropoffCoords = activeShop?.coords || { lat: 13.7417, lng: 100.5526 };
+      if (isDelivery) {
+        if (selectedCustomer?.defaultCoords?.lat) {
+          resolvedDropoffCoords = selectedCustomer.defaultCoords;
+        } else {
+          const addrToMatch = (deliveryAddress.trim() || selectedCustomer?.defaultAddress || "").toLowerCase();
+          const matchedPoi = addrToMatch ? allPois.find(p => p.name && (addrToMatch.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(addrToMatch))) : null;
+          if (matchedPoi && matchedPoi.coords && matchedPoi.coords.lat && matchedPoi.coords.lng) {
+            resolvedDropoffCoords = matchedPoi.coords;
+          }
+        }
+      }
       const resolvedDeliveryFee = isDelivery ? (parseFloat(localDeliveryPrice) || 0) : 0;
 
       let finalJob = null;
@@ -2406,11 +2530,24 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]));
         const mergedBills = Array.from(new Set([...existingBills, ...allSessionUrls]));
 
+        const updateType = isPickupAndDelivery ? "full_service" : (isDelivery ? "delivery" : "in_store");
+        const updateStatus = hasPosPackage 
+          ? "topup" 
+          : (isPickupAndDelivery ? "pending" : (loadedJob?.status || "billing"));
+        const updatePickupLoc = isPickupAndDelivery 
+          ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || "Customer Address")
+          : (loadedJob?.pickupLocation || "POS Counter (Walk-in)");
+        const updatePickupCoords = isPickupAndDelivery 
+          ? resolvedDropoffCoords 
+          : (loadedJob?.pickupCoords || activeShop?.coords || { lat: 13.7417, lng: 100.5526 });
+
         await jobStore.updateJobDetails(loadedJobId, {
-          type: isDelivery ? "delivery" : "in_store",
+          type: updateType,
           dropoffLocation: resolvedDropoff,
           dropoffCoords: resolvedDropoffCoords,
           deliveryAddress: isDelivery ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined) : undefined,
+          pickupLocation: updatePickupLoc,
+          pickupCoords: updatePickupCoords,
           fee: resolvedDeliveryFee,
           totalAmount: total,
           discount: manualAdjustment + totalDiscount,
@@ -2422,8 +2559,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           paymentChannel: isPaidFlag ? finalChannel : undefined,
           remark: finalRemark,
           adminNotesJson: paymentsJsonStr,
-          status: hasPosPackage ? "topup" : undefined,
+          status: updateStatus,
           completedAt: !isDelivery && isPaidFlag && isStandardPlan ? new Date() : undefined,
+          pickupScheduledAt: isPickupAndDelivery ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
           shiftId: CASHIER_SHIFT_ENABLED ? (activeShift?.id || loadedJob?.shiftId || undefined) : undefined,
           billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
@@ -2437,23 +2575,32 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         finalJob = allJobs.find(j => j.id === loadedJobId);
       } else {
         const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]));
+        const targetType = isPickupAndDelivery ? "full_service" : (isDelivery ? "delivery" : "in_store");
+        const targetStatus = hasPosPackage ? "topup" : (isPickupAndDelivery ? "pending" : "billing");
+        const targetPickupLoc = isPickupAndDelivery 
+          ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || "Customer Address")
+          : "POS Counter (Walk-in)";
+        const targetPickupCoords = isPickupAndDelivery 
+          ? resolvedDropoffCoords 
+          : (activeShop?.coords || { lat: 13.7417, lng: 100.5526 });
+
         finalJob = await jobStore.addJob({
           source: "pos",
-          type: isDelivery ? "delivery" : "in_store",
+          type: targetType,
           customerId: selectedCustomer?.id,
           customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
           customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
-          pickupLocation: "POS Counter (Walk-in)",
+          pickupLocation: targetPickupLoc,
           dropoffLocation: resolvedDropoff,
           deliveryAddress: isDelivery ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined) : undefined,
-          pickupCoords: activeShop?.coords || { lat: 13.7417, lng: 100.5526 }, // Shop coords
+          pickupCoords: targetPickupCoords,
           dropoffCoords: resolvedDropoffCoords,
           totalAmount: total,
           discount: manualAdjustment + totalDiscount,
           discountPercent: discountPercent,
           items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
           serviceType: (cart[0]?.id as ServiceType) || "wash_fold",
-          status: hasPosPackage ? "topup" : "billing",
+          status: targetStatus,
           completedAt: !isDelivery && isStandardPlan && isPaidFlag ? new Date() : undefined,
           fee: resolvedDeliveryFee, 
           branchId: activeShop?.id || activeBranchId,
@@ -2465,6 +2612,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           remark: finalRemark,
           adminNotesJson: paymentsJsonStr,
           createdBy: user?.name || user?.email || "POS Counter",
+          pickupScheduledAt: isPickupAndDelivery ? new Date() : undefined,
           deliveryScheduledAt: new Date(deliveryScheduledTime),
           billImageUrl: allSessionUrls.length > 0 ? JSON.stringify(allSessionUrls) : undefined,
           proformaReceiptNumber: targetProformaNum || undefined,
@@ -3485,10 +3633,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               key={c.id}
                               type="button"
                               className="w-full text-left px-4 py-2 hover:bg-muted text-xs font-semibold text-foreground flex items-center justify-between transition-colors cursor-pointer"
-                              onClick={() => {
+                              onClick={async () => {
                                 setSelectedCustomer(c);
-                                if (!deliveryAddress && (c.defaultAddress || c.secondaryAddress)) {
-                                  setDeliveryAddress(c.defaultAddress || c.secondaryAddress || "");
+                                const targetAddr = c.defaultAddress || c.secondaryAddress || deliveryAddress || "";
+                                if (!deliveryAddress && targetAddr) {
+                                  setDeliveryAddress(targetAddr);
+                                }
+                                if (deliveryServiceType) {
+                                  await applyDeliveryFee(deliveryServiceType, c, targetAddr);
                                 }
                                 setCustomerSearch("");
                                 setIsCustomerDropdownOpen(false);
@@ -3969,24 +4121,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       type="checkbox"
                       id="delivery-only"
                       checked={deliveryServiceType === "delivery_only"}
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         if (e.target.checked) {
-                          if (!deliveryAddress && (selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress)) {
-                            setDeliveryAddress(selectedCustomer.defaultAddress || selectedCustomer.secondaryAddress || "");
+                          const targetAddr = deliveryAddress || selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress || "";
+                          if (!deliveryAddress && targetAddr) {
+                            setDeliveryAddress(targetAddr);
                           }
-                          setCart(prev => {
-                            const filtered = prev.filter(item => item.id !== "delivery-only-service-item" && item.id !== "delivery-pickup-service-item");
-                            const price = parseFloat(localDeliveryPrice) || 0;
-                            return [...filtered, {
-                              id: "delivery-only-service-item",
-                              name: "บริการส่ง",
-                              nameEn: "Delivery Service",
-                              price: price,
-                              basePrice: price,
-                              quantity: 1
-                            }];
-                          });
+                          await applyDeliveryFee("delivery_only", selectedCustomer, targetAddr);
                         } else {
+                          setLocalDeliveryPrice("");
                           setCart(prev => prev.filter(item => item.id !== "delivery-only-service-item"));
                         }
                       }}
@@ -4004,24 +4147,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       type="checkbox"
                       id="delivery-both"
                       checked={deliveryServiceType === "both"}
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         if (e.target.checked) {
-                          if (!deliveryAddress && (selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress)) {
-                            setDeliveryAddress(selectedCustomer.defaultAddress || selectedCustomer.secondaryAddress || "");
+                          const targetAddr = deliveryAddress || selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress || "";
+                          if (!deliveryAddress && targetAddr) {
+                            setDeliveryAddress(targetAddr);
                           }
-                          setCart(prev => {
-                            const filtered = prev.filter(item => item.id !== "delivery-only-service-item" && item.id !== "delivery-pickup-service-item");
-                            const price = parseFloat(localDeliveryPrice) || 0;
-                            return [...filtered, {
-                              id: "delivery-pickup-service-item",
-                              name: "บริการรับ-ส่ง",
-                              nameEn: "Pickup & Delivery Service",
-                              price: price,
-                              basePrice: price,
-                              quantity: 1
-                            }];
-                          });
+                          await applyDeliveryFee("both", selectedCustomer, targetAddr);
                         } else {
+                          setLocalDeliveryPrice("");
                           setCart(prev => prev.filter(item => item.id !== "delivery-pickup-service-item"));
                         }
                       }}
@@ -4073,7 +4207,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     {selectedCustomer?.defaultAddress && deliveryAddress !== selectedCustomer.defaultAddress && (
                       <button
                         type="button"
-                        onClick={() => setDeliveryAddress(selectedCustomer.defaultAddress || "")}
+                        onClick={async () => {
+                          const addr = selectedCustomer.defaultAddress || "";
+                          setDeliveryAddress(addr);
+                          if (deliveryServiceType) {
+                            await applyDeliveryFee(deliveryServiceType, selectedCustomer, addr);
+                          }
+                        }}
                         className="text-[9px] text-blue-600 dark:text-blue-400 hover:underline font-normal cursor-pointer"
                       >
                         {currentLanguage === "en" ? "Use customer address" : "ใช้ที่อยู่ลูกค้า"}
@@ -4084,6 +4224,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     type="text"
                     value={deliveryAddress}
                     onChange={(e) => setDeliveryAddress(e.target.value)}
+                    onBlur={async () => {
+                      if (deliveryServiceType && deliveryAddress.trim()) {
+                        await applyDeliveryFee(deliveryServiceType, selectedCustomer, deliveryAddress.trim());
+                      }
+                    }}
                     placeholder={currentLanguage === "en" ? "Enter delivery address / room..." : "กรอกที่อยู่จัดส่ง, คอนโด/หมู่บ้าน, เลขห้อง..."}
                     className="w-full h-7 px-2 text-[11px] bg-card border border-border rounded-lg outline-none focus:border-primary text-foreground placeholder:text-muted-foreground/60"
                   />

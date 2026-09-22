@@ -2571,4 +2571,175 @@ export async function getJobRefundsAction(filters?: {
   });
 }
 
+export async function unlockPaidJobAction(data: {
+  jobId: string;
+  reason: string;
+  actorId?: string;
+  actorName?: string;
+  actorRole?: string;
+}): Promise<{
+  success: boolean;
+  error?: string;
+  updatedJob?: any;
+  walletRefundAmount?: number;
+  clearedPayments?: any[];
+}> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // ──── 1. Fetch & Validate ────
+      const job = await tx.job.findUnique({ where: { id: data.jobId } });
+      if (!job) throw new Error("Job not found");
+      if (!job.isPaid && !job.isShopPaid) throw new Error("Job is not currently paid");
+
+      // ──── 2. Parse Existing Payments from adminNotesJson ────
+      let existingNotes: any = {};
+      let existingPayments: any[] = [];
+      if (job.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(job.adminNotesJson);
+          existingNotes = parsed || {};
+          existingPayments = Array.isArray(parsed.payments) ? parsed.payments : [];
+        } catch {}
+      }
+
+      // Legacy fallback: if payments array is empty but job was marked paid
+      if (existingPayments.length === 0 && (job.isPaid || job.isShopPaid) && (job.totalAmount || 0) > 0) {
+        const legacyMethod = (job.paymentChannel || job.paymentMethod || "cash").toLowerCase();
+        existingPayments = [{
+          amount: job.totalAmount || 0,
+          method: legacyMethod.includes("credit") || legacyMethod.includes("wallet") ? "credit" : (legacyMethod.includes("transfer") ? "transfer" : (legacyMethod.includes("card") ? "card" : "cash")),
+          shiftId: job.shiftId || undefined,
+          timestamp: job.updatedAt?.toISOString() || new Date().toISOString(),
+          paidBy: "Legacy Record"
+        }];
+      }
+
+      // ──── 3. Wallet Refund (สำหรับยอดที่ชำระด้วย Member Wallet / Credit) ────
+      const walletRefundAmount = existingPayments
+        .filter(p => (p.method || "").toLowerCase() === "credit")
+        .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+      if (walletRefundAmount > 0 && job.customerId) {
+        const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
+        if (customer) {
+          const balBefore = customer.creditBalance || 0;
+          const balAfter = Math.round((balBefore + walletRefundAmount) * 100) / 100;
+
+          await tx.customer.update({
+            where: { id: job.customerId },
+            data: { creditBalance: balAfter },
+          });
+
+          await tx.walletTransaction.create({
+            data: {
+              customerId: job.customerId,
+              customerName: customer.name,
+              type: "REFUND",
+              amount: walletRefundAmount,
+              direction: "CREDIT",
+              balanceBefore: balBefore,
+              balanceAfter: balAfter,
+              reason: `Unlock Paid: ${data.reason}`,
+              referenceId: job.id,
+              referenceType: "job",
+              createdById: data.actorId || null,
+              createdByName: data.actorName || "CSO",
+              approvalStatus: "APPROVED",
+            },
+          });
+        }
+      }
+
+      // ──── 4. Cashier Shift Adjustment (สำหรับกะที่ยังเปิดอยู่) ────
+      for (const pay of existingPayments) {
+        const effectiveShiftId = pay.shiftId || job.shiftId;
+        if (!effectiveShiftId) continue;
+
+        const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
+        if (shift && shift.status === "open") {
+          const method = (pay.method || "").toLowerCase();
+          const amount = Number(pay.amount) || 0;
+          const shiftUpdates: any = {};
+
+          if (method === "cash") {
+            shiftUpdates.cashSales = Math.max(0, (shift.cashSales || 0) - amount);
+            shiftUpdates.expectedCash = Math.max(0, (shift.expectedCash || 0) - amount);
+          } else if (method === "transfer") {
+            shiftUpdates.transferSales = Math.max(0, (shift.transferSales || 0) - amount);
+          } else if (method === "card") {
+            shiftUpdates.cardSales = Math.max(0, (shift.cardSales || 0) - amount);
+          } else if (method === "credit") {
+            shiftUpdates.creditSales = Math.max(0, (shift.creditSales || 0) - amount);
+          }
+
+          if (Object.keys(shiftUpdates).length > 0) {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: shiftUpdates,
+            });
+          }
+        }
+      }
+
+      // ──── 5. Append Unlock Log into adminNotesJson.notes ────
+      const existingLogs = Array.isArray(existingNotes.notes) ? existingNotes.notes : [];
+      const unlockLog = {
+        id: crypto.randomUUID(),
+        text: `🔓 UNLOCK PAID — ${data.reason}${walletRefundAmount > 0 ? ` | Wallet Refund: ฿${walletRefundAmount.toLocaleString()}` : ""}`,
+        timestamp: new Date().toISOString(),
+        userId: data.actorId || "system",
+        userName: data.actorName || "CSO",
+      };
+
+      const updatedNotesJson = JSON.stringify({
+        ...existingNotes,
+        payments: [], // Clear ALL payments (Option A)
+        notes: [...existingLogs, unlockLog],
+      });
+
+      // ──── 6. Update Job: Reset Paid Flags ────
+      const updatedJob = await tx.job.update({
+        where: { id: data.jobId },
+        data: {
+          isPaid: false,
+          isShopPaid: false,
+          shopPaidAt: null,
+          csoPaidAt: null,
+          adminNotesJson: updatedNotesJson,
+        },
+      });
+
+      // ──── 7. ActivityLog for Audit Trail ────
+      await tx.activityLog.create({
+        data: {
+          entityId: data.jobId,
+          entityType: "job",
+          action: "UNLOCK_PAID",
+          details: JSON.stringify({
+            reason: data.reason,
+            clearedPayments: existingPayments,
+            walletRefundAmount,
+            timestamp: new Date().toISOString(),
+          }),
+          userId: data.actorId || null,
+          userName: data.actorName || null,
+        },
+      });
+
+      return {
+        success: true,
+        updatedJob,
+        walletRefundAmount,
+        clearedPayments: existingPayments,
+      };
+    });
+  } catch (err: any) {
+    console.error("[unlockPaidJobAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message || "Failed to unlock paid job",
+    };
+  }
+}
+
 

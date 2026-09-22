@@ -387,7 +387,7 @@ export function A5ReceiptContent({
     } catch {
       /* ignore */
     }
-    if (receiptData.isPaid && (receiptData.total || 0) > 0) {
+    if (!receiptData.isDraft && receiptData.isPaid && (receiptData.total || 0) > 0) {
       return [
         {
           amount: receiptData.total,
@@ -403,9 +403,9 @@ export function A5ReceiptContent({
   })();
 
   const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
-  const isPaidEffective = Boolean(
-    receiptData.isPaid || (totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0)
-  );
+  const isPaidEffective = receiptData.isDraft
+    ? Boolean(payments.length > 0 && totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0)
+    : Boolean(receiptData.isPaid || (totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0));
 
   const safeDate = receiptData.createdAt
     ? receiptData.createdAt instanceof Date

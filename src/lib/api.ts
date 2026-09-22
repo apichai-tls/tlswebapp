@@ -365,6 +365,16 @@ export const api = {
     return updatedCustomer;
   },
 
+  optimisticUpdateCustomer(id: string, updates: Partial<Customer>) {
+    const db = initDb();
+    db.customers = db.customers.map(c => {
+      if (c.id === id) {
+        return { ...c, ...updates, updatedAt: new Date() };
+      }
+      return c;
+    });
+  },
+
   async topUpCustomer(data: Parameters<typeof dbActions.processTopUpAction>[0]) {
     const result = await dbActions.processTopUpAction(data);
     if (result.updatedCustomer) {
@@ -417,13 +427,17 @@ export const api = {
     const creatorRole = (jobDetails as any).creatorRole;
     const creatorPermissions = (jobDetails as any).creatorPermissions;
     const isCsoCreator = creatorRole === 'cso' || (Array.isArray(creatorPermissions) && creatorPermissions.includes('cso'));
-    const initialStatus = jobDetails.status || (isPOS ? "billing" : (
-      (isCsoCreator && !jobDetails.pickupRiderId && !jobDetails.deliveryRiderId)
-        ? 'tba'
-        : 'pending'
-    ));
+    const initialStatus = jobDetails.status || (
+      jobDetails.type === "delivery" ? "billing" : (
+        isPOS ? "billing" : (
+          (isCsoCreator && !jobDetails.pickupRiderId && !jobDetails.deliveryRiderId)
+            ? 'tba'
+            : 'pending'
+        )
+      )
+    );
     const legStatus = (leg: "pickup" | "delivery") => {
-      if (isPOS && leg === "pickup") return "completed";
+      if (isPOS && leg === "pickup" && initialStatus !== "pending") return "completed";
       return "pending";
     };
 
@@ -474,8 +488,8 @@ export const api = {
       shiftId: jobDetails.shiftId as string | null || null,
       walletBalanceAfter: jobDetails.walletBalanceAfter as number | null || null,
       legs: {
-        pickupOutbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
-        pickupInbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: isPOS ? new Date() : undefined },
+        pickupOutbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: (isPOS && initialStatus !== "pending") ? new Date() : undefined },
+        pickupInbound: { scheduledAt: pDate, status: legStatus("pickup"), riderId: pRider, completedAt: (isPOS && initialStatus !== "pending") ? new Date() : undefined },
         deliveryOutbound: { scheduledAt: dDate, status: legStatus("delivery"), riderId: dRider },
         deliveryInbound: { scheduledAt: dDate, status: legStatus("delivery"), riderId: dRider },
       }
