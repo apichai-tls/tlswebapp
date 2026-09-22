@@ -48,6 +48,46 @@ model Customer {
   startDate          String?
   Booking            Booking[]
   Transaction        Transaction[]
+
+  // Multi-brand & External Web Fields
+  brand               String            @default("that_laundry_shop")
+  gender              String?           @default("Rather not say")
+  nickName            String?
+  secondaryPhone      String?
+  isSecondaryWhatsapp Boolean           @default(false)
+  isVerified          Boolean           @default(false)
+  verifiedVia         String?
+  sourceSystem        String?           @default("pos_store")
+  addresses           CustomerAddress[]
+
+  @@index([brand])
+}
+
+model CustomerAddress {
+  id                String    @id @default(uuid())
+  customerId        String
+  customer          Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  label             String    @default("Home Condo")
+  placeId           String?
+  placeName         String?
+  latitude          Float?
+  longitude         Float?
+  googleMapsUrl     String?
+  address           String
+  roomNumber        String?
+  subDistrict       String?
+  district          String
+  province          String    @default("Bangkok")
+  postalCode        String?
+  contactName       String?
+  contactPhone      String?
+  leaveWithJuristic Boolean   @default(true)
+  deliveryNote      String?
+  isPrimary         Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @default(now()) @updatedAt
+
+  @@index([customerId])
 }
 
 model Job {
@@ -124,7 +164,11 @@ model Job {
   refundId               String?   // Points to JobRefund.id if this job was refunded
   refundedFromId         String?   // Points to original Job.id if this is a corrected job
 
+  // Multi-brand
+  brand                  String?       @default("that_laundry_shop")
+
   @@index([shiftId])
+  @@index([brand])
 }
 
 model ServiceItem {
