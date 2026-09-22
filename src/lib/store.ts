@@ -113,6 +113,7 @@ export interface Customer {
   language?: string | null;
   remark?: string | null;
   secondaryAddress?: string | null;
+  roomNo?: string | null;
   dob?: string | null;
   taxId?: string | null;
   companyName?: string | null;

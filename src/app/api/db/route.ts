@@ -20,7 +20,13 @@ export async function GET() {
       completedJobsCounts,
       openShifts
     ] = await Promise.all([
-      prisma.customer.findMany(),
+      prisma.customer.findMany({
+        include: {
+          addresses: {
+            orderBy: { isPrimary: 'desc' }
+          }
+        }
+      }),
       prisma.job.findMany({
         where: {
           OR: [

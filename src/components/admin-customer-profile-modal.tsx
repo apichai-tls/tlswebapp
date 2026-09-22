@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X } from "lucide-react";
+import { Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X, Edit, MessageCircle } from "lucide-react";
 
 import { format } from "date-fns";
 import { type Customer, shopStore, walletApprovalStore } from "@/lib/store";
@@ -62,11 +62,13 @@ const getAvatarStylesForProfile = (customer: Customer, isStandardPlan?: boolean)
 export function AdminCustomerProfileModal({ 
   open, 
   onOpenChange, 
-  customer 
+  customer,
+  onEditCustomer
 }: { 
   open: boolean; 
   onOpenChange: (open: boolean) => void; 
   customer: Customer | null;
+  onEditCustomer?: (c: Customer) => void;
 }) {
   const jobs = useJobs();
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
@@ -251,6 +253,11 @@ export function AdminCustomerProfileModal({
               <div className="space-y-1">
                 <DialogTitle className="flex flex-wrap items-center gap-1.5 text-xl font-black text-slate-900 tracking-tight">
                   {customer.name}
+                  {customer.nickName && (
+                    <span className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/60 px-2 py-0.5 rounded-md">
+                      ({customer.nickName})
+                    </span>
+                  )}
                   {!isStandardPlan && customer.isVIP && (
                     <Badge className="bg-gradient-to-r from-pink-100 via-purple-100 to-amber-100 text-indigo-950 border border-pink-200 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
                       <Star size={8} className="text-indigo-950 fill-indigo-950" /> VIP
@@ -283,7 +290,26 @@ export function AdminCustomerProfileModal({
                 </DialogTitle>
                 
                 <DialogDescription className="flex flex-col sm:flex-row sm:items-center gap-x-4 gap-y-1 mt-1.5 text-xs font-semibold text-slate-500">
-                  <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" /> {customer.phone}</span>
+                  <span className="flex items-center gap-1">
+                    <Phone size={12} className="text-slate-400" /> 
+                    {customer.phone}
+                    {customer.isWhatsapp && (
+                      <span className="inline-flex items-center gap-0.5 text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded text-[9px] font-bold">
+                        <MessageCircle size={8} /> WA
+                      </span>
+                    )}
+                  </span>
+                  {customer.secondaryPhone && (
+                    <span className="flex items-center gap-1 text-slate-600">
+                      <Phone size={12} className="text-indigo-400" /> 
+                      {customer.secondaryPhone} (สำรอง)
+                      {customer.isSecondaryWhatsapp && (
+                        <span className="inline-flex items-center gap-0.5 text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded text-[9px] font-bold">
+                          <MessageCircle size={8} /> WA
+                        </span>
+                      )}
+                    </span>
+                  )}
                   {customer.email && (
                     <span className="flex items-center gap-1 truncate max-w-[200px]"><Mail size={12} className="text-slate-400" /> {customer.email}</span>
                   )}
@@ -291,35 +317,53 @@ export function AdminCustomerProfileModal({
               </div>
             </div>
             
-            {/* Wallet Credit Balance */}
-            {!isStandardPlan && (
-              <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm text-right shrink-0 min-w-[140px]">
-                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-end gap-1 mb-0.5">
-                  <Wallet size={10} className={customer.isMember && isCustomerExpired ? "text-rose-500" : "text-emerald-500"} /> Credit Wallet
-                </div>
-                <div className={`text-xl font-black ${customer.isMember && isCustomerExpired ? "text-rose-600" : "text-emerald-600"}`}>
-                  ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </div>
-                {pendingCount > 0 && (
-                  <div className="mt-1 flex justify-end">
-                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
-                      Pending Approval ({pendingCount})
-                    </span>
+            <div className="flex items-center gap-2">
+              {onEditCustomer && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2.5 gap-1 text-xs font-bold border-indigo-200 text-indigo-700 bg-white hover:bg-indigo-600 hover:text-white transition-all rounded-lg shadow-2xs cursor-pointer"
+                  onClick={() => {
+                    onOpenChange(false);
+                    onEditCustomer(customer);
+                  }}
+                >
+                  <Edit size={12} />
+                  <span>Edit Profile</span>
+                </Button>
+              )}
+
+              {/* Wallet Credit Balance */}
+              {!isStandardPlan && (
+                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm text-right shrink-0 min-w-[130px]">
+                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-end gap-1 mb-0.5">
+                    <Wallet size={10} className={customer.isMember && isCustomerExpired ? "text-rose-500" : "text-emerald-500"} /> Credit Wallet
                   </div>
-                )}
-                {customer.isMember && (
-                  <div className={`text-[9px] font-bold mt-0.5 ${
-                    resolvedExpiryDate 
-                      ? (isCustomerExpired ? "text-rose-500" : "text-slate-400")
-                      : "text-amber-500"
-                  }`}>
-                    {resolvedExpiryDate 
-                      ? (isCustomerExpired ? "หมดอายุ (ระงับชั่วคราว)" : `ใช้ได้ถึง ${format(resolvedExpiryDate, "dd/MM/yyyy")}`)
-                      : "รอเริ่มนับเมื่อ Top Up"}
+                  <div className={`text-lg font-black ${customer.isMember && isCustomerExpired ? "text-rose-600" : "text-emerald-600"}`}>
+                    ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </div>
-                )}
-              </div>
-            )}
+                  {pendingCount > 0 && (
+                    <div className="mt-1 flex justify-end">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                        Pending Approval ({pendingCount})
+                      </span>
+                    </div>
+                  )}
+                  {customer.isMember && (
+                    <div className={`text-[9px] font-bold mt-0.5 ${
+                      resolvedExpiryDate 
+                        ? (isCustomerExpired ? "text-rose-500" : "text-slate-400")
+                        : "text-amber-500"
+                    }`}>
+                      {resolvedExpiryDate 
+                        ? (isCustomerExpired ? "หมดอายุ (ระงับชั่วคราว)" : `ใช้ได้ถึง ${format(resolvedExpiryDate, "dd/MM/yyyy")}`)
+                        : "รอเริ่มนับเมื่อ Top Up"}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </DialogHeader>
 
@@ -431,6 +475,22 @@ export function AdminCustomerProfileModal({
              </h3>
              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 text-xs space-y-3 font-semibold text-slate-700">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {customer.gender && customer.gender !== "Rather not say" && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 w-24 shrink-0">Gender:</span>
+                      <span className="text-slate-900 font-bold capitalize">
+                        {customer.gender === "male" ? "Male (ชาย)" : customer.gender === "female" ? "Female (หญิง)" : customer.gender}
+                      </span>
+                    </div>
+                  )}
+                  {customer.sourceSystem && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 w-24 shrink-0">Source Channel:</span>
+                      <span className="text-slate-800 font-mono text-[11px] bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md font-semibold">
+                        {customer.sourceSystem === "web_booking" ? "Web Online" : customer.sourceSystem === "pos_store" ? "POS Walk-in" : customer.sourceSystem}
+                      </span>
+                    </div>
+                  )}
                   {customer.lineId && (
                     <div className="flex items-center gap-2">
                       <span className="text-slate-400 w-24 shrink-0">LINE ID:</span>
@@ -445,7 +505,7 @@ export function AdminCustomerProfileModal({
                   )}
                   {customer.language && (
                     <div className="flex items-center gap-2">
-                      <span className="text-slate-400 w-24 shrink-0">Supported Language:</span>
+                      <span className="text-slate-400 w-24 shrink-0">Language:</span>
                       <span className="text-slate-900 uppercase">{customer.language === "th" ? "Thai (TH)" : "English (EN)"}</span>
                     </div>
                   )}
@@ -459,13 +519,55 @@ export function AdminCustomerProfileModal({
                       {customer.defaultAddress}
                     </span>
                   </div>
-                  {customer.secondaryAddress && (
+                  {(customer.secondaryAddress || customer.roomNo) && (
                     <div className="flex items-center gap-2">
                       <span className="text-slate-400 w-24 shrink-0">Building/Room:</span>
                       <span className="text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md font-extrabold flex items-center gap-1">
                         <Building size={12} />
-                        {customer.secondaryAddress}
+                        {customer.secondaryAddress || (customer.roomNo ? `Room ${customer.roomNo}` : '')}
                       </span>
+                    </div>
+                  )}
+
+                  {/* Multiple Saved Delivery Addresses (from Web / App) */}
+                  {customer.addresses && customer.addresses.length > 0 && (
+                    <div className="pt-2 border-t border-slate-200/80 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                          Saved Address Book ({customer.addresses.length} แห่ง)
+                        </span>
+                      </div>
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                        {customer.addresses.map((addr: any, idx: number) => (
+                          <div key={addr.id || idx} className="bg-white p-2.5 rounded-lg border border-slate-200 text-xs flex justify-between items-start gap-2 shadow-2xs">
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                                <span>{addr.label || "Address"}</span>
+                                {addr.isPrimary && (
+                                  <span className="bg-emerald-100 text-emerald-800 text-[9px] px-1.5 py-0.2 rounded font-bold">Primary</span>
+                                )}
+                                {addr.roomNumber && (
+                                  <span className="text-indigo-600 bg-indigo-50 text-[10px] px-1.5 py-0.2 rounded font-bold">Room {addr.roomNumber}</span>
+                                )}
+                              </div>
+                              <p className="text-slate-600 text-[11px]">{addr.placeName || addr.address}</p>
+                              {addr.deliveryNote && (
+                                <p className="text-amber-700 text-[10px] italic">Note: {addr.deliveryNote}</p>
+                              )}
+                            </div>
+                            {addr.latitude && addr.longitude && (
+                              <a
+                                href={`https://maps.google.com/?q=${addr.latitude},${addr.longitude}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold flex items-center gap-0.5 shrink-0 bg-indigo-50 px-2 py-1 rounded"
+                              >
+                                Maps <ExternalLink size={9} />
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>

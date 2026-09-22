@@ -2125,6 +2125,10 @@ export function AdminCRM({
         open={profileOpen}
         onOpenChange={setProfileOpen}
         customer={selectedProfileCustomer}
+        onEditCustomer={(c) => {
+          setProfileOpen(false);
+          openForm(c);
+        }}
       />
 
       {/* A5 Receipt Reprint Dialog */}

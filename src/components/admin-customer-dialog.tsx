@@ -106,6 +106,13 @@ export function AdminCustomerDialog({
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [brand, setBrand] = useState<string>("that_laundry_shop");
+  const [nickName, setNickName] = useState<string>("");
+  const [gender, setGender] = useState<string>("Rather not say");
+  const [secondaryPhone, setSecondaryPhone] = useState<string>("");
+  const [isSecondaryWhatsapp, setIsSecondaryWhatsapp] = useState<boolean>(false);
+  const [roomNo, setRoomNo] = useState<string>("");
+  const [sourceSystem, setSourceSystem] = useState<string>("pos_store");
   const [address, setAddress] = useState("");
   const [coords, setCoords] = useState({ lat: 13.736717, lng: 100.523186 });
   const [priceListId, setPriceListId] = useState("regular");
@@ -136,34 +143,105 @@ export function AdminCustomerDialog({
   useEffect(() => {
     if (open) {
       if (customer) {
-        setName(customer.name.toUpperCase()); setPhone(customer.phone); setAddress(customer.defaultAddress); setCoords(customer.defaultCoords);
-        setPriceListId(customer.priceListId || "regular"); setEmail(customer.email || ""); setLineId(customer.lineId || "");
-        setLanguage(customer.language || "th"); setRemark(customer.remark || ""); setSecondaryAddress(customer.secondaryAddress || "");
-        setDob(customer.dob || ""); setTaxId(customer.taxId || ""); setCompanyName(customer.companyName || "");
-        setIsVIP(customer.isVIP || false); setIsCorporate(customer.isCorporate || false); setIsMember(customer.isMember || false);
+        setName(customer.name.toUpperCase());
+        setPhone(customer.phone);
+        setBrand(customer.brand || "that_laundry_shop");
+        setNickName(customer.nickName || "");
+        setGender(customer.gender || "Rather not say");
+        setSecondaryPhone(customer.secondaryPhone || "");
+        setIsSecondaryWhatsapp(customer.isSecondaryWhatsapp || false);
+        setRoomNo(customer.roomNo || "");
+        setSourceSystem(customer.sourceSystem || "pos_store");
+        setAddress(customer.defaultAddress || "");
+        setCoords(customer.defaultCoords || { lat: 13.736717, lng: 100.523186 });
+        setPriceListId(customer.priceListId || "regular");
+        setEmail(customer.email || "");
+        setLineId(customer.lineId || "");
+        setLanguage(customer.language || "th");
+        setRemark(customer.remark || "");
+        setSecondaryAddress(customer.secondaryAddress || "");
+        setDob(customer.dob || "");
+        setTaxId(customer.taxId || "");
+        setCompanyName(customer.companyName || "");
+        setIsVIP(customer.isVIP || false);
+        setIsCorporate(customer.isCorporate || false);
+        setIsMember(customer.isMember || false);
         setMemberId(customer.memberId || "");
         setMemberStartDate(customer.memberStartDate ? new Date(customer.memberStartDate).toISOString().split("T")[0] : "");
         setMemberExpiryDate(customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split("T")[0] : "");
-        setIsWhatsapp(customer.isWhatsapp || false); setSelectedLocation(null);
+        setIsWhatsapp(customer.isWhatsapp || false);
+        setSelectedLocation(null);
       } else {
-        setName(""); setPhone(""); setAddress(""); setCoords({ lat: 13.736717, lng: 100.523186 }); setPriceListId("regular");
-        setEmail(""); setLineId(""); setLanguage("th"); setRemark(""); setSecondaryAddress(""); setDob(""); setTaxId(""); setCompanyName("");
-        setIsVIP(false); setIsCorporate(false); setIsMember(false); setMemberId(""); setMemberStartDate(""); setMemberExpiryDate("");
-        setIsWhatsapp(false); setSelectedLocation(null);
+        setName("");
+        setPhone("");
+        setBrand("that_laundry_shop");
+        setNickName("");
+        setGender("Rather not say");
+        setSecondaryPhone("");
+        setIsSecondaryWhatsapp(false);
+        setRoomNo("");
+        setSourceSystem("pos_store");
+        setAddress("");
+        setCoords({ lat: 13.736717, lng: 100.523186 });
+        setPriceListId("regular");
+        setEmail("");
+        setLineId("");
+        setLanguage("th");
+        setRemark("");
+        setSecondaryAddress("");
+        setDob("");
+        setTaxId("");
+        setCompanyName("");
+        setIsVIP(false);
+        setIsCorporate(false);
+        setIsMember(false);
+        setMemberId("");
+        setMemberStartDate("");
+        setMemberExpiryDate("");
+        setIsWhatsapp(false);
+        setSelectedLocation(null);
       }
     }
   }, [open, customer]);
 
   const handleSave = async () => {
-    if (!name.trim() || !phone.trim() || !address.trim() || !secondaryAddress.trim()) { toast.error("Please fill in all required fields."); return; }
+    if (!name.trim() || !phone.trim() || !address.trim()) {
+      toast.error("Please fill in Name, Phone, and Address.");
+      return;
+    }
     let finalPriceListId = priceListId;
-    if (isMember) { const ml = priceLists.find(p => p.name.toLowerCase().includes("member")); if (ml) finalPriceListId = ml.id; }
-    else { const rl = priceLists.find(p => p.isDefault); if (rl) finalPriceListId = rl.id; }
+    if (isMember) {
+      const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
+      if (ml) finalPriceListId = ml.id;
+    } else {
+      const rl = priceLists.find(p => p.isDefault);
+      if (rl) finalPriceListId = rl.id;
+    }
     const customerData = {
-      name, phone, defaultAddress: address, defaultCoords: coords, priceListId: finalPriceListId,
-      email: email.trim() || null, lineId: lineId.trim() || null, language, remark: remark.trim() || null,
-      secondaryAddress: secondaryAddress.trim() || null, dob: dob || null, taxId: taxId.trim() || null,
-      companyName: companyName.trim() || null, isVIP, isCorporate, isMember, isWhatsapp,
+      name: name.trim().toUpperCase(),
+      phone: phone.trim(),
+      brand,
+      nickName: nickName.trim() || null,
+      gender,
+      secondaryPhone: secondaryPhone.trim() || null,
+      isSecondaryWhatsapp,
+      roomNo: roomNo.trim() || null,
+      sourceSystem,
+      defaultAddress: address,
+      defaultCoords: coords,
+      priceListId: finalPriceListId,
+      email: email.trim() || null,
+      lineId: lineId.trim() || null,
+      language,
+      remark: remark.trim() || null,
+      secondaryAddress: secondaryAddress.trim() || (roomNo.trim() ? `Room ${roomNo.trim()}` : null),
+      dob: dob || null,
+      taxId: taxId.trim() || null,
+      companyName: companyName.trim() || null,
+      isVIP,
+      isCorporate,
+      isMember,
+      isWhatsapp,
       memberId: isMember ? memberId.trim() || null : null,
       memberStartDate: isMember && memberStartDate ? memberStartDate : null,
       memberExpiryDate: isMember && memberExpiryDate ? memberExpiryDate : null,
@@ -180,7 +258,9 @@ export function AdminCustomerDialog({
         if (onSaved && newCustomer) onSaved(newCustomer);
       }
       onOpenChange(false);
-    } catch (e: any) { toast.error(e.message || "Failed to save customer"); }
+    } catch (e: any) {
+      toast.error(e.message || "Failed to save customer");
+    }
   };
 
   return (
@@ -245,21 +325,95 @@ export function AdminCustomerDialog({
             </div>
           )}
 
+          {/* Brand & Registration Source Selector */}
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 mb-3">
+            <div className="flex items-center gap-2">
+              <Label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">แบรนด์ (Brand):</Label>
+              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setBrand("that_laundry_shop")}
+                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                    brand === "that_laundry_shop"
+                      ? "bg-slate-800 text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  That Laundry Shop (TLS)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBrand("noname_laundry")}
+                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                    brand === "noname_laundry"
+                      ? "bg-amber-500 text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  Noname Laundry
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">ช่องทาง (Source):</Label>
+              <select
+                value={sourceSystem}
+                onChange={(e) => setSourceSystem(e.target.value)}
+                className="h-7 text-xs font-semibold border border-slate-200 rounded-md bg-white px-2 text-slate-700 cursor-pointer"
+              >
+                <option value="pos_store">POS หน้าร้าน (Store)</option>
+                <option value="web_booking">เว็บไซต์ (Online Web)</option>
+                <option value="line_oa">LINE OA</option>
+                <option value="phone_call">โทรศัพท์ (Phone Call)</option>
+              </select>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 py-1">
-            <div className="space-y-1 col-span-2">
-              <Label htmlFor="name" className="text-xs font-semibold text-rose-600">Full Name *</Label>
+            {/* Row 1: Full Name, Nickname */}
+            <div className="space-y-1 col-span-1 md:col-span-2">
+              <Label htmlFor="name" className="text-xs font-semibold text-rose-600">Full Name (ชื่อ-นามสกุล) *</Label>
               <Input id="name" placeholder="JOHN DOE" value={name} onChange={e => setName(e.target.value.toUpperCase())} className="h-8 text-xs border-slate-200" />
             </div>
+            <div className="space-y-1 col-span-1">
+              <Label htmlFor="nickName" className="text-xs font-semibold text-slate-700">Nickname (ชื่อเล่น)</Label>
+              <Input id="nickName" placeholder="e.g. Alex, พี่พลอย" value={nickName} onChange={e => setNickName(e.target.value)} className="h-8 text-xs border-slate-200" />
+            </div>
+
+            {/* Row 2: Primary Phone, Secondary Phone, Gender */}
             <div className="space-y-1">
-              <Label htmlFor="phone" className="text-xs font-semibold text-rose-600">Phone Number *</Label>
+              <Label htmlFor="phone" className="text-xs font-semibold text-rose-600">Primary Phone (เบอร์โทรหลัก) *</Label>
               <PhoneInput value={phone} onChange={setPhone} className="h-8" />
               <label className="flex items-center gap-1.5 mt-1 cursor-pointer">
                 <input type="checkbox" checked={isWhatsapp} onChange={e => setIsWhatsapp(e.target.checked)} className="rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 h-3 w-3" />
                 <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1"><MessageCircle size={10} className="text-emerald-500" /> WhatsApp Available</span>
               </label>
             </div>
-            <div className="space-y-1 col-span-2">
-              <Label className="text-xs font-semibold text-rose-600">Default Address *</Label>
+            <div className="space-y-1">
+              <Label htmlFor="secondaryPhone" className="text-xs font-semibold text-slate-700">Secondary Phone (เบอร์สำรอง)</Label>
+              <PhoneInput value={secondaryPhone} onChange={setSecondaryPhone} className="h-8" />
+              <label className="flex items-center gap-1.5 mt-1 cursor-pointer">
+                <input type="checkbox" checked={isSecondaryWhatsapp} onChange={e => setIsSecondaryWhatsapp(e.target.checked)} className="rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 h-3 w-3" />
+                <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1"><MessageCircle size={10} className="text-emerald-500" /> WhatsApp Available</span>
+              </label>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold text-slate-700">Gender (เพศ)</Label>
+              <select
+                value={gender}
+                onChange={e => setGender(e.target.value)}
+                className="w-full h-8 text-xs border border-slate-200 rounded-md bg-white px-2 text-slate-800 cursor-pointer"
+              >
+                <option value="Rather not say">ไม่ระบุ (Rather not say)</option>
+                <option value="male">ชาย (Male)</option>
+                <option value="female">หญิง (Female)</option>
+              </select>
+            </div>
+
+            {/* Row 3: Default Address, Room Number */}
+            <div className="space-y-1 col-span-1 md:col-span-2">
+              <Label className="text-xs font-semibold text-rose-600">Default Address (ที่อยู่หลัก) *</Label>
               <div className="flex items-center gap-2 h-8">
                 <LocationInput id="default-address" placeholder="Search or enter full address..." value={address} localData={localDataForSearch} onChange={setAddress}
                   onSelectLocation={(loc) => { setCoords({ lat: loc.lat, lng: loc.lng }); setSelectedLocation(loc); }} className="flex-1" />
@@ -272,33 +426,90 @@ export function AdminCustomerDialog({
               </div>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs font-semibold text-rose-600">Floor/Room *</Label>
-              <Input placeholder="e.g. 15th Floor, Room 1502" value={secondaryAddress} onChange={e => setSecondaryAddress(e.target.value)} className="h-8 text-xs border-slate-200" />
+              <Label className="text-xs font-semibold text-slate-700">Room Number (เลขห้อง)</Label>
+              <Input 
+                placeholder="e.g. 1802" 
+                value={roomNo} 
+                onChange={e => {
+                  setRoomNo(e.target.value);
+                  if (!secondaryAddress || secondaryAddress.startsWith("Room ")) {
+                    setSecondaryAddress(e.target.value ? `Room ${e.target.value}` : "");
+                  }
+                }} 
+                className="h-8 text-xs border-slate-200" 
+              />
+            </div>
+
+            {/* Row 4: Floor / Building / Juristic Note, Email, LINE ID */}
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold text-slate-700">Floor / Building / Juristic Note</Label>
+              <Input placeholder="e.g. Fl 18, ฝากนิติบุคคลได้" value={secondaryAddress} onChange={e => setSecondaryAddress(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">Email Address</Label>
+              <Label className="text-xs font-semibold text-slate-700">Email Address</Label>
               <Input type="email" placeholder="customer@email.com" value={email} onChange={e => setEmail(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">LINE ID</Label>
+              <Label className="text-xs font-semibold text-slate-700">LINE ID</Label>
               <Input placeholder="@lineid" value={lineId} onChange={e => setLineId(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
+
+            {/* Row 5: Date of Birth, Company Name, Tax ID */}
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">Date of Birth</Label>
+              <Label className="text-xs font-semibold text-slate-700">Date of Birth</Label>
               <Input type="text" placeholder="DD/MM/YYYY" maxLength={10} value={dob} onChange={handleDobChange} className="h-8 text-xs border-slate-200" />
             </div>
-            <div className="space-y-1 col-span-3">
-              <Label className="text-xs font-semibold text-rose-600">Special Instructions / Remarks</Label>
-              <Input placeholder="e.g. Allergic to softener, fold shirts" value={remark} onChange={e => setRemark(e.target.value)} className="h-8 text-xs border-rose-200 focus-visible:ring-rose-500" />
-            </div>
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">Company Name</Label>
+              <Label className="text-xs font-semibold text-slate-700">Company Name (สำหรับ B2B)</Label>
               <Input placeholder="For B2B Billing" value={companyName} onChange={e => setCompanyName(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs font-semibold">Tax ID</Label>
+              <Label className="text-xs font-semibold text-slate-700">Tax ID</Label>
               <Input placeholder="13-digit Tax ID" value={taxId} onChange={e => setTaxId(e.target.value)} className="h-8 text-xs border-slate-200" />
             </div>
+
+            {/* Row 6: Remarks */}
+            <div className="space-y-1 col-span-1 md:col-span-3">
+              <Label className="text-xs font-semibold text-rose-600">Special Instructions / Remarks</Label>
+              <Input placeholder="e.g. Allergic to softener, fold shirts" value={remark} onChange={e => setRemark(e.target.value)} className="h-8 text-xs border-rose-200 focus-visible:ring-rose-500" />
+            </div>
+
+            {/* Row 7: Other Saved Delivery Addresses (if any) */}
+            {customer && customer.addresses && customer.addresses.length > 0 && (
+              <div className="col-span-1 md:col-span-3 bg-slate-50 border border-slate-200/80 rounded-xl p-3 space-y-1.5 mt-1">
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  สมุดที่อยู่จัดส่งเพิ่มเติมของลูกค้า ({customer.addresses.length} รายการจากระบบเว็บ/แอป):
+                </p>
+                <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                  {customer.addresses.map((a: any, i: number) => (
+                    <div key={a.id || i} className="bg-white p-2 rounded-lg border border-slate-200 text-xs flex justify-between items-center shadow-2xs">
+                      <div>
+                        <span className="font-bold text-slate-800">{a.label || "ที่อยู่"}</span>
+                        {a.roomNumber && <span className="ml-1 text-indigo-600 font-semibold">(ห้อง {a.roomNumber})</span>}
+                        <span className="text-slate-500 ml-2">{a.placeName || a.address}</span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-[10px] text-indigo-600 hover:text-indigo-800 font-bold px-1.5 cursor-pointer"
+                        onClick={() => {
+                          setAddress(a.address || a.placeName || "");
+                          if (a.latitude && a.longitude) setCoords({ lat: a.latitude, lng: a.longitude });
+                          if (a.roomNumber) {
+                            setRoomNo(a.roomNumber);
+                            setSecondaryAddress(`Room ${a.roomNumber}`);
+                          }
+                          toast.info(`เลือกที่อยู่ "${a.label}" มาเป็นที่อยู่หลักแล้ว`);
+                        }}
+                      >
+                        ใช้ที่อยู่นี้
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="col-span-1 md:col-span-3 mt-2 flex flex-col gap-2">
               <div className="flex flex-col gap-2 p-3 bg-blue-50/80 rounded-lg border border-blue-200">
                 <label className="flex items-center gap-3 cursor-pointer hover:bg-blue-50/20 transition-colors">

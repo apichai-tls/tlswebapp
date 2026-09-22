@@ -6616,6 +6616,10 @@ export default function AdminPage() {
         open={profileOpen}
         onOpenChange={setProfileOpen}
         customer={selectedProfileCustomer}
+        onEditCustomer={() => {
+          setProfileOpen(false);
+          setCustomerDialogOpen(true);
+        }}
       />
 
       {receiptPaperSize === "A5" ? (

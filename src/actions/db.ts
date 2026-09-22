@@ -46,6 +46,15 @@ export async function addCustomerAction(data: any) {
       dob: data.dob,
       taxId: data.taxId,
       companyName: data.companyName,
+      brand: data.brand || 'that_laundry_shop',
+      nickName: data.nickName || null,
+      gender: data.gender || 'Rather not say',
+      secondaryPhone: data.secondaryPhone || null,
+      isSecondaryWhatsapp: Boolean(data.isSecondaryWhatsapp),
+      isVerified: Boolean(data.isVerified),
+      verifiedVia: data.verifiedVia || null,
+      sourceSystem: data.sourceSystem || 'pos_store',
+      roomNo: data.roomNo || null,
       memberStartDate: data.memberStartDate ? new Date(data.memberStartDate) : null,
       memberExpiryDate: data.memberExpiryDate ? new Date(data.memberExpiryDate) : null,
     }
@@ -139,6 +148,15 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.dob !== undefined) data.dob = updates.dob;
   if (updates.taxId !== undefined) data.taxId = updates.taxId;
   if (updates.companyName !== undefined) data.companyName = updates.companyName;
+  if (updates.brand !== undefined) data.brand = updates.brand;
+  if (updates.nickName !== undefined) data.nickName = updates.nickName;
+  if (updates.gender !== undefined) data.gender = updates.gender;
+  if (updates.secondaryPhone !== undefined) data.secondaryPhone = updates.secondaryPhone;
+  if (updates.isSecondaryWhatsapp !== undefined) data.isSecondaryWhatsapp = updates.isSecondaryWhatsapp;
+  if (updates.isVerified !== undefined) data.isVerified = updates.isVerified;
+  if (updates.verifiedVia !== undefined) data.verifiedVia = updates.verifiedVia;
+  if (updates.sourceSystem !== undefined) data.sourceSystem = updates.sourceSystem;
+  if (updates.roomNo !== undefined) data.roomNo = updates.roomNo;
   if (updates.memberStartDate !== undefined) {
     data.memberStartDate = updates.memberStartDate ? new Date(updates.memberStartDate) : null;
   }
@@ -146,7 +164,15 @@ export async function updateCustomerAction(id: string, updates: any) {
     data.memberExpiryDate = updates.memberExpiryDate ? new Date(updates.memberExpiryDate) : null;
   }
 
-  const updatedCustomer = await prisma.customer.update({ where: { id }, data });
+  const updatedCustomer = await prisma.customer.update({
+    where: { id },
+    data,
+    include: {
+      addresses: {
+        orderBy: { isPrimary: 'desc' }
+      }
+    }
+  });
 
   const changes: Record<string, { from: any, to: any } | any> = {};
   for (const key of Object.keys(data)) {
