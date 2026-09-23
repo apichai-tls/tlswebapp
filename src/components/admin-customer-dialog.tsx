@@ -112,7 +112,7 @@ export function AdminCustomerDialog({
   const [secondaryPhone, setSecondaryPhone] = useState<string>("");
   const [isSecondaryWhatsapp, setIsSecondaryWhatsapp] = useState<boolean>(false);
   const [roomNo, setRoomNo] = useState<string>("");
-  const [sourceSystem, setSourceSystem] = useState<string>("pos_store");
+  const [sourceSystem, setSourceSystem] = useState<string>("web_booking");
   const [address, setAddress] = useState("");
   const [coords, setCoords] = useState({ lat: 13.736717, lng: 100.523186 });
   const [priceListId, setPriceListId] = useState("regular");
@@ -151,7 +151,7 @@ export function AdminCustomerDialog({
         setSecondaryPhone(customer.secondaryPhone || "");
         setIsSecondaryWhatsapp(customer.isSecondaryWhatsapp || false);
         setRoomNo(customer.roomNo || "");
-        setSourceSystem(customer.sourceSystem || "pos_store");
+        setSourceSystem(customer.sourceSystem || "web_booking");
         setAddress(customer.defaultAddress || "");
         setCoords(customer.defaultCoords || { lat: 13.736717, lng: 100.523186 });
         setPriceListId(customer.priceListId || "regular");
@@ -180,7 +180,7 @@ export function AdminCustomerDialog({
         setSecondaryPhone("");
         setIsSecondaryWhatsapp(false);
         setRoomNo("");
-        setSourceSystem("pos_store");
+        setSourceSystem("web_booking");
         setAddress("");
         setCoords({ lat: 13.736717, lng: 100.523186 });
         setPriceListId("regular");
@@ -362,8 +362,8 @@ export function AdminCustomerDialog({
                 onChange={(e) => setSourceSystem(e.target.value)}
                 className="h-7 text-xs font-semibold border border-slate-200 rounded-md bg-white px-2 text-slate-700 cursor-pointer"
               >
-                <option value="pos_store">POS หน้าร้าน (Store)</option>
                 <option value="web_booking">เว็บไซต์ (Online Web)</option>
+                <option value="pos_store">POS หน้าร้าน (Store)</option>
                 <option value="line_oa">LINE OA</option>
                 <option value="phone_call">โทรศัพท์ (Phone Call)</option>
               </select>

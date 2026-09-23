@@ -53,7 +53,7 @@ export async function addCustomerAction(data: any) {
       isSecondaryWhatsapp: Boolean(data.isSecondaryWhatsapp),
       isVerified: Boolean(data.isVerified),
       verifiedVia: data.verifiedVia || null,
-      sourceSystem: data.sourceSystem || 'pos_store',
+      sourceSystem: data.sourceSystem || 'web_booking',
       roomNo: data.roomNo || null,
       memberStartDate: data.memberStartDate ? new Date(data.memberStartDate) : null,
       memberExpiryDate: data.memberExpiryDate ? new Date(data.memberExpiryDate) : null,
