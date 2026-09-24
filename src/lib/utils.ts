@@ -82,36 +82,14 @@ export function computeCartHash(data: {
   serviceSpeed?: string | null;
   fee?: number;
   discountPercent?: number;
+  promoCode?: string | null;
+  promoDiscount?: number;
   vatType?: string | null;
   vatRate?: number;
   customerName?: string | null;
   customerPhone?: string | null;
   deliveryAt?: string | Date | null;
 }): string {
-  let normalizedDeliveryAt = "";
-  if (data.deliveryAt) {
-    if (data.deliveryAt instanceof Date) {
-      if (!isNaN(data.deliveryAt.getTime())) {
-        const d = data.deliveryAt;
-        const pad = (n: number) => String(n).padStart(2, '0');
-        normalizedDeliveryAt = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      }
-    } else {
-      const s = String(data.deliveryAt).trim();
-      if (s.includes("T") && (s.endsWith("Z") || s.includes("+") || s.lastIndexOf("-") > 10)) {
-        const parsedD = new Date(s);
-        if (!isNaN(parsedD.getTime())) {
-          const pad = (n: number) => String(n).padStart(2, '0');
-          normalizedDeliveryAt = `${parsedD.getFullYear()}-${pad(parsedD.getMonth() + 1)}-${pad(parsedD.getDate())}T${pad(parsedD.getHours())}:${pad(parsedD.getMinutes())}`;
-        } else {
-          normalizedDeliveryAt = s.slice(0, 16);
-        }
-      } else {
-        normalizedDeliveryAt = s.slice(0, 16);
-      }
-    }
-  }
-
   const vatType = (data.vatType || "none").toLowerCase();
   const vatRate = vatType === "none" ? 0 : (Number(data.vatRate) || 0);
 
@@ -126,11 +104,9 @@ export function computeCartHash(data: {
     speed: data.serviceSpeed || "standard",
     fee: Number(data.fee) || 0,
     disc: Number(data.discountPercent) || 0,
+    promo: data.promoCode ? `${data.promoCode}:${Number(data.promoDiscount) || 0}` : "",
     vatType,
     vatRate,
-    name: (data.customerName || "").trim(),
-    phone: (data.customerPhone || "").trim(),
-    deliveryAt: normalizedDeliveryAt,
   });
 }
 
@@ -307,16 +283,31 @@ export function isJobFullyPaid(job?: {
 export function isValidPhoneNumber(phone: string | null | undefined): phone is string {
   if (!phone) return false;
   const trimmed = phone.trim();
-  if (!trimmed || trimmed === "-" || trimmed === "--" || trimmed === "+66 --" || trimmed === "+66 -") return false;
+  if (!trimmed || trimmed === "-" || trimmed === "--" || trimmed === "+66 --" || trimmed === "+66 -" || trimmed.toLowerCase() === "n/a" || trimmed.toLowerCase() === "null") return false;
   const digits = trimmed.replace(/\D/g, "");
+  if (/^0+$/.test(digits)) return false; // reject dummy like "0000000000"
   return digits.length >= 8;
 }
 
 /**
- * Finds the best matching customer for a job or search parameters.
- * Prioritizes ID match (with name validation fallback), then Name match, then valid Phone match.
+ * Checks whether a phone string represents a valid Thai phone number.
+ * (Starts with 0, +66, or 66, and has 9-10 digits)
  */
-export function findMatchingCustomer<T extends { id: string; name?: string | null; phone?: string | null }>(
+export function isThaiPhoneNumber(phone: string | null | undefined): boolean {
+  if (!isValidPhoneNumber(phone)) return false;
+  const trimmed = phone.trim();
+  if (trimmed.startsWith("+66") || trimmed.startsWith("66")) return true;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.startsWith("66") && (digits.length === 11 || digits.length === 10)) return true;
+  if (digits.startsWith("0") && (digits.length === 9 || digits.length === 10)) return true;
+  return false;
+}
+
+/**
+ * Finds the best matching customer for a job or search parameters.
+ * Prioritizes ID match (with name validation fallback), then Name match, then valid Phone/secondaryPhone match.
+ */
+export function findMatchingCustomer<T extends { id: string; name?: string | null; phone?: string | null; secondaryPhone?: string | null }>(
   customers: T[],
   lookup: { customerId?: string | null; customerName?: string | null; customerPhone?: string | null }
 ): T | null {
@@ -351,13 +342,135 @@ export function findMatchingCustomer<T extends { id: string; name?: string | nul
     if (byName) return byName;
   }
 
-  // 3. Match by Phone (ONLY if phone is a valid real phone number)
+  // 3. Match by Phone or Secondary Phone (ONLY if phone is a valid real phone number)
   if (isValidPhoneNumber(targetPhone)) {
-    const byPhone = customers.find(c => c.phone && c.phone.trim() === targetPhone);
+    const byPhone = customers.find(c => 
+      (c.phone && c.phone.trim() === targetPhone) || 
+      (c.secondaryPhone && c.secondaryPhone.trim() === targetPhone)
+    );
     if (byPhone) return byPhone;
   }
 
   return null;
 }
+
+/**
+ * Resolves the primary and secondary/alternate phone numbers for a customer/job.
+ * In case customer has an international number and no Thai number, it looks for
+ * secondaryPhone or address contactPhone to display.
+ */
+export function resolveCustomerPhones(params: {
+  customerPhone?: string | null;
+  customer?: {
+    phone?: string | null;
+    secondaryPhone?: string | null;
+    isSecondaryWhatsapp?: boolean;
+    addresses?: Array<{ contactPhone?: string | null }>;
+  } | null;
+}): {
+  primaryPhone: string;
+  secondaryPhone: string | null;
+  hasThaiPhone: boolean;
+  isIntlPrimary: boolean;
+  isSecondaryWhatsapp: boolean;
+} {
+  const { customerPhone, customer } = params;
+
+  const rawPhone = isValidPhoneNumber(customerPhone) ? customerPhone.trim() : "";
+  const profilePhone = isValidPhoneNumber(customer?.phone) ? customer?.phone!.trim() : "";
+  const secPhone = isValidPhoneNumber(customer?.secondaryPhone) ? customer?.secondaryPhone!.trim() : "";
+  const addrPhone = customer?.addresses?.map(a => a.contactPhone?.trim()).find(p => isValidPhoneNumber(p)) || "";
+
+  // 1. Candidate Thai phone:
+  let thaiPhone = "";
+  if (isThaiPhoneNumber(rawPhone)) thaiPhone = rawPhone;
+  else if (isThaiPhoneNumber(profilePhone)) thaiPhone = profilePhone;
+  else if (isThaiPhoneNumber(addrPhone)) thaiPhone = addrPhone;
+
+  // 2. Candidate International/Other phone:
+  let intlPhone = "";
+  if (secPhone) intlPhone = secPhone;
+  else if (rawPhone && !isThaiPhoneNumber(rawPhone)) intlPhone = rawPhone;
+  else if (profilePhone && !isThaiPhoneNumber(profilePhone)) intlPhone = profilePhone;
+  else if (addrPhone && !isThaiPhoneNumber(addrPhone)) intlPhone = addrPhone;
+
+  // 3. Alternate phone (if different from primary)
+  let alternatePhone: string | null = null;
+  if (intlPhone && intlPhone !== thaiPhone) {
+    alternatePhone = intlPhone;
+  } else if (addrPhone && addrPhone !== thaiPhone) {
+    alternatePhone = addrPhone;
+  } else if (profilePhone && profilePhone !== thaiPhone) {
+    alternatePhone = profilePhone;
+  }
+
+  // If customer has NO Thai phone:
+  if (!thaiPhone) {
+    const fallback = intlPhone || addrPhone || rawPhone || profilePhone || "";
+    return {
+      primaryPhone: fallback,
+      secondaryPhone: (alternatePhone && alternatePhone !== fallback) ? alternatePhone : null,
+      hasThaiPhone: false,
+      isIntlPrimary: Boolean(fallback && !isThaiPhoneNumber(fallback)),
+      isSecondaryWhatsapp: Boolean(customer?.isSecondaryWhatsapp),
+    };
+  }
+
+  // Customer has Thai phone:
+  return {
+    primaryPhone: thaiPhone,
+    secondaryPhone: alternatePhone,
+    hasThaiPhone: true,
+    isIntlPrimary: false,
+    isSecondaryWhatsapp: Boolean(customer?.isSecondaryWhatsapp),
+  };
+}
+
+/**
+ * Checks whether a payment date falls on today or yesterday (in Thailand timezone UTC+7).
+ */
+export function isPaidTodayOrYesterday(paidAt: Date | string | number | null | undefined): boolean {
+  if (!paidAt) return false;
+  const targetDate = new Date(paidAt);
+  if (isNaN(targetDate.getTime())) return false;
+
+  // Convert current time to Thailand timezone (UTC+7)
+  const nowUtc = Date.now();
+  const THAILAND_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const thTime = new Date(nowUtc + THAILAND_OFFSET_MS);
+
+  // Start of yesterday in Thailand (00:00:00.000):
+  const thYear = thTime.getUTCFullYear();
+  const thMonth = thTime.getUTCMonth();
+  const thDate = thTime.getUTCDate();
+
+  // Midnight of yesterday in Thailand, converted back to UTC timestamp:
+  const startOfYesterdayThUtc = Date.UTC(thYear, thMonth, thDate - 1, 0, 0, 0, 0) - THAILAND_OFFSET_MS;
+
+  return targetDate.getTime() >= startOfYesterdayThUtc;
+}
+
+/**
+ * Extracts the effective payment date from a Job object or adminNotesJson
+ */
+export function getJobPaymentDate(job: any): Date | null {
+  if (!job) return null;
+  if (job.csoPaidAt) return new Date(job.csoPaidAt);
+  if (job.shopPaidAt) return new Date(job.shopPaidAt);
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (Array.isArray(parsed?.payments) && parsed.payments.length > 0) {
+        const lastPay = parsed.payments[parsed.payments.length - 1];
+        if (lastPay?.timestamp) return new Date(lastPay.timestamp);
+      }
+    } catch {}
+  }
+  if (job.completedAt) return new Date(job.completedAt);
+  if (job.updatedAt) return new Date(job.updatedAt);
+  if (job.createdAt) return new Date(job.createdAt);
+  return null;
+}
+
 
 

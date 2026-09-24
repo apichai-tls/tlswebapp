@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
-import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId } from '@/lib/utils';
+import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 
 // CUSTOMERS
@@ -2694,6 +2694,27 @@ export async function unlockPaidJobAction(data: {
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
       if (!job.isPaid && !job.isShopPaid) throw new Error("Job is not currently paid");
+
+      // Check permission: Admin, Superadmin, and Accounting have unlimited unlock access.
+      // CSO can only unlock jobs whose payment was recorded today or yesterday.
+      let actorRole = (data.actorRole || "").toLowerCase();
+      let hasFullAccess = actorRole === "admin" || actorRole === "superadmin" || actorRole === "accounting";
+      if (!hasFullAccess && data.actorId) {
+        const userRec = await tx.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true, permissions: true } });
+        if (userRec) {
+          const role = (userRec.role || "").toLowerCase();
+          const perms = userRec.permissions || "";
+          if (role === "admin" || role === "superadmin" || role === "accounting" || perms.includes("accounting")) {
+            hasFullAccess = true;
+          }
+        }
+      }
+      if (!hasFullAccess) {
+        const paymentDate = getJobPaymentDate(job);
+        if (!isPaidTodayOrYesterday(paymentDate)) {
+          throw new Error("CSO สามารถปลดล็อคการชำระเงินได้เฉพาะงานที่บันทึกชำระวันนี้และเมื่อวานเท่านั้น");
+        }
+      }
 
       // ──── 2. Parse Existing Payments from adminNotesJson ────
       let existingNotes: any = {};

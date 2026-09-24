@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -76,6 +76,7 @@ import {
   Users,
   User,
   Phone,
+  Globe,
   Eye,
   ArrowDownUp,
   Store,
@@ -899,10 +900,38 @@ export default function AdminPage() {
     return true;
   }, [selectedProfileCustomer, customerPhone, customerName, customers]);
 
+  // Resolves primary / secondary / international phones for the active customer
+  const phoneResolution = useMemo(() => {
+    return resolveCustomerPhones({
+      customerPhone,
+      customer: selectedProfileCustomer,
+    });
+  }, [customerPhone, selectedProfileCustomer]);
+
+  // Auto-populate customerPhone if empty but customer has international or alternate phone
+  useEffect(() => {
+    if (!customerPhone && phoneResolution.primaryPhone) {
+      setCustomerPhone(phoneResolution.primaryPhone);
+    }
+  }, [customerPhone, phoneResolution.primaryPhone]);
+
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const isAccounting = user?.role === 'accounting' || Boolean(user?.permissions?.includes('accounting'));
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
   const isCsoOrAdmin = isCSO || isAdmin;
+
+  // CSO can only unlock jobs whose payment was recorded today or yesterday (Thailand time UTC+7)
+  // Admin / Superadmin / Accounting can unlock any paid job without time limit
+  const canUnlockPaid = useMemo(() => {
+    if (!editingJobId || !isPaidJob || activeJob?.refundId) return false;
+    if (isAdmin || isAccounting) return true;
+    if (isCSO) {
+      const payDate = getJobPaymentDate(activeJob);
+      return isPaidTodayOrYesterday(payDate);
+    }
+    return false;
+  }, [editingJobId, isPaidJob, activeJob, isAdmin, isAccounting, isCSO]);
   const canDeleteLaundryBags = isAdmin || isCSO;
   const canDeleteBills = isAdmin;
   const canSeeTaxInvoice = isCSO || isAdmin || user?.role === 'accounting';
@@ -921,6 +950,7 @@ export default function AdminPage() {
   // false = user has NOT pressed Proforma after the most recent cart change
   // → Save Changes SHOULD auto-gen a new image (guard against user forgetting)
   const [proformaPressedSinceLastEdit, setProformaPressedSinceLastEdit] = useState<boolean>(false);
+  const lastPaidProformaInfoRef = useRef<{ id: string | null; rev: number } | null>(null);
   const [isDraftPreview, setIsDraftPreview] = useState<boolean>(false);
   const [draftCreatedAt, setDraftCreatedAt] = useState<Date>(new Date());
   const [showReceipt, setShowReceipt] = useState<boolean>(false);
@@ -1478,14 +1508,18 @@ export default function AdminPage() {
     });
     // Populate dummy cart item for legacy jobs that lack cart items
     if (mappedCart.length === 0 && job.serviceType) {
+      const legacyServicePrice = (job.totalAmount !== undefined && job.totalAmount !== null)
+        ? Math.max(0, job.totalAmount - (job.fee || 0))
+        : (job.fee || 0);
+
       if ((job.serviceType as any) === "other") {
         mappedCart.push({
           id: "other",
           name: "Other (Custom Price)",
           nameEn: "Other (Custom Price)",
           quantity: 1,
-          price: job.fee || 0,
-          basePrice: job.fee || 0,
+          price: legacyServicePrice,
+          basePrice: legacyServicePrice,
           category: "other",
           unit: "piece"
         });
@@ -1497,7 +1531,7 @@ export default function AdminPage() {
             name: matched.name,
             nameEn: matched.nameEn || matched.name,
             quantity: 1,
-            price: job.fee || 0,
+            price: legacyServicePrice || matched.price,
             basePrice: matched.price,
             category: matched.category,
             unit: matched.unit || "piece"
@@ -1574,14 +1608,13 @@ export default function AdminPage() {
       serviceSpeed: initialSpeed,
       fee: job.fee || 0,
       discountPercent: initialDiscountPercent,
+      promoCode: promoMatch ? promoMatch[1] : null,
+      promoDiscount: (promoMatch && promoMatch[3]) ? parseFloat(promoMatch[3]) : 0,
       vatType: initialVatType,
       vatRate: initialVatRate,
-      customerName: job.customerName,
-      customerPhone: job.customerPhone,
-      deliveryAt: initialDeliveryTime,
     });
 
-    setLastProformaCartHash(initialLoadedCartHash);
+    setLastProformaCartHash(loadedCartHash || initialLoadedCartHash);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
@@ -1593,15 +1626,19 @@ export default function AdminPage() {
           ? rawLaundry.split(",")
           : []
     );
-    setCustomerName(job.customerName || "");
-    setCustomerPhone(job.customerPhone || "");
-    
     const foundCustomer = findMatchingCustomer(customers, {
       customerId: job.customerId,
       customerName: job.customerName,
       customerPhone: job.customerPhone,
     });
     setSelectedProfileCustomer(foundCustomer || null);
+
+    const resolvedPhones = resolveCustomerPhones({
+      customerPhone: job.customerPhone,
+      customer: foundCustomer,
+    });
+    setCustomerName(job.customerName || "");
+    setCustomerPhone(resolvedPhones.primaryPhone);
     const isPickupService = !!job.pickupLocation && !shopLocations.some(s => s.address === job.pickupLocation || s.name === job.pickupLocation || (job.pickupLocation && job.pickupLocation.includes("POS Counter")));
     const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation || s.name === job.dropoffLocation);
 
@@ -1986,11 +2023,10 @@ export default function AdminPage() {
       serviceSpeed,
       fee,
       discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
+      promoCode: appliedPromo?.code || promoCodeInput.trim() || null,
+      promoDiscount: appliedPromo ? promoDiscountAmount : 0,
       vatType: dialogVatType,
       vatRate: dialogVatRate,
-      customerName,
-      customerPhone,
-      deliveryAt: deliveryScheduledTime,
     });
 
     // Proforma should only be preserved/used if it was explicitly generated/exists
@@ -2007,25 +2043,72 @@ export default function AdminPage() {
 
     const isNewJobProformaRequested = !editingJobId && (proformaReceiptNumber === "DRAFT" || proformaPressedSinceLastEdit);
 
-    let targetProformaNum: string | null = existingProformaNum || null;
-    if (!targetProformaNum && targetEditingJobId) {
-      targetProformaNum = generateProformaBaseNumber(targetEditingJobId);
-    }
-
     const isCartChangedFromLastProforma = Boolean(
-      targetEditingJobId && lastProformaCartHash && currentCartHash !== lastProformaCartHash
+      lastProformaCartHash && currentCartHash !== lastProformaCartHash
     );
 
-    let effectiveProformaRevision = targetProformaNum 
-      ? (isRfJob ? Math.max(1, proformaRevision || 1) : proformaRevision) 
-      : 0;
-    let effectiveProformaCartHash = targetProformaNum ? (lastProformaCartHash || currentCartHash) : null;
+    let targetProformaNum: string | null = null;
+    let effectiveProformaRevision = 0;
+    let effectiveProformaCartHash: string | null = null;
 
-    if (targetEditingJobId && targetProformaNum && isCartChangedFromLastProforma && !proformaPressedSinceLastEdit) {
-      effectiveProformaRevision = (effectiveProformaRevision || (isRfJob ? 1 : 0)) + 1;
-      effectiveProformaCartHash = currentCartHash;
+    if (isPayment) {
+      // ── Payment flow (Pay button clicked) ───────────────────────────
+      // Rule: Paid job always has a paired Proforma
+      // If job already had a Proforma (or was previewed in this session):
+      //   - If cart changed and not previewed in this session -> Bump revision!
+      //   - If cart didn't change -> keep current revision.
+      // If job NEVER had a Proforma before -> Create Proforma Rev 0 paired with it!
+      const hasPriorProforma = Boolean(existingProformaNum || proformaPressedSinceLastEdit);
+
+      if (hasPriorProforma) {
+        targetProformaNum = existingProformaNum || (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT" ? cleanProformaNumber(proformaReceiptNumber) : null);
+        if (!targetProformaNum && targetEditingJobId) {
+          targetProformaNum = generateProformaBaseNumber(targetEditingJobId);
+        }
+
+        if (isCartChangedFromLastProforma && !proformaPressedSinceLastEdit) {
+          // Items were edited and user clicked Pay directly -> Bump revision!
+          effectiveProformaRevision = (proformaRevision || (isRfJob ? 1 : 0)) + 1;
+          effectiveProformaCartHash = currentCartHash;
+        } else {
+          effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
+          effectiveProformaCartHash = lastProformaCartHash || currentCartHash;
+        }
+      } else {
+        // Job NEVER had a Proforma before, but user clicked Pay:
+        // Rule: Create Proforma Rev 0 paired with it!
+        targetProformaNum = targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null;
+        effectiveProformaRevision = isRfJob ? 1 : 0;
+        effectiveProformaCartHash = currentCartHash;
+      }
+
+      setProformaReceiptNumber(targetProformaNum);
       setProformaRevision(effectiveProformaRevision);
-      setLastProformaCartHash(currentCartHash);
+      setLastProformaCartHash(effectiveProformaCartHash);
+      if (lastPaidProformaInfoRef) {
+        lastPaidProformaInfoRef.current = targetProformaNum ? { id: targetProformaNum, rev: effectiveProformaRevision } : null;
+      }
+    } else {
+      // ── Save Changes flow (isPayment === false) ────────────────────
+      // Rule: Proforma is only created if user explicitly pressed Proforma button
+      // If user did NOT press Proforma button, DO NOT bump revision and DO NOT auto-create a Proforma!
+      if (proformaPressedSinceLastEdit) {
+        targetProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT")
+          ? cleanProformaNumber(proformaReceiptNumber)
+          : (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null);
+        effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
+        effectiveProformaCartHash = currentCartHash;
+      } else if (existingProformaNum) {
+        // Job already had a proforma from before -> preserve existing without bumping revision!
+        targetProformaNum = existingProformaNum;
+        effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
+        effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
+      } else {
+        // Job had NO proforma and user did NOT press Proforma button -> keep null!
+        targetProformaNum = null;
+        effectiveProformaRevision = 0;
+        effectiveProformaCartHash = null;
+      }
     }
     const cannotDeduct = !isAlreadyPaidJob && isPayment && paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal) || isWalletExpired(selectedProfileCustomer));
 
@@ -2351,10 +2434,10 @@ export default function AdminPage() {
           }
         }
 
-        // [AUTO-PROFORMA] If paying OR if cart changed without prior preview, ensure proforma is synchronized, saved, and captured
-        const shouldCaptureProforma = isPayment || Boolean(targetProformaNum && isCartChangedFromLastProforma && !proformaPressedSinceLastEdit);
+        // [AUTO-PROFORMA] If paying and proforma exists, ensure proforma is synchronized, saved, and captured
+        const shouldCaptureProforma = Boolean(targetProformaNum && isPayment);
         if (shouldCaptureProforma) {
-          let finalProformaNum = proformaReceiptNumber || (existingJob as any)?.proformaNumber;
+          let finalProformaNum = targetProformaNum!;
           if (targetEditingJobId.startsWith("RF-")) {
             finalProformaNum = cleanProformaNumber(finalProformaNum) || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(targetEditingJobId));
           } else if (!finalProformaNum) {
@@ -2373,6 +2456,9 @@ export default function AdminPage() {
           setProformaReceiptNumber(finalProformaNum);
           setProformaRevision(finalRevision);
           setLastProformaCartHash(finalCartHash);
+          if (lastPaidProformaInfoRef) {
+            lastPaidProformaInfoRef.current = { id: finalProformaNum, rev: finalRevision };
+          }
           if (existingJob) {
             (existingJob as any).proformaNumber = finalProformaNum;
             (existingJob as any).proformaRevision = finalRevision;
@@ -2581,6 +2667,9 @@ export default function AdminPage() {
             } as any);
             setProformaReceiptNumber(autoProformaNum);
             setProformaRevision(0);
+            if (lastPaidProformaInfoRef) {
+              lastPaidProformaInfoRef.current = { id: autoProformaNum, rev: 0 };
+            }
           }
 
           // Fire background proforma image capture for new jobs (fire-and-forget)
@@ -2721,7 +2810,7 @@ export default function AdminPage() {
         createTaxInvoiceTaskForJobAction({
           jobId: savedJobId,
           customerName: customerName || selectedProfileCustomer?.name,
-          customerPhone: customerPhone || selectedProfileCustomer?.phone,
+          customerPhone: customerPhone || selectedProfileCustomer?.phone || selectedProfileCustomer?.secondaryPhone || undefined,
           isCorporate: selectedProfileCustomer?.isCorporate,
           totalAmount: calculatedTotal,
           paymentChannel: paymentChannel || undefined,
@@ -2790,7 +2879,7 @@ export default function AdminPage() {
         customerId: selectedProfileCustomer?.id || (editingJobId ? jobs.find(j => j.id === editingJobId)?.customerId : undefined),
         createdAt: draftCreatedAt,
         customerName: customerName || "Walk-In",
-        customerPhone: customerPhone || "-",
+        customerPhone: customerPhone || selectedProfileCustomer?.phone || selectedProfileCustomer?.secondaryPhone || "-",
         isMember: selectedProfileCustomer?.isMember !== undefined ? selectedProfileCustomer.isMember : (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.isMember : undefined),
         walletBalance: selectedProfileCustomer?.creditBalance !== undefined ? selectedProfileCustomer.creditBalance : undefined,
         deliveryAddress: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || null),
@@ -2841,9 +2930,11 @@ export default function AdminPage() {
     } else if (activeJob) {
       const formatted = formatJobToReceiptData(activeJob);
       formatted.autoCapture = isPaymentEvent;
-      if (proformaReceiptNumber) {
-        formatted.proformaId = cleanProformaNumber(proformaReceiptNumber);
-        formatted.proformaRevision = proformaRevision;
+      const targetProforma = lastPaidProformaInfoRef.current?.id || (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT" ? cleanProformaNumber(proformaReceiptNumber) : null) || (activeJob as any)?.proformaNumber;
+      const targetRevision = lastPaidProformaInfoRef.current ? lastPaidProformaInfoRef.current.rev : proformaRevision;
+      if (targetProforma) {
+        formatted.proformaId = cleanProformaNumber(targetProforma);
+        formatted.proformaRevision = targetRevision;
       }
       // Pass promo info for payment receipts too
       if (appliedPromo) {
@@ -2904,7 +2995,7 @@ export default function AdminPage() {
   };
 
   const handleUnlockPaid = async () => {
-    if (!editingJobId || !unlockPaidReason.trim()) return;
+    if (!editingJobId || !unlockPaidReason.trim() || !canUnlockPaid) return;
     setIsUnlockingPaid(true);
     try {
       const result = await unlockPaidJobAction({
@@ -3818,8 +3909,9 @@ export default function AdminPage() {
                                     bedsheet: { selected: false, quantity: 1 },
                                     other: { selected: false, quantity: 1 },
                                   });
+                                  const resolvedPhones = resolveCustomerPhones({ customer: c });
                                   setCustomerName(c.name);
-                                  setCustomerPhone(c.phone);
+                                  setCustomerPhone(resolvedPhones.primaryPhone);
                                   setSelectedProfileCustomer(c);
                                   setAppliedPromo(null);
                                   setPromoCodeInput("");
@@ -3864,7 +3956,12 @@ export default function AdminPage() {
                               >
                                 <div>
                                   <p className="font-semibold text-slate-800">{c.name}</p>
-                                  <p className="text-xs text-slate-500">{c.phone}</p>
+                                  <p className="text-xs text-slate-500 font-mono">
+                                    {c.phone || c.secondaryPhone || "-"}
+                                    {c.secondaryPhone && c.phone && c.secondaryPhone !== c.phone && (
+                                      <span className="ml-1 text-[11px] text-sky-600 font-sans">({c.secondaryPhone})</span>
+                                    )}
+                                  </p>
                                 </div>
                                 <div className="flex items-center gap-1">
                                   {c.isNew === true && (
@@ -4152,17 +4249,52 @@ export default function AdminPage() {
 
                           {/* Col 2: Customer Phone (5 cols) */}
                           <div className="space-y-1 sm:col-span-5 min-w-0">
-                            <Label htmlFor="custPhone" className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                              <Phone size={12} />
-                              Phone
-                            </Label>
-                            <Input
-                              id="custPhone"
-                              placeholder="Phone number"
-                              value={customerPhone}
-                              readOnly={true}
-                              className="h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all"
-                            />
+                            <div className="flex items-center justify-between text-xs min-h-[16px]">
+                              <Label htmlFor="custPhone" className="flex items-center gap-1.5 text-xs font-medium text-slate-500 shrink-0">
+                                <Phone size={12} className="shrink-0" />
+                                <span>Phone</span>
+                              </Label>
+                              {phoneResolution.isIntlPrimary ? (
+                                <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4 bg-sky-50 text-sky-700 border-sky-200 font-bold flex items-center gap-1 shrink-0">
+                                  <Globe size={9} />
+                                  <span>Intl (ต่างชาติ)</span>
+                                </Badge>
+                              ) : phoneResolution.hasThaiPhone ? (
+                                <span className="text-[9px] text-slate-400 font-medium">TH Mobile</span>
+                              ) : null}
+                            </div>
+                            <div className="relative flex items-center">
+                              <Input
+                                id="custPhone"
+                                placeholder="Phone number"
+                                value={customerPhone || phoneResolution.primaryPhone || ""}
+                                readOnly={true}
+                                className="h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all font-mono"
+                              />
+                            </div>
+                            {/* If customer has an alternate/secondary phone (e.g. international mobile or address contact phone) */}
+                            {phoneResolution.secondaryPhone && (
+                              <div className="flex items-center justify-between gap-1 text-[10px] pt-0.5 text-slate-500 overflow-hidden">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setCustomerPhone(phoneResolution.secondaryPhone!);
+                                  }}
+                                  className="flex items-center gap-1 text-slate-600 hover:text-sky-700 font-mono transition-colors text-left truncate cursor-pointer group"
+                                  title="คลิกเพื่อสลับมาใช้เบอร์นี้สำหรับออเดอร์นี้"
+                                >
+                                  <Globe size={10} className="text-sky-600 shrink-0" />
+                                  <span className="truncate group-hover:underline">{phoneResolution.secondaryPhone}</span>
+                                  <span className="text-[8px] text-slate-400 font-sans shrink-0">(สลับ)</span>
+                                </button>
+                                {phoneResolution.isSecondaryWhatsapp && (
+                                  <span className="text-[8px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200 shrink-0">
+                                    WhatsApp
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -5559,11 +5691,10 @@ export default function AdminPage() {
                                   serviceSpeed,
                                   fee,
                                   discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
+                                  promoCode: appliedPromo?.code || promoCodeInput.trim() || null,
+                                  promoDiscount: appliedPromo ? promoDiscountAmount : 0,
                                   vatType: dialogVatType,
                                   vatRate: dialogVatRate,
-                                  customerName,
-                                  customerPhone,
-                                  deliveryAt: deliveryScheduledTime,
                                 });
 
                                 const cleanOriginalId = editingJobId ? formatJobDisplayId(editingJobId).replace(/^RF-/i, "") : "";
@@ -6169,7 +6300,7 @@ export default function AdminPage() {
                       <div className="flex items-center justify-between gap-3 w-full flex-wrap">
                         {/* Left: Unlock Paid & Refund Action Buttons */}
                         <div className="flex items-center gap-2">
-                          {editingJobId && isPaidJob && isCsoOrAdmin && !activeJob?.refundId && (
+                          {canUnlockPaid && (
                             <Button
                               type="button"
                               variant="outline"
@@ -6687,6 +6818,7 @@ export default function AdminPage() {
           currentLanguage={currentLanguage}
           onCloseComplete={() => {
             const wasDraft = isDraftPreview;
+            lastPaidProformaInfoRef.current = null;
             setIsDraftPreview(false);
             setIsPaymentEvent(false);
             if (!wasDraft && !dialogOpen) {
@@ -6712,6 +6844,7 @@ export default function AdminPage() {
           currentLanguage={currentLanguage}
           onCloseComplete={() => {
             const wasDraft = isDraftPreview;
+            lastPaidProformaInfoRef.current = null;
             setIsDraftPreview(false);
             setIsPaymentEvent(false);
             if (!wasDraft && !dialogOpen) {

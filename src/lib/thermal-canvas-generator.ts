@@ -96,6 +96,12 @@ export async function generateThermalReceiptImage(
           <span>${receiptData.isDraft ? "PROFORMA NO:" : "RECEIPT NO:"}</span>
           <span style="font-family: monospace;">${docId}</span>
         </div>
+        ${!receiptData.isDraft && receiptData.proformaId ? `
+          <div style="display: flex; justify-content: space-between; font-weight: bold; color: #171717;">
+            <span>PROFORMA NO:</span>
+            <span style="font-family: monospace;">${receiptData.proformaRevision && receiptData.proformaRevision > 0 ? `${receiptData.proformaId}-R${receiptData.proformaRevision}` : receiptData.proformaId}</span>
+          </div>
+        ` : ""}
         <div style="display: flex; justify-content: space-between;">
           <span>DATE:</span>
           <span>${formattedDate}</span>

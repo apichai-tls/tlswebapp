@@ -16,6 +16,8 @@ import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { TopUpDialog } from "@/components/top-up-dialog";
 import { addCustomerAddressAction } from "@/actions/db";
+import { CountryCodeInput } from "@/components/ui/country-code-input";
+import { parseFullPhone } from "@/lib/country-codes";
 
 const BANGKOK_DISTRICTS = [
   "Watthana (Thonglor, Ekkamai, Phrom Phong)",
@@ -70,7 +72,7 @@ export function AdminCustomerDialog({
   const [nickName, setNickName] = useState("");
   const [gender, setGender] = useState("Rather not say");
   const [dob, setDob] = useState("");
-  const [customerTier, setCustomerTier] = useState<"member" | "vip" | "standard">("member");
+  const [customerTier, setCustomerTier] = useState<"member" | "vip" | "standard">("standard");
 
   // Dual Phones & Channels
   const [phone, setPhone] = useState("");
@@ -129,7 +131,14 @@ export function AdminCustomerDialog({
 
         setPhone(customer.phone || "");
         setIsWhatsapp(customer.isWhatsapp || false);
-        setSecondaryPhone(customer.secondaryPhone || "");
+        if (customer.secondaryPhone) {
+          const { countryCode, nationalNumber } = parseFullPhone(customer.secondaryPhone);
+          setIntlCountryCode(countryCode || "+1");
+          setSecondaryPhone(nationalNumber || customer.secondaryPhone);
+        } else {
+          setIntlCountryCode("+1");
+          setSecondaryPhone("");
+        }
         setIsSecondaryWhatsapp(customer.isSecondaryWhatsapp || false);
         setLineId(customer.lineId || "");
         setEmail(customer.email || "");
@@ -164,7 +173,7 @@ export function AdminCustomerDialog({
         setNickName("");
         setGender("Rather not say");
         setDob("");
-        setCustomerTier("member");
+        setCustomerTier("standard");
 
         setPhone("");
         setIsWhatsapp(true);
@@ -259,8 +268,16 @@ export function AdminCustomerDialog({
       toast.error("กรุณาระบุชื่อ-นามสกุล (Full Name is required)");
       return;
     }
-    if (!phone.trim()) {
-      toast.error("กรุณาระบุเบอร์โทรศัพท์หลัก (Primary Phone is required)");
+    const cleanPhone = phone.trim();
+    // Combine secondary phone with intl country code if typed
+    let finalSecondaryPhone = secondaryPhone.trim();
+    if (finalSecondaryPhone && !finalSecondaryPhone.startsWith("+") && intlCountryCode) {
+      const code = intlCountryCode.trim().startsWith("+") ? intlCountryCode.trim() : `+${intlCountryCode.trim()}`;
+      finalSecondaryPhone = `${code} ${finalSecondaryPhone}`;
+    }
+
+    if (!cleanPhone && !finalSecondaryPhone) {
+      toast.error("กรุณาระบุเบอร์โทรศัพท์ (ระบุเบอร์ไทย หรือเบอร์ต่างประเทศอย่างน้อย 1 เบอร์)");
       return;
     }
     if (!address.trim()) {
@@ -282,15 +299,9 @@ export function AdminCustomerDialog({
         if (rl) finalPriceListId = rl.id;
       }
 
-      // Combine secondary phone with intl country code if typed
-      let finalSecondaryPhone = secondaryPhone.trim();
-      if (finalSecondaryPhone && !finalSecondaryPhone.startsWith("+") && intlCountryCode) {
-        finalSecondaryPhone = `${intlCountryCode} ${finalSecondaryPhone}`;
-      }
-
       const customerData = {
         name: name.trim().toUpperCase(),
-        phone: phone.trim(),
+        phone: cleanPhone || finalSecondaryPhone || "-",
         brand,
         nickName: nickName.trim() || null,
         gender,
@@ -558,9 +569,9 @@ export function AdminCustomerDialog({
                     onChange={e => setCustomerTier(e.target.value as any)}
                     className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer font-semibold"
                   >
+                    <option value="standard">Standard</option>
                     <option value="member">Regular Member</option>
                     <option value="vip">VIP Gold</option>
-                    <option value="standard">Standard</option>
                   </select>
                 </div>
               </div>
@@ -580,7 +591,7 @@ export function AdminCustomerDialog({
                 <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3 space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-bold text-slate-800 flex items-center gap-1">
-                      <span>🇹🇭</span> Default Thai Mobile <span className="text-rose-500">*</span>
+                      <span>🇹🇭</span> Default Thai Mobile
                     </span>
                     <span className="text-[10px] text-slate-400">Local +66</span>
                   </div>
@@ -595,7 +606,6 @@ export function AdminCustomerDialog({
                       value={phone} 
                       onChange={e => setPhone(e.target.value)} 
                       className="h-9 text-xs border-slate-300 rounded-xl bg-white font-mono font-bold" 
-                      required
                     />
                   </div>
 
@@ -618,32 +628,21 @@ export function AdminCustomerDialog({
                     <span className="font-bold text-slate-800 flex items-center gap-1">
                       <Globe size={13} className="text-sky-600" /> International Mobile (Optional)
                     </span>
-                    <span className="text-[10px] text-slate-400">Search country name/code</span>
+                    <span className="text-[10px] text-slate-400">กรอกรหัสตรงๆ หรือค้นหาประเทศ</span>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <select
+                    <CountryCodeInput
                       value={intlCountryCode}
-                      onChange={e => setIntlCountryCode(e.target.value)}
-                      className="h-9 px-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 shrink-0 cursor-pointer"
-                    >
-                      <option value="+1">US/CA +1</option>
-                      <option value="+44">UK +44</option>
-                      <option value="+81">JP +81</option>
-                      <option value="+82">KR +82</option>
-                      <option value="+65">SG +65</option>
-                      <option value="+86">CN +86</option>
-                      <option value="+61">AU +61</option>
-                      <option value="+49">DE +49</option>
-                      <option value="+33">FR +33</option>
-                      <option value="+971">AE +971</option>
-                    </select>
+                      onChange={setIntlCountryCode}
+                      className="shrink-0"
+                    />
                     <Input 
                       type="tel"
                       placeholder="Phone number" 
                       value={secondaryPhone} 
                       onChange={e => setSecondaryPhone(e.target.value)} 
-                      className="h-9 text-xs border-slate-300 rounded-xl bg-white font-mono" 
+                      className="h-9 text-xs border-slate-300 rounded-xl bg-white font-mono flex-1" 
                     />
                   </div>
 

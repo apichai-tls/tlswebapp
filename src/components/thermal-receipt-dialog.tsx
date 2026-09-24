@@ -235,10 +235,10 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   if (isRfJob) {
     rawProformaId = cleanProformaNumber(rawProformaId) || (cleanOriginalId ? `PR-${cleanOriginalId}` : undefined);
   } else if (!rawProformaId) {
-    rawProformaId = (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : undefined);
+    rawProformaId = (job.id && job.id !== "DRAFT" && Boolean((job as any).isPaid || (job as any).isShopPaid) ? generateProformaBaseNumber(job.id) : undefined);
   }
-  const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : "");
-  const revisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
+  const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (job.id && job.id !== "DRAFT" && Boolean((job as any).isPaid || (job as any).isShopPaid) ? generateProformaBaseNumber(job.id) : "");
+  const revisionMatch = job.remark?.match(/(?:Revision:\s*|Proforma:\s*PR-[^\s|]+-R)(\d+)/i);
   const parsedRevision = ((job as any).proformaRevision != null && (job as any).proformaRevision !== "")
     ? Number((job as any).proformaRevision)
     : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);

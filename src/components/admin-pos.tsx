@@ -83,7 +83,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId, computeCartHash } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -2126,7 +2126,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         rawProformaId = (latestJob.id ? generateProformaBaseNumber(latestJob.id) : undefined);
       }
       const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (latestJob.id ? generateProformaBaseNumber(latestJob.id) : "");
-      const revisionMatch = latestJob.remark?.match(/Revision:\s*(\d+)/i);
+      const revisionMatch = latestJob.remark?.match(/(?:Revision:\s*|Proforma:\s*PR-[^\s|]+-R)(\d+)/i);
       const parsedRev = latestJob.proformaRevision !== undefined ? Number(latestJob.proformaRevision) : (revisionMatch ? parseInt(revisionMatch[1], 10) : 0);
       const jobProformaRevision = isRfJob ? Math.max(1, parsedRev || 1) : parsedRev;
 
@@ -2193,7 +2193,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       proformaId: displayProforma,
       createdAt: draftDate,
       customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
-      customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
+      customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
       deliveryAddress: resolvedDraftAddress,
       items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
       subtotal: subtotal,
@@ -2287,7 +2287,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     await new Promise(resolve => setTimeout(resolve, 800));
 
     try {
-      const currentCartHash = JSON.stringify(cart.map(it => ({ id: it.id, q: it.quantity, price: it.price })));
+      const isDeliveryCheck = Boolean(deliveryServiceType);
+      const currentCartHash = computeCartHash({
+        items: cart.map(it => ({ id: it.id, name: it.name, quantity: it.quantity, price: it.price })),
+        serviceSpeed,
+        fee: isDeliveryCheck ? (parseFloat(localDeliveryPrice) || 0) : 0,
+        discountPercent,
+        promoCode: appliedPromo?.code || promoCodeInput.trim() || null,
+        promoDiscount: appliedPromo ? effectivePromoDiscount : 0,
+        vatType,
+        vatRate,
+      });
       const cartChangedAfterProforma = Boolean(proformaReceiptNumber && lastProformaCartHash && (currentCartHash !== lastProformaCartHash));
 
       let targetProformaNum = proformaReceiptNumber;
@@ -2327,7 +2337,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               proformaRevision: effectiveRevision,
               createdAt: new Date(),
               customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
-              customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
+              customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
               deliveryAddress: resolvedTempAddress,
               items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
               subtotal: subtotal,
@@ -2589,7 +2599,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           type: targetType,
           customerId: selectedCustomer?.id,
           customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
-          customerPhone: selectedCustomer ? selectedCustomer.phone : "-",
+          customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
           pickupLocation: targetPickupLoc,
           dropoffLocation: resolvedDropoff,
           deliveryAddress: isDelivery ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined) : undefined,
@@ -4630,7 +4640,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 onClick={() => {
                   playAudioFeedback("click");
 
-                  const cartHash = JSON.stringify(cart.map(it => ({ id: it.id, q: it.quantity, price: it.price })));
+                  const isDeliveryCheck = Boolean(deliveryServiceType);
+                  const cartHash = computeCartHash({
+                    items: cart.map(it => ({ id: it.id, name: it.name, quantity: it.quantity, price: it.price })),
+                    serviceSpeed,
+                    fee: isDeliveryCheck ? (parseFloat(localDeliveryPrice) || 0) : 0,
+                    discountPercent,
+                    promoCode: appliedPromo?.code || promoCodeInput.trim() || null,
+                    promoDiscount: appliedPromo ? effectivePromoDiscount : 0,
+                    vatType,
+                    vatRate,
+                  });
 
                   let targetProformaNum = proformaReceiptNumber;
                   let targetRevision = proformaRevision;
