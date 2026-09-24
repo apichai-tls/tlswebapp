@@ -394,7 +394,11 @@ export function ThermalReceiptDialog({
       ? `DRAFT_draft_rev${snapshotData.proformaRevision || 0}_${Date.now()}`
       : `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
 
-    if (!snapshotData.autoCapture && !snapshotData.isDraft) return;
+    const shouldCapture =
+      snapshotData.isDraft ||
+      snapshotData.autoCapture ||
+      (!snapshotData.isDraft && snapshotData.isPaid);
+    if (!shouldCapture) return;
 
     if (capturedKeysRef.current.has(captureKey)) return;
     capturedKeysRef.current.add(captureKey); // Lock immediately to prevent duplicate runs on re-render
@@ -939,6 +943,13 @@ export function ThermalReceiptDialog({
               );
             }
           })()}
+          {/* Member Wallet Balance on Receipt */}
+          {!receiptData.isDraft && receiptData.isMember && receiptData.walletBalance !== undefined && (
+            <div className={`w-full flex justify-between font-bold text-neutral-900 border-t border-b border-dashed border-neutral-400/50 py-1 my-1 ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")}`}>
+              <span>{currentLanguage === "en" ? "MEMBER BALANCE:" : "ยอดคงเหลือสมาชิก:"}</span>
+              <span className="font-mono">฿{formatCurrency(receiptData.walletBalance)}</span>
+            </div>
+          )}
           {cleanRemarkForDisplay(receiptData.remark) && (
             <div className={`${isA5 ? "text-xs p-2" : (isSmall ? "text-[8px] p-1" : "text-[9px] p-1.5")} text-neutral-800 font-medium text-left mt-2 bg-neutral-100 rounded border border-neutral-400 w-full leading-tight`}>
               <span className="font-bold text-black">REMARK:</span> {cleanRemarkForDisplay(receiptData.remark)}

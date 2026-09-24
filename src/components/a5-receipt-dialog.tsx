@@ -90,11 +90,6 @@ export function A5ReceiptDialog({
             snapshotData.proformaRevision || 0
           }`;
 
-    if (snapshotData.autoCapture || snapshotData.isDraft) {
-      if (capturedKeysRef.current.has(captureKey)) return;
-      capturedKeysRef.current.add(captureKey);
-    }
-
     const filename = snapshotData.isDraft
       ? `proforma-${
           snapshotData.proformaId && snapshotData.proformaId !== "DRAFT"
@@ -102,6 +97,15 @@ export function A5ReceiptDialog({
             : targetJobId
         }-rev${snapshotData.proformaRevision || 0}.png`
       : `receipt-${targetJobId}.png`;
+
+    const shouldCapture =
+      snapshotData.isDraft ||
+      snapshotData.autoCapture ||
+      (!snapshotData.isDraft && snapshotData.isPaid);
+
+    if (!shouldCapture) return;
+
+    if (capturedKeysRef.current.has(captureKey)) return;
 
     const uploadAndSave = async (blob: Blob) => {
       const { jobStore } = await import("@/lib/store");
@@ -168,16 +172,38 @@ export function A5ReceiptDialog({
             await jobStore.updateJobDetails(targetJob.id, {
               billImageUrl: JSON.stringify(newBills),
             });
+            try {
+              const { api } = await import("@/lib/api");
+              await api.updateJob(targetJob.id, {
+                billImageUrl: JSON.stringify(newBills),
+              } as any);
+            } catch {}
           }
         }
       }
     };
 
     const runCapture = async () => {
+      // Avoid duplicate capture if current job in store already has this exact filename
+      const { jobStore } = await import("@/lib/store");
+      const currentJob = jobStore.getSnapshot().find((j: any) => j.id === targetJobId || (rawJobId && j.id === rawJobId));
+      if (currentJob && currentJob.billImageUrl) {
+        try {
+          const parsed = JSON.parse(currentJob.billImageUrl);
+          const existingBills = Array.isArray(parsed) ? parsed : [parsed];
+          if (existingBills.some((url: string) => url.includes(filename))) {
+            capturedKeysRef.current.add(captureKey);
+            return;
+          }
+        } catch {}
+      }
+
+      capturedKeysRef.current.add(captureKey);
+
       try {
         const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
         const blob = await generateA5ReceiptImage(snapshotData, activeShop);
-        if (blob && open && (snapshotData.autoCapture || snapshotData.isDraft)) {
+        if (blob) {
           uploadAndSave(blob).catch((err) =>
             console.error("Background receipt upload failed:", err)
           );
@@ -187,11 +213,9 @@ export function A5ReceiptDialog({
       }
     };
 
-    if (snapshotData.autoCapture || snapshotData.isDraft) {
-      setTimeout(() => {
-        runCapture();
-      }, 50);
-    }
+    setTimeout(() => {
+      runCapture();
+    }, 50);
   }, [open, receiptData, activeShop, onBillImageUploaded]);
 
   // Reset captured keys on close
@@ -455,42 +479,59 @@ export function A5ReceiptContent({
     ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? 1 : 0) +
     (receiptData.vatRate > 0 ? 1 : 0);
   const paymentLines = payments.length > 0 ? payments.length + 1 : 0;
+
   // ── Dynamic Adaptive Density / Compaction Calculation ───────────────────────
   // Step 1: Calculate total estimated height under 100% standard (Normal) styling
-  const normalHeaderHeight = 125;
-  const normalCustomerHeight = 48 + (receiptData.deliveryAddress ? 16 : 0);
-  const normalTableHeaderHeight = 26;
-  const normalItemRowHeight = 25; // py-1 (8px) + line-height (16px) + border (1px)
-  const normalCategoryHeaderHeight = 18;
-  const normalItemsHeight = receiptData.items.length * normalItemRowHeight + groupedItems.length * normalCategoryHeaderHeight;
+  const normalContentPadding = 48; // 24px top + 24px bottom
+  const normalHeaderMargin = 12; // mb-3
+  const normalDividerMargin = 13; // 1px border + mb-3
+  const normalCustomerMargin = 12; // mb-3
+  const normalTableMargin = 12; // mb-3
+  const normalTotalsMargin = 12; // mb-3
+  const normalFooterBorder = 7; // pt-1.5 + border-t
+
+  const normalHeaderHeight = 125 + normalHeaderMargin + normalDividerMargin;
+  const normalCustomerHeight =
+    50 +
+    (receiptData.deliveryAddress ? (receiptData.deliveryAddress.length > 35 ? 32 : 18) : 0) +
+    normalCustomerMargin;
+  const normalTableHeaderHeight = 28;
+  const normalItemRowHeight = 26; // py-1 (8px) + line-height (17px) + border (1px)
+  const normalCategoryHeaderHeight = 26; // py-1 (8px) + line-height (16px) + borders (2px)
+  const normalItemsHeight =
+    receiptData.items.length * normalItemRowHeight +
+    groupedItems.length * normalCategoryHeaderHeight +
+    normalTableMargin;
+
   const normalTotalsRowHeight = 20;
   const normalTotalsBaseHeight =
-    56 +
-    transportFeeItems.length * normalTotalsRowHeight +
-    (receiptData.expressSurcharge > 0 ? normalTotalsRowHeight : 0) +
-    (receiptData.discount > 0 ? normalTotalsRowHeight : 0) +
-    ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? normalTotalsRowHeight : 0) +
-    (receiptData.vatRate > 0 ? normalTotalsRowHeight : 0);
+    50 +
+    extraTotalsLines * normalTotalsRowHeight +
+    normalTotalsMargin;
+
   const normalPaymentsHeight =
     payments.length > 0
       ? payments.length * normalTotalsRowHeight + 38
       : !isPaidEffective && !receiptData.isDraft && (receiptData.total || 0) > 0
-      ? 20
+      ? 26
       : 0;
+
   const normalQrOrWalletHeight = (receiptData.isDraft && !isPaidEffective)
     ? isMember
       ? isWalletSufficient
-        ? 62
-        : 88
+        ? 68
+        : 98 // QR box: 72px image + 16px padding + 2px border + 8px margin
       : activeShop?.proformaQrUrl
-      ? 88
+      ? 98
       : 0
-    : (receiptData.isDraft && isPaidEffective ? 26 : 0);
+    : (receiptData.isDraft && isPaidEffective ? 32 : 0);
+
+  const normalMemberBalanceHeight = (!receiptData.isDraft && isMember) ? 38 : 0;
   const normalVoidHeight = receiptData.status === "cancel" ? 35 : 0;
-  const normalFooterHeight = 28;
-  const normalContentPadding = 48; // 24px top + 24px bottom
+  const normalFooterHeight = 25 + normalFooterBorder;
 
   const estimatedNormalHeight =
+    normalContentPadding +
     normalHeaderHeight +
     normalCustomerHeight +
     normalTableHeaderHeight +
@@ -498,20 +539,20 @@ export function A5ReceiptContent({
     normalTotalsBaseHeight +
     normalPaymentsHeight +
     normalQrOrWalletHeight +
+    normalMemberBalanceHeight +
     normalVoidHeight +
-    normalFooterHeight +
-    normalContentPadding;
+    normalFooterHeight;
 
   const A5_MAX_HEIGHT = 793;
 
   // Only reduce font size / padding when the content actually starts to exceed A5 page capacity!
-  // Compact mode: triggers when normal height exceeds 745px (starting to overflow A5)
-  // UltraCompact mode: triggers when normal height exceeds 860px (very long orders)
-  const isCompact = estimatedNormalHeight > 745 && estimatedNormalHeight <= 860;
-  const isUltraCompact = estimatedNormalHeight > 860;
+  // Compact mode: triggers when normal height exceeds 620px (prevents any bottom overflow on medium/categorized orders)
+  // UltraCompact mode: triggers when normal height exceeds 750px (very long orders, 10+ items)
+  const isCompact = estimatedNormalHeight > 620 && estimatedNormalHeight <= 750;
+  const isUltraCompact = estimatedNormalHeight > 750;
 
   // Dynamic styling tokens based on compaction mode
-  const outerPadding = isUltraCompact ? "12px 18px" : isCompact ? "16px 22px" : "24px 28px";
+  const outerPadding = isUltraCompact ? "10px 16px" : isCompact ? "14px 20px" : "24px 28px";
   const headerMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
   const logoClass = isUltraCompact ? "h-6" : isCompact ? "h-7" : "h-9";
   const customerMargin = isUltraCompact ? "mb-1" : isCompact ? "mb-1.5" : "mb-3";
@@ -523,47 +564,54 @@ export function A5ReceiptContent({
   const totalsRowClass = isUltraCompact ? "py-0 text-[9.5px]" : isCompact ? "py-0.5 text-[10.5px]" : "py-0.5 text-xs";
   const grandTotalClass = isUltraCompact ? "py-0.5 text-xs font-black" : isCompact ? "py-0.5 text-[13px] font-black" : "py-1 text-sm font-black";
   const paymentsRowClass = isUltraCompact ? "py-0 text-[9px]" : isCompact ? "py-0.5 text-[10px]" : "py-0.5 text-xs";
-  const qrBoxClass = isUltraCompact ? "p-1 mb-1 gap-2 rounded-lg" : isCompact ? "p-1.5 mb-1.5 gap-2.5 rounded-xl" : "p-2 mb-2 gap-3 rounded-xl";
-  const qrImageClass = isUltraCompact ? "h-11 w-11" : isCompact ? "h-14 w-14" : "h-18 w-18";
+  const qrBoxClass = isUltraCompact ? "p-1 mb-1 gap-2 rounded-lg" : isCompact ? "p-1.5 mb-1.5 gap-2.5 rounded-lg" : "p-2 mb-2 gap-3 rounded-xl";
+  const qrImageClass = isUltraCompact ? "h-11 w-11" : isCompact ? "h-13 w-13" : "h-18 w-18";
   const qrTitleClass = `font-bold text-neutral-400 uppercase tracking-widest ${isUltraCompact ? "text-[8px]" : "text-[9px]"}`;
   const qrAmountClass = `font-black text-neutral-900 ${isUltraCompact ? "text-xs" : isCompact ? "text-[13px]" : "text-sm"}`;
   const qrSubtextClass = `leading-tight text-neutral-400 ${isUltraCompact ? "text-[8px]" : "text-[9px]"}`;
 
   // Step 2: Accurate height calculation based on chosen compaction mode
-  const headerHeight = isUltraCompact ? 95 : isCompact ? 110 : normalHeaderHeight;
-  const customerHeight = (isUltraCompact ? 38 : isCompact ? 44 : normalCustomerHeight) + (receiptData.deliveryAddress ? (isUltraCompact ? 12 : isCompact ? 14 : 16) : 0);
+  const contentPadding = isUltraCompact ? 20 : isCompact ? 28 : normalContentPadding;
+  const headerHeight = isUltraCompact ? 105 : isCompact ? 122 : normalHeaderHeight;
+  const customerHeight =
+    (isUltraCompact ? 40 : isCompact ? 46 : 50) +
+    (receiptData.deliveryAddress ? (isUltraCompact ? 14 : isCompact ? 16 : 20) : 0) +
+    (isUltraCompact ? 4 : isCompact ? 6 : 12);
   const tableHeaderHeight = isUltraCompact ? 18 : isCompact ? 22 : normalTableHeaderHeight;
-  const categoryHeaderHeight = isUltraCompact ? 13 : isCompact ? 15 : normalCategoryHeaderHeight;
-  const itemRowHeight = isUltraCompact ? 16 : isCompact ? 19 : normalItemRowHeight;
-  const itemsHeight = receiptData.items.length * itemRowHeight + groupedItems.length * categoryHeaderHeight;
+  const categoryHeaderHeight = isUltraCompact ? 16 : isCompact ? 19 : normalCategoryHeaderHeight;
+  const itemRowHeight = isUltraCompact ? 17 : isCompact ? 20 : normalItemRowHeight;
+  const itemsHeight =
+    receiptData.items.length * itemRowHeight +
+    groupedItems.length * categoryHeaderHeight +
+    (isUltraCompact ? 4 : isCompact ? 6 : 12);
   const totalsRowHeight = isUltraCompact ? 14 : isCompact ? 17 : normalTotalsRowHeight;
   const totalsBaseHeight =
-    (isUltraCompact ? 40 : isCompact ? 48 : 56) +
-    transportFeeItems.length * totalsRowHeight +
-    (receiptData.expressSurcharge > 0 ? totalsRowHeight : 0) +
-    (receiptData.discount > 0 ? totalsRowHeight : 0) +
-    ((receiptData.promoDiscount && receiptData.promoDiscount > 0) ? totalsRowHeight : 0) +
-    (receiptData.vatRate > 0 ? totalsRowHeight : 0);
+    (isUltraCompact ? 35 : isCompact ? 42 : 50) +
+    extraTotalsLines * totalsRowHeight +
+    (isUltraCompact ? 4 : isCompact ? 6 : 12);
   const paymentsHeight =
     payments.length > 0
-      ? payments.length * totalsRowHeight + (isUltraCompact ? 28 : isCompact ? 32 : 38)
+      ? payments.length * totalsRowHeight + (isUltraCompact ? 26 : isCompact ? 30 : 38)
       : !isPaidEffective && !receiptData.isDraft && (receiptData.total || 0) > 0
-      ? (isUltraCompact ? 16 : 20)
+      ? (isUltraCompact ? 16 : isCompact ? 20 : 26)
       : 0;
   const qrOrWalletHeight = (receiptData.isDraft && !isPaidEffective)
     ? isMember
       ? isWalletSufficient
-        ? (isUltraCompact ? 42 : isCompact ? 50 : 62)
-        : (isUltraCompact ? 54 : isCompact ? 68 : 88)
+        ? (isUltraCompact ? 44 : isCompact ? 54 : 68)
+        : (isUltraCompact ? 58 : isCompact ? 76 : 98)
       : activeShop?.proformaQrUrl
-      ? (isUltraCompact ? 54 : isCompact ? 68 : 88)
+      ? (isUltraCompact ? 58 : isCompact ? 76 : 98)
       : 0
-    : (receiptData.isDraft && isPaidEffective ? (isUltraCompact ? 20 : 26) : 0);
+    : (receiptData.isDraft && isPaidEffective ? (isUltraCompact ? 22 : isCompact ? 28 : 32) : 0);
+  const memberBalanceHeight = (!receiptData.isDraft && isMember)
+    ? (isUltraCompact ? 24 : isCompact ? 30 : 38)
+    : 0;
   const voidHeight = receiptData.status === "cancel" ? (isUltraCompact ? 26 : 35) : 0;
-  const footerHeight = isUltraCompact ? 22 : normalFooterHeight;
-  const contentPadding = isUltraCompact ? 24 : isCompact ? 32 : normalContentPadding;
+  const footerHeight = (isUltraCompact ? 20 : isCompact ? 22 : 25) + (isUltraCompact ? 4 : isCompact ? 5 : 7);
 
   const estimatedTotalHeight =
+    contentPadding +
     headerHeight +
     customerHeight +
     tableHeaderHeight +
@@ -571,13 +619,13 @@ export function A5ReceiptContent({
     totalsBaseHeight +
     paymentsHeight +
     qrOrWalletHeight +
+    memberBalanceHeight +
     voidHeight +
-    footerHeight +
-    contentPadding;
+    footerHeight;
 
   const scale =
-    estimatedTotalHeight > A5_MAX_HEIGHT
-      ? Math.max(0.5, (A5_MAX_HEIGHT - 6) / estimatedTotalHeight)
+    estimatedTotalHeight > (A5_MAX_HEIGHT - 6)
+      ? Math.max(0.45, (A5_MAX_HEIGHT - 6) / estimatedTotalHeight)
       : 1;
 
   const remainingBalance = Math.max(0, (receiptData.total || 0) - totalPaid);
@@ -597,13 +645,13 @@ export function A5ReceiptContent({
       <div
         style={{
           width: scale < 1 ? `${Math.round(559 / scale)}px` : "559px",
-          minHeight: scale < 1 ? `${Math.round(A5_MAX_HEIGHT / scale)}px` : `${A5_MAX_HEIGHT}px`,
+          height: scale < 1 ? `${Math.round(A5_MAX_HEIGHT / scale)}px` : `${A5_MAX_HEIGHT}px`,
           transform: scale < 1 ? `scale(${scale})` : undefined,
           transformOrigin: "top left",
           padding: outerPadding,
           boxSizing: "border-box",
         }}
-        className="flex flex-col h-full bg-white relative justify-between"
+        className="flex flex-col bg-white relative justify-between"
       >
         {/* PAID Watermark Stamp in center */}
         {isPaidEffective && !receiptData.isDraft && receiptData.status !== "cancel" && (
@@ -912,6 +960,54 @@ export function A5ReceiptContent({
 
         {/* Footer — anchored cleanly at bottom */}
         <div className="shrink-0 mt-auto pt-1.5 border-t border-neutral-200">
+          {/* Member Remaining Balance — on Receipt when customer is a Member */}
+          {!receiptData.isDraft && isMember && (
+            <div
+              className={`flex items-center justify-between border border-indigo-200 bg-indigo-50/70 shrink-0 ${
+                isUltraCompact
+                  ? "p-1 mb-1 gap-2 rounded-lg"
+                  : isCompact
+                  ? "p-1.5 mb-1.5 gap-2.5 rounded-lg"
+                  : "p-2 mb-2 gap-3 rounded-xl"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className={`bg-indigo-100 text-indigo-600 rounded-lg shrink-0 ${
+                    isUltraCompact ? "p-1" : isCompact ? "p-1.5" : "p-1.5"
+                  }`}
+                >
+                  <Wallet size={isUltraCompact ? 13 : isCompact ? 15 : 16} />
+                </div>
+                <div>
+                  <p
+                    className={`font-bold text-indigo-900 uppercase tracking-wider leading-tight ${
+                      isUltraCompact ? "text-[8.5px]" : "text-[9.5px]"
+                    }`}
+                  >
+                    {currentLanguage === "en" ? "Member Remaining Balance" : "ยอดเงินคงเหลือในกระเป๋าสมาชิก (Wallet)"}
+                  </p>
+                  <p
+                    className={`text-neutral-500 font-medium leading-tight ${
+                      isUltraCompact ? "text-[7.5px]" : "text-[8.5px]"
+                    }`}
+                  >
+                    {currentLanguage === "en" ? "Available credit in wallet" : "ยอดเงินคงเหลือที่สามารถใช้ได้"}
+                  </p>
+                </div>
+              </div>
+              <div className="text-right">
+                <span
+                  className={`font-mono font-black text-indigo-950 ${
+                    isUltraCompact ? "text-xs" : isCompact ? "text-[13px]" : "text-sm"
+                  }`}
+                >
+                  ฿{formatCurrency(walletBalance)}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* If Proforma is already paid in full, show clean paid badge instead of duplicate SCAN TO PAY */}
           {receiptData.isDraft && isPaidEffective && (
             <div className={`flex items-center justify-between border border-emerald-200 rounded-lg bg-emerald-50/70 text-emerald-800 shrink-0 ${isUltraCompact ? "p-1 mb-1 text-[9px]" : "p-1.5 mb-1 text-[10px]"}`}>

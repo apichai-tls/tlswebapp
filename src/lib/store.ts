@@ -117,6 +117,7 @@ export interface Customer {
   dob?: string | null;
   taxId?: string | null;
   companyName?: string | null;
+  passwordHash?: string | null;
   createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
   memberStartDate?: Date | string | null;
@@ -160,6 +161,7 @@ export interface Job {
   source?: "app" | "pos";
   brand?: string | null;
   totalAmount?: number; // Customer price
+  weight?: number | null;
   paymentMethod?: "cash" | "transfer" | "credit" | "card";
   paymentChannel?: string;
   isPaid?: boolean;

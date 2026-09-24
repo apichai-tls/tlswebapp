@@ -45,6 +45,25 @@ import {
   jobStore 
 } from "@/lib/store";
 import { formatCurrency, formatJobDisplayId } from "@/lib/utils";
+import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { type ReceiptData } from "@/components/thermal-receipt-dialog";
+
+export function getCleanBranchName(rawName?: string | null): string {
+  if (!rawName || rawName === "-") return "-";
+  // Matches "That Laundry Shop (15 Sukhumvit Residences)" or any "Prefix (Branch)"
+  const parenMatch = rawName.match(/\(([^)]+)\)/);
+  if (parenMatch && parenMatch[1]?.trim()) {
+    return parenMatch[1].trim();
+  }
+  // Matches "That Laundry Shop - Branch Name"
+  const dashParts = rawName.split(/[-–—]/);
+  if (dashParts.length > 1 && /that\s*laundry\s*shop|tls/i.test(dashParts[0])) {
+    return dashParts.slice(1).join("-").trim();
+  }
+  // Strip "That Laundry Shop" or "TLS" prefix
+  const stripped = rawName.replace(/^(that\s*laundry\s*shop|tls)\s+/i, "").trim();
+  return stripped || rawName;
+}
 
 type DatePreset = "today" | "yesterday" | "7days" | "30days" | "thisMonth" | "lastMonth" | "custom";
 type ApprovalStatusFilter = "all" | "PENDING" | "APPROVED" | "REJECTED";
@@ -98,6 +117,8 @@ interface ReportsWalletApprovalsProps {
 export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: ReportsWalletApprovalsProps) {
   const { user } = useAuth();
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const customers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
+  const jobs = useSyncExternalStore(jobStore.subscribe, jobStore.getSnapshot, jobStore.getSnapshot);
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
 
   // Permission check
@@ -132,6 +153,65 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
   const [rejectReason, setRejectReason] = useState("");
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [inspectTx, setInspectTx] = useState<WalletTransactionItem | null>(null);
+
+  // Top-Up Receipt Dialog state
+  const [previewReceiptData, setPreviewReceiptData] = useState<ReceiptData | null>(null);
+  const [isReceiptOpen, setIsReceiptOpen] = useState(false);
+  const [receiptActiveShop, setReceiptActiveShop] = useState<any>(null);
+
+  const handleOpenTopUpReceipt = (tx: WalletTransactionItem) => {
+    const customerObj = customers.find((c) => c.id === tx.customerId);
+    const linkedJob = tx.referenceId ? jobs.find(j => j.id === tx.referenceId || j.billNo === tx.referenceId) : null;
+    const effectiveBranchId = tx.branchId || linkedJob?.branchId;
+    const branchObj = shops.find((s) => s.id === effectiveBranchId || s.name === tx.branchId) || shops[0] || null;
+    const receiptNo = tx.referenceId || `TU-${tx.id.slice(0, 8).toUpperCase()}`;
+    const paidAmount = Math.max(0, (tx.amount || 0) - (tx.bonusAmount || 0));
+
+    const rdata: ReceiptData = {
+      id: receiptNo,
+      receiptNumber: receiptNo,
+      createdAt: new Date(tx.createdAt),
+      customerName: tx.customerName || customerObj?.name || "Customer",
+      customerPhone: customerObj?.phone || "-",
+      customerId: tx.customerId,
+      deliveryAddress: customerObj?.defaultAddress || null,
+      items: [
+        {
+          name: tx.packageName ? `Package: ${tx.packageName}` : "Member Wallet Top-Up",
+          quantity: 1,
+          price: paidAmount,
+          total: paidAmount,
+          category: "PACKAGE",
+        } as any,
+      ],
+      subtotal: paidAmount,
+      expressSurcharge: 0,
+      discount: 0,
+      total: paidAmount,
+      isPaid: true,
+      paymentChannel: tx.paymentChannel || "Transfer",
+      isDraft: false,
+      vatType: "none",
+      vatRate: 0,
+      vatAmount: 0,
+      walletBalance: tx.balanceAfter,
+      isMember: true,
+      status: "completed",
+      serviceSpeed: "standard",
+    };
+
+    setReceiptActiveShop(branchObj ? {
+      id: branchObj.id,
+      name: branchObj.name,
+      address: branchObj.addressFull || branchObj.address,
+      phone: branchObj.phone,
+      taxId: branchObj.taxId,
+      logoUrl: branchObj.logoUrl,
+    } : null);
+
+    setPreviewReceiptData(rdata);
+    setIsReceiptOpen(true);
+  };
 
   // Update internal branch filter when prop changes
   useEffect(() => {
@@ -378,7 +458,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
       const d = new Date(tx.createdAt);
       const dateStr = format(d, "yyyy-MM-dd");
       const timeStr = format(d, "HH:mm:ss");
-      const shopName = shops.find((s) => s.id === tx.branchId)?.name || tx.branchId || "-";
+      const shopName = getCleanBranchName(shops.find((s) => s.id === tx.branchId)?.name || tx.branchId);
       const approvedAtStr = tx.approvedAt ? format(new Date(tx.approvedAt), "yyyy-MM-dd HH:mm") : "-";
 
       csv += `"${dateStr}","${timeStr}","${tx.customerName || "-"}","${tx.type}","${tx.direction}","${tx.amount}","${tx.balanceBefore}","${tx.balanceAfter}","${tx.referenceId || "-"}","${(tx.reason || "").replace(/"/g, '""')}","${shopName}","${tx.createdByName || "-"}","${tx.approvalStatus}","${tx.approvedByName || "-"}","${approvedAtStr}"\n`;
@@ -480,7 +560,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
               <option value="all">All Branches</option>
               {shops.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name}
+                  {getCleanBranchName(s.name)}
                 </option>
               ))}
             </select>
@@ -720,7 +800,10 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                   const isApproved = tx.approvalStatus === "APPROVED";
                   const isRejected = tx.approvalStatus === "REJECTED";
                   const isCredit = tx.direction === "CREDIT";
-                  const branchObj = shops.find((s) => s.id === tx.branchId);
+                  const linkedJob = tx.referenceId ? jobs.find(j => j.id === tx.referenceId || j.billNo === tx.referenceId) : null;
+                  const effectiveBranchId = tx.branchId || linkedJob?.branchId;
+                  const branchObj = shops.find((s) => s.id === effectiveBranchId || s.name === tx.branchId);
+                  const cleanBranch = getCleanBranchName(branchObj?.name || (tx.branchId && !shops.some(s => s.id === tx.branchId) ? tx.branchId : null));
 
                   const taskMatch = tx.rejectReason?.match(/\[Task:\s*([^\]]+)\]/i);
                   const linkedTaskId = taskMatch ? taskMatch[1].trim() : null;
@@ -745,7 +828,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                       {/* Branch */}
                       <TableCell className="py-3.5 text-xs text-slate-600">
                         <span className="font-semibold text-slate-700 dark:text-slate-300">
-                          {branchObj?.name || "-"}
+                          {cleanBranch}
                         </span>
                       </TableCell>
 
@@ -849,8 +932,8 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                       </TableCell>
 
                       {/* Reason / Slip */}
-                      <TableCell className="py-3.5 text-xs text-slate-600 max-w-[200px]">
-                        <div className="flex items-center gap-2">
+                      <TableCell className="py-3.5 text-xs text-slate-600 max-w-[220px]">
+                        <div className="flex items-start gap-2">
                           {tx.slipImageUrl && (
                             <button
                               type="button"
@@ -858,7 +941,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                                 e.stopPropagation();
                                 setPreviewSlipUrl(tx.slipImageUrl || null);
                               }}
-                              className="w-8 h-8 rounded-lg overflow-hidden border border-slate-200 hover:ring-2 hover:ring-indigo-400 shrink-0 cursor-pointer"
+                              className="w-8 h-8 rounded-lg overflow-hidden border border-slate-200 hover:ring-2 hover:ring-indigo-400 shrink-0 cursor-pointer mt-0.5"
                               title="Click to view transfer slip"
                             >
                               <img
@@ -868,8 +951,24 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                               />
                             </button>
                           )}
-                          <div className="truncate text-slate-700 dark:text-slate-300 text-[11px]" title={tx.reason || ""}>
-                            {tx.reason || (tx.type === "TOPUP" ? `Top-up ${tx.packageName || ""}` : "-")}
+                          <div className="flex flex-col min-w-0">
+                            <div className="truncate text-slate-700 dark:text-slate-300 text-[11px] font-medium" title={tx.reason || ""}>
+                              {tx.reason || (tx.type === "TOPUP" ? `Top-up ${tx.packageName || ""}` : "-")}
+                            </div>
+                            {tx.type === "TOPUP" && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenTopUpReceipt(tx);
+                                }}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 hover:text-indigo-900 border border-indigo-200/80 dark:border-indigo-800 px-1.5 py-0.5 rounded mt-1 cursor-pointer transition-colors shadow-2xs w-fit"
+                                title="ดูใบเสร็จรับเงิน A5 (Click to view Receipt)"
+                              >
+                                <Receipt size={11} className="text-indigo-600 shrink-0" />
+                                <span>Receipt: {tx.referenceId || "TU-Receipt"}</span>
+                              </button>
+                            )}
                           </div>
                         </div>
                       </TableCell>
@@ -1210,7 +1309,10 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
             const isPending = inspectTx.approvalStatus === "PENDING";
             const isApproved = inspectTx.approvalStatus === "APPROVED";
             const isRejected = inspectTx.approvalStatus === "REJECTED";
-            const branchObj = shops.find((s) => s.id === inspectTx.branchId);
+            const linkedJob = inspectTx.referenceId ? jobs.find(j => j.id === inspectTx.referenceId || j.billNo === inspectTx.referenceId) : null;
+            const effectiveBranchId = inspectTx.branchId || linkedJob?.branchId;
+            const branchObj = shops.find((s) => s.id === effectiveBranchId || s.name === inspectTx.branchId);
+            const cleanBranch = getCleanBranchName(branchObj?.name || (inspectTx.branchId && !shops.some(s => s.id === inspectTx.branchId) ? inspectTx.branchId : null));
             const cleanReject = inspectTx.rejectReason?.replace(/\s*\[Task:\s*[^\]]+\]/i, "").trim() || "";
 
             return (
@@ -1250,7 +1352,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                     </div>
                     <div>
                       <div className="text-[11px] font-medium text-slate-400">สาขา (Branch)</div>
-                      <div className="font-bold text-slate-800 dark:text-slate-200">{branchObj?.name || "-"}</div>
+                      <div className="font-bold text-slate-800 dark:text-slate-200">{cleanBranch}</div>
                       <div className="text-[11px] text-slate-400">โดย: {inspectTx.createdByName || "System"}</div>
                     </div>
                   </div>
@@ -1337,6 +1439,34 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                     </div>
                   )}
 
+                  {/* Top-Up Receipt section */}
+                  {isTopUp && (
+                    <div className="p-3.5 bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/60 rounded-xl flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-2 bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 rounded-lg">
+                          <Receipt size={18} />
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                            ใบเสร็จรับเงิน (Top-Up Receipt)
+                          </div>
+                          <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-mono">
+                            {inspectTx.referenceId ? `Receipt No: ${inspectTx.referenceId}` : "Receipt generated"}
+                          </div>
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => handleOpenTopUpReceipt(inspectTx)}
+                        className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold gap-1.5 shadow-2xs rounded-xl cursor-pointer"
+                      >
+                        <Eye size={13} />
+                        <span>ดูใบเสร็จ (View Receipt)</span>
+                      </Button>
+                    </div>
+                  )}
+
                   {/* Status Details if already Approved or Rejected */}
                   {isApproved && (
                     <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 rounded-xl text-xs text-emerald-800 dark:text-emerald-300">
@@ -1404,6 +1534,17 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* 8. Top-Up A5 Receipt Preview Modal */}
+      {isReceiptOpen && previewReceiptData && (
+        <A5ReceiptDialog
+          open={isReceiptOpen}
+          onOpenChange={setIsReceiptOpen}
+          receiptData={previewReceiptData}
+          activeShop={receiptActiveShop}
+          currentLanguage="en"
+        />
+      )}
     </div>
   );
 }

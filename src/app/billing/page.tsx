@@ -147,6 +147,7 @@ function BillingJobCard({
   onFinish?: () => void;
 }) {
   const { user } = useAuth();
+  const canDeletePhoto = user?.role === "admin";
   const [billUrls, setBillUrls] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -236,6 +237,10 @@ function BillingJobCard({
 
   // ---- Delete a bill image ----
   const handleDelete = async (index: number) => {
+    if (!canDeletePhoto) {
+      toast.error("เฉพาะ Admin เท่านั้นที่สามารถลบรูปภาพได้");
+      return;
+    }
     const newUrls = billUrls.filter((_, i) => i !== index);
     try {
       await jobStore.updateJobDetails(job.id, {
@@ -266,12 +271,31 @@ function BillingJobCard({
   // Truncate long IDs for display
   const shortId = job.id.length > 10 ? job.id.substring(0, 10) : job.id;
 
-  // Filter out Pickup/Delivery instructions from remarks
+  // Filter out system tags (Proforma, Discount, VAT, Promo, Express, Pickup, Delivery, etc.) and keep only actual customer/staff remark
   const cleanRemark = job.remark
     ? job.remark
         .split(" | ")
-        .filter((part) => !part.trim().startsWith("Pickup:") && !part.trim().startsWith("Delivery:"))
+        .map((part) => part.trim())
+        .filter((part) => {
+          if (!part) return false;
+          const lower = part.toLowerCase();
+          if (lower.startsWith("proforma:")) return false;
+          if (lower.startsWith("discount:")) return false;
+          if (lower.startsWith("vat:")) return false;
+          if (lower.startsWith("promo:")) return false;
+          if (lower.startsWith("revision:")) return false;
+          if (lower.startsWith("express")) return false;
+          if (lower.startsWith("pickup:")) return false;
+          if (lower.startsWith("delivery:")) return false;
+          if (lower === "free delivery") return false;
+          if (lower === "req tax inv") return false;
+          if (lower.startsWith("tax inv")) return false;
+          return true;
+        })
+        .map((part) => part.replace(/^crm\s*remark:\s*/i, "").trim())
+        .filter(Boolean)
         .join(" | ")
+        .trim()
     : "";
 
   return (
@@ -323,15 +347,19 @@ function BillingJobCard({
                     className="w-full h-full object-cover cursor-pointer"
                     onClick={() => setPreviewUrl(url)}
                   />
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(i);
-                    }}
-                    className="absolute top-0.5 right-0.5 w-5 h-5 bg-red-500/90 text-white rounded-full flex items-center justify-center shadow-md backdrop-blur-sm"
-                  >
-                    <X size={11} />
-                  </button>
+                  {canDeletePhoto && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(i);
+                      }}
+                      className="absolute top-0.5 right-0.5 w-5 h-5 bg-red-500/90 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-md backdrop-blur-sm transition-colors cursor-pointer"
+                      title="ลบรูปภาพ (Admin only)"
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

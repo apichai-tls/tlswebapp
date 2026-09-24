@@ -3,16 +3,37 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, Plus, Minus, Building } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { 
+  Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, 
+  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check 
+} from "lucide-react";
 import { customerStore, priceListStore, poiStore, walletApprovalStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { LocationInput } from "@/components/location-input";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { TopUpDialog } from "@/components/top-up-dialog";
+import { addCustomerAddressAction } from "@/actions/db";
+
+const BANGKOK_DISTRICTS = [
+  "Watthana (Thonglor, Ekkamai, Phrom Phong)",
+  "Khlong Toei",
+  "Bang Rak",
+  "Sathorn",
+  "Pathum Wan",
+  "Phra Khanong",
+  "Ratchathewi",
+  "Phaya Thai",
+  "Chatuchak",
+  "Huai Khwang",
+  "Bang Na",
+  "Yan Nawa",
+  "Bang Kapi",
+  "Din Daeng",
+  "Other / อื่นๆ"
+];
 
 export function AdminCustomerDialog({ 
   open, 
@@ -39,16 +60,151 @@ export function AdminCustomerDialog({
   const [adjustReason, setAdjustReason] = useState("");
   const [adjustLoading, setAdjustLoading] = useState(false);
 
-
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
   const pendingCount = customer?.id ? (pendingWalletMap.byCustomer[customer.id] || 0) : 0;
 
+  // Form Fields
+  const [name, setName] = useState("");
+  const [nickName, setNickName] = useState("");
+  const [gender, setGender] = useState("Rather not say");
+  const [dob, setDob] = useState("");
+  const [customerTier, setCustomerTier] = useState<"member" | "vip" | "standard">("member");
+
+  // Dual Phones & Channels
+  const [phone, setPhone] = useState("");
+  const [isWhatsapp, setIsWhatsapp] = useState(true);
+  const [secondaryPhone, setSecondaryPhone] = useState("");
+  const [intlCountryCode, setIntlCountryCode] = useState("+1");
+  const [isSecondaryWhatsapp, setIsSecondaryWhatsapp] = useState(false);
+  const [lineId, setLineId] = useState("");
+  const [email, setEmail] = useState("");
+  const [initialPin, setInitialPin] = useState("");
+
+  // Delivery Location
+  const [addressLabel, setAddressLabel] = useState("Home Condo");
+  const [address, setAddress] = useState("");
+  const [roomNo, setRoomNo] = useState("");
+  const [district, setDistrict] = useState("Watthana (Thonglor, Ekkamai, Phrom Phong)");
+  const [leaveWithJuristic, setLeaveWithJuristic] = useState(true);
+  const [coords, setCoords] = useState({ lat: 13.736717, lng: 100.523186 });
+  const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
+
+  // Company Tax Details
+  const [requiresTaxInvoice, setRequiresTaxInvoice] = useState(false);
+  const [companyName, setCompanyName] = useState("");
+  const [taxId, setTaxId] = useState("");
+  const [taxBranch, setTaxBranch] = useState("Head Office (สำนักงานใหญ่)");
+  const [taxBillingAddress, setTaxBillingAddress] = useState("");
+
+  // Internal Notes & Meta
+  const [remark, setRemark] = useState("");
+  const [brand, setBrand] = useState<string>("that_laundry_shop");
+  const [sourceSystem, setSourceSystem] = useState<string>("web_booking");
+  const [isCorporate, setIsCorporate] = useState(false);
+  const [memberId, setMemberId] = useState("");
+  const [memberStartDate, setMemberStartDate] = useState("");
+  const [memberExpiryDate, setMemberExpiryDate] = useState("");
+  const [priceListId, setPriceListId] = useState("regular");
+  const [isSaving, setIsSaving] = useState(false);
+
+  const localDataForSearch = useMemo(() => pois.map(p => ({ 
+    name: p.name, 
+    address: p.address, 
+    lat: p.coords.lat, 
+    lng: p.coords.lng, 
+    placeId: p.placeId || p.id, 
+    isLocal: true 
+  })), [pois]);
+
+  useEffect(() => {
+    if (open) {
+      if (customer) {
+        setName(customer.name || "");
+        setNickName(customer.nickName || "");
+        setGender(customer.gender || "Rather not say");
+        setDob(customer.dob || "");
+        setCustomerTier(customer.isVIP ? "vip" : customer.isMember ? "member" : "standard");
+
+        setPhone(customer.phone || "");
+        setIsWhatsapp(customer.isWhatsapp || false);
+        setSecondaryPhone(customer.secondaryPhone || "");
+        setIsSecondaryWhatsapp(customer.isSecondaryWhatsapp || false);
+        setLineId(customer.lineId || "");
+        setEmail(customer.email || "");
+        setInitialPin(customer.passwordHash || "");
+
+        setAddress(customer.defaultAddress && customer.defaultAddress !== "--" ? customer.defaultAddress : "");
+        setRoomNo(customer.roomNo || "");
+        setCoords(customer.defaultCoords || { lat: 13.736717, lng: 100.523186 });
+        setAddressLabel("Home Condo");
+        setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
+        setLeaveWithJuristic(true);
+
+        const hasTax = Boolean(customer.taxId || customer.companyName);
+        setRequiresTaxInvoice(hasTax);
+        setCompanyName(customer.companyName || "");
+        setTaxId(customer.taxId || "");
+        setTaxBranch("Head Office (สำนักงานใหญ่)");
+        setTaxBillingAddress(customer.defaultAddress && customer.defaultAddress !== "--" ? customer.defaultAddress : "");
+
+        setRemark(customer.remark || "");
+        setBrand(customer.brand || "that_laundry_shop");
+        setSourceSystem(customer.sourceSystem || "web_booking");
+        setIsCorporate(customer.isCorporate || false);
+        setMemberId(customer.memberId || "");
+        setMemberStartDate(customer.memberStartDate ? new Date(customer.memberStartDate).toISOString().split("T")[0] : "");
+        setMemberExpiryDate(customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split("T")[0] : "");
+        setPriceListId(customer.priceListId || "regular");
+        setSelectedLocation(null);
+      } else {
+        // Reset all states cleanly - no mock defaults
+        setName("");
+        setNickName("");
+        setGender("Rather not say");
+        setDob("");
+        setCustomerTier("member");
+
+        setPhone("");
+        setIsWhatsapp(true);
+        setSecondaryPhone("");
+        setIntlCountryCode("+1");
+        setIsSecondaryWhatsapp(false);
+        setLineId("");
+        setEmail("");
+        setInitialPin("");
+
+        setAddressLabel("Home Condo");
+        setAddress("");
+        setRoomNo("");
+        setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
+        setLeaveWithJuristic(true);
+        setCoords({ lat: 13.736717, lng: 100.523186 });
+
+        setRequiresTaxInvoice(false);
+        setCompanyName("");
+        setTaxId("");
+        setTaxBranch("Head Office (สำนักงานใหญ่)");
+        setTaxBillingAddress("");
+
+        setRemark("");
+        setBrand("that_laundry_shop");
+        setSourceSystem("web_booking");
+        setIsCorporate(false);
+        setMemberId("");
+        setMemberStartDate("");
+        setMemberExpiryDate("");
+        setPriceListId("regular");
+        setSelectedLocation(null);
+      }
+    }
+  }, [open, customer]);
+
   const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canAdjustBalance) {
-      toast.error("คุณไม่มีสิทธิ์ในการปรับยอดเงิน Wallet (No permission to adjust wallet)");
+      toast.error("คุณไม่มีสิทธิ์ในการปรับยอดเงิน Wallet");
       return;
     }
     if (!customer) return;
@@ -58,12 +214,11 @@ export function AdminCustomerDialog({
       return;
     }
     if (!adjustReason.trim()) {
-      toast.error("กรุณาระบุเหตุผลในการปรับยอดเงิน (Reason is required)");
+      toast.error("กรุณาระบุเหตุผลในการปรับยอดเงิน");
       return;
     }
 
     const currentBalance = customer.creditBalance || 0;
-    // If user explicitly typed a negative number, treat as deduction
     const delta = rawAmount < 0 
       ? rawAmount 
       : (adjustMode === "add" ? rawAmount : -rawAmount);
@@ -86,7 +241,7 @@ export function AdminCustomerDialog({
 
       const actualNewBalance = updated?.creditBalance ?? newBalance;
       toast.success(
-        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${actualNewBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือ: ฿${actualNewBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
       );
       setAdjustOpen(false);
       setAdjustAmount("");
@@ -99,205 +254,211 @@ export function AdminCustomerDialog({
     }
   };
 
-
-
-
-  const localDataForSearch = useMemo(() => pois.map(p => ({ name: p.name, address: p.address, lat: p.coords.lat, lng: p.coords.lng, placeId: p.placeId || p.id, isLocal: true })), [pois]);
-
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [brand, setBrand] = useState<string>("that_laundry_shop");
-  const [nickName, setNickName] = useState<string>("");
-  const [gender, setGender] = useState<string>("Rather not say");
-  const [secondaryPhone, setSecondaryPhone] = useState<string>("");
-  const [isSecondaryWhatsapp, setIsSecondaryWhatsapp] = useState<boolean>(false);
-  const [roomNo, setRoomNo] = useState<string>("");
-  const [sourceSystem, setSourceSystem] = useState<string>("web_booking");
-  const [address, setAddress] = useState("");
-  const [coords, setCoords] = useState({ lat: 13.736717, lng: 100.523186 });
-  const [priceListId, setPriceListId] = useState("regular");
-  const [email, setEmail] = useState("");
-  const [lineId, setLineId] = useState("");
-  const [language, setLanguage] = useState("th");
-  const [remark, setRemark] = useState("");
-  const [secondaryAddress, setSecondaryAddress] = useState("");
-  const [dob, setDob] = useState("");
-  const [taxId, setTaxId] = useState("");
-  const [companyName, setCompanyName] = useState("");
-  const [isVIP, setIsVIP] = useState(false);
-  const [isCorporate, setIsCorporate] = useState(false);
-  const [isMember, setIsMember] = useState(false);
-  const [memberId, setMemberId] = useState("");
-  const [memberStartDate, setMemberStartDate] = useState("");
-  const [memberExpiryDate, setMemberExpiryDate] = useState("");
-  const [isWhatsapp, setIsWhatsapp] = useState(false);
-  const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
-
-  const handleDobChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let val = e.target.value.replace(/\D/g, "");
-    if (val.length > 4) val = val.substring(0, 2) + "/" + val.substring(2, 4) + "/" + val.substring(4, 8);
-    else if (val.length > 2) val = val.substring(0, 2) + "/" + val.substring(2, 4);
-    setDob(val);
-  };
-
-  useEffect(() => {
-    if (open) {
-      if (customer) {
-        setName(customer.name.toUpperCase());
-        setPhone(customer.phone);
-        setBrand(customer.brand || "that_laundry_shop");
-        setNickName(customer.nickName || "");
-        setGender(customer.gender || "Rather not say");
-        setSecondaryPhone(customer.secondaryPhone || "");
-        setIsSecondaryWhatsapp(customer.isSecondaryWhatsapp || false);
-        setRoomNo(customer.roomNo || "");
-        setSourceSystem(customer.sourceSystem || "web_booking");
-        setAddress(customer.defaultAddress || "");
-        setCoords(customer.defaultCoords || { lat: 13.736717, lng: 100.523186 });
-        setPriceListId(customer.priceListId || "regular");
-        setEmail(customer.email || "");
-        setLineId(customer.lineId || "");
-        setLanguage(customer.language || "th");
-        setRemark(customer.remark || "");
-        setSecondaryAddress(customer.secondaryAddress || "");
-        setDob(customer.dob || "");
-        setTaxId(customer.taxId || "");
-        setCompanyName(customer.companyName || "");
-        setIsVIP(customer.isVIP || false);
-        setIsCorporate(customer.isCorporate || false);
-        setIsMember(customer.isMember || false);
-        setMemberId(customer.memberId || "");
-        setMemberStartDate(customer.memberStartDate ? new Date(customer.memberStartDate).toISOString().split("T")[0] : "");
-        setMemberExpiryDate(customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split("T")[0] : "");
-        setIsWhatsapp(customer.isWhatsapp || false);
-        setSelectedLocation(null);
-      } else {
-        setName("");
-        setPhone("");
-        setBrand("that_laundry_shop");
-        setNickName("");
-        setGender("Rather not say");
-        setSecondaryPhone("");
-        setIsSecondaryWhatsapp(false);
-        setRoomNo("");
-        setSourceSystem("web_booking");
-        setAddress("");
-        setCoords({ lat: 13.736717, lng: 100.523186 });
-        setPriceListId("regular");
-        setEmail("");
-        setLineId("");
-        setLanguage("th");
-        setRemark("");
-        setSecondaryAddress("");
-        setDob("");
-        setTaxId("");
-        setCompanyName("");
-        setIsVIP(false);
-        setIsCorporate(false);
-        setIsMember(false);
-        setMemberId("");
-        setMemberStartDate("");
-        setMemberExpiryDate("");
-        setIsWhatsapp(false);
-        setSelectedLocation(null);
-      }
-    }
-  }, [open, customer]);
-
   const handleSave = async () => {
-    if (!name.trim() || !phone.trim() || !address.trim()) {
-      toast.error("Please fill in Name, Phone, and Address.");
+    if (!name.trim()) {
+      toast.error("กรุณาระบุชื่อ-นามสกุล (Full Name is required)");
       return;
     }
-    let finalPriceListId = priceListId;
-    if (isMember) {
-      const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
-      if (ml) finalPriceListId = ml.id;
-    } else {
-      const rl = priceLists.find(p => p.isDefault);
-      if (rl) finalPriceListId = rl.id;
+    if (!phone.trim()) {
+      toast.error("กรุณาระบุเบอร์โทรศัพท์หลัก (Primary Phone is required)");
+      return;
     }
-    const customerData = {
-      name: name.trim().toUpperCase(),
-      phone: phone.trim(),
-      brand,
-      nickName: nickName.trim() || null,
-      gender,
-      secondaryPhone: secondaryPhone.trim() || null,
-      isSecondaryWhatsapp,
-      roomNo: roomNo.trim() || null,
-      sourceSystem,
-      defaultAddress: address,
-      defaultCoords: coords,
-      priceListId: finalPriceListId,
-      email: email.trim() || null,
-      lineId: lineId.trim() || null,
-      language,
-      remark: remark.trim() || null,
-      secondaryAddress: secondaryAddress.trim() || (roomNo.trim() ? `Room ${roomNo.trim()}` : null),
-      dob: dob || null,
-      taxId: taxId.trim() || null,
-      companyName: companyName.trim() || null,
-      isVIP,
-      isCorporate,
-      isMember,
-      isWhatsapp,
-      memberId: isMember ? memberId.trim() || null : null,
-      memberStartDate: isMember && memberStartDate ? memberStartDate : null,
-      memberExpiryDate: isMember && memberExpiryDate ? memberExpiryDate : null,
-      updatedAt: customer ? customer.updatedAt : undefined,
-    };
+    if (!address.trim()) {
+      toast.error("กรุณาระบุที่อยู่จัดส่ง (Delivery Address is required)");
+      return;
+    }
+
+    setIsSaving(true);
     try {
+      const isMemberBool = customerTier === "member" || customerTier === "vip";
+      const isVIPBool = customerTier === "vip";
+
+      let finalPriceListId = priceListId;
+      if (isMemberBool) {
+        const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
+        if (ml) finalPriceListId = ml.id;
+      } else {
+        const rl = priceLists.find(p => p.isDefault);
+        if (rl) finalPriceListId = rl.id;
+      }
+
+      // Combine secondary phone with intl country code if typed
+      let finalSecondaryPhone = secondaryPhone.trim();
+      if (finalSecondaryPhone && !finalSecondaryPhone.startsWith("+") && intlCountryCode) {
+        finalSecondaryPhone = `${intlCountryCode} ${finalSecondaryPhone}`;
+      }
+
+      const customerData = {
+        name: name.trim().toUpperCase(),
+        phone: phone.trim(),
+        brand,
+        nickName: nickName.trim() || null,
+        gender,
+        secondaryPhone: finalSecondaryPhone || null,
+        isSecondaryWhatsapp,
+        roomNo: roomNo.trim() || null,
+        sourceSystem,
+        defaultAddress: address.trim(),
+        defaultCoords: coords,
+        priceListId: finalPriceListId,
+        email: email.trim() || null,
+        lineId: lineId.trim() || null,
+        language: "th",
+        remark: remark.trim() || null,
+        secondaryAddress: roomNo.trim() ? `Room ${roomNo.trim()}` : null,
+        dob: dob.trim() || null,
+        taxId: requiresTaxInvoice ? taxId.trim() || null : null,
+        companyName: requiresTaxInvoice ? companyName.trim() || null : null,
+        isVIP: isVIPBool,
+        isCorporate,
+        isMember: isMemberBool,
+        isWhatsapp,
+        passwordHash: initialPin.trim() || undefined,
+        memberId: isMemberBool ? memberId.trim() || null : null,
+        memberStartDate: isMemberBool && memberStartDate ? memberStartDate : null,
+        memberExpiryDate: isMemberBool && memberExpiryDate ? memberExpiryDate : null,
+        updatedAt: customer ? customer.updatedAt : undefined,
+      };
+
       if (customer) {
         await customerStore.updateCustomer(customer.id, customerData);
-        toast.success(`Updated customer: ${name}`);
+        toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ`);
         if (onSaved) onSaved({ ...customer, ...customerData } as Customer);
       } else {
         const newCustomer = await customerStore.addCustomer(customerData);
-        toast.success(`Added new customer: ${name}`);
+        // Create initial address record in CustomerAddress table
+        if (newCustomer?.id && address.trim()) {
+          try {
+            await addCustomerAddressAction(newCustomer.id, {
+              label: addressLabel.trim() || "Home Condo",
+              placeName: address.trim(),
+              address: address.trim(),
+              roomNumber: roomNo.trim() || undefined,
+              district: district || "Bangkok",
+              leaveWithJuristic,
+              isPrimary: true
+            });
+          } catch (addrErr) {
+            console.error("Failed to add initial address to CustomerAddress table:", addrErr);
+          }
+        }
+        toast.success(`บันทึกลูกค้าใหม่ ${name} เรียบร้อยแล้ว`);
         if (onSaved && newCustomer) onSaved(newCustomer);
       }
       onOpenChange(false);
     } catch (e: any) {
       toast.error(e.message || "Failed to save customer");
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(newOpen, eventDetails) => { if (!newOpen && eventDetails?.reason === "outside-press") return; onOpenChange(newOpen); }} disablePointerDismissal={true}>
-        <DialogContent className="sm:max-w-2xl p-6 bg-white overflow-y-auto max-h-[90vh] z-[60]">
-          <DialogHeader className="mb-4">
-            <DialogTitle className="flex items-center gap-2 text-xl">
-              {customer ? <Edit className="text-indigo-500" size={24} /> : <UserPlus className="text-indigo-500" size={24} />}
-              {customer ? "Edit Customer Profile" : "Register New Customer"}
-            </DialogTitle>
-            <DialogDescription>
-              {customer ? "Update the customer's contact information and status." : "Add a new customer to the database for quicker order fulfillment."}
-            </DialogDescription>
-          </DialogHeader>
-
-          {/* Wallet Balance — compact, shown only for Member customers */}
-          {customer && isMember && (
-            <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-3">
-              <div className="flex items-center gap-2">
-                <Wallet size={13} className="text-emerald-600" />
-                <span className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wider">Credit Wallet</span>
-                <span className="text-sm font-black text-emerald-800">
-                  ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </span>
-                {pendingCount > 0 && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
-                    Pending Approval ({pendingCount})
-                  </span>
-                )}
+      <Dialog 
+        open={open} 
+        onOpenChange={(newOpen, eventDetails) => { 
+          if (!newOpen && eventDetails?.reason === "outside-press") return; 
+          onOpenChange(newOpen); 
+        }} 
+        disablePointerDismissal={true}
+      >
+        <DialogContent 
+          showCloseButton={false}
+          className="max-w-4xl w-[95vw] sm:max-w-4xl p-0 bg-white overflow-hidden rounded-3xl z-[60] border border-slate-200/90 shadow-2xl transition-all"
+        >
+          {/* HEADER SECTION (Matching Mockup) */}
+          <div className="p-6 pb-4 bg-white border-b border-slate-200/80">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+                  {customer ? "Edit Customer Profile" : "Register New Customer"}
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  Save customer profile, multiple Google Maps addresses, WhatsApp status, and company tax invoice details.
+                </p>
               </div>
-              <div className="flex items-center gap-1.5">
-                {canTopUp && customer?.isMember && (
-                  <Button type="button" variant="outline" size="sm"
-                    className="h-7 border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[10px] font-bold px-2 rounded-md"
-                    onClick={() => {
-                      if (customer) {
+
+              {/* Close Button */}
+              <button
+                type="button"
+                onClick={() => onOpenChange(false)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                title="Close (ESC)"
+              >
+                <span className="text-[10px] font-mono text-slate-400 border border-slate-200 px-1 py-0.2 rounded bg-slate-50">ESC</span>
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Brand & Registration Source Selector Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 mt-4">
+              <div className="flex items-center gap-2">
+                <Label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">แบรนด์ (Brand):</Label>
+                <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setBrand("that_laundry_shop")}
+                    className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                      brand === "that_laundry_shop"
+                        ? "bg-slate-800 text-white shadow-xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    That Laundry Shop (TLS)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBrand("noname_laundry")}
+                    className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                      brand === "noname_laundry"
+                        ? "bg-amber-500 text-white shadow-xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    Noname Laundry
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">ช่องทาง (Source):</Label>
+                <select
+                  value={sourceSystem}
+                  onChange={(e) => setSourceSystem(e.target.value)}
+                  className="h-7 text-xs font-semibold border border-slate-200 rounded-md bg-white px-2 text-slate-700 cursor-pointer"
+                >
+                  <option value="web_booking">เว็บไซต์ (Online Web)</option>
+                  <option value="pos_store">POS หน้าร้าน (Store)</option>
+                  <option value="line_oa">LINE OA</option>
+                  <option value="phone_call">โทรศัพท์ (Phone Call)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Wallet Balance — Shown if editing Member */}
+            {customer && customer.isMember && (
+              <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl px-3.5 py-2 mt-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <Wallet size={14} className="text-emerald-600" />
+                  <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Credit Wallet</span>
+                  <span className="text-sm font-black text-emerald-800">
+                    ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                  {pendingCount > 0 && (
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                      Pending ({pendingCount})
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {canTopUp && (
+                    <Button 
+                      type="button" 
+                      variant="outline" 
+                      size="sm"
+                      className="h-6.5 border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[11px] font-bold px-2.5 rounded-lg"
+                      onClick={() => {
                         if (onTopUpCustomer) {
                           onOpenChange(false);
                           onTopUpCustomer(customer);
@@ -306,261 +467,434 @@ export function AdminCustomerDialog({
                           onOpenChange(false);
                           setTimeout(() => setShowTopUpDialog(true), 150);
                         }
-                      }
-                    }}>
-
-                    <Wallet size={10} />
-                    Top Up
-                  </Button>
-                )}
-                {canAdjustBalance && customer?.isMember && (
-                  <Button type="button" variant="outline" size="sm"
-                    className="h-7 border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-500 hover:text-white transition-all gap-1 text-[10px] font-bold px-2 rounded-md"
-                    onClick={() => { setAdjustAmount(""); setAdjustOpen(true); }}>
-                    <SlidersHorizontal size={10} />
-                    Adjust
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Brand & Registration Source Selector */}
-          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 mb-3">
-            <div className="flex items-center gap-2">
-              <Label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">แบรนด์ (Brand):</Label>
-              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
-                <button
-                  type="button"
-                  onClick={() => setBrand("that_laundry_shop")}
-                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                    brand === "that_laundry_shop"
-                      ? "bg-slate-800 text-white shadow-xs"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  That Laundry Shop (TLS)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setBrand("noname_laundry")}
-                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                    brand === "noname_laundry"
-                      ? "bg-amber-500 text-white shadow-xs"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  Noname Laundry
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">ช่องทาง (Source):</Label>
-              <select
-                value={sourceSystem}
-                onChange={(e) => setSourceSystem(e.target.value)}
-                className="h-7 text-xs font-semibold border border-slate-200 rounded-md bg-white px-2 text-slate-700 cursor-pointer"
-              >
-                <option value="web_booking">เว็บไซต์ (Online Web)</option>
-                <option value="pos_store">POS หน้าร้าน (Store)</option>
-                <option value="line_oa">LINE OA</option>
-                <option value="phone_call">โทรศัพท์ (Phone Call)</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 py-1">
-            {/* Row 1: Full Name, Nickname */}
-            <div className="space-y-1 col-span-1 md:col-span-2">
-              <Label htmlFor="name" className="text-xs font-semibold text-rose-600">Full Name (ชื่อ-นามสกุล) *</Label>
-              <Input id="name" placeholder="JOHN DOE" value={name} onChange={e => setName(e.target.value.toUpperCase())} className="h-8 text-xs border-slate-200" />
-            </div>
-            <div className="space-y-1 col-span-1">
-              <Label htmlFor="nickName" className="text-xs font-semibold text-slate-700">Nickname (ชื่อเล่น)</Label>
-              <Input id="nickName" placeholder="e.g. Alex, พี่พลอย" value={nickName} onChange={e => setNickName(e.target.value)} className="h-8 text-xs border-slate-200" />
-            </div>
-
-            {/* Row 2: Primary Phone, Secondary Phone, Gender */}
-            <div className="space-y-1">
-              <Label htmlFor="phone" className="text-xs font-semibold text-rose-600">Primary Phone (เบอร์โทรหลัก) *</Label>
-              <PhoneInput value={phone} onChange={setPhone} className="h-8" />
-              <label className="flex items-center gap-1.5 mt-1 cursor-pointer">
-                <input type="checkbox" checked={isWhatsapp} onChange={e => setIsWhatsapp(e.target.checked)} className="rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 h-3 w-3" />
-                <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1"><MessageCircle size={10} className="text-emerald-500" /> WhatsApp Available</span>
-              </label>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="secondaryPhone" className="text-xs font-semibold text-slate-700">Secondary Phone (เบอร์สำรอง)</Label>
-              <PhoneInput value={secondaryPhone} onChange={setSecondaryPhone} className="h-8" />
-              <label className="flex items-center gap-1.5 mt-1 cursor-pointer">
-                <input type="checkbox" checked={isSecondaryWhatsapp} onChange={e => setIsSecondaryWhatsapp(e.target.checked)} className="rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 h-3 w-3" />
-                <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1"><MessageCircle size={10} className="text-emerald-500" /> WhatsApp Available</span>
-              </label>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">Gender (เพศ)</Label>
-              <select
-                value={gender}
-                onChange={e => setGender(e.target.value)}
-                className="w-full h-8 text-xs border border-slate-200 rounded-md bg-white px-2 text-slate-800 cursor-pointer"
-              >
-                <option value="Rather not say">ไม่ระบุ (Rather not say)</option>
-                <option value="male">ชาย (Male)</option>
-                <option value="female">หญิง (Female)</option>
-              </select>
-            </div>
-
-            {/* Row 3: Default Address, Room Number */}
-            <div className="space-y-1 col-span-1 md:col-span-2">
-              <Label className="text-xs font-semibold text-rose-600">Default Address (ที่อยู่หลัก) *</Label>
-              <div className="flex items-center gap-2 h-8">
-                <LocationInput id="default-address" placeholder="Search or enter full address..." value={address} localData={localDataForSearch} onChange={setAddress}
-                  onSelectLocation={(loc) => { setCoords({ lat: loc.lat, lng: loc.lng }); setSelectedLocation(loc); }} className="flex-1" />
-                {selectedLocation && !selectedLocation.isLocal && (
-                  <Button type="button" onClick={() => { poiStore.addPOI({ name: selectedLocation.name, address: selectedLocation.address || selectedLocation.name, coords: { lat: selectedLocation.lat, lng: selectedLocation.lng }, placeId: selectedLocation.placeId }); toast.success(`Saved location: ${selectedLocation.name}`); setSelectedLocation(prev => prev ? { ...prev, isLocal: true } : null); }}
-                    variant="outline" className="h-8 px-3 whitespace-nowrap text-xs bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100" title="Save this Google Maps location to Database">
-                    <Database size={14} className="mr-1.5" />Save to DB
-                  </Button>
-                )}
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">Room Number (เลขห้อง)</Label>
-              <Input 
-                placeholder="e.g. 1802" 
-                value={roomNo} 
-                onChange={e => {
-                  setRoomNo(e.target.value);
-                  if (!secondaryAddress || secondaryAddress.startsWith("Room ")) {
-                    setSecondaryAddress(e.target.value ? `Room ${e.target.value}` : "");
-                  }
-                }} 
-                className="h-8 text-xs border-slate-200" 
-              />
-            </div>
-
-            {/* Row 4: Floor / Building / Juristic Note, Email, LINE ID */}
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">Floor / Building / Juristic Note</Label>
-              <Input placeholder="e.g. Fl 18, ฝากนิติบุคคลได้" value={secondaryAddress} onChange={e => setSecondaryAddress(e.target.value)} className="h-8 text-xs border-slate-200" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">Email Address</Label>
-              <Input type="email" placeholder="customer@email.com" value={email} onChange={e => setEmail(e.target.value)} className="h-8 text-xs border-slate-200" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">LINE ID</Label>
-              <Input placeholder="@lineid" value={lineId} onChange={e => setLineId(e.target.value)} className="h-8 text-xs border-slate-200" />
-            </div>
-
-            {/* Row 5: Date of Birth, Company Name, Tax ID */}
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">Date of Birth</Label>
-              <Input type="text" placeholder="DD/MM/YYYY" maxLength={10} value={dob} onChange={handleDobChange} className="h-8 text-xs border-slate-200" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">Company Name (สำหรับ B2B)</Label>
-              <Input placeholder="For B2B Billing" value={companyName} onChange={e => setCompanyName(e.target.value)} className="h-8 text-xs border-slate-200" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-slate-700">Tax ID</Label>
-              <Input placeholder="13-digit Tax ID" value={taxId} onChange={e => setTaxId(e.target.value)} className="h-8 text-xs border-slate-200" />
-            </div>
-
-            {/* Row 6: Remarks */}
-            <div className="space-y-1 col-span-1 md:col-span-3">
-              <Label className="text-xs font-semibold text-rose-600">Special Instructions / Remarks</Label>
-              <Input placeholder="e.g. Allergic to softener, fold shirts" value={remark} onChange={e => setRemark(e.target.value)} className="h-8 text-xs border-rose-200 focus-visible:ring-rose-500" />
-            </div>
-
-            {/* Row 7: Other Saved Delivery Addresses (if any) */}
-            {customer && customer.addresses && customer.addresses.length > 0 && (
-              <div className="col-span-1 md:col-span-3 bg-slate-50 border border-slate-200/80 rounded-xl p-3 space-y-1.5 mt-1">
-                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  สมุดที่อยู่จัดส่งเพิ่มเติมของลูกค้า ({customer.addresses.length} รายการจากระบบเว็บ/แอป):
-                </p>
-                <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-                  {customer.addresses.map((a: any, i: number) => (
-                    <div key={a.id || i} className="bg-white p-2 rounded-lg border border-slate-200 text-xs flex justify-between items-center shadow-2xs">
-                      <div>
-                        <span className="font-bold text-slate-800">{a.label || "ที่อยู่"}</span>
-                        {a.roomNumber && <span className="ml-1 text-indigo-600 font-semibold">(ห้อง {a.roomNumber})</span>}
-                        <span className="text-slate-500 ml-2">{a.placeName || a.address}</span>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-[10px] text-indigo-600 hover:text-indigo-800 font-bold px-1.5 cursor-pointer"
-                        onClick={() => {
-                          setAddress(a.address || a.placeName || "");
-                          if (a.latitude && a.longitude) setCoords({ lat: a.latitude, lng: a.longitude });
-                          if (a.roomNumber) {
-                            setRoomNo(a.roomNumber);
-                            setSecondaryAddress(`Room ${a.roomNumber}`);
-                          }
-                          toast.info(`เลือกที่อยู่ "${a.label}" มาเป็นที่อยู่หลักแล้ว`);
-                        }}
-                      >
-                        ใช้ที่อยู่นี้
-                      </Button>
-                    </div>
-                  ))}
+                      }}
+                    >
+                      <Wallet size={11} />
+                      Top Up
+                    </Button>
+                  )}
+                  {canAdjustBalance && (
+                    <Button 
+                      type="button" 
+                      variant="outline" 
+                      size="sm"
+                      className="h-6.5 border-amber-300 bg-white text-amber-700 hover:bg-amber-500 hover:text-white transition-all gap-1 text-[11px] font-bold px-2.5 rounded-lg"
+                      onClick={() => { setAdjustAmount(""); setAdjustOpen(true); }}
+                    >
+                      <SlidersHorizontal size={11} />
+                      Adjust
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
-            <div className="col-span-1 md:col-span-3 mt-2 flex flex-col gap-2">
-              <div className="flex flex-col gap-2 p-3 bg-blue-50/80 rounded-lg border border-blue-200">
-                <label className="flex items-center gap-3 cursor-pointer hover:bg-blue-50/20 transition-colors">
-                  <input type="checkbox" checked={isMember} onChange={e => { setIsMember(e.target.checked); if (!e.target.checked) setMemberId(""); }} className="h-5 w-5 rounded border-blue-300 text-blue-600 focus:ring-blue-600 bg-white" />
-                  <div>
-                    <p className="text-sm font-bold text-blue-800 flex items-center gap-1.5"><Users size={16} className="text-blue-600" /> Member</p>
-                    <p className="text-xs text-blue-600/80">Apply member pricing list automatically and assign a Member No.</p>
-                  </div>
-                </label>
-                {isMember && (
-                  <div className="mt-2 pl-8 space-y-2">
-                    <div className="space-y-1">
-                      <Label htmlFor="memberId" className="text-[10px] font-semibold text-blue-800">Member No (Optional)</Label>
-                      <Input id="memberId" placeholder="e.g. MB-001" value={memberId} onChange={e => setMemberId(e.target.value.toUpperCase())} className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <Label htmlFor="memberStartDate" className="text-[10px] font-semibold text-blue-800">Member Start Date</Label>
-                        <Input id="memberStartDate" type="date" value={memberStartDate} onChange={e => setMemberStartDate(e.target.value)} className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label htmlFor="memberExpiryDate" className="text-[10px] font-semibold text-blue-800">Member Expiry Date</Label>
-                        <Input id="memberExpiryDate" type="date" value={memberExpiryDate} onChange={e => setMemberExpiryDate(e.target.value)} className="h-8 text-xs border-blue-200 focus-visible:ring-blue-500 bg-white text-blue-800" />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-              <label className="flex items-center gap-3 p-3 bg-indigo-50/80 rounded-lg border border-indigo-200 cursor-pointer hover:bg-indigo-50 transition-colors">
-                <input type="checkbox" checked={isVIP} onChange={e => setIsVIP(e.target.checked)} className="h-5 w-5 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-600 bg-white" />
-                <div>
-                  <p className="text-sm font-bold text-indigo-800 flex items-center gap-1.5"><Crown size={16} className="text-indigo-600" /> VIP Customer</p>
-                  <p className="text-xs text-indigo-600/80">Enable special delivery rates (฿4/km) and apply VIP pricing list</p>
-                </div>
-              </label>
-              <label className="flex items-center gap-3 p-3 bg-slate-100/80 rounded-lg border border-slate-250 cursor-pointer hover:bg-slate-100 transition-colors">
-                <input type="checkbox" checked={isCorporate} onChange={e => setIsCorporate(e.target.checked)} className="h-5 w-5 rounded border-slate-400 text-slate-700 focus:ring-slate-700 bg-white" />
-                <div>
-                  <p className="text-sm font-bold text-slate-800 flex items-center gap-1.5"><Building size={16} className="text-slate-600" /> Corporate B2B Customer</p>
-                  <p className="text-xs text-slate-600/80">จัดกลุ่มเป็นลูกค้าองค์กร/นิติบุคคลสำหรับงาน B2B การออกใบกำกับภาษี และรายงาน CRM</p>
-                </div>
-              </label>
-            </div>
           </div>
 
-          <DialogFooter className="mt-6 border-t border-slate-100 pt-4">
-            <Button variant="outline" onClick={() => onOpenChange(false)} className="h-10">Cancel</Button>
-            <Button onClick={handleSave} className="h-10 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">
-              {customer ? "Save Changes" : "Register Customer"}
+          {/* MAIN SCROLLABLE FORM BODY */}
+          <div className="p-6 max-h-[75vh] overflow-y-auto space-y-5">
+            
+            {/* ========================================================================= */}
+            {/* SECTION 1: CUSTOMER IDENTITY (Name, Nickname, Gender, DOB, Tier)          */}
+            {/* ========================================================================= */}
+            <div className="space-y-3">
+              {/* Row 1: Full Name & Nickname */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <Label className="text-xs font-bold text-slate-800 block mb-1">
+                    Full Name (ชื่อ-นามสกุล) <span className="text-rose-500">*</span>
+                  </Label>
+                  <Input 
+                    placeholder="e.g. Alex Thorne / ศิริพร ธนาคา" 
+                    value={name} 
+                    onChange={e => setName(e.target.value.toUpperCase())} 
+                    className="h-9 text-xs border-slate-300 rounded-xl focus-visible:ring-sky-500" 
+                    required
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-bold text-slate-800 block mb-1">
+                    Nickname (ชื่อเล่น)
+                  </Label>
+                  <Input 
+                    placeholder="e.g. Alex / ส้ม" 
+                    value={nickName} 
+                    onChange={e => setNickName(e.target.value)} 
+                    className="h-9 text-xs border-slate-300 rounded-xl focus-visible:ring-sky-500" 
+                  />
+                </div>
+              </div>
+
+              {/* Row 2: Gender, DOB, Customer Tier */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                <div>
+                  <Label className="text-xs font-bold text-slate-800 block mb-1">Gender</Label>
+                  <select
+                    value={gender}
+                    onChange={e => setGender(e.target.value)}
+                    className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer"
+                  >
+                    <option value="Rather not say">Rather not say</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                  </select>
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold text-slate-800 block mb-1">Date of Birth (DOB)</Label>
+                  <div className="relative">
+                    <Input 
+                      type="date" 
+                      value={dob} 
+                      onChange={e => setDob(e.target.value)} 
+                      className="h-9 text-xs border-slate-300 rounded-xl focus-visible:ring-sky-500 bg-white" 
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold text-slate-800 block mb-1">Customer Tier</Label>
+                  <select
+                    value={customerTier}
+                    onChange={e => setCustomerTier(e.target.value as any)}
+                    className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer font-semibold"
+                  >
+                    <option value="member">Regular Member</option>
+                    <option value="vip">VIP Gold</option>
+                    <option value="standard">Standard</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* SECTION 2: CONTACT CHANNELS & DUAL PHONE NUMBERS                          */}
+            {/* ========================================================================= */}
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4.5 shadow-2xs space-y-3.5">
+              <h3 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                Contact Channels & Dual Phone Numbers
+              </h3>
+
+              {/* Sub-row: Dual Phone Number Boxes */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Default Thai Mobile */}
+                <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-800 flex items-center gap-1">
+                      <span>🇹🇭</span> Default Thai Mobile <span className="text-rose-500">*</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">Local +66</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="h-9 px-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 flex items-center shrink-0">
+                      TH +66
+                    </span>
+                    <Input 
+                      type="tel"
+                      placeholder="08x-xxx-xxxx" 
+                      value={phone} 
+                      onChange={e => setPhone(e.target.value)} 
+                      className="h-9 text-xs border-slate-300 rounded-xl bg-white font-mono font-bold" 
+                      required
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 pt-1 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={isWhatsapp} 
+                      onChange={e => setIsWhatsapp(e.target.checked)} 
+                      className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5" 
+                    />
+                    <span className="text-xs font-bold text-emerald-700 flex items-center gap-1">
+                      Thai number has WhatsApp
+                    </span>
+                  </label>
+                </div>
+
+                {/* International Mobile (Optional) */}
+                <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-800 flex items-center gap-1">
+                      <Globe size={13} className="text-sky-600" /> International Mobile (Optional)
+                    </span>
+                    <span className="text-[10px] text-slate-400">Search country name/code</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={intlCountryCode}
+                      onChange={e => setIntlCountryCode(e.target.value)}
+                      className="h-9 px-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 shrink-0 cursor-pointer"
+                    >
+                      <option value="+1">US/CA +1</option>
+                      <option value="+44">UK +44</option>
+                      <option value="+81">JP +81</option>
+                      <option value="+82">KR +82</option>
+                      <option value="+65">SG +65</option>
+                      <option value="+86">CN +86</option>
+                      <option value="+61">AU +61</option>
+                      <option value="+49">DE +49</option>
+                      <option value="+33">FR +33</option>
+                      <option value="+971">AE +971</option>
+                    </select>
+                    <Input 
+                      type="tel"
+                      placeholder="Phone number" 
+                      value={secondaryPhone} 
+                      onChange={e => setSecondaryPhone(e.target.value)} 
+                      className="h-9 text-xs border-slate-300 rounded-xl bg-white font-mono" 
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 pt-1 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={isSecondaryWhatsapp} 
+                      onChange={e => setIsSecondaryWhatsapp(e.target.checked)} 
+                      className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5" 
+                    />
+                    <span className="text-xs font-bold text-emerald-700 flex items-center gap-1">
+                      Intl number has WhatsApp
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Sub-row 3 inputs: LINE ID, Email, Initial 6-Digit PIN */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-1">
+                <div>
+                  <Label className="text-xs font-bold text-slate-700 block mb-1">LINE ID</Label>
+                  <Input 
+                    placeholder="e.g. @nonamelaundry or lin" 
+                    value={lineId} 
+                    onChange={e => setLineId(e.target.value)} 
+                    className="h-9 text-xs border-slate-300 rounded-xl" 
+                  />
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold text-slate-700 block mb-1">Email Address</Label>
+                  <Input 
+                    type="email" 
+                    placeholder="customer@email.com" 
+                    value={email} 
+                    onChange={e => setEmail(e.target.value)} 
+                    className="h-9 text-xs border-slate-300 rounded-xl" 
+                  />
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold text-slate-700 block mb-1">
+                    Initial 6-Digit PIN (Quick Access)
+                  </Label>
+                  <Input 
+                    type="text" 
+                    maxLength={6} 
+                    placeholder="123456" 
+                    value={initialPin} 
+                    onChange={e => setInitialPin(e.target.value.replace(/\D/g, ""))} 
+                    className="h-9 text-xs font-mono font-bold tracking-widest border-slate-300 rounded-xl" 
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* SECTION 3: INITIAL BANGKOK DELIVERY LOCATION                              */}
+            {/* ========================================================================= */}
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4.5 shadow-2xs space-y-3.5">
+              <h3 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                Initial Bangkok Delivery Location (Google Maps Address)
+              </h3>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <Label className="text-xs font-bold text-slate-700 block mb-1">Address Label</Label>
+                  <Input 
+                    placeholder="Home Condo" 
+                    value={addressLabel} 
+                    onChange={e => setAddressLabel(e.target.value)} 
+                    className="h-9 text-xs border-slate-300 rounded-xl" 
+                  />
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold text-slate-700 block mb-1">Room / Unit No</Label>
+                  <Input 
+                    placeholder="e.g. Tower A, Room 1804" 
+                    value={roomNo} 
+                    onChange={e => setRoomNo(e.target.value)} 
+                    className="h-9 text-xs border-slate-300 rounded-xl" 
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs font-bold text-slate-800 block mb-1">
+                  Condo / Building / Street Address <span className="text-rose-500">*</span>
+                </Label>
+                <div className="flex items-center gap-2">
+                  <LocationInput 
+                    id="customer-address" 
+                    placeholder="e.g. The Estelle Phrom Phong, 8 Sukhumvit 26" 
+                    value={address} 
+                    localData={localDataForSearch} 
+                    onChange={setAddress}
+                    onSelectLocation={(loc) => { 
+                      setCoords({ lat: loc.lat, lng: loc.lng }); 
+                      setSelectedLocation(loc); 
+                    }} 
+                    className="flex-1 h-9 text-xs rounded-xl" 
+                  />
+                  {selectedLocation && !selectedLocation.isLocal && (
+                    <Button 
+                      type="button" 
+                      onClick={() => { 
+                        poiStore.addPOI({ 
+                          name: selectedLocation.name, 
+                          address: selectedLocation.address || selectedLocation.name, 
+                          coords: { lat: selectedLocation.lat, lng: selectedLocation.lng }, 
+                          placeId: selectedLocation.placeId 
+                        }); 
+                        toast.success(`Saved location: ${selectedLocation.name}`); 
+                        setSelectedLocation(prev => prev ? { ...prev, isLocal: true } : null); 
+                      }}
+                      variant="outline" 
+                      className="h-9 px-3 whitespace-nowrap text-xs bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 rounded-xl" 
+                      title="Save this Google Maps location to Database"
+                    >
+                      <Database size={13} className="mr-1" /> Save
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 pt-1 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={leaveWithJuristic} 
+                  onChange={e => setLeaveWithJuristic(e.target.checked)} 
+                  className="rounded border-slate-300 text-sky-600 focus:ring-sky-500 h-4 w-4" 
+                />
+                <span className="text-xs font-semibold text-slate-700">
+                  Allow Juristic Office / Reception desk drop-off
+                </span>
+              </label>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* SECTION 4: COMPANY TAX INVOICE DETAILS (ใบกำกับภาษี)                      */}
+            {/* ========================================================================= */}
+            <div className={`border rounded-2xl p-4.5 transition-all shadow-2xs space-y-3.5 ${
+              requiresTaxInvoice ? "border-amber-300 bg-amber-50/20" : "border-slate-200 bg-white"
+            }`}>
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={requiresTaxInvoice} 
+                  onChange={e => setRequiresTaxInvoice(e.target.checked)} 
+                  className="rounded border-amber-400 text-amber-600 focus:ring-amber-500 h-4 w-4" 
+                />
+                <span className="text-xs font-black text-amber-950">
+                  Customer requires Company Tax Receipt / Full Tax Invoice (ใบกำกับภาษี)
+                </span>
+              </label>
+
+              {requiresTaxInvoice && (
+                <div className="pt-2 border-t border-amber-200/60 space-y-3 animate-in fade-in duration-150">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <div>
+                      <Label className="text-xs font-bold text-slate-800 block mb-1">
+                        Company Name (ชื่อบริษัท/นิติบุคคล)
+                      </Label>
+                      <Input 
+                        placeholder="e.g. Thorne Design & Living (Thailand) Co., Ltd." 
+                        value={companyName} 
+                        onChange={e => setCompanyName(e.target.value)} 
+                        className="h-9 text-xs border-slate-300 rounded-xl bg-white" 
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-bold text-slate-800 block mb-1">
+                        13-digit Tax ID (เลขประจำตัวผู้เสียภาษี 13 หลัก)
+                      </Label>
+                      <Input 
+                        placeholder="e.g. 0105562019284" 
+                        maxLength={13}
+                        value={taxId} 
+                        onChange={e => setTaxId(e.target.value.replace(/\D/g, ""))} 
+                        className="h-9 text-xs font-mono border-slate-300 rounded-xl bg-white" 
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <div>
+                      <Label className="text-xs font-bold text-slate-800 block mb-1">
+                        Branch (สาขา)
+                      </Label>
+                      <Input 
+                        placeholder="Head Office (สำนักงานใหญ่)" 
+                        value={taxBranch} 
+                        onChange={e => setTaxBranch(e.target.value)} 
+                        className="h-9 text-xs border-slate-300 rounded-xl bg-white" 
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-bold text-slate-800 block mb-1">
+                        Registered Billing Address (ที่อยู่จดทะเบียน)
+                      </Label>
+                      <Input 
+                        placeholder="e.g. 8 Sukhumvit 26, Khlong Tan, Khlong Toei, Bangkok" 
+                        value={taxBillingAddress} 
+                        onChange={e => setTaxBillingAddress(e.target.value)} 
+                        className="h-9 text-xs border-slate-300 rounded-xl bg-white" 
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ========================================================================= */}
+            {/* SECTION 5: INITIAL STAFF NOTES & GARMENT CARE PREFERENCES                 */}
+            {/* ========================================================================= */}
+            <div>
+              <Label className="text-xs font-bold text-slate-800 block mb-1">
+                Initial Staff Notes & Garment Care Preferences
+              </Label>
+              <textarea
+                rows={2}
+                placeholder="e.g. Hypoallergenic only, extra starch on shirts..."
+                value={remark}
+                onChange={e => setRemark(e.target.value)}
+                className="w-full text-xs p-3 border border-slate-300 rounded-2xl focus:outline-none focus:ring-2 focus:ring-sky-500 leading-relaxed"
+              />
+            </div>
+
+          </div>
+
+          {/* FOOTER ACTIONS (Matching Mockup) */}
+          <div className="p-4 px-6 bg-slate-50 border-t border-slate-200/80 flex items-center justify-end gap-3">
+            <Button 
+              type="button" 
+              variant="ghost" 
+              onClick={() => onOpenChange(false)} 
+              className="h-10 px-5 text-xs font-bold text-slate-600 hover:text-slate-900 rounded-full"
+            >
+              Cancel
             </Button>
-          </DialogFooter>
+            <Button 
+              type="button" 
+              disabled={isSaving}
+              onClick={handleSave} 
+              className="h-10 px-6 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-full shadow-sm cursor-pointer transition-all"
+            >
+              {isSaving ? "Saving..." : "Save Customer to CRM"}
+            </Button>
+          </div>
+
         </DialogContent>
       </Dialog>
 
@@ -575,176 +909,90 @@ export function AdminCustomerDialog({
                   Adjust Balance (Manual)
                 </DialogTitle>
                 <DialogDescription className="text-amber-800/80 mt-1">
-                  ปรับยอด Wallet โดยตรงสำหรับ <strong>{customer.name}</strong> — ใช้สำหรับ Update ยอดจากระบบเก่า
+                  ปรับยอด Wallet โดยตรงสำหรับ <strong>{customer.name}</strong>
                 </DialogDescription>
               </DialogHeader>
-              <div className="p-6 space-y-5">
-                {/* Current Balance */}
+              <div className="p-6 space-y-4 text-xs">
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Balance</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl font-black text-slate-900">฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                    {pendingCount > 0 && (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
-                        Pending Approval ({pendingCount})
-                      </span>
-                    )}
-                  </div>
+                  <span className="font-bold text-slate-500 uppercase tracking-wider">Current Balance</span>
+                  <span className="text-2xl font-black text-slate-900">
+                    ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
                 </div>
 
-                {/* Adjustment Mode (+ / - Buttons) */}
                 <div className="space-y-2">
-                  <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Adjustment Action</Label>
+                  <Label className="font-bold text-slate-400 uppercase tracking-widest">Adjustment Action</Label>
                   <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl">
                     <button
                       type="button"
                       onClick={() => setAdjustMode("add")}
-                      className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
-                        adjustMode === "add"
-                          ? "bg-emerald-500 text-white shadow-md shadow-emerald-200"
-                          : "text-slate-600 hover:text-slate-900"
+                      className={`py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1 transition-all ${
+                        adjustMode === "add" ? "bg-emerald-600 text-white shadow-xs" : "text-slate-600 hover:text-slate-900"
                       }`}
                     >
-                      <Plus size={15} />
-                      <span>เพิ่มเงิน (+ Add)</span>
+                      <Plus size={14} /> เพิ่มยอด (Credit)
                     </button>
                     <button
                       type="button"
                       onClick={() => setAdjustMode("deduct")}
-                      className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
-                        adjustMode === "deduct"
-                          ? "bg-rose-500 text-white shadow-md shadow-rose-200"
-                          : "text-slate-600 hover:text-slate-900"
+                      className={`py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1 transition-all ${
+                        adjustMode === "deduct" ? "bg-rose-600 text-white shadow-xs" : "text-slate-600 hover:text-slate-900"
                       }`}
                     >
-                      <Minus size={15} />
-                      <span>หักเงิน (- Deduct)</span>
+                      <Minus size={14} /> หักยอด (Debit)
                     </button>
                   </div>
                 </div>
 
-                {/* Amount Input */}
-                <div className="space-y-2">
-                  <Label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Amount (฿)</Label>
-                  <div className="relative">
-                    <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black text-lg ${
-                      (adjustAmount.startsWith("-") || adjustMode === "deduct") ? "text-rose-600" : "text-emerald-600"
-                    }`}>
-                      {(adjustAmount.startsWith("-") || adjustMode === "deduct") ? "-" : "+"} ฿
-                    </span>
-                    <Input 
-                      type="number" 
-                      step="any"
-                      required 
-                      autoFocus 
-                      placeholder="e.g. 500 หรือ -500" 
-                      value={adjustAmount} 
-                      onChange={e => {
-                        const val = e.target.value;
-                        setAdjustAmount(val);
-                        if (val.startsWith("-")) {
-                          setAdjustMode("deduct");
-                        } else if (val.startsWith("+")) {
-                          setAdjustMode("add");
-                        }
-                      }} 
-                      className={`h-14 pl-14 border-slate-200 text-xl font-bold rounded-xl bg-white ${
-                        (adjustAmount.startsWith("-") || adjustMode === "deduct") 
-                          ? "focus-visible:ring-rose-500 text-rose-950" 
-                          : "focus-visible:ring-emerald-500 text-emerald-950"
-                      }`} 
-                    />
-                  </div>
+                <div className="space-y-1">
+                  <Label className="font-bold text-slate-700">จำนวนเงิน (฿)</Label>
+                  <Input
+                    type="number"
+                    step="any"
+                    placeholder="0.00"
+                    value={adjustAmount}
+                    onChange={e => setAdjustAmount(e.target.value)}
+                    className="h-10 text-base font-black rounded-xl"
+                    required
+                  />
                 </div>
 
-                {/* Adjustment Reason Input */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
-                    <span>เหตุผลในการปรับยอด (Reason) <span className="text-rose-500 font-bold">*</span></span>
-                    <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
-                  </Label>
-                  <Input 
-                    type="text"
-                    required
-                    placeholder="e.g. ยกยอดจากระบบเดิม, ชดเชยผ้าเสียหาย, ปรับปรุงยอดผิดพลาด"
+                <div className="space-y-1">
+                  <Label className="font-bold text-slate-700">เหตุผลในการปรับยอด</Label>
+                  <Input
+                    placeholder="เช่น ปรับยอดจากระบบเดิม, คืนเงินค่าซัก"
                     value={adjustReason}
                     onChange={e => setAdjustReason(e.target.value)}
-                    className={`h-11 border text-xs rounded-xl bg-white text-slate-800 placeholder:text-slate-400 ${
-                      !adjustReason.trim() && adjustAmount ? 'border-amber-400 focus:border-amber-500' : 'border-slate-200'
-                    }`}
+                    className="h-9 text-xs rounded-xl"
+                    required
                   />
-                  {!adjustReason.trim() && adjustAmount && (
-                    <p className="text-[10px] text-amber-600 font-medium">* จำเป็นต้องใส่เหตุผลเพื่อบันทึกประวัติ (Log)</p>
-                  )}
                 </div>
 
-                {/* Live Preview Box */}
-                {(() => {
-                  const raw = parseFloat(adjustAmount);
-                  const valid = !isNaN(raw) && raw !== 0;
-                  const delta = valid ? (raw < 0 ? raw : (adjustMode === "add" ? raw : -raw)) : 0;
-                  const cur = customer.creditBalance || 0;
-                  const projected = Math.round((cur + delta) * 100) / 100;
-                  const isAdd = delta >= 0;
-                  return (
-                    <div className={`p-3.5 rounded-xl border transition-all ${
-                      isAdd ? "bg-emerald-50/60 border-emerald-200 text-emerald-900" : "bg-rose-50/60 border-rose-200 text-rose-900"
-                    }`}>
-                      <div className="flex justify-between items-center text-xs font-semibold">
-                        <span>ยอดหลังปรับปรุง (New Balance):</span>
-                        <span className={`text-base font-black ${projected < 0 ? "text-rose-600" : ""}`}>
-                          ฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })()}
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setAdjustOpen(false)} className="rounded-xl">
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="sm" disabled={adjustLoading} className="bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold">
+                    {adjustLoading ? "Saving..." : "Confirm Adjustment"}
+                  </Button>
+                </div>
               </div>
-              <DialogFooter className="p-6 pt-4 bg-white border-t border-slate-100">
-                <Button type="button" variant="ghost" onClick={() => setAdjustOpen(false)} disabled={adjustLoading} className="h-12 rounded-xl font-semibold px-6">Cancel</Button>
-                {(() => {
-                  const raw = parseFloat(adjustAmount);
-                  const valid = !isNaN(raw) && raw !== 0;
-                  const delta = valid ? (raw < 0 ? raw : (adjustMode === "add" ? raw : -raw)) : 0;
-                  const isAdd = delta >= 0;
-                  return (
-                    <Button 
-                      type="submit" 
-                      disabled={adjustLoading || !valid || !adjustReason.trim()} 
-                      className={`h-12 text-white font-bold rounded-xl px-8 shadow-lg transition-all ${
-                        isAdd
-                          ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100"
-                          : "bg-rose-600 hover:bg-rose-700 shadow-rose-100"
-                      } disabled:opacity-50 disabled:cursor-not-allowed`}
-                    >
-                      {adjustLoading
-                        ? "Saving..."
-                        : isAdd
-                          ? `Confirm Add +฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
-                          : `Confirm Deduct -฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-                    </Button>
-                  );
-                })()}
-              </DialogFooter>
-
             </form>
           </DialogContent>
         </Dialog>
-
       )}
 
-      {/* Top Up Dialog — opens after Edit Profile closes to avoid z-index conflict */}
-      {showTopUpDialog && (localTopUpCustomer || customer) && (
+      {/* Top Up Dialog */}
+      {showTopUpDialog && (
         <TopUpDialog
           open={showTopUpDialog}
           onClose={() => {
             setShowTopUpDialog(false);
             setLocalTopUpCustomer(null);
           }}
-          preselectedCustomer={localTopUpCustomer || customer}
+          preselectedCustomer={localTopUpCustomer}
         />
       )}
     </>
   );
 }
-

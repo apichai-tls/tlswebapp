@@ -156,6 +156,7 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.isVerified !== undefined) data.isVerified = updates.isVerified;
   if (updates.verifiedVia !== undefined) data.verifiedVia = updates.verifiedVia;
   if (updates.sourceSystem !== undefined) data.sourceSystem = updates.sourceSystem;
+  if (updates.passwordHash !== undefined) data.passwordHash = updates.passwordHash;
   if (updates.roomNo !== undefined) data.roomNo = updates.roomNo;
   if (updates.memberStartDate !== undefined) {
     data.memberStartDate = updates.memberStartDate ? new Date(updates.memberStartDate) : null;
@@ -322,6 +323,75 @@ export async function deleteCustomerAction(id: string) {
     throw new Error(`Cannot delete customer: they have ${jobsCount} historical job(s).`);
   }
   return prisma.customer.delete({ where: { id } });
+}
+
+export async function addCustomerAddressAction(customerId: string, addressData: {
+  label: string;
+  placeName?: string;
+  address: string;
+  roomNumber?: string;
+  district?: string;
+  province?: string;
+  postalCode?: string;
+  googleMapsUrl?: string;
+  leaveWithJuristic?: boolean;
+  deliveryNote?: string;
+  isPrimary?: boolean;
+}) {
+  if (addressData.isPrimary) {
+    await prisma.customerAddress.updateMany({
+      where: { customerId, isPrimary: true },
+      data: { isPrimary: false }
+    });
+  }
+  const created = await prisma.customerAddress.create({
+    data: {
+      customerId,
+      label: addressData.label || 'Home Condo',
+      placeName: addressData.placeName || null,
+      address: addressData.address || addressData.placeName || '',
+      roomNumber: addressData.roomNumber || null,
+      district: addressData.district || 'Bangkok',
+      province: addressData.province || 'Bangkok',
+      postalCode: addressData.postalCode || null,
+      googleMapsUrl: addressData.googleMapsUrl || null,
+      leaveWithJuristic: addressData.leaveWithJuristic ?? true,
+      deliveryNote: addressData.deliveryNote || null,
+      isPrimary: Boolean(addressData.isPrimary)
+    }
+  });
+
+  if (addressData.isPrimary) {
+    await prisma.customer.update({
+      where: { id: customerId },
+      data: { defaultAddress: addressData.address }
+    });
+  }
+
+  return created;
+}
+
+export async function deleteCustomerAddressAction(addressId: string, customerId: string) {
+  await prisma.customerAddress.delete({
+    where: { id: addressId }
+  });
+  return { success: true };
+}
+
+export async function setPrimaryCustomerAddressAction(customerId: string, addressId: string) {
+  await prisma.customerAddress.updateMany({
+    where: { customerId, isPrimary: true },
+    data: { isPrimary: false }
+  });
+  const updated = await prisma.customerAddress.update({
+    where: { id: addressId },
+    data: { isPrimary: true }
+  });
+  await prisma.customer.update({
+    where: { id: customerId },
+    data: { defaultAddress: updated.address }
+  });
+  return updated;
 }
 
 export async function addJobAction(data: any) {
@@ -2380,13 +2450,21 @@ export async function processRefundAndCorrectAction(data: {
     let initialCartHash: string | null = null;
     try {
       const items = job.itemsJson ? JSON.parse(job.itemsJson) : [];
+      const vatMatch = job.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
+      const vatType = vatMatch ? vatMatch[1].toLowerCase() : "none";
+      const vatRate = vatMatch ? parseFloat(vatMatch[2]) : 0;
+      const speedMatch = job.remark?.match(/Express\s*(\d+)%/i);
+      const speed = speedMatch ? `express_${speedMatch[1]}` : "standard";
+      const hasDiscountOn = job.remark ? job.remark.includes("Discount: on") : false;
+      const discountPercent = hasDiscountOn ? (job.discountPercent || 0) : 0;
+
       initialCartHash = computeCartHash({
         items,
-        serviceSpeed: (job.remark?.match(/Express\s*(\d+)%/i) ? `express_${job.remark?.match(/Express\s*(\d+)%/i)![1]}` : "standard"),
+        serviceSpeed: speed,
         fee: job.fee || 0,
-        discountPercent: job.discountPercent || 0,
-        vatType: (job as any).vatType,
-        vatRate: (job as any).vatRate || 0,
+        discountPercent,
+        vatType,
+        vatRate,
         customerName: job.customerName,
         customerPhone: job.customerPhone,
         deliveryAt: job.deliveryScheduledAt,

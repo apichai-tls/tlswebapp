@@ -712,7 +712,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           )}
                           {(() => {
                             const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
-                            if (isCash && !isJobFullyPaid(job) && !job.isPaid) {
+                            const isProcessOrLater = !['tba', 'pending', 'pickup'].includes(job.status);
+                            if (isCash && !isJobFullyPaid(job) && !job.isPaid && isProcessOrLater) {
                               return (
                                 <span title={`ต้องเก็บเงินสด (COD)${job.totalAmount ? ` ฿${Math.round(job.totalAmount).toLocaleString()}` : ""}`} className="w-4 h-4 rounded flex items-center justify-center bg-rose-100 text-rose-700 border border-rose-200 animate-in fade-in duration-200">
                                   <Banknote size={10} />
@@ -1149,7 +1150,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 )}
                                 {(() => {
                                   const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
-                                  if (isCash && !isJobFullyPaid(job) && !job.isPaid) {
+                                  const isProcessOrLater = !['tba', 'pending', 'pickup'].includes(job.status);
+                                  if (isCash && !isJobFullyPaid(job) && !job.isPaid && isProcessOrLater) {
                                     return (
                                       <span title={`ต้องเก็บเงินสด (COD)${job.totalAmount ? ` ฿${Math.round(job.totalAmount).toLocaleString()}` : ""}`} className="w-4 h-4 rounded flex items-center justify-center bg-rose-100 text-rose-700 border border-rose-200 animate-in fade-in duration-200">
                                         <Banknote size={10} />

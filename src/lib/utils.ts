@@ -88,6 +88,33 @@ export function computeCartHash(data: {
   customerPhone?: string | null;
   deliveryAt?: string | Date | null;
 }): string {
+  let normalizedDeliveryAt = "";
+  if (data.deliveryAt) {
+    if (data.deliveryAt instanceof Date) {
+      if (!isNaN(data.deliveryAt.getTime())) {
+        const d = data.deliveryAt;
+        const pad = (n: number) => String(n).padStart(2, '0');
+        normalizedDeliveryAt = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+    } else {
+      const s = String(data.deliveryAt).trim();
+      if (s.includes("T") && (s.endsWith("Z") || s.includes("+") || s.lastIndexOf("-") > 10)) {
+        const parsedD = new Date(s);
+        if (!isNaN(parsedD.getTime())) {
+          const pad = (n: number) => String(n).padStart(2, '0');
+          normalizedDeliveryAt = `${parsedD.getFullYear()}-${pad(parsedD.getMonth() + 1)}-${pad(parsedD.getDate())}T${pad(parsedD.getHours())}:${pad(parsedD.getMinutes())}`;
+        } else {
+          normalizedDeliveryAt = s.slice(0, 16);
+        }
+      } else {
+        normalizedDeliveryAt = s.slice(0, 16);
+      }
+    }
+  }
+
+  const vatType = (data.vatType || "none").toLowerCase();
+  const vatRate = vatType === "none" ? 0 : (Number(data.vatRate) || 0);
+
   return JSON.stringify({
     items: (data.items || [])
       .map(i => ({
@@ -99,11 +126,11 @@ export function computeCartHash(data: {
     speed: data.serviceSpeed || "standard",
     fee: Number(data.fee) || 0,
     disc: Number(data.discountPercent) || 0,
-    vatType: data.vatType || "none",
-    vatRate: Number(data.vatRate) || 0,
+    vatType,
+    vatRate,
     name: (data.customerName || "").trim(),
     phone: (data.customerPhone || "").trim(),
-    deliveryAt: data.deliveryAt ? String(data.deliveryAt) : "",
+    deliveryAt: normalizedDeliveryAt,
   });
 }
 

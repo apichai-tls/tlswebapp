@@ -336,6 +336,14 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
   const formattedTime = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(displayDate);
   const targetLocation = task.targetLocation;
   
+  // Format pure branch name (cut to max ~10 chars)
+  const formattedBranch = (() => {
+    if (!branchName) return null;
+    const match = branchName.match(/\(([^)]+)\)/);
+    const clean = match ? match[1].trim() : branchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
+    return clean.length > 10 ? clean.slice(0, 10) + '...' : clean;
+  })();
+
   // Parse Remark for specific tags
   const remarks = job.remark ? job.remark.split(" | ") : [];
   const isExpress50 = remarks.some(r => r.includes("Express 50%"));
@@ -348,12 +356,25 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
       : (r.startsWith('ไปส่ง:') || r.startsWith('Delivery:'))
   );
   
-  // Clean remark string
-  const cleanRemark = remarks.filter(r => 
-    !r.includes("Express") && 
-    !r.startsWith('ไปรับ:') && !r.startsWith('Pickup:') && 
-    !r.startsWith('ไปส่ง:') && !r.startsWith('Delivery:')
-  ).join(" | ");
+  // Clean human remark string (filter out all system/billing tags)
+  const cleanRemark = remarks.filter(r => {
+    const t = r.trim();
+    if (!t) return false;
+    if (t.startsWith("Proforma:")) return false;
+    if (t.startsWith("Discount:")) return false;
+    if (t.startsWith("VAT:")) return false;
+    if (t.startsWith("Promo:")) return false;
+    if (t.startsWith("Req Tax Inv")) return false;
+    if (t.startsWith("Free Delivery")) return false;
+    if (t.includes("Express 50%") || t.includes("Express 100%") || t.startsWith("Express")) return false;
+    if (t.startsWith("ไปรับ:") || t.startsWith("Pickup:")) return false;
+    if (t.startsWith("ไปส่ง:") || t.startsWith("Delivery:")) return false;
+    if (t.startsWith("[Noname Web Booking]")) return false;
+    if (t.startsWith("TimeSlot:")) return false;
+    if (t.startsWith("Services:")) return false;
+    if (t.includes("อนุญาตให้ฝากนิติบุคคลได้")) return false;
+    return true;
+  }).map(r => r.replace(/^Note:\s*/i, "").trim()).filter(Boolean).join(" | ");
 
   return (
     <div
@@ -369,10 +390,15 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold font-mono">
               <span>#{job.id.split('-')[0].toUpperCase()}</span>
-              {branchName && (
+              {formattedBranch && (
                 <>
                   <span className="text-slate-300">•</span>
-                  <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded text-[10px] tracking-wider truncate max-w-[120px]">{branchName}</span>
+                  <span 
+                    className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide"
+                    title={branchName}
+                  >
+                    {formattedBranch}
+                  </span>
                 </>
               )}
             </div>
@@ -409,7 +435,7 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
               {(() => {
                 const isPaidEffective = isJobFullyPaid(job) || Boolean(job.isPaid);
                 const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
-                if (isCash && !isPaidEffective) {
+                if (isCash && !isPaidEffective && legType === "delivery") {
                   return (
                     <span className="flex items-center gap-1 text-[10px] font-bold py-0.5 px-2 rounded-full border bg-red-50 text-red-600 border-red-200 animate-in fade-in duration-200">
                       <Banknote size={10} className="text-red-500" />
@@ -454,6 +480,7 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
           {!!job.totalAmount && job.totalAmount > 0 && (() => {
             const isWalkIn = job.source === 'pos' || (job.type as string) === 'in_store';
             const isPaidEffective = isWalkIn ? Boolean(job.isShopPaid) : Boolean(job.isPaid);
+            const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
             return (
               <div className="flex items-center gap-2 mt-1">
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex items-center gap-1 ${
@@ -462,7 +489,7 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
                   <CreditCard size={10} className={isPaidEffective ? "text-emerald-500" : "text-orange-500"} />
                   {[job.paymentMethod?.toUpperCase(), job.paymentChannel ? `(${job.paymentChannel})` : ""].filter(Boolean).join(" ")}
                   {job.paymentMethod || job.paymentChannel ? " - " : ""}
-                  {isPaidEffective ? 'PAID' : 'UNPAID'} ฿{job.totalAmount}
+                  {isPaidEffective ? 'PAID' : (isCash && legType === 'pickup' ? 'COD (ชำระปลายทาง)' : 'UNPAID')} ฿{job.totalAmount}
                 </span>
               </div>
             );
@@ -1743,6 +1770,33 @@ export default function RiderPage() {
                 : (r.startsWith('ไปส่ง:') || r.startsWith('Delivery:'))
             );
             
+            const branchName = shopLocations.find(s => s.id === selectedJob.job.branchId)?.name;
+            const formattedBranch = (() => {
+              if (!branchName) return null;
+              const match = branchName.match(/\(([^)]+)\)/);
+              const clean = match ? match[1].trim() : branchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
+              return clean.length > 10 ? clean.slice(0, 10) + '...' : clean;
+            })();
+
+            const cleanRemark = remarks.filter(r => {
+              const t = r.trim();
+              if (!t) return false;
+              if (t.startsWith("Proforma:")) return false;
+              if (t.startsWith("Discount:")) return false;
+              if (t.startsWith("VAT:")) return false;
+              if (t.startsWith("Promo:")) return false;
+              if (t.startsWith("Req Tax Inv")) return false;
+              if (t.startsWith("Free Delivery")) return false;
+              if (t.includes("Express 50%") || t.includes("Express 100%") || t.startsWith("Express")) return false;
+              if (t.startsWith("ไปรับ:") || t.startsWith("Pickup:")) return false;
+              if (t.startsWith("ไปส่ง:") || t.startsWith("Delivery:")) return false;
+              if (t.startsWith("[Noname Web Booking]")) return false;
+              if (t.startsWith("TimeSlot:")) return false;
+              if (t.startsWith("Services:")) return false;
+              if (t.includes("อนุญาตให้ฝากนิติบุคคลได้")) return false;
+              return true;
+            }).map(r => r.replace(/^Note:\s*/i, "").trim()).filter(Boolean).join(" | ");
+
             const notes = extractAdminNotes(selectedJob.job.adminNotesJson).notes;
             
             return (
@@ -1767,9 +1821,19 @@ export default function RiderPage() {
                         {selectedJob.job.subStatus === 'iron' && <span className="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-indigo-200 flex items-center gap-1"><Shirt size={10} /> IRON</span>}
                         {selectedJob.job.subStatus === 'ready' && <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-emerald-200 flex items-center gap-1"><CheckCircle2 size={10} /> READY</span>}
                       </DialogTitle>
-                      <span className="font-mono text-[10px] font-bold tracking-wider text-slate-500 mt-0.5 block">
-                        {selectedJob.job.id}
-                      </span>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className="font-mono text-[10px] font-bold tracking-wider text-slate-500">
+                          #{selectedJob.job.id.split('-')[0].toUpperCase()}
+                        </span>
+                        {formattedBranch && (
+                          <>
+                            <span className="text-slate-300 text-[10px]">•</span>
+                            <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide" title={branchName}>
+                              {formattedBranch}
+                            </span>
+                          </>
+                        )}
+                      </div>
                       <div className="mt-1.5">
                         <a href={`tel:${selectedJob.job.customerPhone || '0812345678'}`} className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition-colors font-bold text-xs">
                           <Phone size={12} /> {selectedJob.job.customerPhone || 'No Phone Number'}
@@ -1785,7 +1849,7 @@ export default function RiderPage() {
                           {(() => {
                             const isPaidEffective = isJobFullyPaid(selectedJob.job) || Boolean(selectedJob.job.isPaid);
                             const isCash = selectedJob.job.paymentChannel === "Cash / COD" || (selectedJob.job.paymentMethod || "").toLowerCase() === "cash";
-                            if (isCash && !isPaidEffective) {
+                            if (isCash && !isPaidEffective && legType === "delivery") {
                               return (
                                 <Badge
                                   variant="outline"
@@ -1843,6 +1907,7 @@ export default function RiderPage() {
                     {!!selectedJob.job.totalAmount && selectedJob.job.totalAmount > 0 && (() => {
                       const isWalkIn = selectedJob.job.source === 'pos' || (selectedJob.job.type as string) === 'in_store';
                       const isPaidEffective = isWalkIn ? Boolean(selectedJob.job.isShopPaid) : Boolean(selectedJob.job.isPaid);
+                      const isCash = selectedJob.job.paymentChannel === "Cash / COD" || (selectedJob.job.paymentMethod || "").toLowerCase() === "cash";
                       return (
                         <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-2">
                           <span className={`text-[11px] font-bold px-2 py-1 rounded border flex items-center gap-1.5 ${
@@ -1851,7 +1916,7 @@ export default function RiderPage() {
                             <CreditCard size={12} className={isPaidEffective ? "text-emerald-500" : "text-orange-500"} />
                             {[selectedJob.job.paymentMethod?.toUpperCase(), selectedJob.job.paymentChannel ? `(${selectedJob.job.paymentChannel})` : ""].filter(Boolean).join(" ")}
                             {selectedJob.job.paymentMethod || selectedJob.job.paymentChannel ? " - " : ""}
-                            {isPaidEffective ? 'PAID' : 'UNPAID'} ฿{selectedJob.job.totalAmount}
+                            {isPaidEffective ? 'PAID' : (isCash && legType === 'pickup' ? 'COD (ชำระปลายทาง)' : 'UNPAID')} ฿{selectedJob.job.totalAmount}
                           </span>
                         </div>
                       );
@@ -1863,6 +1928,15 @@ export default function RiderPage() {
                       <Info size={16} className="text-orange-600 shrink-0 mt-0.5" />
                       <div>
                         <p className="text-xs font-bold text-orange-800 leading-tight">{legInstruction}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {cleanRemark && (
+                    <div className="p-2.5 bg-rose-50 border border-rose-100 rounded-xl flex items-start gap-2.5">
+                      <Info size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-semibold text-rose-800 leading-tight">{cleanRemark}</p>
                       </div>
                     </div>
                   )}

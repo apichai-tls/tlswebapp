@@ -900,10 +900,13 @@ export default function AdminPage() {
   }, [selectedProfileCustomer, customerPhone, customerName, customers]);
 
 
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
-  const isCsoOrAdmin = isCSO || user?.role === 'admin';
-  const canSeeTaxInvoice = isCSO || user?.role === 'admin' || user?.role === 'superadmin' || user?.role === 'accounting';
-  const canSeeStuck = user?.role === 'admin' || isCSO || user?.role === 'superadmin';
+  const isCsoOrAdmin = isCSO || isAdmin;
+  const canDeleteLaundryBags = isAdmin || isCSO;
+  const canDeleteBills = isAdmin;
+  const canSeeTaxInvoice = isCSO || isAdmin || user?.role === 'accounting';
+  const canSeeStuck = isAdmin || isCSO;
   // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
   const isPricingLocked = isPaidJob;
   const isCartLocked = isPaidJob;
@@ -1556,21 +1559,29 @@ export default function AdminPage() {
     setProformaReceiptNumber(loadedProformaNum);
     setProformaRevision(loadedRevision);
 
-    // Initial cart hash: if loadedCartHash is null, compute from loaded cart items so that
-    // subsequent modifications are accurately detected.
+    const speedMatch = job.remark?.match(/Express\s*(\d+)%/i);
+    const initialSpeed = speedMatch ? `express_${speedMatch[1]}` : "standard";
+    const initialDiscountOn = Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || hasValidPromo || hasRawPromo);
+    const initialDiscountPercent = initialDiscountOn ? (job.discountPercent || 0) : 0;
+    const initialVatType = vatMatch ? (vatMatch[1].toLowerCase() as any) : ((systemSettings?.vatType as any) || "none");
+    const initialVatRate = vatMatch ? parseFloat(vatMatch[2]) : (parseFloat(systemSettings?.vatRate || "7") || 7);
+    const initialDeliveryTime = format(roundToNearest30(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm");
+
+    // Initial cart hash: compute from loaded cart items and initial state so that
+    // subsequent modifications are accurately detected without false positive revision bumps.
     const initialLoadedCartHash = computeCartHash({
       items: mappedCart,
-      serviceSpeed: (job.remark?.match(/Express\s*(\d+)%/i) ? `express_${job.remark?.match(/Express\s*(\d+)%/i)![1]}` : "standard"),
+      serviceSpeed: initialSpeed,
       fee: job.fee || 0,
-      discountPercent: job.discountPercent || 0,
-      vatType: (job as any).vatType,
-      vatRate: (job as any).vatRate || 0,
+      discountPercent: initialDiscountPercent,
+      vatType: initialVatType,
+      vatRate: initialVatRate,
       customerName: job.customerName,
       customerPhone: job.customerPhone,
-      deliveryAt: job.deliveryScheduledAt,
+      deliveryAt: initialDeliveryTime,
     });
 
-    setLastProformaCartHash(loadedCartHash || initialLoadedCartHash);
+    setLastProformaCartHash(initialLoadedCartHash);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
@@ -1875,8 +1886,8 @@ export default function AdminPage() {
     // Trigger upload promises concurrently
     const bagUploadPromise = uploaderRef.current ? uploaderRef.current.startUpload() : Promise.resolve(finalBagImageUrls);
     const billUploadPromise = billUploaderRef.current ? billUploaderRef.current.startUpload() : Promise.resolve(finalBillImageUrls);
-    const pickupUploadPromise = (user?.role === 'admin' && pickupUploaderRef.current) ? pickupUploaderRef.current.startUpload() : Promise.resolve(pickupProofImageUrls);
-    const deliveryUploadPromise = (user?.role === 'admin' && deliveryUploaderRef.current) ? deliveryUploaderRef.current.startUpload() : Promise.resolve(deliveryProofImageUrls);
+    const pickupUploadPromise = (isAdmin && pickupUploaderRef.current) ? pickupUploaderRef.current.startUpload() : Promise.resolve(pickupProofImageUrls);
+    const deliveryUploadPromise = (isAdmin && deliveryUploaderRef.current) ? deliveryUploaderRef.current.startUpload() : Promise.resolve(deliveryProofImageUrls);
 
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
     const customRemarks = oldRemarks.filter(r => 
@@ -1974,7 +1985,7 @@ export default function AdminPage() {
       items: dialogCart,
       serviceSpeed,
       fee,
-      discountPercent: dialogDiscountPercent,
+      discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
       vatType: dialogVatType,
       vatRate: dialogVatRate,
       customerName,
@@ -2238,18 +2249,51 @@ export default function AdminPage() {
           deliveryUploadPromise
         ]);
 
-        if (JSON.stringify(bagUrls) !== JSON.stringify(origBagImageUrls)) {
-          payload.bagImageUrl = (bagUrls.length > 0 ? JSON.stringify(bagUrls) : null) as any;
+        // Defense-in-depth: Ensure unauthorized roles cannot delete existing images
+        let safeBagUrls = bagUrls;
+        if (!canDeleteLaundryBags && origBagImageUrls.length > 0) {
+          const missingBags = origBagImageUrls.filter(url => !safeBagUrls.includes(url));
+          if (missingBags.length > 0) {
+            safeBagUrls = [...missingBags, ...safeBagUrls];
+          }
         }
-        if (JSON.stringify(billUrls) !== JSON.stringify(origBillImageUrls)) {
-          payload.billImageUrl = (billUrls.length > 0 ? JSON.stringify(billUrls) : null) as any;
+
+        let safeBillUrls = billUrls;
+        if (!isAdmin && origBillImageUrls.length > 0) {
+          const missingBills = origBillImageUrls.filter(url => !safeBillUrls.includes(url));
+          if (missingBills.length > 0) {
+            safeBillUrls = [...missingBills, ...safeBillUrls];
+          }
         }
-        if (JSON.stringify(pickupUrls) !== JSON.stringify(origPickupProofImageUrls)) {
-          payload.pickupProofImageUrl = (pickupUrls.length > 0 ? JSON.stringify(pickupUrls) : null) as any;
+
+        let safePickupUrls = pickupUrls;
+        if (!isAdmin && origPickupProofImageUrls.length > 0) {
+          const missingPickups = origPickupProofImageUrls.filter(url => !safePickupUrls.includes(url));
+          if (missingPickups.length > 0) {
+            safePickupUrls = [...missingPickups, ...safePickupUrls];
+          }
         }
-        if (JSON.stringify(deliveryUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
-          payload.deliveryProofImageUrl = (deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null) as any;
-          payload.proofImageUrl = (deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null) as any;
+
+        let safeDeliveryUrls = deliveryUrls;
+        if (!isAdmin && origDeliveryProofImageUrls.length > 0) {
+          const missingDeliveries = origDeliveryProofImageUrls.filter(url => !safeDeliveryUrls.includes(url));
+          if (missingDeliveries.length > 0) {
+            safeDeliveryUrls = [...missingDeliveries, ...safeDeliveryUrls];
+          }
+        }
+
+        if (JSON.stringify(safeBagUrls) !== JSON.stringify(origBagImageUrls)) {
+          payload.bagImageUrl = (safeBagUrls.length > 0 ? JSON.stringify(safeBagUrls) : null) as any;
+        }
+        if (JSON.stringify(safeBillUrls) !== JSON.stringify(origBillImageUrls)) {
+          payload.billImageUrl = (safeBillUrls.length > 0 ? JSON.stringify(safeBillUrls) : null) as any;
+        }
+        if (JSON.stringify(safePickupUrls) !== JSON.stringify(origPickupProofImageUrls)) {
+          payload.pickupProofImageUrl = (safePickupUrls.length > 0 ? JSON.stringify(safePickupUrls) : null) as any;
+        }
+        if (JSON.stringify(safeDeliveryUrls) !== JSON.stringify(origDeliveryProofImageUrls)) {
+          payload.deliveryProofImageUrl = (safeDeliveryUrls.length > 0 ? JSON.stringify(safeDeliveryUrls) : null) as any;
+          payload.proofImageUrl = (safeDeliveryUrls.length > 0 ? JSON.stringify(safeDeliveryUrls) : null) as any;
         }
 
         // 3. Persist to DB and await confirmation
@@ -2307,8 +2351,9 @@ export default function AdminPage() {
           }
         }
 
-        // [AUTO-PROFORMA] If paying, ensure proforma is synchronized, saved, and captured
-        if (isPayment) {
+        // [AUTO-PROFORMA] If paying OR if cart changed without prior preview, ensure proforma is synchronized, saved, and captured
+        const shouldCaptureProforma = isPayment || Boolean(targetProformaNum && isCartChangedFromLastProforma && !proformaPressedSinceLastEdit);
+        if (shouldCaptureProforma) {
           let finalProformaNum = proformaReceiptNumber || (existingJob as any)?.proformaNumber;
           if (targetEditingJobId.startsWith("RF-")) {
             finalProformaNum = cleanProformaNumber(finalProformaNum) || (cleanOriginalId ? `PR-${cleanOriginalId}` : generateProformaBaseNumber(targetEditingJobId));
@@ -2742,9 +2787,12 @@ export default function AdminPage() {
       
       const mockJob: any = {
         id: editingJobId || "DRAFT",
+        customerId: selectedProfileCustomer?.id || (editingJobId ? jobs.find(j => j.id === editingJobId)?.customerId : undefined),
         createdAt: draftCreatedAt,
         customerName: customerName || "Walk-In",
         customerPhone: customerPhone || "-",
+        isMember: selectedProfileCustomer?.isMember !== undefined ? selectedProfileCustomer.isMember : (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.isMember : undefined),
+        walletBalance: selectedProfileCustomer?.creditBalance !== undefined ? selectedProfileCustomer.creditBalance : undefined,
         deliveryAddress: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || null),
         dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || activeShop?.address || ""),
         items: dialogCart.map(item => ({
@@ -4603,6 +4651,7 @@ export default function AdminPage() {
                               value={bagImageUrls}
                               onValueChange={setBagImageUrls}
                               maxFiles={5}
+                              disableDelete={!canDeleteLaundryBags}
                             />
                           </div>
 
@@ -4616,34 +4665,37 @@ export default function AdminPage() {
                               value={billImageUrls}
                               onValueChange={setBillImageUrls}
                               maxFiles={10}
+                              disableDelete={!isAdmin}
                             />
                           </div>
 
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
                             <MultiImageUploader
-                              ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
+                              ref={isAdmin ? pickupUploaderRef : undefined}
                               entityType="job"
                               entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={pickupProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
+                              onValueChange={isAdmin ? setPickupProofImageUrls : undefined}
+                              maxFiles={isAdmin ? 5 : pickupProofImageUrls.length}
+                              readOnly={!isAdmin}
+                              disableDelete={!isAdmin}
                             />
                           </div>
 
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
                             <MultiImageUploader
-                              ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
+                              ref={isAdmin ? deliveryUploaderRef : undefined}
                               entityType="job"
                               entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={deliveryProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
+                              onValueChange={isAdmin ? setDeliveryProofImageUrls : undefined}
+                              maxFiles={isAdmin ? 5 : deliveryProofImageUrls.length}
+                              readOnly={!isAdmin}
+                              disableDelete={!isAdmin}
                             />
                           </div>
                         </div>
@@ -5506,7 +5558,7 @@ export default function AdminPage() {
                                   items: dialogCart,
                                   serviceSpeed,
                                   fee,
-                                  discountPercent: dialogDiscountPercent,
+                                  discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
                                   vatType: dialogVatType,
                                   vatRate: dialogVatRate,
                                   customerName,
@@ -5648,6 +5700,7 @@ export default function AdminPage() {
                               value={bagImageUrls}
                               onValueChange={setBagImageUrls}
                               maxFiles={5}
+                              disableDelete={!canDeleteLaundryBags}
                             />
                           </div>
 
@@ -5661,34 +5714,37 @@ export default function AdminPage() {
                               value={billImageUrls}
                               onValueChange={setBillImageUrls}
                               maxFiles={10}
+                              disableDelete={!isAdmin}
                             />
                           </div>
 
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
                             <MultiImageUploader
-                              ref={user?.role === 'admin' ? pickupUploaderRef : undefined}
+                              ref={isAdmin ? pickupUploaderRef : undefined}
                               entityType="job"
                               entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={pickupProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setPickupProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : pickupProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
+                              onValueChange={isAdmin ? setPickupProofImageUrls : undefined}
+                              maxFiles={isAdmin ? 5 : pickupProofImageUrls.length}
+                              readOnly={!isAdmin}
+                              disableDelete={!isAdmin}
                             />
                           </div>
 
                           <div className="space-y-1.5">
                             <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
                             <MultiImageUploader
-                              ref={user?.role === 'admin' ? deliveryUploaderRef : undefined}
+                              ref={isAdmin ? deliveryUploaderRef : undefined}
                               entityType="job"
                               entityId={editingJobId || Date.now().toString()}
                               subType="proofs"
                               value={deliveryProofImageUrls}
-                              onValueChange={user?.role === 'admin' ? setDeliveryProofImageUrls : undefined}
-                              maxFiles={user?.role === 'admin' ? 5 : deliveryProofImageUrls.length}
-                              readOnly={user?.role !== 'admin'}
+                              onValueChange={isAdmin ? setDeliveryProofImageUrls : undefined}
+                              maxFiles={isAdmin ? 5 : deliveryProofImageUrls.length}
+                              readOnly={!isAdmin}
+                              disableDelete={!isAdmin}
                             />
                           </div>
                         </div>
