@@ -333,6 +333,18 @@ export const customerStore = {
   async deleteCustomer(id: string) {
     await api.deleteCustomer(id);
     emitCustomerChange();
+  },
+  async mergeCustomer(primaryId: string, duplicateId: string, actor?: { id?: string; name?: string; role?: string }) {
+    const result = await api.mergeCustomer(primaryId, duplicateId, actor);
+    emitCustomerChange();
+    emitJobChange();
+    return result;
+  },
+  async batchMergeObviousDuplicates(actor?: { id?: string; name?: string; role?: string }) {
+    const result = await api.batchMergeObviousDuplicates(actor);
+    emitCustomerChange();
+    emitJobChange();
+    return result;
   }
 };
 

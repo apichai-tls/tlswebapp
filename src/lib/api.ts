@@ -405,6 +405,47 @@ export const api = {
     await dbActions.deleteCustomerAction(id);
   },
 
+  async mergeCustomer(
+    primaryId: string,
+    duplicateId: string,
+    actor?: { id?: string; name?: string; role?: string }
+  ) {
+    const res = await dbActions.mergeCustomerAction({
+      primaryCustomerId: primaryId,
+      duplicateCustomerId: duplicateId,
+      actorId: actor?.id,
+      actorName: actor?.name,
+      actorRole: actor?.role,
+    });
+    if (res.success) {
+      const db = initDb();
+      db.customers = db.customers.filter(c => c.id !== duplicateId);
+      if (res.updatedCustomer) {
+        const idx = db.customers.findIndex(c => c.id === primaryId);
+        if (idx >= 0) db.customers[idx] = res.updatedCustomer;
+        else db.customers.push(res.updatedCustomer);
+      }
+      db.jobs.forEach(j => {
+        if (j.customerId === duplicateId) {
+          j.customerId = primaryId;
+        }
+      });
+    }
+    return res;
+  },
+
+  async batchMergeObviousDuplicates(actor?: { id?: string; name?: string; role?: string }) {
+    const res = await dbActions.batchMergeObviousDuplicatesAction({
+      actorId: actor?.id,
+      actorName: actor?.name,
+      actorRole: actor?.role,
+    });
+    if (res.success && res.mergedCount > 0) {
+      await refreshDb();
+    }
+    return res;
+  },
+
   // --- JOBS ---
   async getJobs(): Promise<Job[]> {
     

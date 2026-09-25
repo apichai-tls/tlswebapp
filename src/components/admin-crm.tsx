@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
@@ -20,7 +20,7 @@ import { getTopUpTransactionsAction, updateTopUpTransactionSlipAction } from "@/
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
-import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer } from "@/lib/utils";
+import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone } from "@/lib/utils";
 
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
   return new Promise((resolve) => {
@@ -165,12 +165,14 @@ export function AdminCRM({
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const activeShop = shops[0];
 
+  // Role check: Strictly admin or superadmin
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   // Adjust Balance permission: granted via 'adjust-wallet' permission in Manage Users, or default for admin role
-  const canAdjustBalance = Boolean(user?.permissions?.includes('adjust-wallet') || user?.role === 'admin');
+  const canAdjustBalance = Boolean(user?.permissions?.includes('adjust-wallet') || isAdmin);
   // Everyone except Rider can see Top Up button
   const canTopUp = user?.role !== 'rider';
   // Wallet Approval permission: Admin, or users with 'approve-wallet' permission
-  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || user?.role === 'admin');
+  const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || isAdmin);
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
 
   useEffect(() => {
@@ -185,10 +187,21 @@ export function AdminCRM({
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+
+  // Duplicate Customer States (Strictly Admin Only)
+  const [selectedPrimaryMap, setSelectedPrimaryMap] = useState<Record<string, string>>({}); // phoneKey -> primaryCustomerId
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergePrimaryCustomer, setMergePrimaryCustomer] = useState<(Customer & { jobsCount: number; ltv: number }) | null>(null);
+  const [mergeDuplicateCustomer, setMergeDuplicateCustomer] = useState<(Customer & { jobsCount: number; ltv: number }) | null>(null);
+  const [isMerging, setIsMerging] = useState(false);
+  const [batchMergeModalOpen, setBatchMergeModalOpen] = useState(false);
+  const [isBatchMerging, setIsBatchMerging] = useState(false);
+  const [dupPage, setDupPage] = useState(1);
+  const dupPageSize = 10;
 
   // Customer Report States
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
@@ -464,10 +477,14 @@ export function AdminCRM({
     setDialogOpen(true);
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (confirm(`Are you sure you want to delete ${name}?`)) {
-      customerStore.deleteCustomer(id);
-      toast.info(`Deleted customer ${name}`);
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to delete customer "${name}"?`)) return;
+    try {
+      await customerStore.deleteCustomer(id);
+      toast.success(`ลบลูกค้า "${name}" เรียบร้อยแล้ว`);
+    } catch (err: any) {
+      console.error("Delete customer error:", err);
+      toast.error(err?.message || `ไม่สามารถลบลูกค้า "${name}" ได้ (อาจมีออเดอร์หรือประวัติที่ต้องจัดการก่อน)`);
     }
   };
 
@@ -554,6 +571,161 @@ export function AdminCRM({
       noname: customers.filter(c => c.brand === "noname_laundry").length
     };
   }, [customers]);
+
+  // Group duplicate customers by normalized phone number (Admin Only)
+  const duplicateGroups = useMemo(() => {
+    const map = new Map<string, (Customer & { jobsCount: number; ltv: number })[]>();
+
+    for (const c of customers) {
+      const norm = normalizePhone(c.phone);
+      if (!norm || norm.length < 8 || norm === "0000000000") continue;
+
+      const stats = customerAnalytics[c.id] || { jobsCount: 0, ltv: 0 };
+      const enriched = { ...c, jobsCount: stats.jobsCount, ltv: stats.ltv };
+
+      const existing = map.get(norm) || [];
+      existing.push(enriched);
+      map.set(norm, existing);
+    }
+
+    const groups: {
+      phoneKey: string;
+      normalizedPhone: string;
+      customers: (Customer & { jobsCount: number; ltv: number })[];
+      isRapidDuplicate: boolean;
+    }[] = [];
+
+    for (const [normPhone, list] of map.entries()) {
+      if (list.length > 1) {
+        // Sort inside group: prioritize by most jobs, then highest balance, then older createdAt
+        const sortedList = [...list].sort((a, b) => {
+          if (b.jobsCount !== a.jobsCount) return b.jobsCount - a.jobsCount;
+          const balA = a.creditBalance || 0;
+          const balB = b.creditBalance || 0;
+          if (balB !== balA) return balB - balA;
+          return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+        });
+
+        // Check if rapid double-click duplicate (exact name and created within 60s)
+        let isRapid = false;
+        if (list.length === 2) {
+          const [c1, c2] = list;
+          const n1 = (c1.name || "").trim().toUpperCase();
+          const n2 = (c2.name || "").trim().toUpperCase();
+          const t1 = new Date(c1.createdAt || 0).getTime();
+          const t2 = new Date(c2.createdAt || 0).getTime();
+          if (n1 === n2 && Math.abs(t1 - t2) <= 60000) {
+            isRapid = true;
+          }
+        }
+
+        groups.push({
+          phoneKey: normPhone,
+          normalizedPhone: normPhone,
+          customers: sortedList,
+          isRapidDuplicate: isRapid,
+        });
+      }
+    }
+
+    // Sort groups: rapid duplicates first, then groups with most records
+    return groups.sort((a, b) => {
+      if (a.isRapidDuplicate && !b.isRapidDuplicate) return -1;
+      if (!a.isRapidDuplicate && b.isRapidDuplicate) return 1;
+      return b.customers.length - a.customers.length;
+    });
+  }, [customers, customerAnalytics]);
+
+  const filteredDuplicateGroups = useMemo(() => {
+    if (!searchTerm.trim()) return duplicateGroups;
+    const q = searchTerm.toLowerCase().trim();
+    return duplicateGroups.filter(g => {
+      if (g.normalizedPhone.includes(q)) return true;
+      return g.customers.some(c => 
+        (c.name || "").toLowerCase().includes(q) ||
+        (c.phone || "").toLowerCase().includes(q) ||
+        (c.id || "").toLowerCase().includes(q) ||
+        (c.memberId || "").toLowerCase().includes(q)
+      );
+    });
+  }, [duplicateGroups, searchTerm]);
+
+  const rapidDuplicateCount = useMemo(() => {
+    return duplicateGroups.filter(g => g.isRapidDuplicate).length;
+  }, [duplicateGroups]);
+
+  const totalDupPages = Math.ceil(filteredDuplicateGroups.length / dupPageSize) || 1;
+  const paginatedDuplicateGroups = useMemo(() => {
+    const start = (dupPage - 1) * dupPageSize;
+    return filteredDuplicateGroups.slice(start, start + dupPageSize);
+  }, [filteredDuplicateGroups, dupPage, dupPageSize]);
+
+  const handleOpenMergeModal = (primary: Customer & { jobsCount: number; ltv: number }, duplicate: Customer & { jobsCount: number; ltv: number }) => {
+    if (!isAdmin) {
+      toast.error("Only Admin has permission to merge customer accounts");
+      return;
+    }
+    setMergePrimaryCustomer(primary);
+    setMergeDuplicateCustomer(duplicate);
+    setMergeModalOpen(true);
+  };
+
+  const handleConfirmMerge = async () => {
+    if (!isAdmin) {
+      toast.error("Only Admin has permission to merge customer accounts");
+      return;
+    }
+    if (!mergePrimaryCustomer || !mergeDuplicateCustomer) return;
+    setIsMerging(true);
+    try {
+      const res = await customerStore.mergeCustomer(
+        mergePrimaryCustomer.id,
+        mergeDuplicateCustomer.id,
+        { id: user?.id, name: user?.name, role: user?.role }
+      );
+      if (res.success) {
+        toast.success(
+          `Accounts merged successfully! Transferred ${res.transferredJobsCount || 0} order(s) and ฿${(res.transferredWalletAmount || 0).toLocaleString()} wallet balance to primary account.`
+        );
+        setMergeModalOpen(false);
+        setMergePrimaryCustomer(null);
+        setMergeDuplicateCustomer(null);
+      } else {
+        toast.error(res.error || "Failed to merge customer accounts");
+      }
+    } catch (err: any) {
+      console.error("Merge error:", err);
+      toast.error(err?.message || "Failed to merge customer accounts");
+    } finally {
+      setIsMerging(false);
+    }
+  };
+
+  const handleConfirmBatchMerge = async () => {
+    if (!isAdmin) {
+      toast.error("Only Admin has permission to merge customer accounts");
+      return;
+    }
+    setIsBatchMerging(true);
+    try {
+      const res = await customerStore.batchMergeObviousDuplicates({
+        id: user?.id,
+        name: user?.name,
+        role: user?.role,
+      });
+      if (res.success) {
+        toast.success(`Auto-merged ${res.mergedCount} account(s) successfully!`);
+        setBatchMergeModalOpen(false);
+      } else {
+        toast.error(res.error || "Failed to auto-merge accounts");
+      }
+    } catch (err: any) {
+      console.error("Batch merge error:", err);
+      toast.error(err?.message || "Failed to auto-merge accounts");
+    } finally {
+      setIsBatchMerging(false);
+    }
+  };
 
   // Combined search, brand & tag filtering
   const filteredCustomers = useMemo(() => {
@@ -1004,6 +1176,27 @@ export function AdminCRM({
               <FileText size={14} className={activeTab === "customer_report" ? "text-white" : "text-indigo-600"} />
               Customer Report
             </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setActiveTab("duplicates")}
+                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                  activeTab === "duplicates"
+                    ? "bg-rose-600 text-white shadow-sm"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <GitMerge size={14} className={activeTab === "duplicates" ? "text-white" : "text-rose-600"} />
+                <span>Duplicate Customers</span>
+                {duplicateGroups.length > 0 && (
+                  <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
+                    activeTab === "duplicates" ? "bg-white text-rose-700" : "bg-rose-100 text-rose-800"
+                  }`}>
+                    {duplicateGroups.length}
+                  </span>
+                )}
+              </button>
+            )}
           </div>
           </div>
 
@@ -1562,6 +1755,246 @@ export function AdminCRM({
           <div className="p-1">
             <ReportsWalletApprovals onViewJob={onViewJob} />
           </div>
+        ) : activeTab === "duplicates" ? (
+          !isAdmin ? (
+            <div className="p-12 text-center text-slate-500 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+              <Lock size={36} className="mx-auto text-rose-500 mb-2" />
+              <p className="text-sm font-bold text-slate-800">Access Restricted</p>
+              <p className="text-xs text-slate-400 mt-1">Only Admin or Superadmin users can review and merge duplicate customer accounts.</p>
+            </div>
+          ) : (
+            <div className="p-5 sm:p-6 space-y-6">
+              {/* Header Info & Actions */}
+              <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 bg-gradient-to-r from-rose-50/80 via-slate-50 to-amber-50/50 p-5 rounded-2xl border border-rose-100">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-rose-600 text-white flex items-center justify-center shadow-sm">
+                      <GitMerge size={18} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black text-slate-900">Duplicate Review & Merge</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Found <span className="font-bold text-rose-600">{duplicateGroups.length}</span> duplicate phone group{duplicateGroups.length > 1 ? "s" : ""} ({duplicateGroups.reduce((acc, g) => acc + g.customers.length, 0)} total accounts)
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 mt-3">
+                    <span className="text-[11px] font-semibold text-slate-500 bg-white/80 border border-slate-200 px-2.5 py-1 rounded-lg">
+                      Merge Details: All order history, wallet balance, and delivery addresses will be safely transferred to the primary account.
+                    </span>
+                    {rapidDuplicateCount > 0 && (
+                      <span className="text-[11px] font-bold text-amber-700 bg-amber-100/80 border border-amber-200 px-2.5 py-1 rounded-lg flex items-center gap-1">
+                        <Sparkles size={12} className="text-amber-600" />
+                        Rapid duplicates detected (Double-clicked within 1 min): {rapidDuplicateCount} group{rapidDuplicateCount > 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {rapidDuplicateCount > 0 && (
+                  <Button
+                    type="button"
+                    onClick={() => setBatchMergeModalOpen(true)}
+                    className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-bold text-xs shadow-md rounded-xl h-10 px-4 shrink-0 cursor-pointer border-none flex items-center gap-1.5"
+                  >
+                    <Sparkles size={15} />
+                    <span>Auto-Merge Rapid Duplicates ({rapidDuplicateCount})</span>
+                  </Button>
+                )}
+              </div>
+
+              {/* Duplicate Groups List */}
+              {filteredDuplicateGroups.length === 0 ? (
+                <div className="text-center py-16 text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-2">
+                  <CheckCircle2 size={36} className="mx-auto text-emerald-500 mb-2" />
+                  <p className="font-bold text-sm text-slate-700">No duplicate customer accounts found</p>
+                  <p className="text-xs text-slate-400">
+                    {searchTerm ? "No results matching your search" : "All customer phone numbers in the system are unique"}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {paginatedDuplicateGroups.map((group) => {
+                    const primaryId = selectedPrimaryMap[group.phoneKey] || group.customers[0]?.id;
+                    const primaryCustomer = group.customers.find(c => c.id === primaryId) || group.customers[0];
+
+                    return (
+                      <div
+                        key={group.phoneKey}
+                        className="border border-slate-200 rounded-2xl bg-white shadow-sm overflow-hidden transition-all hover:border-slate-300"
+                      >
+                        {/* Group Header */}
+                        <div className="bg-slate-50/80 px-5 py-3.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                              <Phone size={14} />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-extrabold text-slate-900 tracking-wide font-mono">
+                                  {group.normalizedPhone}
+                                </span>
+                                <Badge variant="outline" className="text-[10px] font-bold bg-white text-slate-700 border-slate-200">
+                                  {group.customers.length} accounts with this phone
+                                </Badge>
+                                {group.isRapidDuplicate && (
+                                  <Badge className="bg-amber-100 text-amber-800 border border-amber-200 text-[10px] font-bold flex items-center gap-1">
+                                    <Sparkles size={10} />
+                                    Rapid Duplicate (Double-click)
+                                  </Badge>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-slate-400">
+                                Select the radio button to designate the primary account to keep, then click merge on duplicate records.
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Customer Records Table in this group */}
+                        <div className="divide-y divide-slate-100">
+                          {group.customers.map((c) => {
+                            const isPrimary = c.id === primaryCustomer.id;
+
+                            return (
+                              <div
+                                key={c.id}
+                                className={`p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${
+                                  isPrimary ? "bg-emerald-50/30" : "hover:bg-slate-50/50"
+                                }`}
+                              >
+                                {/* Left: Radio + Identity */}
+                                <div className="flex items-center gap-3.5 flex-1 min-w-0">
+                                  <label className="flex items-center cursor-pointer p-1">
+                                    <input
+                                      type="radio"
+                                      name={`primary-${group.phoneKey}`}
+                                      checked={isPrimary}
+                                      onChange={() => setSelectedPrimaryMap(prev => ({ ...prev, [group.phoneKey]: c.id }))}
+                                      className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                                    />
+                                  </label>
+
+                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs border shrink-0 ${getAvatarStyles(c)}`}>
+                                    {getInitials(c.name)}
+                                  </div>
+
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-xs font-bold text-slate-900 truncate">
+                                        {c.name}
+                                      </span>
+                                      <span className="font-mono text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                                        ID: {c.id}
+                                      </span>
+                                      {c.isVIP && (
+                                        <Badge className="bg-amber-50 text-amber-800 border-amber-200 text-[9px] font-bold py-0 h-4">VIP</Badge>
+                                      )}
+                                      {c.isMember && (
+                                        <Badge className="bg-blue-50 text-blue-800 border-blue-200 text-[9px] font-bold py-0 h-4">
+                                          Member {c.memberId ? `(${c.memberId})` : ""}
+                                        </Badge>
+                                      )}
+                                      {c.brand && (
+                                        <Badge variant="outline" className="text-[9px] text-slate-500 py-0 h-4">
+                                          {c.brand === "that_laundry_shop" ? "TLS" : "Noname"}
+                                        </Badge>
+                                      )}
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-[11px] text-slate-500">
+                                      <span>Display Phone: <span className="font-medium text-slate-700">{c.phone || "-"}</span></span>
+                                      {c.secondaryPhone && (
+                                        <span>Secondary Phone: <span className="font-medium text-slate-700">{c.secondaryPhone}</span></span>
+                                      )}
+                                      <span>Created: <span className="text-slate-600">{c.createdAt ? format(new Date(c.createdAt), "dd/MM/yyyy HH:mm") : "-"}</span></span>
+                                      {c.addresses && c.addresses.length > 0 && (
+                                        <span className="text-slate-600">{c.addresses.length} address{c.addresses.length > 1 ? "es" : ""}</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Middle: Stats (Jobs & Wallet) */}
+                                <div className="flex items-center gap-6 px-2 self-start md:self-center shrink-0">
+                                  <div className="text-left md:text-right">
+                                    <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Orders</p>
+                                    <p className={`text-xs font-black ${c.jobsCount > 0 ? "text-indigo-600" : "text-slate-400"}`}>
+                                      {c.jobsCount} order{c.jobsCount !== 1 ? "s" : ""}
+                                    </p>
+                                    <p className="text-[10px] text-slate-400">LTV: ฿{c.ltv.toLocaleString()}</p>
+                                  </div>
+
+                                  <div className="text-left md:text-right">
+                                    <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Wallet</p>
+                                    <p className={`text-xs font-black ${(c.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"}`}>
+                                      ฿{(c.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {/* Right: Primary Badge or Merge Button */}
+                                <div className="flex items-center justify-end shrink-0 pl-2">
+                                  {isPrimary ? (
+                                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-100/80 text-emerald-800 border border-emerald-300 text-xs font-bold shadow-sm">
+                                      <Check size={14} className="text-emerald-700" />
+                                      <span>Primary Account (Master)</span>
+                                    </div>
+                                  ) : (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleOpenMergeModal(primaryCustomer, c)}
+                                      className="h-8 px-3 text-xs font-bold text-rose-700 border-rose-300 hover:bg-rose-50 hover:text-rose-800 gap-1.5 rounded-xl shadow-sm cursor-pointer transition-all"
+                                    >
+                                      <GitMerge size={13} />
+                                      <span>Merge into Primary</span>
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Pagination Controls */}
+                  {totalDupPages > 1 && (
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+                      <p className="text-xs text-slate-500 font-medium">
+                        Showing page <span className="font-bold text-slate-800">{dupPage}</span> of <span className="font-bold text-slate-800">{totalDupPages}</span> ({filteredDuplicateGroups.length} group{filteredDuplicateGroups.length > 1 ? "s" : ""})
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={dupPage <= 1}
+                          onClick={() => setDupPage(p => Math.max(1, p - 1))}
+                          className="h-8 text-xs font-bold rounded-lg"
+                        >
+                          Previous
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={dupPage >= totalDupPages}
+                          onClick={() => setDupPage(p => Math.min(totalDupPages, p + 1))}
+                          className="h-8 text-xs font-bold rounded-lg"
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
         ) : (
           <div className="overflow-x-auto">
             <Table>
@@ -2458,6 +2891,194 @@ export function AdminCRM({
         </Dialog>
       )}
 
+      {/* Customer Merge Confirmation Modal */}
+      {mergePrimaryCustomer && mergeDuplicateCustomer && (
+        <Dialog open={mergeModalOpen} onOpenChange={setMergeModalOpen}>
+          <DialogContent className="max-w-2xl rounded-2xl p-6">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-base font-black text-slate-900">
+                <GitMerge className="text-rose-600" size={20} />
+                <span>Confirm Customer Merge</span>
+              </DialogTitle>
+              <DialogDescription className="text-xs text-slate-500">
+                Order history, wallet balance, and delivery addresses from the duplicate account will be safely transferred to the primary account, and the duplicate account will be removed.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 my-2">
+              {/* Visual Before / After Comparison */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Duplicate Card (Will be removed) */}
+                <div className="border border-rose-200 bg-rose-50/30 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between border-b border-rose-100 pb-2">
+                    <span className="text-xs font-black text-rose-800 flex items-center gap-1.5">
+                      <Trash2 size={13} className="text-rose-600" />
+                      Duplicate Account (Will be merged & removed)
+                    </span>
+                    <Badge variant="outline" className="text-[10px] font-mono text-rose-700 border-rose-200 bg-rose-50">
+                      {mergeDuplicateCustomer.id}
+                    </Badge>
+                  </div>
+                  <div>
+                    <p className="text-xs font-extrabold text-slate-900">{mergeDuplicateCustomer.name}</p>
+                    <p className="text-[11px] text-slate-500 font-mono mt-0.5">{mergeDuplicateCustomer.phone}</p>
+                  </div>
+                  <div className="bg-white/80 rounded-lg p-2.5 space-y-1.5 text-xs border border-rose-100">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Orders (Jobs):</span>
+                      <span className="font-bold text-indigo-700">{mergeDuplicateCustomer.jobsCount} order{mergeDuplicateCustomer.jobsCount !== 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Wallet Balance:</span>
+                      <span className="font-bold text-emerald-700">฿{(mergeDuplicateCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Delivery Addresses:</span>
+                      <span className="font-bold text-slate-700">{mergeDuplicateCustomer.addresses?.length || 0} address{mergeDuplicateCustomer.addresses?.length !== 1 ? "es" : ""}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Primary Card (Will be kept and enhanced) */}
+                <div className="border border-emerald-200 bg-emerald-50/30 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between border-b border-emerald-100 pb-2">
+                    <span className="text-xs font-black text-emerald-800 flex items-center gap-1.5">
+                      <CheckCircle2 size={13} className="text-emerald-600" />
+                      Primary Account (Will be retained)
+                    </span>
+                    <Badge variant="outline" className="text-[10px] font-mono text-emerald-700 border-emerald-200 bg-emerald-50">
+                      {mergePrimaryCustomer.id}
+                    </Badge>
+                  </div>
+                  <div>
+                    <p className="text-xs font-extrabold text-slate-900">{mergePrimaryCustomer.name}</p>
+                    <p className="text-[11px] text-slate-500 font-mono mt-0.5">{mergePrimaryCustomer.phone}</p>
+                  </div>
+                  <div className="bg-white/80 rounded-lg p-2.5 space-y-1.5 text-xs border border-emerald-100">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Combined Orders:</span>
+                      <span className="font-bold text-indigo-700">
+                        {mergePrimaryCustomer.jobsCount} + {mergeDuplicateCustomer.jobsCount} = {mergePrimaryCustomer.jobsCount + mergeDuplicateCustomer.jobsCount} orders
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Combined Wallet Balance:</span>
+                      <span className="font-bold text-emerald-700">
+                        ฿{((mergePrimaryCustomer.creditBalance || 0) + (mergeDuplicateCustomer.creditBalance || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Delivery Addresses:</span>
+                      <span className="font-bold text-slate-700">Combined (Duplicates deduplicated)</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Safety Guarantee Notice */}
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2">
+                <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <p className="font-bold">Database Transaction Guarantee</p>
+                  <p className="text-[11px] text-amber-700">
+                    All financial and order history will be permanently transferred to the primary account. A detailed audit trail will be recorded in Activity Logs.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter className="mt-4 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isMerging}
+                onClick={() => setMergeModalOpen(false)}
+                className="text-xs font-bold rounded-xl h-9"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={isMerging}
+                onClick={handleConfirmMerge}
+                className="bg-rose-600 hover:bg-rose-700 text-white font-black text-xs rounded-xl h-9 px-4 gap-1.5 shadow-sm border-none"
+              >
+                {isMerging ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>Merging accounts...</span>
+                  </>
+                ) : (
+                  <>
+                    <GitMerge size={14} />
+                    <span>Confirm Merge</span>
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* 1-Click Batch Merge Modal for Rapid Duplicates */}
+      <Dialog open={batchMergeModalOpen} onOpenChange={setBatchMergeModalOpen}>
+        <DialogContent className="max-w-md rounded-2xl p-6">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-black text-slate-900">
+              <Sparkles className="text-amber-500" size={20} />
+              <span>1-Click Auto-Merge Rapid Duplicates</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-500">
+              Identified duplicate accounts created from rapid double-clicks (within 60 seconds) with identical customer names.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 my-2 text-xs">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 space-y-2 text-amber-900">
+              <div className="flex items-center gap-2 font-bold text-amber-800">
+                <CheckCircle2 size={16} className="text-amber-600" />
+                <span>Found {rapidDuplicateCount} group{rapidDuplicateCount > 1 ? "s" : ""} matching rapid duplicate criteria</span>
+              </div>
+              <ul className="list-disc pl-5 space-y-1 text-[11px] text-amber-800/90">
+                <li>Identical normalized phone number</li>
+                <li>Exact match customer name</li>
+                <li>Created within 60 seconds of each other</li>
+                <li>The system will automatically select the account with existing orders or wallet balance as the primary account</li>
+              </ul>
+            </div>
+          </div>
+
+          <DialogFooter className="mt-4 gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isBatchMerging}
+              onClick={() => setBatchMergeModalOpen(false)}
+              className="text-xs font-bold rounded-xl h-9"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={isBatchMerging || rapidDuplicateCount === 0}
+              onClick={handleConfirmBatchMerge}
+              className="bg-amber-600 hover:bg-amber-700 text-white font-black text-xs rounded-xl h-9 px-4 gap-1.5 shadow-sm border-none"
+            >
+              {isBatchMerging ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  <span>Merging accounts...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={14} />
+                  <span>Confirm Auto-Merge ({rapidDuplicateCount} groups)</span>
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -472,5 +472,19 @@ export function getJobPaymentDate(job: any): Date | null {
   return null;
 }
 
+/**
+ * Normalizes a phone number for duplicate detection and comparison.
+ * Extracts digits only and standardizes Thailand country code (66 -> 0).
+ */
+export function normalizePhone(raw: string | null | undefined): string {
+  if (!raw) return "";
+  let digits = raw.replace(/\D/g, "");
+  if (digits.startsWith("66") && digits.length >= 10) {
+    digits = "0" + digits.slice(2);
+  }
+  return digits;
+}
+
+
 
 

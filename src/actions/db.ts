@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
-import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate } from '@/lib/utils';
+import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 
 // CUSTOMERS
@@ -324,6 +324,323 @@ export async function deleteCustomerAction(id: string) {
   }
   return prisma.customer.delete({ where: { id } });
 }
+
+export async function mergeCustomerAction(data: {
+  primaryCustomerId: string;
+  duplicateCustomerId: string;
+  actorId?: string;
+  actorName?: string;
+  actorRole?: string;
+}): Promise<{
+  success: boolean;
+  error?: string;
+  transferredJobsCount?: number;
+  transferredWalletAmount?: number;
+  transferredAddressesCount?: number;
+  updatedCustomer?: any;
+}> {
+  try {
+    // 1. Permission check: strictly admin / superadmin only
+    let actorRole = (data.actorRole || "").toLowerCase();
+    if (!actorRole && data.actorId) {
+      const userRec = await prisma.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true } });
+      if (userRec?.role) actorRole = userRec.role.toLowerCase();
+    }
+    const isAdmin = actorRole === "admin" || actorRole === "superadmin";
+    if (!isAdmin) {
+      throw new Error("เฉพาะสิทธิ์ Admin เท่านั้นที่สามารถรวมบัญชีลูกค้าได้");
+    }
+
+    if (!data.primaryCustomerId || !data.duplicateCustomerId) {
+      throw new Error("ต้องระบุบัญชีหลักและบัญชีที่จะรวม");
+    }
+
+    if (data.primaryCustomerId === data.duplicateCustomerId) {
+      throw new Error("ไม่สามารถรวมบัญชีตัวเองได้");
+    }
+
+    return await prisma.$transaction(async (tx) => {
+      const primary = await tx.customer.findUnique({
+        where: { id: data.primaryCustomerId },
+        include: { addresses: true }
+      });
+      const duplicate = await tx.customer.findUnique({
+        where: { id: data.duplicateCustomerId },
+        include: { addresses: true }
+      });
+
+      if (!primary) throw new Error("ไม่พบบัญชีหลักในระบบ");
+      if (!duplicate) throw new Error("ไม่พบบัญชีที่จะรวมในระบบ");
+
+      // 2. Transfer Jobs
+      const jobUpdateRes = await tx.job.updateMany({
+        where: { customerId: duplicate.id },
+        data: { customerId: primary.id }
+      });
+      const transferredJobsCount = jobUpdateRes.count;
+
+      // 3. Transfer Wallet Balance
+      let transferredWalletAmount = 0;
+      let newPrimaryBalance = primary.creditBalance || 0;
+      const dupBalance = duplicate.creditBalance || 0;
+
+      if (dupBalance > 0) {
+        transferredWalletAmount = Math.round(dupBalance * 100) / 100;
+        newPrimaryBalance = Math.round((newPrimaryBalance + transferredWalletAmount) * 100) / 100;
+
+        // Record on Primary
+        await tx.walletTransaction.create({
+          data: {
+            customerId: primary.id,
+            customerName: primary.name,
+            type: "ADJUST_ADD",
+            amount: transferredWalletAmount,
+            direction: "CREDIT",
+            balanceBefore: primary.creditBalance || 0,
+            balanceAfter: newPrimaryBalance,
+            referenceId: duplicate.id,
+            referenceType: "merge",
+            reason: `โอนย้ายยอดเงินคงเหลือจากการรวมบัญชีลูกค้า ${duplicate.name} (${duplicate.phone || duplicate.id})`,
+            approvalStatus: "APPROVED",
+            approvedById: data.actorId || undefined,
+            approvedByName: data.actorName || "Admin",
+            approvedAt: new Date(),
+            createdById: data.actorId || undefined,
+            createdByName: data.actorName || "Admin",
+          }
+        });
+
+        // Record on Duplicate
+        await tx.walletTransaction.create({
+          data: {
+            customerId: duplicate.id,
+            customerName: duplicate.name,
+            type: "ADJUST_DEDUCT",
+            amount: transferredWalletAmount,
+            direction: "DEBIT",
+            balanceBefore: dupBalance,
+            balanceAfter: 0,
+            referenceId: primary.id,
+            referenceType: "merge",
+            reason: `โอนยอดเงินไปยังบัญชีหลัก ${primary.name} (${primary.phone || primary.id})`,
+            approvalStatus: "APPROVED",
+            approvedById: data.actorId || undefined,
+            approvedByName: data.actorName || "Admin",
+            approvedAt: new Date(),
+            createdById: data.actorId || undefined,
+            createdByName: data.actorName || "Admin",
+          }
+        });
+      }
+
+      // Update any previous wallet transactions of duplicate to point to primary
+      await tx.walletTransaction.updateMany({
+        where: { customerId: duplicate.id },
+        data: { customerId: primary.id }
+      });
+
+      // 4. Transfer Customer Addresses
+      let transferredAddressesCount = 0;
+      const primaryAddressesNormalized = new Set(
+        (primary.addresses || []).map(a => (a.address || "").trim().toLowerCase())
+      );
+
+      for (const dupAddr of (duplicate.addresses || [])) {
+        const norm = (dupAddr.address || "").trim().toLowerCase();
+        if (norm && primaryAddressesNormalized.has(norm)) {
+          // If address already exists in primary, delete the duplicate address
+          await tx.customerAddress.delete({ where: { id: dupAddr.id } });
+        } else {
+          // Transfer to primary as secondary address
+          await tx.customerAddress.update({
+            where: { id: dupAddr.id },
+            data: { customerId: primary.id, isPrimary: false }
+          });
+          if (norm) primaryAddressesNormalized.add(norm);
+          transferredAddressesCount++;
+        }
+      }
+
+      // 5. Transfer Bookings & Transactions (external web)
+      await tx.booking.updateMany({
+        where: { memberId: duplicate.id },
+        data: { memberId: primary.id }
+      });
+      await tx.transaction.updateMany({
+        where: { memberId: duplicate.id },
+        data: { memberId: primary.id }
+      });
+
+      // 6. Merge profile fields into Primary
+      const updateData: any = {};
+      if (newPrimaryBalance !== (primary.creditBalance || 0)) {
+        updateData.creditBalance = newPrimaryBalance;
+      }
+
+      // Keep foreign or secondary phone if primary doesn't have one
+      if (!primary.secondaryPhone && duplicate.secondaryPhone) {
+        updateData.secondaryPhone = duplicate.secondaryPhone;
+        updateData.isSecondaryWhatsapp = duplicate.isSecondaryWhatsapp;
+      } else if (!primary.secondaryPhone && duplicate.phone && duplicate.phone !== primary.phone && duplicate.phone !== "-") {
+        updateData.secondaryPhone = duplicate.phone;
+        updateData.isSecondaryWhatsapp = duplicate.isWhatsapp;
+      }
+
+      // If primary phone is dummy/empty and duplicate has a valid phone
+      if ((!primary.phone || primary.phone === "-" || primary.phone === "0000000000") && duplicate.phone && duplicate.phone !== "-") {
+        updateData.phone = duplicate.phone;
+      }
+
+      // Upgrade member status if duplicate has higher tier
+      if (duplicate.isVIP && !primary.isVIP) {
+        updateData.isVIP = true;
+        updateData.tier = "vip";
+      } else if (duplicate.isMember && !primary.isMember) {
+        updateData.isMember = true;
+        updateData.tier = "member";
+        if (duplicate.memberId && !primary.memberId) updateData.memberId = duplicate.memberId;
+        if (duplicate.memberStartDate && !primary.memberStartDate) updateData.memberStartDate = duplicate.memberStartDate;
+        if (duplicate.memberExpiryDate && !primary.memberExpiryDate) updateData.memberExpiryDate = duplicate.memberExpiryDate;
+      }
+
+      // Merge remarks
+      if (duplicate.remark && duplicate.remark.trim()) {
+        const existing = primary.remark ? primary.remark.trim() : "";
+        updateData.remark = existing
+          ? `${existing}\n[Merged from ${duplicate.name}]: ${duplicate.remark.trim()}`
+          : `[Merged from ${duplicate.name}]: ${duplicate.remark.trim()}`;
+      }
+
+      let updatedCustomer = primary;
+      if (Object.keys(updateData).length > 0) {
+        updatedCustomer = await tx.customer.update({
+          where: { id: primary.id },
+          data: updateData,
+          include: { addresses: true }
+        });
+      }
+
+      // 7. Delete the duplicate customer record safely
+      await tx.customer.delete({ where: { id: duplicate.id } });
+
+      // 8. Log activity
+      await tx.activityLog.create({
+        data: {
+          entityId: primary.id,
+          entityType: "Customer",
+          action: "MERGE_CUSTOMER",
+          details: `Merged duplicate customer "${duplicate.name}" (${duplicate.phone || "-"}, ID: ${duplicate.id}) into "${primary.name}" (${primary.phone || "-"}, ID: ${primary.id}). Transferred ${transferredJobsCount} jobs, ฿${transferredWalletAmount} wallet balance, ${transferredAddressesCount} addresses.`,
+          userId: data.actorId || "system",
+          userName: data.actorName || "Admin",
+        }
+      });
+
+      return {
+        success: true,
+        transferredJobsCount,
+        transferredWalletAmount,
+        transferredAddressesCount,
+        updatedCustomer,
+      };
+    });
+  } catch (err: any) {
+    console.error("[mergeCustomerAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message || "เกิดข้อผิดพลาดในการรวมบัญชีลูกค้า",
+    };
+  }
+}
+
+export async function batchMergeObviousDuplicatesAction(data: {
+  actorId?: string;
+  actorName?: string;
+  actorRole?: string;
+}): Promise<{
+  success: boolean;
+  mergedCount: number;
+  error?: string;
+}> {
+  try {
+    let actorRole = (data.actorRole || "").toLowerCase();
+    if (!actorRole && data.actorId) {
+      const userRec = await prisma.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true } });
+      if (userRec?.role) actorRole = userRec.role.toLowerCase();
+    }
+    const isAdmin = actorRole === "admin" || actorRole === "superadmin";
+    if (!isAdmin) {
+      throw new Error("เฉพาะสิทธิ์ Admin เท่านั้นที่สามารถรวมบัญชีลูกค้าได้");
+    }
+
+    const allCustomers = await prisma.customer.findMany({
+      orderBy: { createdAt: "asc" }
+    });
+
+    // Group by normalized phone
+    const phoneMap = new Map<string, typeof allCustomers>();
+    for (const c of allCustomers) {
+      const norm = normalizePhone(c.phone);
+      if (norm && norm.length >= 8 && norm !== "0000000000") {
+        const list = phoneMap.get(norm) || [];
+        list.push(c);
+        phoneMap.set(norm, list);
+      }
+    }
+
+    let mergedCount = 0;
+    for (const [_, list] of phoneMap.entries()) {
+      if (list.length === 2) {
+        const [c1, c2] = list;
+        const normName1 = (c1.name || "").trim().toUpperCase();
+        const normName2 = (c2.name || "").trim().toUpperCase();
+        const tDiff = Math.abs(new Date(c1.createdAt).getTime() - new Date(c2.createdAt).getTime());
+
+        // Identical name and created within 60s
+        if (normName1 === normName2 && tDiff <= 60000) {
+          // Check jobs for both
+          const j1Count = await prisma.job.count({ where: { customerId: c1.id } });
+          const j2Count = await prisma.job.count({ where: { customerId: c2.id } });
+
+          // Pick primary: one with jobs or wallet or older
+          let primaryId = c1.id;
+          let dupId = c2.id;
+          if (j2Count > 0 && j1Count === 0) {
+            primaryId = c2.id;
+            dupId = c1.id;
+          } else if ((c2.creditBalance || 0) > 0 && (c1.creditBalance || 0) === 0) {
+            primaryId = c2.id;
+            dupId = c1.id;
+          }
+
+          const res = await mergeCustomerAction({
+            primaryCustomerId: primaryId,
+            duplicateCustomerId: dupId,
+            actorId: data.actorId,
+            actorName: data.actorName,
+            actorRole: "admin",
+          });
+
+          if (res.success) {
+            mergedCount++;
+          }
+        }
+      }
+    }
+
+    return {
+      success: true,
+      mergedCount,
+    };
+  } catch (err: any) {
+    console.error("[batchMergeObviousDuplicatesAction] Error:", err);
+    return {
+      success: false,
+      mergedCount: 0,
+      error: err?.message || "เกิดข้อผิดพลาดในการรวมบัญชีอัตโนมัติ",
+    };
+  }
+}
+
 
 export async function addCustomerAddressAction(customerId: string, addressData: {
   label: string;

@@ -2,18 +2,18 @@
   "info": {
     "_postman_id": "noname-laundry-api-v1",
     "name": "Noname Laundry - External API Collection (V1)",
-    "description": "Postman Collection for Noname Laundry Web App integration with That Laundry Shop (TLS) Multi-Brand Backend.\n\n### Setup\n1. Set `baseUrl` variable (e.g. `http://localhost:3000` or Cloud Run Test URL)\n2. Set `apiKey` (default: `noname_secret_api_key_2026`)\n3. Run **1. Register** or **2. Login** - the collection will automatically save the `authToken` into collection variables for subsequent calls.",
+    "description": "Postman Collection for Noname Laundry Web App integration with That Laundry Shop (TLS) Multi-Brand Backend.\n\n### Setup\n1. Set `baseUrl` variable (e.g. `https://apptest.thatlaundryshop.com`)\n2. Set `apiKey` (default: `nl_api_key_live_9988776655`)\n3. Run **1. Register** or **2. Login** - the collection will automatically save the `authToken` into collection variables for subsequent calls.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:3000",
+      "value": "https://apptest.thatlaundryshop.com",
       "type": "string"
     },
     {
       "key": "apiKey",
-      "value": "noname_secret_api_key_2026",
+      "value": "nl_api_key_live_9988776655",
       "type": "string"
     },
     {

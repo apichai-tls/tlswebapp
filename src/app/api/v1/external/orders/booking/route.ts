@@ -110,7 +110,7 @@ export async function POST(req: Request) {
       customerNote ? `Note: ${customerNote}` : ''
     ].filter(Boolean).join(' | ')
 
-    // 3. Create Job in POS (Status: pending)
+    // 3. Create Job in POS (Status: tba)
     const job = await prisma.job.create({
       data: {
         type: 'pickup',
@@ -125,7 +125,7 @@ export async function POST(req: Request) {
         dropoffLng: 100.523186,
         distance: 3.5, // Default estimated distance
         fee: 0,
-        status: 'pending',
+        status: 'tba',
         serviceType: servicePreferences[0] || 'wash_fold',
         laundryTypes: servicePreferences.join(','),
         brand: 'noname_laundry',
