@@ -33,13 +33,16 @@ export async function POST(req: Request) {
 
     const body = await req.json()
     const {
+      orderId,
+      id,
       addressId,
       address,
       scheduledDate,
       timeSlot,
       servicePreferences = [],
       customerNote,
-      leaveWithJuristic = true
+      leaveWithJuristic = true,
+      status = 'tba'
     } = body
 
     // 1. Resolve Pickup Address
@@ -110,9 +113,12 @@ export async function POST(req: Request) {
       customerNote ? `Note: ${customerNote}` : ''
     ].filter(Boolean).join(' | ')
 
+    const customJobId = (orderId || id || '').trim() || undefined;
+
     // 3. Create Job in POS (Status: tba)
     const job = await prisma.job.create({
       data: {
+        id: customJobId,
         type: 'pickup',
         customerId: customer.id,
         customerName: customer.name,

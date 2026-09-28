@@ -49,7 +49,7 @@ export function formatJobDisplayId(id: string | null | undefined): string {
     const short = withoutRf.includes("-") ? withoutRf.split("-")[0] : withoutRf;
     return `RF-${short}`;
   }
-  if (upper.startsWith("JOB-")) {
+  if (upper.startsWith("JOB-") || upper.startsWith("NNL-")) {
     return upper;
   }
   return upper.split("-")[0];
