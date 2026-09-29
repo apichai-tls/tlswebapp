@@ -1851,7 +1851,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (hasPosPackage && (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item")) {
         return sum;
       }
-      return sum + (item.price * item.quantity);
+      return sum + safeCeil((item.price || 0) * (item.quantity || 0));
     }, 0);
   }, [cart, hasPosPackage]);
 
@@ -1860,13 +1860,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item") {
         return sum;
       }
-      return sum + (item.price * item.quantity);
+      return sum + safeCeil((item.price || 0) * (item.quantity || 0));
     }, 0);
   }, [cart]);
 
   const expressSurcharge = useMemo(() => {
     if (selectedExpressPercent > 0) {
-      return Math.ceil(subtotal * (selectedExpressPercent / 100));
+      return safeCeil(subtotal * (selectedExpressPercent / 100));
     }
     return 0;
   }, [selectedExpressPercent, subtotal]);
@@ -2080,8 +2080,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const jobItems = Array.isArray(latestJob.items) 
         ? latestJob.items 
         : (latestJob.itemsJson ? JSON.parse(latestJob.itemsJson) : []);
-      const jobSubtotal = jobItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
-      const jobSurcharge = expressPercent > 0 ? Math.ceil(jobSubtotal * (expressPercent / 100)) : 0;
+      const jobSubtotal = jobItems.reduce((sum: number, item: any) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
+      const jobSurcharge = expressPercent > 0 ? safeCeil(jobSubtotal * (expressPercent / 100)) : 0;
 
       const vatMatch = latestJob.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
       const jobVatType = vatMatch ? vatMatch[1].toLowerCase() : "none";
@@ -2266,7 +2266,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     let topUpTotal = 0;
     cart.forEach(item => {
       if (item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") {
-        topUpTotal += item.price * item.quantity;
+        topUpTotal += safeCeil((item.price || 0) * (item.quantity || 0));
       }
     });
 
@@ -2562,7 +2562,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           totalAmount: total,
           discount: manualAdjustment + totalDiscount,
           discountPercent: discountPercent,
-          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
+          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit, serviceId: item.id })),
           isPaid: isPaidFlag,
           isShopPaid: isPaidFlag, // POS payment always marks shop as paid
           paymentMethod: isPaidFlag ? finalMethod : undefined,
@@ -2608,7 +2608,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           totalAmount: total,
           discount: manualAdjustment + totalDiscount,
           discountPercent: discountPercent,
-          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
+          items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit, serviceId: item.id })),
           serviceType: (cart[0]?.id as ServiceType) || "wash_fold",
           status: targetStatus,
           completedAt: !isDelivery && isStandardPlan && isPaidFlag ? new Date() : undefined,
@@ -3921,9 +3921,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           className={`text-right px-1.5 py-0.5 rounded transition-colors shrink-0 ${isPaidJob ? 'cursor-default' : 'hover:bg-muted cursor-pointer'}`}
                           title={isPaidJob ? undefined : "Click to edit unit price"}
                         >
-                          <p className="text-[13px] font-extrabold text-foreground">฿{(item.price * item.quantity).toFixed(2)}</p>
+                          <p className="text-[13px] font-extrabold text-foreground">฿{safeCeil((item.price || 0) * (item.quantity || 0)).toLocaleString()}</p>
                           {item.price !== item.basePrice && (
-                            <p className="text-[8px] font-semibold text-amber-600 line-through">฿{(item.basePrice * item.quantity).toFixed(2)}</p>
+                            <p className="text-[8px] font-semibold text-amber-600 line-through">฿{safeCeil((item.basePrice || 0) * (item.quantity || 0)).toLocaleString()}</p>
                           )}
                         </button>
                       )}
@@ -4492,7 +4492,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               {serviceSpeed !== "standard" && (
                 <div className="flex justify-between text-xs font-semibold text-muted-foreground">
                   <span>Subtotal</span>
-                  <span className="font-bold text-foreground">฿{subtotal.toFixed(2)}</span>
+                  <span className="font-bold text-foreground">฿{subtotal.toLocaleString()}</span>
                 </div>
               )}
 
@@ -4502,7 +4502,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     <Zap size={11} className="fill-purple-600 text-purple-650 shrink-0 animate-pulse" />
                     Express Surcharge ({selectedExpressPercent}%)
                   </span>
-                  <span className="font-bold">+฿{expressSurcharge.toFixed(2)}</span>
+                  <span className="font-bold">+฿{expressSurcharge.toLocaleString()}</span>
                 </div>
               )}
 
@@ -4971,14 +4971,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                     quantity: it.quantity
                                   };
                                 }
-                                const match = services.find(s => s.name === it.name || s.nameEn === it.nameEn);
+                                const match = services.find(s => (s.id && it.serviceId && s.id === it.serviceId) || s.name === it.name || s.nameEn === it.nameEn);
                                 return {
-                                  id: match ? match.id : `RECALLED-${idx}-${Date.now()}`,
+                                  id: match ? match.id : (it.serviceId || `RECALLED-${idx}-${Date.now()}`),
                                   name: it.name,
                                   nameEn: it.nameEn,
                                   price: it.price,
-                                  basePrice: it.price,
-                                  quantity: it.quantity
+                                  basePrice: it.basePrice ?? it.price,
+                                  quantity: it.quantity,
+                                  category: it.category || match?.category || "",
+                                  unit: it.unit || match?.unit || "piece"
                                 };
                               });
 
@@ -5048,7 +5050,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               const promoAmt = hasValidPromo ? parseFloat(promoMatch![3]) : 0;
                               const baseTotalForDiscount = cartItems.reduce((sum, item) => {
                                 if (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item") return sum;
-                                return sum + (item.price * item.quantity);
+                                return sum + safeCeil((item.price || 0) * (item.quantity || 0));
                               }, 0);
                               const pctDiscountEstimated = (job.discountPercent && job.discountPercent > 0)
                                 ? Math.round(baseTotalForDiscount * (job.discountPercent / 100))

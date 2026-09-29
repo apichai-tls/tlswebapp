@@ -332,7 +332,7 @@ export async function createTask(data: {
       data: {
         id: nextId,
         title: data.title.trim(),
-        description: data.description?.trim() || null,
+        description: data.description?.trim().slice(0, 100) || null,
         priority: data.priority,
         status: "todo",
         jobId: data.jobId?.trim() || null,
@@ -489,8 +489,8 @@ export async function updateTask(
     }
 
     // Track Description change
-    if (updates.description !== undefined && (updates.description?.trim() || null) !== existing.description) {
-      const newDesc = updates.description?.trim() || null;
+    if (updates.description !== undefined && (updates.description?.trim().slice(0, 100) || null) !== existing.description) {
+      const newDesc = updates.description?.trim().slice(0, 100) || null;
       changes.description = { from: existing.description, to: newDesc };
       activityMessages.push("Updated description");
       data.description = newDesc;

@@ -1695,6 +1695,16 @@ export function TaskFormModal({
   const modalFileInputRef = useRef<HTMLInputElement>(null);
   const assigneeContainerRef = useRef<HTMLDivElement>(null);
   const assigneeInputRef = useRef<HTMLInputElement>(null);
+  const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize description textarea based on content
+  useEffect(() => {
+    if (descriptionTextareaRef.current) {
+      descriptionTextareaRef.current.style.height = "auto";
+      const scrollH = descriptionTextareaRef.current.scrollHeight;
+      descriptionTextareaRef.current.style.height = `${Math.max(54, scrollH)}px`;
+    }
+  }, [description, open]);
 
   const currentUserId = currentUser?.id ?? "unknown";
   const currentUserName = currentUser?.name ?? currentUser?.email ?? "User";
@@ -2139,16 +2149,30 @@ export function TaskFormModal({
 
               {/* Description */}
               <div className="space-y-1">
-                <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-                  Description {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
-                </Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                    Description {!canEditTaskDetails && <Lock size={10} className="text-amber-500" />}
+                  </Label>
+                  <span className={`text-[10px] font-semibold tabular-nums ${description.length >= 100 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
+                    {description.length}/100
+                  </span>
+                </div>
                 <textarea
+                  ref={descriptionTextareaRef}
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={(e) => {
+                    setDescription(e.target.value.slice(0, 100));
+                    if (descriptionTextareaRef.current) {
+                      descriptionTextareaRef.current.style.height = "auto";
+                      const scrollH = descriptionTextareaRef.current.scrollHeight;
+                      descriptionTextareaRef.current.style.height = `${Math.max(54, scrollH)}px`;
+                    }
+                  }}
+                  maxLength={100}
                   disabled={!canEditTaskDetails}
-                  placeholder="Additional task description or instructions..."
+                  placeholder="Additional task description or instructions... (Max 100 characters)"
                   rows={2}
-                  className={`w-full text-xs border rounded-lg px-3 py-2 resize-none transition-all ${
+                  className={`w-full text-xs border rounded-lg px-3 py-2 resize-none overflow-hidden transition-[border-color,box-shadow] ${
                     !canEditTaskDetails
                       ? "bg-slate-100 text-slate-600 cursor-not-allowed border-slate-200"
                       : "border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300"

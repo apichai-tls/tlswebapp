@@ -6,61 +6,132 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 export const printImageUrl = (url: string) => {
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    document.body.appendChild(iframe);
-    const doc = iframe.contentWindow?.document;
-    if (doc) {
-      doc.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Print Image</title>
-            <style>
-              @page { margin: 0; size: auto; }
-              body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
-              img { max-width: 100%; max-height: 100vh; object-fit: contain; }
-            </style>
-          </head>
-          <body>
-            <img src="${url}" onload="window.print();" />
-          </body>
-        </html>
-      `);
-      doc.close();
-      setTimeout(() => {
-        if (document.body.contains(iframe)) {
-          document.body.removeChild(iframe);
-        }
-      }, 60000);
-    }
-    return;
-  }
+  // Use a hidden, non-zero dimensioned iframe positioned offscreen.
+  // Note: Safari & Chrome silently ignore window.print() from zero-dimensioned (0x0) or display:none iframes.
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.left = "-9999px";
+  iframe.style.top = "-9999px";
+  iframe.style.width = "800px";
+  iframe.style.height = "1000px";
+  iframe.style.opacity = "0";
+  iframe.style.pointerEvents = "none";
+  iframe.style.border = "0";
+  document.body.appendChild(iframe);
 
-  printWindow.document.write(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Print Image</title>
-        <style>
-          @page { margin: 0; size: auto; }
-          body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
-          img { max-width: 100%; max-height: 100vh; object-fit: contain; }
-        </style>
-      </head>
-      <body>
-        <img src="${url}" onload="window.focus(); window.print(); window.close();" />
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
+  const cleanup = () => {
+    setTimeout(() => {
+      if (document.body.contains(iframe)) {
+        document.body.removeChild(iframe);
+      }
+    }, 60000);
+  };
+
+  const fallbackPopup = () => {
+    try {
+      const win = window.open("", "_blank");
+      if (win) {
+        win.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>Print Image</title>
+              <style>
+                @page { margin: 0; size: auto; }
+                html, body { margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
+                img { max-width: 100%; max-height: 100vh; object-fit: contain; }
+              </style>
+            </head>
+            <body>
+              <img src="${url}" />
+              <script>
+                window.onload = function() {
+                  window.focus();
+                  window.print();
+                };
+                window.addEventListener('afterprint', function() {
+                  window.close();
+                });
+              </script>
+            </body>
+          </html>
+        `);
+        win.document.close();
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+    // Ultimate fallback if popup was also blocked
+    if (typeof window !== "undefined") {
+      window.print();
+    }
+  };
+
+  try {
+    const doc = iframe.contentWindow?.document;
+    if (!doc) {
+      fallbackPopup();
+      cleanup();
+      return;
+    }
+
+    doc.open();
+    doc.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Print Image</title>
+          <style>
+            @page { margin: 0; size: auto; }
+            html, body { margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
+            img { max-width: 100%; max-height: 100vh; object-fit: contain; }
+          </style>
+        </head>
+        <body>
+          <img id="print-target-img" src="${url}" />
+        </body>
+      </html>
+    `);
+    doc.close();
+
+    const img = doc.getElementById("print-target-img") as HTMLImageElement;
+    const triggerPrint = () => {
+      try {
+        const win = iframe.contentWindow;
+        if (!win) {
+          fallbackPopup();
+          cleanup();
+          return;
+        }
+        win.focus();
+        win.print();
+      } catch (err) {
+        console.warn("Iframe print invocation failed, falling back to popup:", err);
+        fallbackPopup();
+      }
+      cleanup();
+    };
+
+    if (img) {
+      if (img.complete) {
+        setTimeout(triggerPrint, 80);
+      } else {
+        img.onload = () => setTimeout(triggerPrint, 80);
+        img.onerror = () => {
+          console.warn("Failed to load image inside iframe, falling back to popup");
+          fallbackPopup();
+          cleanup();
+        };
+      }
+    } else {
+      setTimeout(triggerPrint, 150);
+    }
+  } catch (err) {
+    console.error("printImageUrl error:", err);
+    fallbackPopup();
+    cleanup();
+  }
 };
 
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {

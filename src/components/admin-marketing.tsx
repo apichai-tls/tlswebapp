@@ -24,10 +24,14 @@ import {
   Eye,
   ArrowLeft,
   Lock,
-  Megaphone
+  Megaphone,
+  CalendarDays,
+  QrCode
 } from "lucide-react";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
+import { AdminMarketingCalendar } from "@/components/admin-marketing-calendar";
+import { AdminMarketingLinks } from "@/components/admin-marketing-links";
 
 interface AdminMarketingProps {
   onViewJob?: (job: any) => void;
@@ -40,7 +44,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Sub-tabs state (extensible for future marketing tools)
-  const [subTab, setSubTab] = useState<"promo">("promo");
+  const [subTab, setSubTab] = useState<"calendar" | "links" | "promo">("calendar");
 
   // Filters State
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
@@ -510,106 +514,148 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
             Marketing & Analytics
           </h1>
           <p className="text-xs text-slate-500 font-semibold mt-1">
-            รายงานและสถิติประสิทธิภาพแคมเปญโปรโมชัน ยอดส่วนลด และผลตอบแทนทางการตลาด (Campaign Performance, Discounts & Marketing ROI)
+            {subTab === "calendar"
+              ? "Marketing Planning Board (ปฏิทินวางแผนการตลาด แคมเปญโปรโมชั่น และกิจกรรม)"
+              : subTab === "links"
+              ? "Link & QR Code Tracker (สร้างลิงก์ย่อ ป้ายคิวอาร์โค้ด และวัดผลสถิติจำนวนคนเข้าชม)"
+              : "Promo Code Performance Report (รายงานและสถิติประสิทธิภาพโค้ดโปรโมชั่น)"}
           </p>
         </div>
 
         {/* Filter Toolbar Controls */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Branch Select */}
-          <div className="flex items-center gap-1.5 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-sm">
-            <Store size={14} className="text-slate-400" />
-            <select
-              value={selectedBranch}
-              onChange={(e) => setSelectedBranch(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer border-none p-0 pr-6 select-none"
-            >
-              <option value="all">All Branches</option>
-              {shops.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Timeframe selector */}
-          <div className="flex items-center bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl p-1 shadow-sm">
-            {(["today", "7days", "30days", "month", "custom"] as const).map(range => (
-              <button
-                key={range}
-                onClick={() => setDateRange(range)}
-                className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  dateRange === range
-                    ? "bg-indigo-600 text-white shadow-xs"
-                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-                }`}
+        {subTab === "promo" && (
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Branch Select */}
+            <div className="flex items-center gap-1.5 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-sm">
+              <Store size={14} className="text-slate-400" />
+              <select
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer border-none p-0 pr-6 select-none"
               >
-                {range === "today" ? "Today" :
-                 range === "7days" ? "7 Days" :
-                 range === "30days" ? "30 Days" :
-                 range === "month" ? "This Month" : "Custom"}
-              </button>
-            ))}
-          </div>
-
-          {/* Custom Date Range Picker */}
-          {dateRange === "custom" && (
-            <div className="flex items-center gap-2 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-2 py-1 shadow-sm animate-in fade-in duration-200">
-              <input
-                type="date"
-                value={customStartDate}
-                onChange={(e) => setCustomStartDate(e.target.value)}
-                className="bg-transparent text-xs font-semibold text-slate-700 dark:text-slate-200 border-none outline-none p-0.5"
-              />
-              <span className="text-xs text-slate-400 font-bold">-</span>
-              <input
-                type="date"
-                value={customEndDate}
-                onChange={(e) => setCustomEndDate(e.target.value)}
-                className="bg-transparent text-xs font-semibold text-slate-700 dark:text-slate-200 border-none outline-none p-0.5"
-              />
+                <option value="all">All Branches (ทุกสาขา)</option>
+                {shops.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
             </div>
-          )}
 
-          {/* Export to Excel */}
-          <button
-            onClick={handleExportExcel}
-            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
-            title="ส่งออกรายงานเป็น Excel/CSV (Export to Excel/CSV)"
-          >
-            <Download size={14} />
-            Export CSV
-          </button>
+            {/* Timeframe selector */}
+            <div className="flex items-center bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl p-1 shadow-sm">
+              {(["today", "7days", "30days", "month", "custom"] as const).map(range => (
+                <button
+                  key={range}
+                  onClick={() => setDateRange(range)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    dateRange === range
+                      ? "bg-indigo-600 text-white shadow-xs"
+                      : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                  }`}
+                >
+                  {range === "today" ? "Today (วันนี้)" :
+                   range === "7days" ? "7 Days (7 วัน)" :
+                   range === "30days" ? "30 Days (30 วัน)" :
+                   range === "month" ? "This Month (เดือนนี้)" : "Custom (กำหนดเอง)"}
+                </button>
+              ))}
+            </div>
 
-          {/* Print Button */}
-          <button
-            onClick={() => {
-              document.body.classList.add("printing-report");
-              setTimeout(() => {
-                window.print();
-              }, 50);
-            }}
-            className="flex items-center gap-1.5 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750 text-xs font-bold text-slate-700 dark:text-slate-200 rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
-          >
-            <Printer size={14} className="text-slate-400" />
-            Print Promo Report
-          </button>
-        </div>
+            {/* Custom Date Range Picker */}
+            {dateRange === "custom" && (
+              <div className="flex items-center gap-2 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-2 py-1 shadow-sm animate-in fade-in duration-200">
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="bg-transparent text-xs font-semibold text-slate-700 dark:text-slate-200 border-none outline-none p-0.5"
+                />
+                <span className="text-xs text-slate-400 font-bold">-</span>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="bg-transparent text-xs font-semibold text-slate-700 dark:text-slate-200 border-none outline-none p-0.5"
+                />
+              </div>
+            )}
+
+            {/* Export to Excel */}
+            <button
+              onClick={handleExportExcel}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
+              title="Export CSV (ส่งออกไฟล์ CSV)"
+            >
+              <Download size={14} />
+              Export CSV (ส่งออก CSV)
+            </button>
+
+            {/* Print Button */}
+            <button
+              onClick={() => {
+                document.body.classList.add("printing-report");
+                setTimeout(() => {
+                  window.print();
+                }, 50);
+              }}
+              className="flex items-center gap-1.5 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750 text-xs font-bold text-slate-700 dark:text-slate-200 rounded-xl px-3 py-2 shadow-sm cursor-pointer transition-colors"
+            >
+              <Printer size={14} className="text-slate-400" />
+              Print Report (พิมพ์รายงาน)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Sub-tab navigation bar */}
       <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-px overflow-x-auto scrollbar-hide shrink-0">
         <button
+          onClick={() => setSubTab("calendar")}
+          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
+            subTab === "calendar"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-450 hover:text-slate-800"
+          }`}
+        >
+          <CalendarDays size={14} />
+          Marketing Board (ปฏิทินการตลาด)
+        </button>
+        <button
+          onClick={() => setSubTab("links")}
+          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
+            subTab === "links"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-450 hover:text-slate-800"
+          }`}
+        >
+          <QrCode size={14} />
+          Link & QR Tracker (ตัวย่อลิงก์ & วัดผลสถิติ)
+        </button>
+        <button
           onClick={() => setSubTab("promo")}
-          className={`flex items-center gap-1.5 pb-2.5 px-2 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
+          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
             subTab === "promo"
               ? "border-indigo-600 text-indigo-600"
               : "border-transparent text-slate-450 hover:text-slate-800"
           }`}
         >
           <Tag size={14} />
-          Promo Report
+          Promo Report (รายงานโค้ดส่วนลด)
         </button>
       </div>
+
+      {/* MARKETING CALENDAR BOARD CONTENT */}
+      {subTab === "calendar" && (
+        <div className="animate-in fade-in duration-200">
+          <AdminMarketingCalendar />
+        </div>
+      )}
+
+      {/* LINK & QR CODE TRACKER CONTENT */}
+      {subTab === "links" && (
+        <div className="animate-in fade-in duration-200">
+          <AdminMarketingLinks />
+        </div>
+      )}
 
       {/* PROMO CODE PERFORMANCE REPORT CONTENT */}
       {subTab === "promo" && (

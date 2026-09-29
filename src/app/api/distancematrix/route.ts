@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "origins and destinations are required" }, { status: 400 });
   }
 
-  const apiKey = providedKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  let apiKey = providedKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+
+  if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
+    try {
+      const setting = await prisma.setting.findUnique({ where: { key: "googleMapsApiKey" } });
+      if (setting?.value) apiKey = setting.value;
+    } catch (e) {
+      console.warn("Could not load Google API key from DB:", e);
+    }
+  }
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
     return NextResponse.json({ 
@@ -21,8 +31,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Call Google Distance Matrix API avoiding tolls and using motorcycle mode (two_wheeler)
-    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origins}&destinations=${destinations}&avoid=tolls&mode=two_wheeler&region=th&key=${apiKey}`;
+    // Call Google Distance Matrix API avoiding tolls, motorcycle mode, and real-time departure_time
+    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origins}&destinations=${destinations}&avoid=tolls&mode=two_wheeler&departure_time=now&region=th&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();

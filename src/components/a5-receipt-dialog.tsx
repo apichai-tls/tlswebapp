@@ -230,8 +230,17 @@ export function A5ReceiptDialog({
   const handlePrint = async () => {
     setIsPrinting(true);
     try {
-      const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
-      const blob = await generateA5ReceiptImage(receiptData, activeShop);
+      // Race image generation with a 4-second timeout to prevent hanging on slower connections
+      const imagePromise = (async () => {
+        const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
+        return await generateA5ReceiptImage(receiptData, activeShop);
+      })();
+
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), 4000)
+      );
+
+      const blob = await Promise.race([imagePromise, timeoutPromise]);
       if (blob) {
         const objectUrl = URL.createObjectURL(blob);
         printImageUrl(objectUrl);
@@ -239,7 +248,8 @@ export function A5ReceiptDialog({
       } else {
         window.print();
       }
-    } catch {
+    } catch (err) {
+      console.warn("A5 receipt image print error, falling back to window.print():", err);
       window.print();
     } finally {
       setIsPrinting(false);
