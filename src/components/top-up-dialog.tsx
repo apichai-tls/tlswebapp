@@ -22,7 +22,7 @@ import {
 } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
 import { useCustomers } from "@/lib/use-customers";
-import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate } from "@/lib/utils";
+import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate, matchCustomerSearch, formatBaht } from "@/lib/utils";
 
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { getCustomerTodayTopUpAction } from "@/actions/db";
@@ -200,12 +200,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
   const filteredCustomers = useMemo(() => {
     if (!customerSearch.trim()) return customers.slice(0, 30);
-    const q = customerSearch.toLowerCase();
-    return customers.filter(c =>
-      c.name.toLowerCase().includes(q) ||
-      (c.phone || "").toLowerCase().includes(q) ||
-      (c.email || "").toLowerCase().includes(q)
-    ).slice(0, 20);
+    return customers.filter(c => matchCustomerSearch(c, customerSearch)).slice(0, 20);
   }, [customers, customerSearch]);
 
   const cartTotal = useMemo(() =>
@@ -499,8 +494,8 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       toast.success(
         bonusTotal > 0
-          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ฿${formatCurrency(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
-          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ฿${formatCurrency(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
+          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ${formatBaht(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
+          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ${formatBaht(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
       );
 
       setReceiptData(rdata);
@@ -563,7 +558,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                   <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <Input
                     autoFocus
-                    placeholder="Search by name, phone or email…"
+                    placeholder="Search by name, phone, member ID or email…"
                     value={customerSearch}
                     onChange={e => setCustomerSearch(e.target.value)}
                     className="pl-8 text-sm h-9"
@@ -587,11 +582,19 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold text-slate-800 truncate">{c.name}</p>
-                            <p className="text-[10px] text-slate-400">{c.phone || "-"}</p>
+                            <p className="text-[10px] text-slate-400">
+                              {c.phone || "-"}
+                              {c.secondaryPhone && c.secondaryPhone !== c.phone && (
+                                <span className="ml-1 text-[9px] text-sky-600 font-sans">({c.secondaryPhone})</span>
+                              )}
+                              {c.memberId && (
+                                <span className="ml-1.5 text-[9px] font-bold text-indigo-600">#{c.memberId}</span>
+                              )}
+                            </p>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
                             <Badge variant="outline" className={`text-[9px] py-0 px-1.5 ${tb.className}`}>{tb.label}</Badge>
-                            <span className="text-xs font-bold text-emerald-600">฿{formatCurrency(c.creditBalance || 0)}</span>
+                            <span className={`text-xs font-bold ${(c.creditBalance || 0) < 0 ? "text-rose-600 font-extrabold" : "text-emerald-600"}`}>{formatBaht(c.creditBalance || 0)}</span>
                             {pendingWalletMap.byCustomer[c.id] > 0 && (
                               <span className="text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded px-1 py-0.2 animate-pulse">
                                 Pending ({pendingWalletMap.byCustomer[c.id]})
@@ -622,7 +625,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                     <div className="text-right">
                       <p className="text-[10px] text-slate-400 uppercase tracking-wide">Current Balance</p>
                       <div className="flex items-center justify-end gap-1">
-                        <p className="text-sm font-bold text-emerald-600">฿{formatCurrency(selectedCustomer.creditBalance || 0)}</p>
+                        <p className={`text-sm font-bold ${(selectedCustomer.creditBalance || 0) < 0 ? "text-rose-600 font-extrabold" : "text-emerald-600"}`}>{formatBaht(selectedCustomer.creditBalance || 0)}</p>
                         {pendingWalletMap.byCustomer[selectedCustomer.id] > 0 && (
                           <span className="text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded px-1 py-0.2 animate-pulse">
                             Pending ({pendingWalletMap.byCustomer[selectedCustomer.id]})
@@ -865,8 +868,8 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                   </div>
                   <div className="flex justify-between items-center text-xs text-slate-500 pt-1 border-t border-emerald-100">
                     <span>New wallet balance</span>
-                    <span className="font-black text-indigo-700 text-sm">
-                      ฿{formatCurrency((selectedCustomer?.creditBalance || 0) + totalCreditReceived)}
+                    <span className={`font-black text-sm ${((selectedCustomer?.creditBalance || 0) + totalCreditReceived) < 0 ? "text-rose-600" : "text-indigo-700"}`}>
+                      {formatBaht((selectedCustomer?.creditBalance || 0) + totalCreditReceived)}
                     </span>
                   </div>
                 </div>

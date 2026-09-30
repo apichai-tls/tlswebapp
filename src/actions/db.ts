@@ -87,7 +87,7 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.creditBalanceDelta !== undefined) {
     const balBefore = Number(currentCustomer.creditBalance || 0);
     const delta = Number(updates.creditBalanceDelta);
-    data.creditBalance = Math.max(0, Math.round((balBefore + delta) * 100) / 100);
+    data.creditBalance = Math.round((balBefore + delta) * 100) / 100;
   } else if (updates.creditBalance !== undefined) {
     data.creditBalance = updates.creditBalance;
   }
@@ -360,14 +360,16 @@ export async function mergeCustomerAction(data: {
     }
 
     return await prisma.$transaction(async (tx) => {
-      const primary = await tx.customer.findUnique({
-        where: { id: data.primaryCustomerId },
-        include: { addresses: true }
-      });
-      const duplicate = await tx.customer.findUnique({
-        where: { id: data.duplicateCustomerId },
-        include: { addresses: true }
-      });
+      const [primary, duplicate] = await Promise.all([
+        tx.customer.findUnique({
+          where: { id: data.primaryCustomerId },
+          include: { addresses: true }
+        }),
+        tx.customer.findUnique({
+          where: { id: data.duplicateCustomerId },
+          include: { addresses: true }
+        })
+      ]);
 
       if (!primary) throw new Error("ไม่พบบัญชีหลักในระบบ");
       if (!duplicate) throw new Error("ไม่พบบัญชีที่จะรวมในระบบ");
@@ -445,31 +447,37 @@ export async function mergeCustomerAction(data: {
         (primary.addresses || []).map(a => (a.address || "").trim().toLowerCase())
       );
 
+      const addressOps: Promise<any>[] = [];
       for (const dupAddr of (duplicate.addresses || [])) {
         const norm = (dupAddr.address || "").trim().toLowerCase();
         if (norm && primaryAddressesNormalized.has(norm)) {
           // If address already exists in primary, delete the duplicate address
-          await tx.customerAddress.delete({ where: { id: dupAddr.id } });
+          addressOps.push(tx.customerAddress.delete({ where: { id: dupAddr.id } }));
         } else {
           // Transfer to primary as secondary address
-          await tx.customerAddress.update({
+          addressOps.push(tx.customerAddress.update({
             where: { id: dupAddr.id },
             data: { customerId: primary.id, isPrimary: false }
-          });
+          }));
           if (norm) primaryAddressesNormalized.add(norm);
           transferredAddressesCount++;
         }
       }
+      if (addressOps.length > 0) {
+        await Promise.all(addressOps);
+      }
 
-      // 5. Transfer Bookings & Transactions (external web)
-      await tx.booking.updateMany({
-        where: { memberId: duplicate.id },
-        data: { memberId: primary.id }
-      });
-      await tx.transaction.updateMany({
-        where: { memberId: duplicate.id },
-        data: { memberId: primary.id }
-      });
+      // 5. Transfer Bookings & Transactions (external web) concurrently
+      await Promise.all([
+        tx.booking.updateMany({
+          where: { memberId: duplicate.id },
+          data: { memberId: primary.id }
+        }),
+        tx.transaction.updateMany({
+          where: { memberId: duplicate.id },
+          data: { memberId: primary.id }
+        })
+      ]);
 
       // 6. Merge profile fields into Primary
       const updateData: any = {};
@@ -542,6 +550,9 @@ export async function mergeCustomerAction(data: {
         transferredAddressesCount,
         updatedCustomer,
       };
+    }, {
+      maxWait: 15000,
+      timeout: 60000,
     });
   } catch (err: any) {
     console.error("[mergeCustomerAction] Error:", err);
@@ -598,8 +609,10 @@ export async function batchMergeObviousDuplicatesAction(data: {
         // Identical name and created within 60s
         if (normName1 === normName2 && tDiff <= 60000) {
           // Check jobs for both
-          const j1Count = await prisma.job.count({ where: { customerId: c1.id } });
-          const j2Count = await prisma.job.count({ where: { customerId: c2.id } });
+          const [j1Count, j2Count] = await Promise.all([
+            prisma.job.count({ where: { customerId: c1.id } }),
+            prisma.job.count({ where: { customerId: c2.id } })
+          ]);
 
           // Pick primary: one with jobs or wallet or older
           let primaryId = c1.id;
@@ -3181,6 +3194,214 @@ export async function unlockPaidJobAction(data: {
       success: false,
       error: err?.message || "Failed to unlock paid job",
     };
+  }
+}
+
+// ==========================================
+// CUSTOMER COUPONS ACTIONS
+// ==========================================
+
+export async function createCustomerCouponAction(data: {
+  customerId: string;
+  code: string;
+  name: string;
+  description?: string;
+  discountType: 'FIXED' | 'PERCENTAGE' | 'FREE_DELIVERY' | 'CASH_VOUCHER';
+  discountValue: number;
+  minOrderAmount?: number | null;
+  maxDiscount?: number | null;
+  expiryDate?: Date | string | null;
+  issuedReason?: string;
+  issuedById?: string;
+  issuedByName?: string;
+  brand?: string;
+}) {
+  try {
+    const customer = await prisma.customer.findUnique({
+      where: { id: data.customerId },
+      select: { id: true, name: true, phone: true, brand: true },
+    });
+    if (!customer) throw new Error("ไม่พบข้อมูลลูกค้า");
+
+    const cleanCode = (data.code || "").trim().toUpperCase();
+    if (!cleanCode) throw new Error("กรุณาระบุรหัสคูปอง (Coupon Code)");
+
+    const coupon = await prisma.customerCoupon.create({
+      data: {
+        customerId: customer.id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        code: cleanCode,
+        name: data.name.trim(),
+        description: data.description?.trim() || null,
+        discountType: data.discountType || "FIXED",
+        discountValue: Number(data.discountValue) || 0,
+        minOrderAmount: data.minOrderAmount != null ? Number(data.minOrderAmount) : null,
+        maxDiscount: data.maxDiscount != null ? Number(data.maxDiscount) : null,
+        status: "ACTIVE",
+        issuedAt: new Date(),
+        expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
+        issuedById: data.issuedById || null,
+        issuedByName: data.issuedByName || null,
+        issuedReason: data.issuedReason?.trim() || null,
+        brand: data.brand || customer.brand || "that_laundry_shop",
+      },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityId: customer.id,
+        entityType: "customer",
+        action: "ISSUE_COUPON",
+        details: JSON.stringify({
+          couponId: coupon.id,
+          code: coupon.code,
+          name: coupon.name,
+          discountType: coupon.discountType,
+          discountValue: coupon.discountValue,
+          expiryDate: coupon.expiryDate,
+          reason: coupon.issuedReason,
+        }),
+        userId: data.issuedById || null,
+        userName: data.issuedByName || null,
+      },
+    });
+
+    return { success: true, coupon };
+  } catch (err: any) {
+    console.error("[createCustomerCouponAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to issue coupon" };
+  }
+}
+
+export async function getCustomerCouponsAction(filters?: {
+  customerId?: string;
+  status?: string;
+  brand?: string;
+  search?: string;
+}) {
+  try {
+    const where: any = {};
+    if (filters?.customerId) {
+      where.customerId = filters.customerId;
+    }
+    if (filters?.status && filters.status !== "all") {
+      where.status = filters.status;
+    }
+    if (filters?.brand && filters.brand !== "all") {
+      where.brand = filters.brand;
+    }
+    if (filters?.search && filters.search.trim()) {
+      const q = filters.search.trim();
+      where.OR = [
+        { code: { contains: q, mode: "insensitive" } },
+        { name: { contains: q, mode: "insensitive" } },
+        { customerName: { contains: q, mode: "insensitive" } },
+        { customerPhone: { contains: q, mode: "insensitive" } },
+        { issuedReason: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const coupons = await prisma.customerCoupon.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Lazy auto-expire check
+    const now = new Date();
+    const updatedCoupons = await Promise.all(
+      coupons.map(async (c) => {
+        if (c.status === "ACTIVE" && c.expiryDate && new Date(c.expiryDate) < now) {
+          try {
+            return await prisma.customerCoupon.update({
+              where: { id: c.id },
+              data: { status: "EXPIRED" },
+            });
+          } catch {
+            return { ...c, status: "EXPIRED" };
+          }
+        }
+        return c;
+      })
+    );
+
+    return { success: true, coupons: updatedCoupons };
+  } catch (err: any) {
+    console.error("[getCustomerCouponsAction] Error:", err);
+    return { success: false, coupons: [], error: err?.message || "Failed to load coupons" };
+  }
+}
+
+export async function updateCustomerCouponStatusAction(
+  id: string,
+  status: "ACTIVE" | "USED" | "EXPIRED" | "VOID",
+  details?: { usedJobId?: string; actorId?: string; actorName?: string; reason?: string }
+) {
+  try {
+    const data: any = { status };
+    if (status === "USED") {
+      data.usedAt = new Date();
+      if (details?.usedJobId) data.usedJobId = details.usedJobId;
+    } else if (status === "ACTIVE") {
+      data.usedAt = null;
+      data.usedJobId = null;
+    }
+
+    const updated = await prisma.customerCoupon.update({
+      where: { id },
+      data,
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityId: updated.customerId,
+        entityType: "customer",
+        action: `COUPON_${status}`,
+        details: JSON.stringify({
+          couponId: updated.id,
+          code: updated.code,
+          status,
+          usedJobId: details?.usedJobId,
+          reason: details?.reason,
+        }),
+        userId: details?.actorId || null,
+        userName: details?.actorName || null,
+      },
+    });
+
+    return { success: true, coupon: updated };
+  } catch (err: any) {
+    console.error("[updateCustomerCouponStatusAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to update coupon status" };
+  }
+}
+
+export async function deleteCustomerCouponAction(id: string, actor?: { id?: string; name?: string }) {
+  try {
+    const coupon = await prisma.customerCoupon.findUnique({ where: { id } });
+    if (!coupon) throw new Error("ไม่พบคูปอง");
+
+    await prisma.customerCoupon.delete({ where: { id } });
+
+    await prisma.activityLog.create({
+      data: {
+        entityId: coupon.customerId,
+        entityType: "customer",
+        action: "DELETE_COUPON",
+        details: JSON.stringify({
+          couponId: coupon.id,
+          code: coupon.code,
+          name: coupon.name,
+        }),
+        userId: actor?.id || null,
+        userName: actor?.name || null,
+      },
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("[deleteCustomerCouponAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to delete coupon" };
   }
 }
 

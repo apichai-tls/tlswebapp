@@ -83,6 +83,31 @@ export interface CustomerAddress {
   updatedAt?: Date | string;
 }
 
+export interface CustomerCoupon {
+  id: string;
+  customerId: string;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  code: string;
+  name: string;
+  description?: string | null;
+  discountType: 'FIXED' | 'PERCENTAGE' | 'FREE_DELIVERY' | 'CASH_VOUCHER';
+  discountValue: number;
+  minOrderAmount?: number | null;
+  maxDiscount?: number | null;
+  status: 'ACTIVE' | 'USED' | 'EXPIRED' | 'VOID';
+  issuedAt: string | Date;
+  expiryDate?: string | Date | null;
+  usedAt?: string | Date | null;
+  usedJobId?: string | null;
+  issuedById?: string | null;
+  issuedByName?: string | null;
+  issuedReason?: string | null;
+  brand?: string;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+}
+
 export interface Customer {
   id: string;
   name: string;

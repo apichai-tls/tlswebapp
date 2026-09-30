@@ -82,8 +82,8 @@ import { useJobs } from "@/lib/use-jobs";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
-import { ThermalReceiptDialog } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId, computeCartHash } from "@/lib/utils";
+import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -955,6 +955,113 @@ const getCategoryStyles = (category: string) => {
   };
 };
 
+function CartItemQuantityInput({
+  item,
+  disabled,
+  isKilo,
+  onUpdate,
+}: {
+  item: CartItem;
+  disabled?: boolean;
+  isKilo?: boolean;
+  onUpdate: (qty: number) => void;
+}) {
+  const [val, setVal] = useState<string>(String(item.quantity ?? ""));
+
+  useEffect(() => {
+    setVal(String(item.quantity ?? ""));
+  }, [item.quantity]);
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      disabled={disabled}
+      className="h-7.5 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground disabled:opacity-50 disabled:cursor-not-allowed w-11"
+      value={val}
+      placeholder="0"
+      onChange={(e) => {
+        const text = e.target.value;
+        if (text === "" || /^\d*(\.\d{0,2})?$/.test(text)) {
+          setVal(text);
+          const parsed = parseFloat(text);
+          if (!isNaN(parsed) && parsed > 0) {
+            onUpdate(parsed);
+          }
+        }
+      }}
+      onBlur={() => {
+        const parsed = parseFloat(val);
+        if (isNaN(parsed) || parsed <= 0) {
+          const fallback = isKilo ? 0.5 : 1;
+          setVal(String(fallback));
+          onUpdate(fallback);
+        } else {
+          const rounded = Math.round(parsed * 100) / 100;
+          setVal(String(rounded));
+          onUpdate(rounded);
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
+function CartItemPriceInput({
+  item,
+  onUpdate,
+  onClose,
+}: {
+  item: CartItem;
+  onUpdate: (price: number) => void;
+  onClose: () => void;
+}) {
+  const [val, setVal] = useState<string>(String(item.price ?? ""));
+
+  return (
+    <div className="relative w-16">
+      <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[9px] text-muted-foreground font-bold">฿</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        className="h-7 w-full text-[11.5px] font-bold bg-card pl-3.5 pr-1 border border-primary rounded-lg outline-none text-right focus:ring-1 focus:ring-primary text-foreground"
+        value={val}
+        placeholder="0"
+        onChange={(e) => {
+          const text = e.target.value;
+          if (text === "" || /^\d*(\.\d{0,2})?$/.test(text)) {
+            setVal(text);
+            const parsed = parseFloat(text);
+            if (!isNaN(parsed) && parsed >= 0) {
+              onUpdate(parsed);
+            }
+          }
+        }}
+        onBlur={() => {
+          const parsed = parseFloat(val);
+          if (isNaN(parsed) || parsed < 0) {
+            onUpdate(item.basePrice || item.price || 0);
+          } else {
+            const rounded = Math.round(parsed * 100) / 100;
+            onUpdate(rounded);
+          }
+          onClose();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === "Escape") {
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        autoFocus
+      />
+    </div>
+  );
+}
+
 export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPreselected }: AdminPOSProps = {}) {
   const { user } = useAuth();
   const canRefund = Boolean(user?.role === 'admin' || user?.permissions?.includes('refund-job'));
@@ -1706,11 +1813,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Filter customers based on search input
   const filteredCustomers = useMemo(() => {
-    if (!customerSearch) return customers;
-    return customers.filter(c => 
-      c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
-      c.phone.includes(customerSearch)
-    );
+    if (!customerSearch.trim()) return customers;
+    return customers.filter(c => matchCustomerSearch(c, customerSearch));
   }, [customerSearch, customers]);
 
   // Dynamically compute unique categories from active services (excluding PACKAGE)
@@ -2132,9 +2236,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       const displayId = latestJob.id ? formatJobDisplayId(latestJob.id) : "";
 
+      const isJobPaid = Boolean(latestJob.isPaid || latestJob.isShopPaid);
+      const isDraftDoc = !isJobPaid;
+
       return {
         id: displayId,
-        receiptNumber: (latestJob as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined),
+        receiptNumber: isJobPaid ? ((latestJob as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined)) : undefined,
         jobId: latestJob.id,
         proformaId: cleanBaseProforma,
         proformaRevision: jobProformaRevision,
@@ -2148,10 +2255,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         serviceSpeed: jobSpeed,
         discount: latestJob.discount || 0,
         total: latestJob.totalAmount,
-        isPaid: latestJob.isPaid,
+        isPaid: isJobPaid,
         paymentChannel: latestJob.paymentChannel,
         remark: latestJob.remark,
-        isDraft: false,
+        isDraft: isDraftDoc,
         vatType: jobVatType,
         vatRate: jobVatRate,
         vatAmount: jobVatAmount,
@@ -2369,7 +2476,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                       entityType: "job",
-                      entityId: effectiveProformaId,
+                      entityId: loadedJobId || effectiveProformaId,
                       subType: "proofs",
                       contentType: "image/png",
                       filename
@@ -2392,7 +2499,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   const formData = new FormData();
                   formData.append("file", file);
                   formData.append("entityType", "jobs");
-                  formData.append("entityId", effectiveProformaId);
+                  formData.append("entityId", loadedJobId || effectiveProformaId);
                   formData.append("subType", "proofs");
                   const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
                   uploadJson = await uploadRes.json();
@@ -2643,6 +2750,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             proformaRevision: 0,
             proformaCartHash: currentCartHash,
           } as any);
+          finalJob = {
+            ...finalJob,
+            proformaNumber: targetProformaNum,
+            proformaRevision: 0,
+            proformaCartHash: currentCartHash,
+          };
         }
       }
 
@@ -2680,7 +2793,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         }
 
         const updatedCust = await customerStore.updateCustomer(selectedCustomer.id, updates);
-        const confirmedBalance = updatedCust?.creditBalance ?? Math.max(0, (selectedCustomer.creditBalance || 0) + balanceAdjustment);
+        const confirmedBalance = updatedCust?.creditBalance ?? ((selectedCustomer.creditBalance || 0) + balanceAdjustment);
         
         // Update local state copy to immediately reflect in current view
         setSelectedCustomer(prev => prev ? { 
@@ -2698,6 +2811,92 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
       setLatestJob(finalJob);
+
+      // [AUTO-PROFORMA for POS] If paying and proforma snapshot not yet captured, auto-capture in background (matching All Jobs conditions)
+      if (finalJob && isPaidFlag && targetProformaNum) {
+        const cleanBaseProforma = cleanProformaNumber(targetProformaNum);
+        const effectiveRev = effectiveRevision || 0;
+        const proformaFilename = `proforma-${cleanBaseProforma}-rev${effectiveRev}.png`;
+
+        const existingBillUrls: string[] = (() => {
+          try {
+            if (finalJob.billImageUrl) {
+              const parsed = JSON.parse(finalJob.billImageUrl);
+              return Array.isArray(parsed) ? parsed : [parsed];
+            }
+          } catch {}
+          return [];
+        })();
+
+        const alreadyCaptured = 
+          capturedReceiptUrlsRef.current.some(url => url.includes(proformaFilename)) ||
+          sessionCapturedReceiptUrls.some(url => url.includes(proformaFilename)) ||
+          existingBillUrls.some(url => url.includes(proformaFilename));
+
+        if (!alreadyCaptured) {
+          const targetJobId = finalJob.id;
+          const paperSize = settings?.receiptPaperSize;
+          const isA5 = paperSize === "A5";
+
+          const resolvedItems = (finalJob.items && Array.isArray(finalJob.items) && finalJob.items.length > 0)
+            ? finalJob.items
+            : (finalJob.itemsJson ? JSON.parse(finalJob.itemsJson) : cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit, serviceId: item.id })));
+
+          const proformaCapData: any = {
+            ...formatJobToReceiptData({
+              ...finalJob,
+              items: resolvedItems,
+              proformaNumber: targetProformaNum,
+              proformaRevision: effectiveRev,
+            } as any),
+            items: resolvedItems,
+            isDraft: true,
+            proformaRevision: effectiveRev,
+            proformaId: cleanBaseProforma,
+            jobId: targetJobId,
+            autoCapture: false,
+          };
+
+          Promise.resolve().then(async () => {
+            try {
+              const blob = isA5
+                ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
+                : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaCapData, activeShop);
+
+              if (blob) {
+                const { uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+                const proformaUrl = await uploadReceiptImage(blob, targetJobId, proformaFilename);
+                if (proformaUrl) {
+                  if (!capturedReceiptUrlsRef.current.includes(proformaUrl)) {
+                    capturedReceiptUrlsRef.current.push(proformaUrl);
+                  }
+                  setSessionCapturedReceiptUrls(prev => prev.includes(proformaUrl) ? prev : [...prev, proformaUrl]);
+
+                  // Merge with latest bills in DB
+                  const latestDbJobs = jobStore.getSnapshot();
+                  const targetDbJob = latestDbJobs.find(j => j.id === targetJobId);
+                  let currentBills: string[] = [];
+                  try {
+                    if (targetDbJob?.billImageUrl) {
+                      const parsed = JSON.parse(targetDbJob.billImageUrl);
+                      currentBills = Array.isArray(parsed) ? parsed : [parsed];
+                    }
+                  } catch {}
+
+                  if (!currentBills.includes(proformaUrl)) {
+                    const merged = [proformaUrl, ...currentBills];
+                    await jobStore.updateJobDetails(targetJobId, {
+                      billImageUrl: JSON.stringify(merged)
+                    } as any);
+                  }
+                }
+              }
+            } catch (err) {
+              console.warn("[AutoProforma POS] Background proforma capture failed:", err);
+            }
+          });
+        }
+      }
       if (appliedPromo && effectivePromoDiscount > 0 && finalJob?.id) {
         handleRedeemPromo(
           appliedPromo.code,
@@ -3590,8 +3789,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     <p className="text-[11px] font-bold text-accent-foreground truncate">{selectedCustomer.name}</p>
                     <p className="text-[9px] text-primary font-semibold truncate flex items-center flex-wrap gap-1">
                       <span>{selectedCustomer.phone}</span>
-                      <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                        (฿{(selectedCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })})
+                      <span className={`font-bold ${(selectedCustomer.creditBalance || 0) < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                        ({formatBaht(selectedCustomer.creditBalance || 0)})
                       </span>
                       {pendingWalletMap.byCustomer[selectedCustomer.id] > 0 && (
                         <span className="inline-flex items-center px-1 py-0 rounded text-[8px] font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300 animate-pulse">
@@ -3620,7 +3819,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={14} />
                   <input 
                     type="text"
-                    placeholder={currentLanguage === "en" ? "Select customer..." : "ค้นหา/เลือกลูกค้า..."}
+                    placeholder={currentLanguage === "en" ? "Search name, phone, member ID..." : "ค้นหาชื่อ, เบอร์โทร, เลขสมาชิก..."}
                     className="w-full pl-9 pr-4 h-9 rounded-xl border border-border bg-card text-foreground text-xs font-semibold focus:ring-2 focus:ring-primary outline-none transition-all placeholder:text-muted-foreground"
                     value={customerSearch}
                     onChange={(e) => {
@@ -3661,14 +3860,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 <p className="font-bold text-foreground truncate">{c.name}</p>
                                 <p className="text-[10px] text-muted-foreground font-medium">
                                   {c.phone}
-                                  <span className="text-emerald-600 dark:text-emerald-400 font-bold ml-1.5">
-                                    (฿{(c.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })})
+                                  {c.secondaryPhone && c.secondaryPhone !== c.phone && (
+                                    <span className="ml-1 text-[9px] text-sky-600 font-sans">({c.secondaryPhone})</span>
+                                  )}
+                                  <span className={`font-bold ml-1.5 ${(c.creditBalance || 0) < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                                    ({formatBaht(c.creditBalance || 0)})
                                   </span>
                                 </p>
                               </div>
-                              {c.isMember && (
+                              {(c.isMember || c.memberId) && (
                                 <Badge variant="secondary" className="bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-100 text-[8px] py-0 px-1 font-bold shrink-0">
-                                  MEMBER
+                                  {c.memberId ? `#${c.memberId}` : "MEMBER"}
                                 </Badge>
                               )}
                             </button>
@@ -3851,30 +4053,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         >
                           <Minus size={10} />
                         </motion.button>
-                        <input 
-                          type="number" 
-                          step="0.01"
-                          min="0.01"
+                        <CartItemQuantityInput
+                          item={item}
                           disabled={isPaidJob}
-                          className="h-7.5 border-none bg-transparent text-center text-[11px] font-extrabold outline-none px-0.5 text-foreground disabled:opacity-50 disabled:cursor-not-allowed w-11"
-                          defaultValue={item.quantity}
-                          key={`qty-${item.id}-${item.quantity}`}
-                          onChange={(e) => {
-                            const raw = parseFloat(e.target.value);
-                            if (!isNaN(raw) && raw > 0) {
-                              const rounded = Math.round(raw * 100) / 100;
-                              updateCartItem(item.id, { quantity: rounded });
-                            }
-                          }}
-                          onBlur={(e) => {
-                            const raw = parseFloat(e.target.value);
-                            if (isNaN(raw) || raw <= 0) {
-                              updateCartItem(item.id, { quantity: isKiloItem ? 0.5 : 1 });
-                            } else {
-                              const rounded = Math.round(raw * 100) / 100;
-                              updateCartItem(item.id, { quantity: rounded });
-                            }
-                          }}
+                          isKilo={isKiloItem}
+                          onUpdate={(newQty) => updateCartItem(item.id, { quantity: newQty })}
                         />
                         <motion.button 
                           whileTap={isPaidJob ? {} : { scale: 0.85 }}
@@ -3892,27 +4075,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     {/* Right: Interactive Price & Delete */}
                     <div className="flex items-center gap-1.5 shrink-0">
                       {editingPriceItemId === item.id && !isPaidJob ? (
-                        <div className="relative w-16">
-                          <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[9px] text-muted-foreground font-bold">฿</span>
-                          <input 
-                            type="number" 
-                            step="0.01" 
-                            className="h-7 w-full text-[11.5px] font-bold bg-card pl-3.5 pr-1 border border-primary rounded-lg outline-none text-right focus:ring-1 focus:ring-primary text-foreground"
-                            value={item.price}
-                            onChange={(e) => {
-                              const valStr = e.target.value;
-                              const raw = parseFloat(valStr);
-                              updateCartItem(item.id, { price: !isNaN(raw) ? raw : (valStr === "" ? 0 : item.price) });
-                            }}
-                            onBlur={() => setEditingPriceItemId(null)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === "Escape") {
-                                setEditingPriceItemId(null);
-                              }
-                            }}
-                            autoFocus
-                          />
-                        </div>
+                        <CartItemPriceInput
+                          item={item}
+                          onUpdate={(newPrice) => updateCartItem(item.id, { price: newPrice })}
+                          onClose={() => setEditingPriceItemId(null)}
+                        />
                       ) : (
                         <button
                           type="button"
@@ -4385,7 +4552,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span>{currentLanguage === "en" ? "Current Balance" : "ยอดเงินปัจจุบัน"}: ฿{(selectedCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        <span>{currentLanguage === "en" ? "Current Balance" : "ยอดเงินปัจจุบัน"}: <strong className={`font-mono ${(selectedCustomer.creditBalance || 0) < 0 ? "text-rose-600 dark:text-rose-400 font-extrabold" : ""}`}>{formatBaht(selectedCustomer.creditBalance || 0)}</strong></span>
                         {pendingWalletMap.byCustomer[selectedCustomer.id] > 0 && (
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300">
                             Pending Approval ({pendingWalletMap.byCustomer[selectedCustomer.id]})
@@ -4398,7 +4565,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         </span>
                       ) : (selectedCustomer.creditBalance || 0) >= total ? (
                         <span>
-                          {currentLanguage === "en" ? "Remaining Balance" : "ยอดคงเหลือหลังชำระ"}: ฿{((selectedCustomer.creditBalance || 0) - total).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          {currentLanguage === "en" ? "Remaining Balance" : "ยอดคงเหลือหลังชำระ"}: {formatBaht((selectedCustomer.creditBalance || 0) - total)}
                         </span>
                       ) : (
                         <span className="text-rose-500 dark:text-rose-400 font-extrabold">

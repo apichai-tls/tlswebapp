@@ -34,6 +34,16 @@ export function formatCurrency(amount: number | null | undefined): string {
 }
 
 /**
+ * Format currency with Thai Baht sign, properly placing negative sign before the ฿ symbol.
+ * e.g. -1549.00 -> "-฿1,549.00", 1549.00 -> "฿1,549.00"
+ */
+export function formatBaht(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined || isNaN(amount)) return "฿0.00";
+  const abs = Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return amount < 0 ? `-฿${abs}` : `฿${abs}`;
+}
+
+/**
  * Format a job ID for display.
  * Handles RF- prefix, UUIDs (shows first 8 chars), and sequential annual IDs (shows full ID).
  * e.g. "RF-2026004284" -> "RF-2026004284"
@@ -349,6 +359,17 @@ export function findMatchingCustomer<T extends { id: string; name?: string | nul
       (c.secondaryPhone && c.secondaryPhone.trim() === targetPhone)
     );
     if (byPhone) return byPhone;
+
+    // Fallback: match by normalized phone digits (handles +66 vs 0, hyphens, spaces)
+    const targetNorm = normalizePhone(targetPhone);
+    if (targetNorm && targetNorm.length >= 8) {
+      const byNormPhone = customers.find(c => {
+        const pNorm = normalizePhone(c.phone);
+        const secNorm = normalizePhone(c.secondaryPhone);
+        return (pNorm && pNorm === targetNorm) || (secNorm && secNorm === targetNorm);
+      });
+      if (byNormPhone) return byNormPhone;
+    }
   }
 
   return null;
@@ -479,12 +500,169 @@ export function getJobPaymentDate(job: any): Date | null {
 export function normalizePhone(raw: string | null | undefined): string {
   if (!raw) return "";
   let digits = raw.replace(/\D/g, "");
-  if (digits.startsWith("66") && digits.length >= 10) {
+  if (digits.startsWith("660") && digits.length >= 11) {
+    digits = "0" + digits.slice(3);
+  } else if (digits.startsWith("66") && digits.length >= 10) {
     digits = "0" + digits.slice(2);
   }
   return digits;
 }
 
+/**
+ * Universal search matcher for customers.
+ * Supports:
+ * - Customer Name & Nickname (case-insensitive, multi-word matching)
+ * - Member ID (case-insensitive, stripped prefix '#' or spaces, alphanumeric matching)
+ * - Phone & Secondary Phone & Address Contact Phone:
+ *   - Direct substring match
+ *   - Clean digits matching (ignores hyphens, spaces, parentheses, +)
+ *   - Thai country-code normalization (+66 / 66 <-> 0, and handling malformed +66 0...)
+ *   - International country-code normalization (e.g. domestic 0-prefixed <-> intl +41, +44, +1, +61, etc.)
+ *   - Partial digit matching (e.g. last 4+ digits)
+ * - Email and Line ID
+ * - Company Name and Tax ID
+ */
+export function matchCustomerSearch(
+  customer: {
+    id?: string | null;
+    name?: string | null;
+    nickName?: string | null;
+    phone?: string | null;
+    secondaryPhone?: string | null;
+    memberId?: string | null;
+    email?: string | null;
+    lineId?: string | null;
+    companyName?: string | null;
+    taxId?: string | null;
+    addresses?: Array<{ contactPhone?: string | null }> | null;
+  } | null | undefined,
+  rawQuery: string | null | undefined
+): boolean {
+  if (!customer || !rawQuery) return false;
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return false;
 
+  // 1. Name & Nickname match (direct or all-words match)
+  const name = (customer.name || "").toLowerCase();
+  const nick = (customer.nickName || "").toLowerCase();
+  const comp = (customer.companyName || "").toLowerCase();
+  if (name.includes(q) || (nick && nick.includes(q)) || (comp && comp.includes(q))) {
+    return true;
+  }
 
+  const qWords = q.split(/\s+/).filter(Boolean);
+  if (qWords.length > 1) {
+    const combinedName = `${name} ${nick} ${comp}`.trim();
+    if (qWords.every(w => combinedName.includes(w))) {
+      return true;
+    }
+  }
 
+  // 2. Member ID match
+  if (customer.memberId) {
+    const mId = customer.memberId.trim().toLowerCase();
+    const cleanQ = q.replace(/^#/, "").trim();
+    if (mId.includes(q) || mId.includes(cleanQ)) {
+      return true;
+    }
+    const mIdAlnum = mId.replace(/[^a-z0-9]/g, "");
+    const cleanQAlnum = cleanQ.replace(/[^a-z0-9]/g, "");
+    if (mIdAlnum && cleanQAlnum && mIdAlnum.includes(cleanQAlnum)) {
+      return true;
+    }
+    if (mIdAlnum.length >= 3 && cleanQAlnum && cleanQAlnum.includes(mIdAlnum)) {
+      return true;
+    }
+  }
+
+  // 3. Tax ID match
+  if (customer.taxId) {
+    const tId = customer.taxId.replace(/\D/g, "");
+    const qDigits = q.replace(/\D/g, "");
+    if (qDigits && tId.includes(qDigits)) return true;
+  }
+
+  // 4. Email & Line ID match
+  if (customer.email && customer.email.toLowerCase().includes(q)) return true;
+  if (customer.lineId && customer.lineId.toLowerCase().includes(q)) return true;
+
+  // 5. Phone Numbers Matching (Thai & International)
+  const phonesToCheck: string[] = [];
+  if (customer.phone) phonesToCheck.push(customer.phone);
+  if (customer.secondaryPhone) phonesToCheck.push(customer.secondaryPhone);
+  if (customer.addresses && Array.isArray(customer.addresses)) {
+    for (const addr of customer.addresses) {
+      if (addr.contactPhone) phonesToCheck.push(addr.contactPhone);
+    }
+  }
+
+  const qDigits = q.replace(/\D/g, "");
+
+  for (const rawPhone of phonesToCheck) {
+    if (!rawPhone) continue;
+    const pLower = rawPhone.toLowerCase().trim();
+    if (pLower.includes(q)) return true;
+
+    const pDigits = rawPhone.replace(/\D/g, "");
+    if (!pDigits || pDigits.length < 4) continue;
+
+    if (qDigits) {
+      // Build candidate variants for stored phone
+      const variants = new Set<string>();
+      variants.add(pDigits);
+
+      // Thai / country-code 66 normalization
+      if (pDigits.startsWith("660") && pDigits.length >= 11) {
+        variants.add("0" + pDigits.slice(3));
+        variants.add("66" + pDigits.slice(3));
+        variants.add(pDigits.slice(3));
+      } else if (pDigits.startsWith("66") && pDigits.length >= 10) {
+        variants.add("0" + pDigits.slice(2));
+        variants.add(pDigits.slice(2));
+      } else if (pDigits.startsWith("0") && pDigits.length >= 9) {
+        variants.add("66" + pDigits.slice(1));
+        variants.add(pDigits.slice(1));
+      }
+
+      // International domestic/country-code variations
+      // (e.g. UK: 447806818431 -> 7806818431 & 07806818431, Switzerland: 41788858009 -> 788858009 & 0788858009)
+      if (pDigits.length >= 10 && !pDigits.startsWith("0")) {
+        for (const ccLen of [1, 2, 3]) {
+          if (pDigits.length > ccLen + 6) {
+            const localPart = pDigits.slice(ccLen);
+            variants.add(localPart);
+            variants.add("0" + localPart);
+          }
+        }
+      }
+
+      // Check matching against variants
+      let matched = false;
+      for (const variant of variants) {
+        if (qDigits.length < 3) {
+          // If query is very short digits (1-2 digits), only match if variant starts with it
+          if (variant.startsWith(qDigits)) {
+            matched = true;
+            break;
+          }
+        } else {
+          if (variant.includes(qDigits)) {
+            matched = true;
+            break;
+          }
+        }
+      }
+      if (matched) return true;
+
+      // If user typed domestic 0-prefixed international number (e.g. '0788858009' -> '788858009')
+      if (qDigits.startsWith("0") && qDigits.length >= 8) {
+        const withoutZero = qDigits.slice(1);
+        for (const variant of variants) {
+          if (variant.includes(withoutZero)) return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}

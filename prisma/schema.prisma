@@ -59,6 +59,7 @@ model Customer {
   verifiedVia         String?
   sourceSystem        String?           @default("pos_store")
   addresses           CustomerAddress[]
+  coupons             CustomerCoupon[]
 
   @@index([brand])
 }
@@ -169,6 +170,7 @@ model Job {
 
   @@index([shiftId])
   @@index([brand])
+  @@index([customerId])
 }
 
 model ServiceItem {
@@ -403,6 +405,7 @@ model Booking {
   updatedAt           DateTime
   website_admin_users website_admin_users? @relation(fields: [assignedToId], references: [id])
   Customer            Customer?            @relation(fields: [memberId], references: [id])
+  @@index([memberId])
 }
 
 model ContactRequest {
@@ -490,6 +493,7 @@ model Transaction {
   createdAt   DateTime @default(now())
   updatedAt   DateTime
   Customer    Customer @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  @@index([memberId])
 }
 
 model website_admin_users {
@@ -584,3 +588,40 @@ model JobRefund {
   @@index([creditNoteNumber])
 }
 
+model CustomerCoupon {
+  id             String    @id @default(uuid())
+  customerId     String
+  customer       Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerName   String?
+  customerPhone  String?
+
+  code           String
+  name           String
+  description    String?
+
+  discountType   String    // "FIXED" | "PERCENTAGE" | "FREE_DELIVERY" | "CASH_VOUCHER"
+  discountValue  Float
+  minOrderAmount Float?
+  maxDiscount    Float?
+
+  status         String    @default("ACTIVE") // "ACTIVE" | "USED" | "EXPIRED" | "VOID"
+
+  issuedAt       DateTime  @default(now())
+  expiryDate     DateTime?
+  usedAt         DateTime?
+  usedJobId      String?
+
+  issuedById     String?
+  issuedByName   String?
+  issuedReason   String?
+
+  brand          String    @default("that_laundry_shop")
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([customerId, status])
+  @@index([code])
+  @@index([status])
+  @@index([brand])
+}

@@ -6,21 +6,28 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
 import { useJobs } from "@/lib/use-jobs";
-import { customerStore, priceListStore, poiStore, shopStore, walletApprovalStore, type Customer, type WalletTransactionItem } from "@/lib/store";
+import { customerStore, priceListStore, poiStore, shopStore, walletApprovalStore, type Customer, type CustomerCoupon, type WalletTransactionItem } from "@/lib/store";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
-import { getTopUpTransactionsAction, updateTopUpTransactionSlipAction } from "@/actions/db";
+import { 
+  getTopUpTransactionsAction, 
+  updateTopUpTransactionSlipAction,
+  getCustomerCouponsAction,
+  updateCustomerCouponStatusAction,
+  deleteCustomerCouponAction
+} from "@/actions/db";
+import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
-import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone } from "@/lib/utils";
+import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone, matchCustomerSearch, formatBaht } from "@/lib/utils";
 
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
   return new Promise((resolve) => {
@@ -175,8 +182,34 @@ export function AdminCRM({
   const canApproveWallet = Boolean(user?.permissions?.includes('approve-wallet') || isAdmin);
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
 
+  // Customer Coupons State
+  const [allCoupons, setAllCoupons] = useState<CustomerCoupon[]>([]);
+  const [isLoadingAllCoupons, setIsLoadingAllCoupons] = useState(false);
+  const [couponSearchQuery, setCouponSearchQuery] = useState("");
+  const [couponStatusFilter, setCouponStatusFilter] = useState<"all" | "ACTIVE" | "USED" | "EXPIRED" | "VOID">("all");
+  const [couponBrandFilter, setCouponBrandFilter] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
+  const [crmIssueCouponModalOpen, setCrmIssueCouponModalOpen] = useState(false);
+  const [copiedCouponId, setCopiedCouponId] = useState<string | null>(null);
+  const [couponPage, setCouponPage] = useState(1);
+  const couponPageSize = 20;
+
+  const fetchCrmCoupons = async () => {
+    setIsLoadingAllCoupons(true);
+    try {
+      const res = await getCustomerCouponsAction({});
+      if (res.success && res.coupons) {
+        setAllCoupons(res.coupons as unknown as CustomerCoupon[]);
+      }
+    } catch (err) {
+      console.error("Failed to load customer coupons:", err);
+    } finally {
+      setIsLoadingAllCoupons(false);
+    }
+  };
+
   useEffect(() => {
     walletApprovalStore.refreshPendingMap();
+    fetchCrmCoupons();
     const handleOpenTab = (e: any) => {
       if (e.detail?.tab) {
         setActiveTab(e.detail.tab);
@@ -187,7 +220,7 @@ export function AdminCRM({
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "coupons">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -399,7 +432,7 @@ export function AdminCRM({
   // Reset page to 1 when search, tab, or brand filters change
   useEffect(() => {
     setCurrentPage(1);
-    if (activeTab === "topup_history") {
+    if (activeTab === "topup_history" || activeTab === "customer_report") {
       fetchTopUps();
     }
   }, [searchTerm, activeTab, selectedBrand]);
@@ -410,13 +443,125 @@ export function AdminCRM({
   const [profileOpen, setProfileOpen] = useState(false);
   const [selectedProfileCustomer, setSelectedProfileCustomer] = useState<Customer | null>(null);
 
+  const handleCopyCouponCode = (coupon: CustomerCoupon) => {
+    navigator.clipboard.writeText(coupon.code);
+    setCopiedCouponId(coupon.id);
+    toast.success(`คัดลอกโค้ด ${coupon.code} เรียบร้อยแล้ว`);
+    setTimeout(() => setCopiedCouponId(null), 2000);
+  };
+
+  const handleVoidCrmCoupon = async (coupon: CustomerCoupon) => {
+    if (!confirm(`คุณต้องการยกเลิกคูปอง "${coupon.code}" (${coupon.name}) ใช่หรือไม่?`)) return;
+    try {
+      const res = await updateCustomerCouponStatusAction(coupon.id, "VOID");
+      if (res.success) {
+        toast.success("ยกเลิกคูปองเรียบร้อย");
+        fetchCrmCoupons();
+      } else {
+        toast.error(res.error || "เกิดข้อผิดพลาดในการยกเลิกคูปอง");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "เกิดข้อผิดพลาด");
+    }
+  };
+
+  const handleDeleteCrmCoupon = async (coupon: CustomerCoupon) => {
+    if (!confirm(`คุณต้องการลบคูปอง "${coupon.code}" (${coupon.name}) ออกจากระบบถาวรใช่หรือไม่?`)) return;
+    try {
+      const res = await deleteCustomerCouponAction(coupon.id);
+      if (res.success) {
+        toast.success("ลบคูปองเรียบร้อยแล้ว");
+        fetchCrmCoupons();
+      } else {
+        toast.error(res.error || "เกิดข้อผิดพลาดในการลบคูปอง");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "เกิดข้อผิดพลาด");
+    }
+  };
+
+  const handleOpenProfileByCustomerId = (customerId: string) => {
+    const cust = customers.find(c => c.id === customerId);
+    if (cust) {
+      setSelectedProfileCustomer(cust);
+      setProfileOpen(true);
+    } else {
+      toast.error("ไม่พบข้อมูลลูกค้าในระบบ");
+    }
+  };
+
+  const renderDiscountBadge = (coupon: CustomerCoupon) => {
+    switch (coupon.discountType) {
+      case "PERCENTAGE":
+        return <span className="font-black text-rose-600">-{coupon.discountValue}%</span>;
+      case "FREE_DELIVERY":
+        return (
+          <span className="font-black text-sky-600 flex items-center gap-1">
+            <Truck size={13} /> ฟรีค่าส่ง
+          </span>
+        );
+      case "CASH_VOUCHER":
+        return <span className="font-black text-amber-600">วอยเชอร์ ฿{coupon.discountValue}</span>;
+      case "FIXED":
+      default:
+        return <span className="font-black text-emerald-600">-฿{coupon.discountValue}</span>;
+    }
+  };
+
+  const filteredCrmCoupons = useMemo(() => {
+    return allCoupons.filter(c => {
+      if (couponBrandFilter !== "all") {
+        if (couponBrandFilter === "that_laundry_shop" && c.brand && c.brand !== "that_laundry_shop") return false;
+        if (couponBrandFilter === "noname_laundry" && c.brand !== "noname_laundry") return false;
+      }
+      if (couponStatusFilter !== "all") {
+        if (c.status !== couponStatusFilter) return false;
+      }
+      if (couponSearchQuery.trim()) {
+        const q = couponSearchQuery.trim().toLowerCase();
+        const codeMatch = c.code.toLowerCase().includes(q);
+        const nameMatch = c.name.toLowerCase().includes(q);
+        const custNameMatch = (c.customerName || "").toLowerCase().includes(q);
+        const custPhoneMatch = (c.customerPhone || "").includes(q);
+        const reasonMatch = (c.issuedReason || "").toLowerCase().includes(q);
+        if (!codeMatch && !nameMatch && !custNameMatch && !custPhoneMatch && !reasonMatch) return false;
+      }
+      return true;
+    });
+  }, [allCoupons, couponBrandFilter, couponStatusFilter, couponSearchQuery]);
+
+  const couponStats = useMemo(() => {
+    return {
+      total: allCoupons.length,
+      active: allCoupons.filter(c => c.status === "ACTIVE").length,
+      used: allCoupons.filter(c => c.status === "USED").length,
+      expiredOrVoid: allCoupons.filter(c => c.status === "EXPIRED" || c.status === "VOID").length
+    };
+  }, [allCoupons]);
+
+  const totalCouponPages = Math.max(1, Math.ceil(filteredCrmCoupons.length / couponPageSize));
+  const paginatedCrmCoupons = useMemo(() => {
+    const start = (couponPage - 1) * couponPageSize;
+    return filteredCrmCoupons.slice(start, start + couponPageSize);
+  }, [filteredCrmCoupons, couponPage, couponPageSize]);
+
   // Top Up / Adjust State
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [topUpCustomer, setTopUpCustomer] = useState<Customer | null>(null);
   const [adjustMode, setAdjustMode] = useState<"add" | "deduct">("add");
   const [topUpAmount, setTopUpAmount] = useState("");
   const [adjustReason, setAdjustReason] = useState("");
+  const [adjustExpiryDate, setAdjustExpiryDate] = useState("");
   const [adjustLoading, setAdjustLoading] = useState(false);
+
+  useEffect(() => {
+    if (topUpOpen && topUpCustomer) {
+      const d = topUpCustomer.memberExpiryDate
+        ? new Date(topUpCustomer.memberExpiryDate).toISOString().split("T")[0]
+        : "";
+      setAdjustExpiryDate(d);
+    }
+  }, [topUpOpen, topUpCustomer]);
 
   const handleTopUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -444,7 +589,7 @@ export function AdminCRM({
     
     setAdjustLoading(true);
     try {
-      await customerStore.updateCustomer(topUpCustomer.id, {
+      const updates: any = {
         creditBalance: newBalance,
         creditBalanceDelta: delta,
         walletTxType: isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT',
@@ -454,14 +599,30 @@ export function AdminCRM({
         actorId: user?.id,
         actorName: user?.name || user?.email || "Admin",
         actorRole: user?.role
-      } as any);
+      };
+
+      if (adjustExpiryDate) {
+        updates.memberExpiryDate = new Date(`${adjustExpiryDate}T23:59:59`);
+        if (!topUpCustomer.isMember) {
+          updates.isMember = true;
+        }
+      } else {
+        updates.memberExpiryDate = null;
+      }
+
+      await customerStore.updateCustomer(topUpCustomer.id, updates);
+
+      const expiryInfo = adjustExpiryDate 
+        ? ` (วันหมดอายุ: ${format(new Date(`${adjustExpiryDate}T23:59:59`), "dd/MM/yyyy")})` 
+        : "";
 
       toast.success(
-        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ฿${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือใหม่: ${formatBaht(newBalance)}${expiryInfo}`
       );
       setTopUpOpen(false);
       setTopUpAmount("");
       setAdjustReason("");
+      setAdjustExpiryDate("");
       setAdjustMode("add");
     } catch (err: any) {
       toast.error(err?.message || "เกิดข้อผิดพลาด กรุณาลองใหม่");
@@ -641,12 +802,7 @@ export function AdminCRM({
     const q = searchTerm.toLowerCase().trim();
     return duplicateGroups.filter(g => {
       if (g.normalizedPhone.includes(q)) return true;
-      return g.customers.some(c => 
-        (c.name || "").toLowerCase().includes(q) ||
-        (c.phone || "").toLowerCase().includes(q) ||
-        (c.id || "").toLowerCase().includes(q) ||
-        (c.memberId || "").toLowerCase().includes(q)
-      );
+      return g.customers.some(c => matchCustomerSearch(c, searchTerm));
     });
   }, [duplicateGroups, searchTerm]);
 
@@ -737,15 +893,9 @@ export function AdminCRM({
       }
 
       // 1. Search filter
-      const searchLower = searchTerm.toLowerCase();
-      const matchSearch = 
-        c.name.toLowerCase().includes(searchLower) || 
-        c.phone.includes(searchTerm) ||
-        (c.memberId && c.memberId.toLowerCase().includes(searchLower)) ||
-        (c.email && c.email.toLowerCase().includes(searchLower)) ||
-        (c.lineId && c.lineId.toLowerCase().includes(searchLower));
-      
-      if (!matchSearch) return false;
+      if (searchTerm.trim() && !matchCustomerSearch(c, searchTerm)) {
+        return false;
+      }
 
       // 2. Tab filter
       if (activeTab === "vip") return c.isVIP;
@@ -795,57 +945,103 @@ export function AdminCRM({
   // Customer Report Autocomplete Search
   const filteredCustomersForReport = useMemo(() => {
     if (!customerSearchQuery.trim()) return [];
-    const query = customerSearchQuery.toLowerCase().trim();
-    return customers.filter(c => 
-      c.name.toLowerCase().includes(query) || 
-      c.phone.includes(query) ||
-      (c.memberId && c.memberId.toLowerCase().includes(query))
-    );
+    return customers.filter(c => matchCustomerSearch(c, customerSearchQuery));
   }, [customerSearchQuery, customers]);
 
-  // Customer Report Jobs & Running Balance
+  // Customer Report Jobs & Running Balance (merged Jobs + Top-up Transactions)
   const customerJobsForReport = useMemo(() => {
     if (!selectedCustomerForReport) return [];
 
+    const normPhone = (p?: string | null) => (p || "").replace(/\D/g, "");
+    const custId = selectedCustomerForReport.id;
+    const custPhoneNorm = normPhone(selectedCustomerForReport.phone);
+
     // 1. Get all jobs for this customer from the entire job list (jobs)
     const rawJobs = jobs.filter(j =>
-      j.customerId === selectedCustomerForReport.id || 
-      j.customerPhone === selectedCustomerForReport.phone
-    );
+      (j.customerId && j.customerId === custId) || 
+      (j.customerPhone && custPhoneNorm && normPhone(j.customerPhone) === custPhoneNorm)
+    ).map(j => ({ ...j, isTopup: false }));
 
-    // 2. Sort from newest to oldest
-    const sorted = [...rawJobs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-    // 3. Calculate running balance backwards
-    let runningBalance = selectedCustomerForReport.creditBalance || 0;
-    
-    const mapped = sorted.map(job => {
-      // If the job already has walletBalanceAfter in DB, we use it. Otherwise compute it.
-      const hasSnapshot = job.walletBalanceAfter !== undefined && job.walletBalanceAfter !== null;
-      const displayBalance = hasSnapshot ? job.walletBalanceAfter : runningBalance;
-
-      // Adjust runningBalance backwards for the next (older) step
-      const isTopup = job.status === "topup" && job.isPaid;
-      const isCreditPayment = (job.paymentChannel === "credit" || job.paymentMethod === "credit") && job.isPaid;
-
-      if (isTopup) {
-        // This transaction increased the wallet, so going backward, the balance was lower
-        runningBalance -= (job.totalAmount || job.fee || 0);
-      } else if (isCreditPayment) {
-        // This transaction decreased the wallet, so going backward, the balance was higher
-        runningBalance += (job.totalAmount || job.fee || 0);
-      }
-
+    // 2. Get all top-up transactions for this customer from allTopUpTxs
+    const customerTopups = allTopUpTxs.filter(tx => {
+      const matchId = (tx.memberId && tx.memberId === custId) ||
+                      (tx.Customer?.id && tx.Customer.id === custId);
+      const matchPhone = tx.Customer?.phone && custPhoneNorm && 
+                         normPhone(tx.Customer.phone) === custPhoneNorm;
+      return matchId || matchPhone;
+    }).map(tx => {
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
       return {
-        ...job,
-        displayWalletBalance: displayBalance,
-        isWalletAffecting: isTopup || isCreditPayment
+        id: tx.id,
+        createdAt: tx.createdAt,
+        status: "topup",
+        isPaid: true,
+        isTopup: true,
+        type: "topup",
+        totalAmount: Number(tx.totalCredit) || Number(tx.amount) || 0,
+        paidAmount: Number(tx.amount) || 0,
+        bonusAmount: Number(tx.bonusAmount) || 0,
+        paymentChannel: tx.paymentChannel || meta.paymentChannel || "Transfer",
+        walletBalanceAfter: tx.balanceAfter != null ? Number(tx.balanceAfter) : (meta.balanceAfter != null ? Number(meta.balanceAfter) : null),
+        walletBalanceBefore: tx.balanceBefore != null ? Number(tx.balanceBefore) : (meta.balanceBefore != null ? Number(meta.balanceBefore) : null),
+        packageName: tx.packageName || meta.packageName || "Top Up",
+        slipImageUrl: tx.slipImageUrl || meta.slipImageUrl || null,
+        receiptData: tx.receiptData || meta.receiptData || null,
+        branchId: tx.branchId || meta.branchId || null,
+        items: [{ name: `TOPUP (${tx.packageName || meta.packageName || "Member Package"})`, quantity: 1 }],
+        rawTx: tx,
       };
     });
 
-    // 4. Finally, filter by the selected date range, branch, and showOnlyTopup filter
+    // 3. Sort from newest to oldest
+    const sorted = [...rawJobs, ...customerTopups].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    // 4. Calculate running balance backwards
+    let runningBalance = selectedCustomerForReport.creditBalance || 0;
+    
+    const mapped = (sorted as any[]).map((item: any) => {
+      const isTopup = item.isTopup || item.status === "topup";
+      const channelStr = (item.paymentChannel || item.paymentMethod || "").toLowerCase();
+      const isDeduct = !isTopup && item.isPaid && (
+        channelStr.includes("deduct") ||
+        channelStr.includes("credit") ||
+        channelStr.includes("member")
+      );
+
+      const hasSnapshot = item.walletBalanceAfter !== undefined && item.walletBalanceAfter !== null;
+      const displayBalance = hasSnapshot ? Number(item.walletBalanceAfter) : (isTopup || isDeduct ? runningBalance : null);
+      const itemCost = Number(item.totalAmount) || Number(item.fee) || 0;
+
+      // Adjust runningBalance backwards for the next (older) step
+      if (hasSnapshot) {
+        if (isTopup) {
+          runningBalance = item.walletBalanceBefore != null ? Number(item.walletBalanceBefore) : (Number(item.walletBalanceAfter) - itemCost);
+        } else if (isDeduct) {
+          runningBalance = Number(item.walletBalanceAfter) + itemCost;
+        } else {
+          runningBalance = Number(item.walletBalanceAfter);
+        }
+      } else {
+        if (isTopup) {
+          runningBalance -= itemCost;
+        } else if (isDeduct) {
+          runningBalance += itemCost;
+        }
+      }
+
+      return {
+        ...item,
+        displayWalletBalance: displayBalance,
+        isWalletAffecting: isTopup || isDeduct
+      };
+    });
+
+    // 5. Finally, filter by the selected date range, branch, and showOnlyTopup filter
     const filteredMapped = mapped.filter(job => {
-      if (reportBranchFilter !== "all" && job.branchId !== reportBranchFilter) return false;
+      if (reportBranchFilter !== "all" && job.branchId && job.branchId !== reportBranchFilter) return false;
       if (!job.createdAt) return false;
       const jobDate = new Date(job.createdAt);
       const today = new Date();
@@ -878,7 +1074,7 @@ export function AdminCRM({
     });
 
     return filteredMapped;
-  }, [selectedCustomerForReport, jobs, reportBranchFilter, reportDateRange, reportCustomStartDate, reportCustomEndDate, showOnlyTopup]);
+  }, [selectedCustomerForReport, jobs, allTopUpTxs, reportBranchFilter, reportDateRange, reportCustomStartDate, reportCustomEndDate, showOnlyTopup]);
 
   const handleExportCustomerStatement = () => {
     if (!selectedCustomerForReport) return;
@@ -1008,8 +1204,8 @@ export function AdminCRM({
           </div>
           <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Credit Wallet Balance</p>
           <div className="flex items-baseline gap-2">
-            <h3 className="text-3xl font-black text-emerald-600">
-              ฿{totalCreditBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            <h3 className={`text-3xl font-black ${totalCreditBalance < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+              {formatBaht(totalCreditBalance)}
             </h3>
           </div>
           <p className="text-xs text-slate-500 mt-3 font-medium">
@@ -1197,11 +1393,30 @@ export function AdminCRM({
                 )}
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setActiveTab("coupons")}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                activeTab === "coupons"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Ticket size={14} className={activeTab === "coupons" ? "text-white" : "text-indigo-600"} />
+              <span>คูปองลูกค้า</span>
+              {allCoupons.length > 0 && (
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
+                  activeTab === "coupons" ? "bg-white text-indigo-700" : "bg-indigo-100 text-indigo-800"
+                }`}>
+                  {allCoupons.length}
+                </span>
+              )}
+            </button>
           </div>
           </div>
 
-          {/* Search bar inside the bar (shown when not on customer report or wallet approvals) */}
-          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && (
+          {/* Search bar inside the bar (shown when not on customer report, wallet approvals, or coupons) */}
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "coupons" && (
             <div className="relative w-full lg:w-80">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <Input 
@@ -1257,7 +1472,9 @@ export function AdminCRM({
                           <span className="text-[10px] text-slate-400 font-medium">{c.phone}</span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="text-[11px] font-bold text-emerald-600">฿{(c.creditBalance || 0).toLocaleString()}</span>
+                          <span className={`text-[11px] font-bold ${(c.creditBalance || 0) < 0 ? "text-rose-600 font-extrabold" : "text-emerald-600"}`}>
+                            {formatBaht(c.creditBalance || 0)}
+                          </span>
                           {c.isMember && c.memberId && (
                             <span className="bg-indigo-50 text-indigo-700 text-[8px] font-bold px-1.5 py-0.5 rounded border border-indigo-200/50">
                               MEMBER: {c.memberId}
@@ -1397,21 +1614,11 @@ export function AdminCRM({
                     )}
                   </div>
 
-                  <div className="flex items-center gap-8 text-center shrink-0">
-                    <div className="space-y-1">
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Spend (LTV)</p>
-                      <p className="text-lg font-black text-slate-900">
-                        ฿{jobs.filter(j => j.customerId === selectedCustomerForReport.id || j.customerPhone === selectedCustomerForReport.phone)
-                          .filter(j => j.isPaid || j.status === "completed")
-                          .reduce((sum, j) => sum + (j.totalAmount || j.fee || 0), 0)
-                          .toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="w-px bg-slate-200 h-8" />
-                    <div className="space-y-1">
+                  <div className="flex items-center gap-6 text-center shrink-0">
+                    <div className="space-y-1 text-right">
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Wallet Balance</p>
-                      <p className="text-lg font-black text-emerald-600">
-                        ฿{(selectedCustomerForReport.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      <p className={`text-lg font-black ${(selectedCustomerForReport.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                        {formatBaht(selectedCustomerForReport.creditBalance || 0)}
                       </p>
                     </div>
                     <button
@@ -1458,41 +1665,78 @@ export function AdminCRM({
                               <td className="py-3">
                                 <span className="font-bold text-slate-800">
                                   {job.status === "topup" ? (
-                                    <span className="text-indigo-600 font-extrabold uppercase flex items-center gap-1">
-                                      <Crown size={12} /> TOPUP MEMBER
+                                    <span className="text-emerald-700 font-extrabold uppercase flex items-center gap-1.5">
+                                      <Crown size={13} className="text-amber-500 fill-amber-400 shrink-0" />
+                                      <span>Topup ({job.packageName || "Member Package"})</span>
                                     </span>
                                   ) : (
                                     (job.items || []).map((it: any) => `${it.name} (x${it.quantity})`).join(", ") || "Laundry Order"
                                   )}
                                 </span>
                               </td>
-                              <td className="py-3 text-right font-black text-slate-900">
-                                ฿{(job.totalAmount || job.fee || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                              <td className="py-3 text-right">
+                                {job.status === "topup" ? (
+                                  <div>
+                                    <span className="font-black text-emerald-600">
+                                      +฿{(job.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                                    </span>
+                                    {job.bonusAmount > 0 && (
+                                      <span className="block text-[9px] font-bold text-amber-600">
+                                        (Bonus +฿{job.bonusAmount.toLocaleString()})
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="font-black text-slate-900">
+                                    ฿{(job.totalAmount || job.fee || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                                  </span>
+                                )}
                               </td>
                               <td className="py-3 text-center font-bold text-slate-500 text-[10px] uppercase">
                                 {(() => {
+                                  if (job.status === "topup") {
+                                    return job.paymentChannel || "Transfer";
+                                  }
                                   const ch = job.paymentChannel || job.paymentMethod || "-";
-                                  if (ch.toLowerCase() === "credit") return "Deduct Member";
+                                  if (ch.toLowerCase().includes("deduct") || ch.toLowerCase().includes("credit") || ch.toLowerCase().includes("member")) {
+                                    return "Deduct Member";
+                                  }
                                   if (ch.toLowerCase() === "card") return "Credit Card";
                                   return ch;
                                 })()}
                               </td>
-                              <td className="py-3 text-right font-black text-slate-900">
-                                {job.isWalletAffecting ? `฿${(job.displayWalletBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` : "-"}
+                              <td className="py-3 text-right font-black">
+                                {job.isWalletAffecting ? (
+                                  <span className={(job.displayWalletBalance || 0) < 0 ? "text-rose-600 font-black" : job.status === "topup" ? "text-emerald-600 font-black" : "text-slate-900 font-black"}>
+                                    {formatBaht(job.displayWalletBalance || 0)}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">-</span>
+                                )}
                               </td>
                               <td className="py-3 text-center">
                                 <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
-                                  job.status === "completed" ? "bg-emerald-100 text-emerald-800" : (job.status === "topup" ? "bg-indigo-100 text-indigo-800" : "bg-indigo-50 text-indigo-600")
+                                  job.status === "topup" ? "bg-emerald-100 text-emerald-800" : (job.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-indigo-50 text-indigo-600")
                                 }`}>
-                                  {job.status}
+                                  {job.status === "topup" ? "TOPUP" : job.status}
                                 </span>
                               </td>
                               <td className="py-3 text-right pr-2">
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (onViewJob) onViewJob(job);
-                                    else setSelectedJobForView(job);
+                                    if (job.status === "topup") {
+                                      if (job.slipImageUrl) {
+                                        setPreviewSlipUrl(job.slipImageUrl);
+                                        setPreviewSlipTitle(`${selectedCustomerForReport.name} — ${job.id}`);
+                                        setPreviewSlipModalOpen(true);
+                                      } else {
+                                        toast.info("ไม่มีรูปสลิปสำหรับรายการนี้ (No slip image attached)");
+                                      }
+                                    } else {
+                                      if (onViewJob) onViewJob(job);
+                                      else setSelectedJobForView(job);
+                                    }
                                   }}
                                   className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-black uppercase flex items-center gap-1 ml-auto cursor-pointer transition-colors"
                                 >
@@ -1547,7 +1791,9 @@ export function AdminCRM({
                         <div className="flex items-center gap-4">
                           <div className="text-right">
                             <p className="text-[10px] text-slate-400 font-semibold">Balance</p>
-                            <p className="text-xs font-extrabold text-emerald-600">฿{(c.creditBalance || 0).toLocaleString()}</p>
+                            <p className={`text-xs font-extrabold ${(c.creditBalance || 0) < 0 ? "text-rose-600 font-black" : "text-emerald-600"}`}>
+                              {formatBaht(c.creditBalance || 0)}
+                            </p>
                           </div>
                           <Button
                             size="sm"
@@ -1927,8 +2173,8 @@ export function AdminCRM({
 
                                   <div className="text-left md:text-right">
                                     <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Wallet</p>
-                                    <p className={`text-xs font-black ${(c.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"}`}>
-                                      ฿{(c.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                    <p className={`text-xs font-black ${(c.creditBalance || 0) < 0 ? "text-rose-600 font-black" : (c.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"}`}>
+                                      {formatBaht(c.creditBalance || 0)}
                                     </p>
                                   </div>
                                 </div>
@@ -1995,6 +2241,403 @@ export function AdminCRM({
               )}
             </div>
           )
+        ) : activeTab === "coupons" ? (
+          <div className="p-5 sm:p-6 space-y-6">
+            {/* 1. Header & Quick Stat Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">คูปองทั้งหมด (Total)</p>
+                  <h3 className="text-2xl font-black text-slate-800 mt-1">{couponStats.total}</h3>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
+                  <Ticket size={20} />
+                </div>
+              </div>
+
+              <div className="bg-emerald-50/50 border border-emerald-200/80 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-600">พร้อมใช้งาน (Active)</p>
+                  <h3 className="text-2xl font-black text-emerald-700 mt-1">{couponStats.active}</h3>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-emerald-100/70 border border-emerald-200 flex items-center justify-center text-emerald-600">
+                  <Sparkles size={20} />
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">ใช้งานแล้ว (Used)</p>
+                  <h3 className="text-2xl font-black text-slate-700 mt-1">{couponStats.used}</h3>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-slate-200/70 border border-slate-300 flex items-center justify-center text-slate-600">
+                  <CheckCircle2 size={20} />
+                </div>
+              </div>
+
+              <div className="bg-amber-50/50 border border-amber-200/80 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-600">หมดอายุ / ยกเลิก</p>
+                  <h3 className="text-2xl font-black text-amber-700 mt-1">{couponStats.expiredOrVoid}</h3>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-amber-100/70 border border-amber-200 flex items-center justify-center text-amber-600">
+                  <Clock size={20} />
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Controls & Search Bar */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-50/70 p-4 rounded-xl border border-slate-200/80">
+              <div className="flex flex-wrap items-center gap-2 flex-1">
+                {/* Search */}
+                <div className="relative min-w-[240px] flex-1 max-w-sm">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    placeholder="ค้นหาโค้ด, ชื่อลูกค้า, เบอร์โทร, เหตุผล..."
+                    value={couponSearchQuery}
+                    onChange={(e) => {
+                      setCouponSearchQuery(e.target.value);
+                      setCouponPage(1);
+                    }}
+                    className="pl-9 h-9 text-xs bg-white rounded-xl border-slate-200"
+                  />
+                  {couponSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setCouponSearchQuery("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Status Filter */}
+                <select
+                  value={couponStatusFilter}
+                  onChange={(e) => {
+                    setCouponStatusFilter(e.target.value as any);
+                    setCouponPage(1);
+                  }}
+                  className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
+                >
+                  <option value="all">สถานะทั้งหมด ({allCoupons.length})</option>
+                  <option value="ACTIVE">พร้อมใช้งาน ({allCoupons.filter(c => c.status === "ACTIVE").length})</option>
+                  <option value="USED">ใช้งานแล้ว ({allCoupons.filter(c => c.status === "USED").length})</option>
+                  <option value="EXPIRED">หมดอายุ ({allCoupons.filter(c => c.status === "EXPIRED").length})</option>
+                  <option value="VOID">ยกเลิก ({allCoupons.filter(c => c.status === "VOID").length})</option>
+                </select>
+
+                {/* Brand Filter */}
+                <select
+                  value={couponBrandFilter}
+                  onChange={(e) => {
+                    setCouponBrandFilter(e.target.value as any);
+                    setCouponPage(1);
+                  }}
+                  className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
+                >
+                  <option value="all">ทุกแบรนด์ (All Brands)</option>
+                  <option value="that_laundry_shop">That Laundry Shop (TLS)</option>
+                  <option value="noname_laundry">Noname Laundry</option>
+                </select>
+              </div>
+
+              {/* Action: + Issue Coupon Button */}
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  type="button"
+                  onClick={() => setCrmIssueCouponModalOpen(true)}
+                  className="h-9 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Plus size={15} />
+                  <span>+ แจกคูปองให้ลูกค้า</span>
+                </Button>
+              </div>
+            </div>
+
+            {/* 3. Table */}
+            <div className="border border-slate-200/90 rounded-2xl overflow-hidden bg-white shadow-2xs">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-slate-50/80 hover:bg-slate-50/80 border-b border-slate-200">
+                    <TableHead className="py-3.5 pl-6 font-bold text-xs text-slate-600 uppercase">รหัสคูปอง & สิทธิประโยชน์</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">ชื่อคูปอง</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">ลูกค้าผู้ถือสิทธิ์</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">เงื่อนไข</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">วันหมดอายุ</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase text-center">สถานะ</TableHead>
+                    <TableHead className="py-3.5 pr-6 font-bold text-xs text-slate-600 uppercase text-right">จัดการ</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isLoadingAllCoupons ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="h-44 text-center">
+                        <div className="flex flex-col items-center justify-center gap-2 text-indigo-600">
+                          <Loader2 size={24} className="animate-spin" />
+                          <span className="text-xs font-bold text-slate-500">กำลังโหลดรายการคูปอง...</span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : filteredCrmCoupons.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="h-44 text-center">
+                        <div className="flex flex-col items-center justify-center gap-2 text-slate-400">
+                          <Ticket size={32} className="text-slate-300" />
+                          <p className="font-bold text-sm text-slate-600">ไม่พบคูปองที่ตรงกับเงื่อนไขการค้นหา</p>
+                          <p className="text-xs text-slate-400">ลองเปลี่ยนคำค้นหา หรือกดปุ่ม "แจกคูปองให้ลูกค้า" เพื่อออกคูปองใหม่</p>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => setCrmIssueCouponModalOpen(true)}
+                            className="mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl h-8 px-3.5 gap-1.5 cursor-pointer"
+                          >
+                            <Plus size={13} /> + แจกคูปองใหม่
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    paginatedCrmCoupons.map((coupon) => {
+                      const isActive = coupon.status === "ACTIVE";
+                      const isUsed = coupon.status === "USED";
+                      const isExpired = coupon.status === "EXPIRED";
+                      const isVoid = coupon.status === "VOID";
+
+                      return (
+                        <TableRow key={coupon.id} className="hover:bg-slate-50/60 transition-colors border-b border-slate-100">
+                          {/* Code & Discount */}
+                          <TableCell className="pl-6 py-4">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shrink-0">
+                                <Ticket size={16} />
+                              </div>
+                              <div className="space-y-0.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-mono font-black text-xs text-slate-800 tracking-wider bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                    {coupon.code}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyCouponCode(coupon)}
+                                    className="text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer p-0.5"
+                                    title="คัดลอกรหัส"
+                                  >
+                                    {copiedCouponId === coupon.id ? (
+                                      <Check size={13} className="text-emerald-600" />
+                                    ) : (
+                                      <Copy size={13} />
+                                    )}
+                                  </button>
+                                </div>
+                                <div className="text-xs font-black">
+                                  {renderDiscountBadge(coupon)}
+                                </div>
+                              </div>
+                            </div>
+                          </TableCell>
+
+                          {/* Name & Details */}
+                          <TableCell className="py-4">
+                            <div className="space-y-0.5 max-w-[220px]">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-slate-800 text-xs truncate">
+                                  {coupon.name}
+                                </span>
+                                {coupon.brand && (
+                                  <Badge variant="outline" className="text-[9px] font-bold py-0 h-4 border-slate-200 text-slate-500">
+                                    {coupon.brand === "that_laundry_shop" ? "TLS" : "NoName"}
+                                  </Badge>
+                                )}
+                              </div>
+                              {coupon.description && (
+                                <p className="text-[11px] text-slate-400 line-clamp-1">{coupon.description}</p>
+                              )}
+                              {coupon.issuedReason && (
+                                <p className="text-[10px] text-slate-400 italic">เหตุผล: {coupon.issuedReason}</p>
+                              )}
+                            </div>
+                          </TableCell>
+
+                          {/* Customer Info */}
+                          <TableCell className="py-4">
+                            <div className="space-y-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenProfileByCustomerId(coupon.customerId)}
+                                className="font-bold text-xs text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer text-left block truncate max-w-[180px]"
+                                title="คลิกเพื่อดูโปรไฟล์ลูกค้า"
+                              >
+                                {coupon.customerName || "—"}
+                              </button>
+                              <div className="text-[11px] text-slate-400 font-mono">
+                                {coupon.customerPhone || "—"}
+                              </div>
+                            </div>
+                          </TableCell>
+
+                          {/* Conditions */}
+                          <TableCell className="py-4 text-xs text-slate-600">
+                            <div className="space-y-0.5 text-[11px]">
+                              <div>
+                                {coupon.minOrderAmount && coupon.minOrderAmount > 0 ? (
+                                  <span>ขั้นต่ำ: <strong>฿{coupon.minOrderAmount.toLocaleString()}</strong></span>
+                                ) : (
+                                  <span className="text-slate-400">ไม่มีขั้นต่ำ</span>
+                                )}
+                              </div>
+                              {coupon.maxDiscount && coupon.maxDiscount > 0 && (
+                                <div className="text-slate-500">
+                                  ลดสูงสุด: <strong>฿{coupon.maxDiscount.toLocaleString()}</strong>
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+
+                          {/* Validity */}
+                          <TableCell className="py-4 text-xs text-slate-600">
+                            <div className="space-y-0.5 text-[11px]">
+                              {coupon.expiryDate ? (
+                                <div>
+                                  <span className="font-medium">{format(new Date(coupon.expiryDate), "dd/MM/yyyy")}</span>
+                                  {isActive && (
+                                    <div className="text-[10px] text-emerald-600 font-semibold">
+                                      เหลืออีก {Math.max(0, Math.ceil((new Date(coupon.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))} วัน
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400">ไม่มีวันหมดอายุ</span>
+                              )}
+                              <div className="text-[10px] text-slate-400">
+                                ออกเมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt), "dd/MM/yyyy")}
+                              </div>
+                            </div>
+                          </TableCell>
+
+                          {/* Status */}
+                          <TableCell className="py-4 text-center">
+                            {isActive && (
+                              <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 font-bold text-[10px]">
+                                พร้อมใช้งาน
+                              </Badge>
+                            )}
+                            {isUsed && (
+                              <div className="space-y-0.5">
+                                <Badge className="bg-slate-100 text-slate-700 border-slate-200 font-bold text-[10px]">
+                                  ใช้แล้ว
+                                </Badge>
+                                {coupon.usedAt && (
+                                  <div className="text-[10px] text-slate-400 font-medium">
+                                    {format(new Date(coupon.usedAt), "dd/MM/yy")}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {isExpired && (
+                              <Badge className="bg-amber-100 text-amber-800 border-amber-200 font-bold text-[10px]">
+                                หมดอายุ
+                              </Badge>
+                            )}
+                            {isVoid && (
+                              <Badge className="bg-rose-100 text-rose-800 border-rose-200 font-bold text-[10px]">
+                                ยกเลิก
+                              </Badge>
+                            )}
+                          </TableCell>
+
+                          {/* Actions */}
+                          <TableCell className="pr-6 py-4 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer"
+                                title="คัดลอกรหัสคูปอง"
+                                onClick={() => handleCopyCouponCode(coupon)}
+                              >
+                                {copiedCouponId === coupon.id ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
+                              </Button>
+
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer"
+                                title="ดูโปรไฟล์ลูกค้า"
+                                onClick={() => handleOpenProfileByCustomerId(coupon.customerId)}
+                              >
+                                <Eye size={13} />
+                              </Button>
+
+                              {isActive && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                                  title="ยกเลิกคูปอง (Void)"
+                                  onClick={() => handleVoidCrmCoupon(coupon)}
+                                >
+                                  <Ban size={13} />
+                                </Button>
+                              )}
+
+                              {isAdmin && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-slate-400 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer"
+                                  title="ลบคูปองถาวร"
+                                  onClick={() => handleDeleteCrmCoupon(coupon)}
+                                >
+                                  <Trash2 size={13} />
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            {/* Pagination Controls for Coupons */}
+            {totalCouponPages > 1 && (
+              <div className="flex items-center justify-between pt-2">
+                <p className="text-xs text-slate-500 font-medium">
+                  แสดงหน้า <span className="font-bold text-slate-800">{couponPage}</span> จาก <span className="font-bold text-slate-800">{totalCouponPages}</span> ({filteredCrmCoupons.length} รายการ)
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={couponPage <= 1}
+                    onClick={() => setCouponPage(p => Math.max(1, p - 1))}
+                    className="h-8 text-xs font-bold rounded-lg cursor-pointer"
+                  >
+                    ก่อนหน้า
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={couponPage >= totalCouponPages}
+                    onClick={() => setCouponPage(p => Math.min(totalCouponPages, p + 1))}
+                    className="h-8 text-xs font-bold rounded-lg cursor-pointer"
+                  >
+                    ถัดไป
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <Table>
@@ -2126,11 +2769,13 @@ export function AdminCRM({
                               <div className="flex items-center gap-1">
                                 <Wallet size={12} className={customer.isMember && isWalletExpired(customer) ? "text-rose-400" : "text-slate-400"} />
                                 <span className={`text-xs font-bold ${
-                                  customer.isMember && isWalletExpired(customer)
-                                    ? "text-rose-600"
-                                    : (customer.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"
+                                  (customer.creditBalance || 0) < 0
+                                    ? "text-rose-600 font-extrabold"
+                                    : customer.isMember && isWalletExpired(customer)
+                                      ? "text-rose-600"
+                                      : (customer.creditBalance || 0) > 0 ? "text-emerald-600" : "text-slate-400"
                                 }`}>
-                                  ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                  {formatBaht(customer.creditBalance || 0)}
                                 </span>
                                 {pendingWalletMap.byCustomer[customer.id] > 0 && (
                                   <span className="text-[9px] font-bold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded-full ml-1">
@@ -2303,7 +2948,7 @@ export function AdminCRM({
         )}
 
         {/* Pagination Controls */}
-        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && totalItems > 0 && (
+        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "coupons" && totalItems > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>
@@ -2404,12 +3049,12 @@ export function AdminCRM({
               </DialogDescription>
             </DialogHeader>
 
-            <div className="p-6 space-y-5">
+            <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
               {/* Current Balance */}
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Balance</span>
-                <span className="text-2xl font-black text-slate-900">
-                  ฿{(topUpCustomer?.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                <span className={`text-2xl font-black ${(topUpCustomer?.creditBalance || 0) < 0 ? "text-rose-600" : "text-slate-900"}`}>
+                  {formatBaht(topUpCustomer?.creditBalance || 0)}
                 </span>
               </div>
 
@@ -2499,6 +3144,44 @@ export function AdminCRM({
                 )}
               </div>
 
+              {/* Member Expiry Date Input */}
+              <div className="space-y-2 p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <Calendar size={14} className="text-indigo-600" />
+                    <span>วันหมดอายุสมาชิก (Member Expiry Date)</span>
+                  </Label>
+                  {topUpCustomer?.memberExpiryDate && (
+                    <span className="text-[11px] text-slate-500">
+                      เดิม: <strong className={new Date(topUpCustomer.memberExpiryDate).getTime() < Date.now() ? "text-rose-600 font-bold" : "text-emerald-700 font-bold"}>
+                        {format(new Date(topUpCustomer.memberExpiryDate), "dd/MM/yyyy")}
+                      </strong>
+                    </span>
+                  )}
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  <Input 
+                    type="date"
+                    value={adjustExpiryDate}
+                    onChange={e => setAdjustExpiryDate(e.target.value)}
+                    className="h-10 text-xs font-semibold rounded-xl bg-white border-slate-200 text-slate-900"
+                  />
+                  {adjustExpiryDate && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setAdjustExpiryDate("")}
+                      className="h-10 px-3 text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 border-slate-200 rounded-xl cursor-pointer"
+                      title="ล้างวันหมดอายุ"
+                    >
+                      ล้าง
+                    </Button>
+                  )}
+                </div>
+              </div>
+
               {/* Live Preview Box */}
               {(() => {
                 const raw = parseFloat(topUpAmount);
@@ -2514,7 +3197,7 @@ export function AdminCRM({
                     <div className="flex justify-between items-center text-xs font-semibold">
                       <span>ยอดหลังปรับปรุง (New Balance):</span>
                       <span className={`text-base font-black ${projected < 0 ? "text-rose-600" : ""}`}>
-                        ฿{projected.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {formatBaht(projected)}
                       </span>
                     </div>
                   </div>
@@ -2930,7 +3613,9 @@ export function AdminCRM({
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Wallet Balance:</span>
-                      <span className="font-bold text-emerald-700">฿{(mergeDuplicateCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      <span className={`font-bold ${(mergeDuplicateCustomer.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-700"}`}>
+                        {formatBaht(mergeDuplicateCustomer.creditBalance || 0)}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Delivery Addresses:</span>
@@ -2963,9 +3648,14 @@ export function AdminCRM({
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Combined Wallet Balance:</span>
-                      <span className="font-bold text-emerald-700">
-                        ฿{((mergePrimaryCustomer.creditBalance || 0) + (mergeDuplicateCustomer.creditBalance || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </span>
+                      {(() => {
+                        const comb = (mergePrimaryCustomer.creditBalance || 0) + (mergeDuplicateCustomer.creditBalance || 0);
+                        return (
+                          <span className={`font-bold ${comb < 0 ? "text-rose-600" : "text-emerald-700"}`}>
+                            {formatBaht(comb)}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Delivery Addresses:</span>
@@ -3079,6 +3769,15 @@ export function AdminCRM({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* CRM Issue Coupon Modal */}
+      {crmIssueCouponModalOpen && (
+        <AdminIssueCouponDialog
+          open={crmIssueCouponModalOpen}
+          onOpenChange={setCrmIssueCouponModalOpen}
+          onSuccess={() => fetchCrmCoupons()}
+        />
+      )}
     </div>
   );
 }

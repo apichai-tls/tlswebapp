@@ -8,7 +8,7 @@ import { Printer, X, Loader2, Wallet } from "lucide-react";
 import { ReceiptData, ReceiptItem, getCategoryDisplayName, resolveItemCategory, CATEGORY_ORDER } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { getTransportFeeBreakdown, safeCeil, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber, formatBaht } from "@/lib/utils";
 
 import { customerStore, serviceStore } from "@/lib/store";
 
@@ -973,7 +973,11 @@ export function A5ReceiptContent({
           {/* Member Remaining Balance — on Receipt when customer is a Member */}
           {!receiptData.isDraft && isMember && (
             <div
-              className={`flex items-center justify-between border border-indigo-200 bg-indigo-50/70 shrink-0 ${
+              className={`flex items-center justify-between border shrink-0 ${
+                walletBalance < 0
+                  ? "border-rose-300 bg-rose-50/80 text-rose-900"
+                  : "border-indigo-200 bg-indigo-50/70 text-indigo-900"
+              } ${
                 isUltraCompact
                   ? "p-1 mb-1 gap-2 rounded-lg"
                   : isCompact
@@ -983,7 +987,11 @@ export function A5ReceiptContent({
             >
               <div className="flex items-center gap-2">
                 <div
-                  className={`bg-indigo-100 text-indigo-600 rounded-lg shrink-0 ${
+                  className={`rounded-lg shrink-0 ${
+                    walletBalance < 0
+                      ? "bg-rose-100 text-rose-600"
+                      : "bg-indigo-100 text-indigo-600"
+                  } ${
                     isUltraCompact ? "p-1" : isCompact ? "p-1.5" : "p-1.5"
                   }`}
                 >
@@ -991,14 +999,18 @@ export function A5ReceiptContent({
                 </div>
                 <div>
                   <p
-                    className={`font-bold text-indigo-900 uppercase tracking-wider leading-tight ${
+                    className={`font-bold uppercase tracking-wider leading-tight ${
+                      walletBalance < 0 ? "text-rose-900" : "text-indigo-900"
+                    } ${
                       isUltraCompact ? "text-[8.5px]" : "text-[9.5px]"
                     }`}
                   >
                     {currentLanguage === "en" ? "Member Remaining Balance" : "ยอดเงินคงเหลือในกระเป๋าสมาชิก (Wallet)"}
                   </p>
                   <p
-                    className={`text-neutral-500 font-medium leading-tight ${
+                    className={`font-medium leading-tight ${
+                      walletBalance < 0 ? "text-rose-600" : "text-neutral-500"
+                    } ${
                       isUltraCompact ? "text-[7.5px]" : "text-[8.5px]"
                     }`}
                   >
@@ -1008,11 +1020,13 @@ export function A5ReceiptContent({
               </div>
               <div className="text-right">
                 <span
-                  className={`font-mono font-black text-indigo-950 ${
+                  className={`font-mono font-black ${
+                    walletBalance < 0 ? "text-rose-600" : "text-indigo-950"
+                  } ${
                     isUltraCompact ? "text-xs" : isCompact ? "text-[13px]" : "text-sm"
                   }`}
                 >
-                  ฿{formatCurrency(walletBalance)}
+                  {formatBaht(walletBalance)}
                 </span>
               </div>
             </div>

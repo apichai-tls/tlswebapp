@@ -44,7 +44,7 @@ import {
   customerStore, 
   jobStore 
 } from "@/lib/store";
-import { formatCurrency, formatJobDisplayId } from "@/lib/utils";
+import { formatCurrency, formatJobDisplayId, formatBaht } from "@/lib/utils";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 
@@ -923,10 +923,10 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                       {/* Balance Before -> After */}
                       <TableCell className="py-3.5 text-center text-xs font-mono text-slate-500">
                         <div className="inline-flex items-center gap-1 bg-slate-50 dark:bg-slate-800 px-2 py-1 rounded-lg border border-slate-100 dark:border-slate-700 text-[11px]">
-                          <span>฿{formatCurrency(tx.balanceBefore)}</span>
+                          <span className={(tx.balanceBefore || 0) < 0 ? "text-rose-600 font-bold" : ""}>{formatBaht(tx.balanceBefore)}</span>
                           <span className="text-slate-300">→</span>
-                          <span className="font-bold text-slate-800 dark:text-slate-200">
-                            ฿{formatCurrency(tx.balanceAfter)}
+                          <span className={`font-bold ${(tx.balanceAfter || 0) < 0 ? "text-rose-600 font-extrabold" : "text-slate-800 dark:text-slate-200"}`}>
+                            {formatBaht(tx.balanceAfter)}
                           </span>
                         </div>
                       </TableCell>
@@ -1398,9 +1398,9 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                     <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
                       <span className="text-slate-500">ยอดคงเหลือ Wallet:</span>
                       <div className="inline-flex items-center gap-1 font-mono font-semibold">
-                        <span>฿{formatCurrency(inspectTx.balanceBefore)}</span>
+                        <span className={(inspectTx.balanceBefore || 0) < 0 ? "text-rose-600 font-bold" : ""}>{formatBaht(inspectTx.balanceBefore)}</span>
                         <span className="text-slate-300">→</span>
-                        <span className="font-bold text-slate-900 dark:text-slate-100">฿{formatCurrency(inspectTx.balanceAfter)}</span>
+                        <span className={`font-bold ${(inspectTx.balanceAfter || 0) < 0 ? "text-rose-600 font-extrabold" : "text-slate-900 dark:text-slate-100"}`}>{formatBaht(inspectTx.balanceAfter)}</span>
                       </div>
                     </div>
                   </div>

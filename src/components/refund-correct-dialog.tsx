@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, customerStore, type Job, type Customer } from "@/lib/store";
 import { api } from "@/lib/api";
+import { formatBaht } from "@/lib/utils";
 
 interface RefundCorrectDialogProps {
   open: boolean;
@@ -263,8 +264,8 @@ export function RefundCorrectDialog({ open, onClose, job, onSuccess }: RefundCor
                   <Wallet size={12} className="text-emerald-600" />
                   <span>Member Wallet</span>
                 </div>
-                <div className="text-[10px] text-slate-500 mt-0.5">
-                  {customer ? `คงเหลือ ฿${formatCurrency(customer.creditBalance || 0)}` : "ไม่ใช่ Member"}
+                <div className={`text-[10px] mt-0.5 ${customer && (customer.creditBalance || 0) < 0 ? "text-rose-600 font-bold" : "text-slate-500"}`}>
+                  {customer ? `คงเหลือ ${formatBaht(customer.creditBalance || 0)}` : "ไม่ใช่ Member"}
                 </div>
               </button>
 

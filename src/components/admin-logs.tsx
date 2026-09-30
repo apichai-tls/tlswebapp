@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { diagnoseJobAction, resolveJobDiscrepancyAction } from "@/actions/db";
 import { toast } from "sonner";
+import { formatBaht } from "@/lib/utils";
 
 interface ActivityLog {
   id: string;
@@ -203,7 +204,7 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
               {balBefore !== undefined && balAfter !== undefined && (
                 <div className="col-span-full pt-2 mt-1 border-t border-emerald-200/60 text-xs text-slate-700 flex flex-wrap items-center justify-between gap-2">
                   <span>
-                    ยอดก่อนเติม: <strong className="font-mono text-slate-600">฿{balBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> → <strong className="font-mono text-emerald-800 font-bold">ยอดคงเหลือใหม่: ฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+                    ยอดก่อนเติม: <strong className={`font-mono ${balBefore < 0 ? 'text-rose-600 font-bold' : 'text-slate-600'}`}>{formatBaht(balBefore)}</strong> → <strong className={`font-mono font-bold ${balAfter < 0 ? 'text-rose-600' : 'text-emerald-800'}`}>ยอดคงเหลือใหม่: {formatBaht(balAfter)}</strong>
                   </span>
                   <span className="text-slate-500 font-medium text-[11px]">
                     ช่องทาง: {parsed.paymentChannel || 'Transfer'}
@@ -241,11 +242,13 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
               </div>
               <div>
                 <span className="text-slate-400 font-medium">New Balance (ยอดคงเหลือใหม่):</span>{" "}
-                <span className="font-black text-slate-900 font-mono">฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                <span className={`font-black font-mono ${balAfter < 0 ? "text-rose-600" : "text-slate-900"}`}>
+                  {balAfter < 0 ? `-฿${Math.abs(balAfter).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `฿${balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                </span>
               </div>
               <div className="col-span-full pt-2 mt-1 border-t border-slate-200/60 text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <span>
-                  ยอดเดิม: <strong className="font-mono text-slate-600">฿{balBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> → <strong className={`font-mono font-bold ${isAdd ? 'text-emerald-700' : 'text-rose-700'}`}>ยอดคงเหลือใหม่: ฿{balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+                  ยอดเดิม: <strong className="font-mono text-slate-600">{balBefore < 0 ? `-฿${Math.abs(balBefore).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `฿${balBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</strong> → <strong className={`font-mono font-bold ${balAfter < 0 ? 'text-rose-600' : isAdd ? 'text-emerald-700' : 'text-slate-700'}`}>ยอดคงเหลือใหม่: {balAfter < 0 ? `-฿${Math.abs(balAfter).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `฿${balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</strong>
                 </span>
                 {parsed.reason && (
                   <div className="flex items-center gap-1.5 bg-white/90 border border-slate-300/80 px-2.5 py-1 rounded-lg text-slate-800 text-[11px] shadow-xs">

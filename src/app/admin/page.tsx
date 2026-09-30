@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -415,12 +415,8 @@ export default function AdminPage() {
   const [customerPriceListId, setCustomerPriceListId] = useState<string | null>(null);
 
   const filteredCustomers = useMemo(() => {
-    if (!customerSearchQuery) return [];
-    const query = customerSearchQuery.toLowerCase();
-    return customers.filter(c => 
-      c.name.toLowerCase().includes(query) || 
-      c.phone.includes(query)
-    );
+    if (!customerSearchQuery.trim()) return [];
+    return customers.filter(c => matchCustomerSearch(c, customerSearchQuery));
   }, [customerSearchQuery, customers]);
   
   const [pickupLoc, setPickupLoc] = useState("");
@@ -2013,7 +2009,7 @@ export default function AdminPage() {
       }
       const currentBalance = selectedProfileCustomer?.creditBalance || 0;
       if (currentBalance < calculatedTotal) {
-        abortSubmit(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
+        abortSubmit(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(calculatedTotal)})`);
         return;
       }
     }
@@ -2398,7 +2394,7 @@ export default function AdminPage() {
           if (paymentChannel === "Deduct Member") {
             const currentBalance = selectedProfileCustomer.creditBalance || 0;
             if (currentBalance < calculatedTotal) {
-              toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
+              toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(calculatedTotal)})`);
               setIsSubmitting(false);
               return;
             }
@@ -2427,10 +2423,10 @@ export default function AdminPage() {
               if (ml) upd.priceListId = ml.id;
             }
             const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
-            const confirmedBal = updatedCust?.creditBalance ?? Math.max(0, (selectedProfileCustomer.creditBalance || 0) + balAdj);
+            const confirmedBal = updatedCust?.creditBalance ?? ((selectedProfileCustomer.creditBalance || 0) + balAdj);
             await api.updateJob(targetEditingJobId, { walletBalanceAfter: confirmedBal });
             setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
-            toast.success(`Customer wallet updated. New balance: ฿${confirmedBal.toLocaleString()}`);
+            toast.success(`Customer wallet updated. New balance: ${formatBaht(confirmedBal)}`);
           }
         }
 
@@ -2600,7 +2596,7 @@ export default function AdminPage() {
           // Validate balance is sufficient before proceeding
           const currentBalance = selectedProfileCustomer.creditBalance || 0;
           if (currentBalance < calculatedTotal) {
-            toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ฿${currentBalance.toLocaleString()}, ต้องการ ฿${calculatedTotal.toLocaleString()})`);
+            toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(calculatedTotal)})`);
             setIsSubmitting(false);
             return;
           }
@@ -3864,7 +3860,7 @@ export default function AdminPage() {
                           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                           <Input
                             id="customer-search"
-                            placeholder="Search customer by name/phone..."
+                            placeholder="Search name, phone, member ID..."
                             value={customerSearchQuery}
                             disabled={!!editingJobId}
                             onChange={(e) => {
@@ -3974,14 +3970,14 @@ export default function AdminPage() {
                                       VIP
                                     </Badge>
                                   )}
-                                  {c.isMember && (
+                                  {(c.isMember || c.memberId) && (
                                     <div className="flex items-center gap-1">
                                       <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
-                                        Member
+                                        {c.memberId ? `#${c.memberId}` : "Member"}
                                       </Badge>
-                                      <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold flex items-center gap-0.5">
-                                        <Wallet size={9} />
-                                        ฿{(c.creditBalance || 0).toLocaleString()}
+                                      <Badge variant="outline" className={`text-[10px] py-0 px-1.5 h-4 font-bold flex items-center gap-0.5 ${(c.creditBalance || 0) < 0 ? "bg-rose-50 text-rose-700 border-rose-300" : "bg-emerald-50 text-emerald-700 border-emerald-300"}`}>
+                                        <Wallet size={9} className={(c.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-600"} />
+                                        <span>{formatBaht(c.creditBalance || 0)}</span>
                                       </Badge>
                                     </div>
                                   )}
@@ -4216,9 +4212,9 @@ export default function AdminPage() {
                                   </Badge>
                                 )}
                                 {selectedProfileCustomer?.isMember && (
-                                  <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4 bg-emerald-50 text-emerald-700 border-emerald-300 font-bold shrink-0 flex items-center gap-0.5 shadow-xs" title="ยอดเงินคงเหลือใน Wallet">
-                                    <Wallet size={9} className="text-emerald-600" />
-                                    <span>฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}</span>
+                                  <Badge variant="outline" className={`text-[9px] py-0 px-1.5 h-4 font-bold shrink-0 flex items-center gap-0.5 shadow-xs ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "bg-rose-50 text-rose-700 border-rose-300" : "bg-emerald-50 text-emerald-700 border-emerald-300"}`} title="ยอดเงินคงเหลือใน Wallet">
+                                    <Wallet size={9} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-600"} />
+                                    <span>{formatBaht(selectedProfileCustomer.creditBalance || 0)}</span>
                                   </Badge>
                                 )}
                               </div>
@@ -5106,20 +5102,22 @@ export default function AdminPage() {
                                         step="0.01"
                                         min="0.01"
                                         disabled={isCartLocked}
-                                        value={item.quantity}
-                                        className="w-12 text-center text-[10px] font-black text-slate-200 bg-transparent border-none outline-none p-0 focus:ring-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        value={item.quantity === 0 || (item.quantity as any) === "" ? "" : item.quantity}
+                                        placeholder="0"
+                                        className="w-12 text-center text-[10px] font-black text-slate-200 bg-transparent border-none outline-none p-0 focus:ring-0 disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-slate-600"
                                         onChange={(e) => {
                                           const valStr = e.target.value;
                                           const raw = parseFloat(valStr);
                                           setDialogCart(prev => {
-                                            const updated = prev.map(it => it.id === item.id ? { ...it, quantity: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.quantity) } : it);
-                                            setLaundryPrice(updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0));
+                                            const updated = prev.map(it => it.id === item.id ? { ...it, quantity: valStr === "" ? ("" as any) : (!isNaN(raw) ? raw : it.quantity) } : it);
+                                            setLaundryPrice(updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (typeof it.quantity === 'number' ? it.quantity : 0)), 0));
                                             return updated;
                                           });
                                         }}
                                         onBlur={(e) => {
                                           const raw = parseFloat(e.target.value);
-                                          const rounded = (!isNaN(raw) && raw > 0) ? Math.round(raw * 100) / 100 : 1;
+                                          const isKilo = item.unit === 'kg' || item.category?.toUpperCase().includes('KILO');
+                                          const rounded = (!isNaN(raw) && raw > 0) ? Math.round(raw * 100) / 100 : (isKilo ? 0.5 : 1);
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => it.id === item.id ? { ...it, quantity: rounded } : it);
                                             setLaundryPrice(updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0));
@@ -5153,18 +5151,19 @@ export default function AdminPage() {
                                         type="number"
                                         step="0.01"
                                         disabled={isCartLocked}
-                                        value={item.price}
-                                        className="w-full text-right text-[10px] font-black text-slate-200 bg-transparent border-none p-0 focus:ring-0 focus:outline-none"
+                                        value={item.price === 0 || (item.price as any) === "" ? "" : item.price}
+                                        placeholder="0"
+                                        className="w-full text-right text-[10px] font-black text-slate-200 bg-transparent border-none p-0 focus:ring-0 focus:outline-none placeholder:text-slate-600"
                                         onChange={e => {
                                           const valStr = e.target.value;
                                           const raw = parseFloat(valStr);
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => 
                                               it.id === item.id 
-                                                ? { ...it, price: !isNaN(raw) ? raw : (valStr === "" ? (0 as any) : it.price), isCustomPrice: true }
+                                                ? { ...it, price: valStr === "" ? ("" as any) : (!isNaN(raw) ? raw : it.price), isCustomPrice: true }
                                                 : it
                                             );
-                                            const totalSum = updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0);
+                                            const totalSum = updated.reduce((acc, it) => acc + safeCeil(((typeof it.price === 'number' ? it.price : 0) || 0) * (typeof it.quantity === 'number' ? it.quantity : 0)), 0);
                                             setLaundryPrice(totalSum);
                                             return updated;
                                           });
@@ -5510,9 +5509,9 @@ export default function AdminPage() {
                                 </select>
                                 {selectedProfileCustomer?.isMember && (
                                   <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
-                                    <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className="text-emerald-400" /> Wallet:</span>
-                                    <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
-                                      ฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
+                                    <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400 font-extrabold" : (selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
+                                      {formatBaht(selectedProfileCustomer.creditBalance || 0)}
                                     </span>
                                   </div>
                                 )}
@@ -5646,7 +5645,7 @@ export default function AdminPage() {
                                     ⚠️ Wallet หมดอายุแล้ว {selectedProfileCustomer.memberExpiryDate ? `(${format(new Date(selectedProfileCustomer.memberExpiryDate), "dd/MM/yyyy")})` : ""}
                                   </p>
                                   <p className="text-[9px] text-rose-400 font-normal truncate">
-                                    ยอดคงเหลือ ฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} ถูกระงับชั่วคราว
+                                    ยอดคงเหลือ {formatBaht(selectedProfileCustomer.creditBalance || 0)} ถูกระงับชั่วคราว
                                   </p>
                                 </div>
                               </div>
@@ -5779,7 +5778,7 @@ export default function AdminPage() {
                                   : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
                                     ? "Wallet หมดอายุแล้ว"
                                     : isWalletInsufficient
-                                      ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ฿${(selectedProfileCustomer?.creditBalance || 0).toLocaleString()}, ต้องการ ฿${dialogTotal.toFixed(2)})`
+                                      ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ${formatBaht(selectedProfileCustomer?.creditBalance || 0)}, ต้องการ ${formatBaht(dialogTotal)})`
                                       : (!isWalkIn && paymentMethod !== 'paid')
                                         ? (currentLanguage === "en" ? "Waiting for CSO verification (CSO Paid)" : "รอ CSO ยืนยันสถานะชำระเงิน (CSO Paid)")
                                         : (!paymentChannel || !paymentChannel.trim())

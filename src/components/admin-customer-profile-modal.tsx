@@ -6,11 +6,11 @@ import {
   Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, 
   Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X, Edit, MessageCircle, 
   MessageSquare, ShieldCheck, CheckCircle2, Plus, Trash2, Tag, Check, Smartphone, Globe, 
-  AlertCircle, ChevronRight, UserCheck, Shield
+  AlertCircle, ChevronRight, UserCheck, Shield, Ticket, Gift, Sparkles, Copy, Ban, Truck, Loader2
 } from "lucide-react";
 
 import { format } from "date-fns";
-import { type Customer, type CustomerAddress, customerStore, shopStore, walletApprovalStore } from "@/lib/store";
+import { type Customer, type CustomerAddress, type CustomerCoupon, customerStore, shopStore, walletApprovalStore } from "@/lib/store";
 import { api } from "@/lib/api";
 import { useSyncExternalStore, useState, useEffect, useMemo } from "react";
 import { useJobs } from "@/lib/use-jobs";
@@ -19,11 +19,15 @@ import {
   getTopUpTransactionsAction, 
   addCustomerAddressAction, 
   deleteCustomerAddressAction, 
-  setPrimaryCustomerAddressAction 
+  setPrimaryCustomerAddressAction,
+  getCustomerCouponsAction,
+  updateCustomerCouponStatusAction
 } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
-import { isWalletExpired, isValidPhoneNumber } from "@/lib/utils";
+import { isWalletExpired, isValidPhoneNumber, formatBaht } from "@/lib/utils";
+import { toast } from "sonner";
 
 // Helper to extract initials for avatar
 const getInitials = (name: string) => {
@@ -95,8 +99,77 @@ export function AdminCustomerProfileModal({
   // Main 3 Tabs: "profile" | "orders" | "tickets"
   const [activeTab, setActiveTab] = useState<"profile" | "orders" | "tickets">("profile");
 
-  // Orders Tab sub-switch: "orders" | "ledger"
-  const [ordersSubTab, setOrdersSubTab] = useState<"orders" | "ledger">("orders");
+  // Orders Tab sub-switch: "orders" | "ledger" | "coupons"
+  const [ordersSubTab, setOrdersSubTab] = useState<"orders" | "ledger" | "coupons">("orders");
+
+  // Customer Coupons state
+  const [coupons, setCoupons] = useState<CustomerCoupon[]>([]);
+  const [isLoadingCoupons, setIsLoadingCoupons] = useState(false);
+  const [couponStatusFilter, setCouponStatusFilter] = useState<"all" | "ACTIVE" | "USED" | "EXPIRED">("all");
+  const [issueCouponModalOpen, setIssueCouponModalOpen] = useState(false);
+
+  const fetchCoupons = () => {
+    if (!customer?.id) return;
+    setIsLoadingCoupons(true);
+    getCustomerCouponsAction({ customerId: customer.id })
+      .then(res => {
+        if (res.success && res.coupons) {
+          setCoupons(res.coupons as unknown as CustomerCoupon[]);
+        }
+      })
+      .catch(err => console.error("Failed to load customer coupons:", err))
+      .finally(() => setIsLoadingCoupons(false));
+  };
+
+  const filteredCoupons = useMemo(() => {
+    if (couponStatusFilter === "all") return coupons;
+    if (couponStatusFilter === "EXPIRED") {
+      return coupons.filter(c => c.status === "EXPIRED" || c.status === "VOID");
+    }
+    return coupons.filter(c => c.status === couponStatusFilter);
+  }, [coupons, couponStatusFilter]);
+
+  const [copiedCouponId, setCopiedCouponId] = useState<string | null>(null);
+
+  const handleCopyCouponCode = (coupon: CustomerCoupon) => {
+    navigator.clipboard.writeText(coupon.code);
+    setCopiedCouponId(coupon.id);
+    toast.success(`คัดลอกโค้ด ${coupon.code} เรียบร้อยแล้ว`);
+    setTimeout(() => setCopiedCouponId(null), 2000);
+  };
+
+  const handleVoidCoupon = async (coupon: CustomerCoupon) => {
+    if (!confirm(`คุณต้องการยกเลิกคูปอง "${coupon.code}" (${coupon.name}) ใช่หรือไม่?`)) return;
+    try {
+      const res = await updateCustomerCouponStatusAction(coupon.id, "VOID");
+      if (res.success) {
+        toast.success("ยกเลิกคูปองเรียบร้อย");
+        fetchCoupons();
+      } else {
+        toast.error(res.error || "เกิดข้อผิดพลาดในการยกเลิกคูปอง");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "เกิดข้อผิดพลาด");
+    }
+  };
+
+  const renderDiscountBadge = (coupon: CustomerCoupon) => {
+    switch (coupon.discountType) {
+      case "PERCENTAGE":
+        return <span className="font-black text-rose-600">-{coupon.discountValue}%</span>;
+      case "FREE_DELIVERY":
+        return (
+          <span className="font-black text-sky-600 flex items-center gap-1">
+            <Truck size={14} /> ฟรีค่าจัดส่ง
+          </span>
+        );
+      case "CASH_VOUCHER":
+        return <span className="font-black text-amber-600">วอยเชอร์ ฿{coupon.discountValue}</span>;
+      case "FIXED":
+      default:
+        return <span className="font-black text-emerald-600">-฿{coupon.discountValue}</span>;
+    }
+  };
 
   // Local state for addresses & tickets (REAL DATA ONLY - NO MOCK)
   const [localAddresses, setLocalAddresses] = useState<CustomerAddress[]>([]);
@@ -177,6 +250,9 @@ export function AdminCustomerProfileModal({
         .then(txs => setWalletTxs(txs || []))
         .catch(err => console.error("Failed to load customer wallet transactions:", err))
         .finally(() => setIsLoadingWallet(false));
+
+      // Fetch customer coupons
+      fetchCoupons();
     }
   }, [open, customer?.id]);
 
@@ -1012,8 +1088,8 @@ export function AdminCustomerProfileModal({
                   </div>
                 </div>
 
-                {/* Sub-Switch: Orders List vs Wallet Ledger */}
-                <div className="flex items-center justify-between">
+                {/* Sub-Switch: Orders List vs Wallet Ledger vs Coupons */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
                     <button
                       type="button"
@@ -1037,12 +1113,36 @@ export function AdminCustomerProfileModal({
                     >
                       Credit Wallet Ledger ({walletTxs.length || topUpTxs.length})
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setOrdersSubTab("coupons")}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                        ordersSubTab === "coupons"
+                          ? "bg-white text-indigo-700 shadow-2xs"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      <Ticket size={13} />
+                      Coupons & Vouchers ({coupons.length})
+                    </button>
                   </div>
 
                   {ordersSubTab === "ledger" && (
-                    <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-lg">
-                      Current Credit: ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    <span className={`text-xs font-bold px-3 py-1 rounded-lg border ${(customer.creditBalance || 0) < 0 ? "text-rose-700 bg-rose-50 border-rose-200" : "text-emerald-700 bg-emerald-50 border-emerald-200"}`}>
+                      Current Credit: {formatBaht(customer.creditBalance || 0)}
                     </span>
+                  )}
+
+                  {ordersSubTab === "coupons" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => setIssueCouponModalOpen(true)}
+                      className="h-8 px-3 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 cursor-pointer shadow-2xs"
+                    >
+                      <Plus size={14} />
+                      + แจกคูปองให้ลูกค้า
+                    </Button>
                   )}
                 </div>
 
@@ -1203,8 +1303,8 @@ export function AdminCustomerProfileModal({
                                   <TableCell className={`text-right font-black py-3 text-xs ${isCredit ? 'text-emerald-600' : 'text-rose-600'}`}>
                                     {isCredit ? '+' : '-'}฿{Number(tx.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                   </TableCell>
-                                  <TableCell className="text-right text-[11px] font-mono font-bold text-slate-600 py-3 whitespace-nowrap">
-                                    ฿{Number(tx.balanceAfter || 0).toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                                  <TableCell className={`text-right text-[11px] font-mono font-bold py-3 whitespace-nowrap ${Number(tx.balanceAfter || 0) < 0 ? 'text-rose-600 font-black' : 'text-slate-600'}`}>
+                                    {formatBaht(Number(tx.balanceAfter || 0))}
                                   </TableCell>
                                   <TableCell className="text-right pr-4 py-3">
                                     {tx.slipImageUrl && (
@@ -1237,6 +1337,260 @@ export function AdminCustomerProfileModal({
                         </TableBody>
                       </Table>
                     </div>
+                  </div>
+                )}
+
+                {/* VIEW 3: CUSTOMER COUPONS & VOUCHERS */}
+                {ordersSubTab === "coupons" && (
+                  <div className="space-y-4">
+                    {/* Filter and Summary Bar */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs font-bold text-slate-500 mr-1">สถานะ:</span>
+                        <button
+                          type="button"
+                          onClick={() => setCouponStatusFilter("all")}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                            couponStatusFilter === "all"
+                              ? "bg-indigo-600 text-white shadow-2xs"
+                              : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                          }`}
+                        >
+                          ทั้งหมด ({coupons.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCouponStatusFilter("ACTIVE")}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                            couponStatusFilter === "ACTIVE"
+                              ? "bg-emerald-600 text-white shadow-2xs"
+                              : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                          }`}
+                        >
+                          พร้อมใช้งาน ({coupons.filter(c => c.status === "ACTIVE").length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCouponStatusFilter("USED")}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                            couponStatusFilter === "USED"
+                              ? "bg-slate-700 text-white shadow-2xs"
+                              : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                          }`}
+                        >
+                          ใช้แล้ว ({coupons.filter(c => c.status === "USED").length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCouponStatusFilter("EXPIRED")}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                            couponStatusFilter === "EXPIRED"
+                              ? "bg-amber-600 text-white shadow-2xs"
+                              : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                          }`}
+                        >
+                          หมดอายุ/ยกเลิก ({coupons.filter(c => c.status === "EXPIRED" || c.status === "VOID").length})
+                        </button>
+                      </div>
+
+                      <div className="text-xs text-slate-500 font-medium">
+                        {isLoadingCoupons && (
+                          <span className="flex items-center gap-1.5 text-indigo-600">
+                            <Loader2 size={13} className="animate-spin" /> กำลังโหลดคูปอง...
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Coupons List */}
+                    {filteredCoupons.length > 0 ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                        {filteredCoupons.map((coupon) => {
+                          const isActive = coupon.status === "ACTIVE";
+                          const isUsed = coupon.status === "USED";
+                          const isExpired = coupon.status === "EXPIRED";
+                          const isVoid = coupon.status === "VOID";
+
+                          return (
+                            <div
+                              key={coupon.id}
+                              className={`relative overflow-hidden rounded-2xl border transition-all ${
+                                isActive
+                                  ? "bg-white border-indigo-200 shadow-2xs hover:border-indigo-300"
+                                  : isUsed
+                                  ? "bg-slate-50/80 border-slate-200 opacity-80"
+                                  : "bg-amber-50/40 border-amber-200/80 opacity-75"
+                              }`}
+                            >
+                              {/* Left decorative color bar */}
+                              <div
+                                className={`absolute left-0 top-0 bottom-0 w-1.5 ${
+                                  isActive
+                                    ? "bg-indigo-500"
+                                    : isUsed
+                                    ? "bg-slate-400"
+                                    : isVoid
+                                    ? "bg-rose-400"
+                                    : "bg-amber-400"
+                                }`}
+                              />
+
+                              <div className="p-4 pl-5 space-y-3">
+                                {/* Top: Name & Status */}
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="space-y-0.5 min-w-0">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <h4 className="font-bold text-slate-800 text-sm truncate">
+                                        {coupon.name}
+                                      </h4>
+                                      {coupon.brand && (
+                                        <Badge variant="outline" className="text-[10px] font-bold py-0 h-4 border-slate-300 text-slate-600">
+                                          {coupon.brand === "that_laundry_shop" ? "TLS" : "NoName"}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    {coupon.description && (
+                                      <p className="text-xs text-slate-500 line-clamp-1">{coupon.description}</p>
+                                    )}
+                                  </div>
+
+                                  <div className="shrink-0">
+                                    {isActive && (
+                                      <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 font-bold text-[10px]">
+                                        พร้อมใช้งาน
+                                      </Badge>
+                                    )}
+                                    {isUsed && (
+                                      <Badge className="bg-slate-100 text-slate-700 border-slate-200 font-bold text-[10px]">
+                                        ใช้แล้ว
+                                      </Badge>
+                                    )}
+                                    {isExpired && (
+                                      <Badge className="bg-amber-100 text-amber-800 border-amber-200 font-bold text-[10px]">
+                                        หมดอายุ
+                                      </Badge>
+                                    )}
+                                    {isVoid && (
+                                      <Badge className="bg-rose-100 text-rose-800 border-rose-200 font-bold text-[10px]">
+                                        ยกเลิกแล้ว
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Center: Discount & Coupon Code Box */}
+                                <div className="flex items-center justify-between gap-3 bg-slate-50/80 rounded-xl p-2.5 border border-slate-200/80">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shrink-0">
+                                      <Ticket size={16} />
+                                    </div>
+                                    <div>
+                                      <div className="text-[10px] text-slate-400 font-medium">มูลค่าส่วนลด</div>
+                                      <div className="text-xs font-black">
+                                        {renderDiscountBadge(coupon)}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Code with Copy */}
+                                  <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1 shadow-2xs">
+                                    <span className="font-mono font-black text-xs text-slate-800 tracking-wider">
+                                      {coupon.code}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopyCouponCode(coupon)}
+                                      className="text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer p-0.5"
+                                      title="คัดลอกรหัสคูปอง"
+                                    >
+                                      {copiedCouponId === coupon.id ? (
+                                        <Check size={13} className="text-emerald-600" />
+                                      ) : (
+                                        <Copy size={13} />
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Conditions & Validity */}
+                                <div className="space-y-1 text-[11px] text-slate-500">
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                                    {coupon.minOrderAmount && coupon.minOrderAmount > 0 ? (
+                                      <span>ขั้นต่ำ ฿{coupon.minOrderAmount.toLocaleString()}</span>
+                                    ) : (
+                                      <span>ไม่มีขั้นต่ำ</span>
+                                    )}
+                                    {coupon.maxDiscount && coupon.maxDiscount > 0 && (
+                                      <span>ลดสูงสุด ฿{coupon.maxDiscount.toLocaleString()}</span>
+                                    )}
+                                    <span>
+                                      {coupon.expiryDate ? (
+                                        `หมดอายุ: ${format(new Date(coupon.expiryDate), "dd/MM/yyyy")}`
+                                      ) : (
+                                        "ไม่มีวันหมดอายุ"
+                                      )}
+                                    </span>
+                                  </div>
+
+                                  {coupon.issuedReason && (
+                                    <div className="text-slate-400 italic">
+                                      เหตุผล: {coupon.issuedReason}
+                                    </div>
+                                  )}
+
+                                  {isUsed && coupon.usedAt && (
+                                    <div className="text-emerald-700 font-medium">
+                                      ใช้งานเมื่อ: {format(new Date(coupon.usedAt), "dd/MM/yyyy HH:mm")} {coupon.usedJobId ? `(บิล ${coupon.usedJobId})` : ""}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Footer Action */}
+                                {isActive && (
+                                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                                    <span className="text-[10px] text-slate-400">
+                                      ออกให้เมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt), "dd/MM/yyyy")}
+                                    </span>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleVoidCoupon(coupon)}
+                                      className="h-6 px-2 text-[11px] text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-md font-bold cursor-pointer"
+                                    >
+                                      <Ban size={12} className="mr-1" />
+                                      ยกเลิกคูปอง
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center space-y-3">
+                        <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-500 flex items-center justify-center mx-auto">
+                          <Ticket size={24} />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-slate-700 text-sm">
+                            {couponStatusFilter === "all" ? "ยังไม่มีคูปองสำหรับลูกค้ารายนี้" : "ไม่พบคูปองในสถานะนี้"}
+                          </h4>
+                          <p className="text-xs text-slate-400 mt-1">
+                            คุณสามารถแจกคูปองส่วนลด วอยเชอร์ หรือฟรีค่าจัดส่งให้ลูกค้ารายนี้ได้ทันที
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          onClick={() => setIssueCouponModalOpen(true)}
+                          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl h-8 px-4 cursor-pointer gap-1.5"
+                        >
+                          <Plus size={14} />
+                          + แจกคูปองใบแรก
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1785,6 +2139,16 @@ export function AdminCustomerProfileModal({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Issue Coupon Modal */}
+      {issueCouponModalOpen && customer && (
+        <AdminIssueCouponDialog
+          open={issueCouponModalOpen}
+          onOpenChange={setIssueCouponModalOpen}
+          preselectedCustomer={customer}
+          onSuccess={() => fetchCoupons()}
+        />
       )}
     </>
   );

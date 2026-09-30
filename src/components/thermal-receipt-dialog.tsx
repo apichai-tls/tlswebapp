@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { type Job, customerStore, shopStore, serviceStore, type ServiceItem } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, formatJobDisplayId, generateReceiptNumber, getTransportFeeBreakdown, safeCeil, findMatchingCustomer } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, formatJobDisplayId, generateReceiptNumber, getTransportFeeBreakdown, safeCeil, findMatchingCustomer, formatBaht } from "@/lib/utils";
 
 export interface ReceiptItem {
   name: string;
@@ -235,9 +235,9 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   if (isRfJob) {
     rawProformaId = cleanProformaNumber(rawProformaId) || (cleanOriginalId ? `PR-${cleanOriginalId}` : undefined);
   } else if (!rawProformaId) {
-    rawProformaId = (job.id && job.id !== "DRAFT" && Boolean((job as any).isPaid || (job as any).isShopPaid) ? generateProformaBaseNumber(job.id) : undefined);
+    rawProformaId = (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : undefined);
   }
-  const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (job.id && job.id !== "DRAFT" && Boolean((job as any).isPaid || (job as any).isShopPaid) ? generateProformaBaseNumber(job.id) : "");
+  const cleanBaseProforma = cleanProformaNumber(rawProformaId) || (job.id && job.id !== "DRAFT" ? generateProformaBaseNumber(job.id) : "");
   const revisionMatch = job.remark?.match(/(?:Revision:\s*|Proforma:\s*PR-[^\s|]+-R)(\d+)/i);
   const parsedRevision = ((job as any).proformaRevision != null && (job as any).proformaRevision !== "")
     ? Number((job as any).proformaRevision)
@@ -302,7 +302,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
 
   return {
     id: displayId,
-    receiptNumber: (job as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined),
+    receiptNumber: isJobPaid ? ((job as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined)) : undefined,
     createdAt: receiptDate,
     customerName: job.customerName || "Walk-In",
     customerPhone: job.customerPhone || "-",
@@ -328,7 +328,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     isPaid: isJobPaid,
     paymentChannel: job.paymentChannel,
     remark: job.remark,
-    isDraft: false,
+    isDraft: !isJobPaid,
     vatType: jobVatType,
     vatRate: jobVatRate,
     vatAmount: jobVatAmount,
@@ -947,7 +947,7 @@ export function ThermalReceiptDialog({
           {!receiptData.isDraft && receiptData.isMember && receiptData.walletBalance !== undefined && (
             <div className={`w-full flex justify-between font-bold text-neutral-900 border-t border-b border-dashed border-neutral-400/50 py-1 my-1 ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")}`}>
               <span>{currentLanguage === "en" ? "MEMBER BALANCE:" : "ยอดคงเหลือสมาชิก:"}</span>
-              <span className="font-mono">฿{formatCurrency(receiptData.walletBalance)}</span>
+              <span className={`font-mono ${receiptData.walletBalance < 0 ? "text-rose-600 font-black" : ""}`}>{formatBaht(receiptData.walletBalance)}</span>
             </div>
           )}
           {cleanRemarkForDisplay(receiptData.remark) && (

@@ -18,6 +18,8 @@ import { TopUpDialog } from "@/components/top-up-dialog";
 import { addCustomerAddressAction } from "@/actions/db";
 import { CountryCodeInput } from "@/components/ui/country-code-input";
 import { parseFullPhone } from "@/lib/country-codes";
+import { formatBaht } from "@/lib/utils";
+import { format } from "date-fns";
 
 const BANGKOK_DISTRICTS = [
   "Watthana (Thonglor, Ekkamai, Phrom Phong)",
@@ -60,7 +62,17 @@ export function AdminCustomerDialog({
   const [adjustMode, setAdjustMode] = useState<"add" | "deduct">("add");
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustReason, setAdjustReason] = useState("");
+  const [adjustExpiryDate, setAdjustExpiryDate] = useState("");
   const [adjustLoading, setAdjustLoading] = useState(false);
+
+  useEffect(() => {
+    if (adjustOpen && customer) {
+      const d = customer.memberExpiryDate
+        ? new Date(customer.memberExpiryDate).toISOString().split("T")[0]
+        : "";
+      setAdjustExpiryDate(d);
+    }
+  }, [adjustOpen, customer]);
 
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
@@ -236,7 +248,7 @@ export function AdminCustomerDialog({
 
     setAdjustLoading(true);
     try {
-      const updated = await customerStore.updateCustomer(customer.id, {
+      const updates: any = {
         creditBalance: newBalance,
         creditBalanceDelta: delta,
         adjustReason: adjustReason.trim() || undefined,
@@ -246,15 +258,37 @@ export function AdminCustomerDialog({
         actorRole: user?.role,
         walletTxType: isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT',
         walletRefType: 'manual',
-      } as any);
+      };
+
+      if (adjustExpiryDate) {
+        updates.memberExpiryDate = new Date(`${adjustExpiryDate}T23:59:59`);
+        if (!customer.isMember) {
+          updates.isMember = true;
+        }
+      } else {
+        updates.memberExpiryDate = null;
+      }
+
+      const updated = await customerStore.updateCustomer(customer.id, updates);
+
+      // Sync with parent customer dialog state
+      setMemberExpiryDate(adjustExpiryDate);
+      if (adjustExpiryDate && customerTier === "standard") {
+        setCustomerTier("member");
+      }
+
+      const expiryInfo = adjustExpiryDate 
+        ? ` (วันหมดอายุ: ${format(new Date(`${adjustExpiryDate}T23:59:59`), "dd/MM/yyyy")})` 
+        : "";
 
       const actualNewBalance = updated?.creditBalance ?? newBalance;
       toast.success(
-        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือ: ฿${actualNewBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+        `${isAdd ? "เพิ่มยอดเงิน" : "หักยอดเงิน"} ฿${Math.abs(delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} — ยอดคงเหลือ: ${formatBaht(actualNewBalance)}${expiryInfo}`
       );
       setAdjustOpen(false);
       setAdjustAmount("");
       setAdjustReason("");
+      setAdjustExpiryDate("");
       setAdjustMode("add");
     } catch (err: any) {
       toast.error(err?.message || "เกิดข้อผิดพลาด กรุณาลองใหม่");
@@ -287,7 +321,7 @@ export function AdminCustomerDialog({
 
     setIsSaving(true);
     try {
-      const isMemberBool = customerTier === "member" || customerTier === "vip";
+      const isMemberBool = customerTier === "member" || customerTier === "vip" || Boolean(memberId.trim());
       const isVIPBool = customerTier === "vip";
 
       let finalPriceListId = priceListId;
@@ -449,12 +483,12 @@ export function AdminCustomerDialog({
 
             {/* Wallet Balance — Shown if editing Member */}
             {customer && customer.isMember && (
-              <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl px-3.5 py-2 mt-3 text-xs">
+              <div className={`flex items-center justify-between rounded-xl px-3.5 py-2 mt-3 text-xs ${(customer.creditBalance || 0) < 0 ? "bg-rose-50 border border-rose-200" : "bg-emerald-50 border border-emerald-200"}`}>
                 <div className="flex items-center gap-2">
-                  <Wallet size={14} className="text-emerald-600" />
-                  <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Credit Wallet</span>
-                  <span className="text-sm font-black text-emerald-800">
-                    ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <Wallet size={14} className={(customer.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-600"} />
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${(customer.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-600"}`}>Credit Wallet</span>
+                  <span className={`text-sm font-black ${(customer.creditBalance || 0) < 0 ? "text-rose-800" : "text-emerald-800"}`}>
+                    {formatBaht(customer.creditBalance || 0)}
                   </span>
                   {pendingCount > 0 && (
                     <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
@@ -566,15 +600,76 @@ export function AdminCustomerDialog({
                   <Label className="text-xs font-bold text-slate-800 block mb-1">Customer Tier</Label>
                   <select
                     value={customerTier}
-                    onChange={e => setCustomerTier(e.target.value as any)}
+                    onChange={e => {
+                      const newTier = e.target.value as any;
+                      setCustomerTier(newTier);
+                      if ((newTier === "member" || newTier === "vip") && !memberStartDate) {
+                        const now = new Date();
+                        setMemberStartDate(now.toISOString().split("T")[0]);
+                        const nextYear = new Date(now);
+                        nextYear.setFullYear(now.getFullYear() + 1);
+                        setMemberExpiryDate(nextYear.toISOString().split("T")[0]);
+                      }
+                    }}
                     className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer font-semibold"
                   >
                     <option value="standard">Standard</option>
-                    <option value="member">Regular Member</option>
+                    <option value="member">Member</option>
                     <option value="vip">VIP Gold</option>
                   </select>
                 </div>
               </div>
+
+              {/* Row 3: Membership Details (Member ID, Start Date, Expiry Date) */}
+              {(customerTier === "member" || customerTier === "vip" || Boolean(memberId)) && (
+                <div className="bg-gradient-to-r from-indigo-50/90 via-blue-50/70 to-indigo-50/90 border border-indigo-200/90 rounded-2xl p-3.5 space-y-3 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black uppercase tracking-wider text-indigo-950 flex items-center gap-1.5">
+                      <Crown size={14} className="text-amber-500 fill-amber-400" />
+                      ข้อมูลสมาชิก & รหัส Member (Membership Details)
+                    </span>
+                    <span className="text-[10px] font-extrabold text-indigo-700 bg-white px-2.5 py-0.5 rounded-full border border-indigo-200 shadow-2xs">
+                      {customerTier === "vip" ? "VIP MEMBER" : "MEMBER"}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <Label className="text-xs font-bold text-slate-800 block mb-1">
+                        Member ID (เลข / รหัสสมาชิก) <span className="text-indigo-600 font-normal">*</span>
+                      </Label>
+                      <Input
+                        placeholder="e.g. 1004, MB-00123"
+                        value={memberId}
+                        onChange={e => setMemberId(e.target.value)}
+                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white font-mono font-bold text-indigo-900 focus-visible:ring-indigo-500 shadow-2xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-bold text-slate-800 block mb-1">
+                        Start Date (วันเริ่มสมาชิก)
+                      </Label>
+                      <Input
+                        type="date"
+                        value={memberStartDate}
+                        onChange={e => setMemberStartDate(e.target.value)}
+                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white focus-visible:ring-indigo-500 shadow-2xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-bold text-slate-800 block mb-1">
+                        Expiry Date (วันหมดอายุ)
+                      </Label>
+                      <Input
+                        type="date"
+                        value={memberExpiryDate}
+                        onChange={e => setMemberExpiryDate(e.target.value)}
+                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white focus-visible:ring-indigo-500 shadow-2xs"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ========================================================================= */}
@@ -911,11 +1006,11 @@ export function AdminCustomerDialog({
                   ปรับยอด Wallet โดยตรงสำหรับ <strong>{customer.name}</strong>
                 </DialogDescription>
               </DialogHeader>
-              <div className="p-6 space-y-4 text-xs">
+              <div className="p-6 space-y-3.5 text-xs max-h-[75vh] overflow-y-auto">
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
                   <span className="font-bold text-slate-500 uppercase tracking-wider">Current Balance</span>
-                  <span className="text-2xl font-black text-slate-900">
-                    ฿{(customer.creditBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className={`text-2xl font-black ${(customer.creditBalance || 0) < 0 ? "text-rose-600" : "text-slate-900"}`}>
+                    {formatBaht(customer.creditBalance || 0)}
                   </span>
                 </div>
 
@@ -965,6 +1060,44 @@ export function AdminCustomerDialog({
                     className="h-9 text-xs rounded-xl"
                     required
                   />
+                </div>
+
+                {/* Member Expiry Date Input */}
+                <div className="space-y-1.5 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                  <div className="flex items-center justify-between">
+                    <Label className="font-bold text-slate-700 flex items-center gap-1.5">
+                      <Calendar size={13} className="text-indigo-600" />
+                      <span>วันหมดอายุสมาชิก (Member Expiry Date)</span>
+                    </Label>
+                    {customer?.memberExpiryDate && (
+                      <span className="text-[10px] text-slate-500">
+                        เดิม: <strong className={new Date(customer.memberExpiryDate).getTime() < Date.now() ? "text-rose-600 font-bold" : "text-emerald-700 font-bold"}>
+                          {format(new Date(customer.memberExpiryDate), "dd/MM/yyyy")}
+                        </strong>
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <Input 
+                      type="date"
+                      value={adjustExpiryDate}
+                      onChange={e => setAdjustExpiryDate(e.target.value)}
+                      className="h-9 text-xs rounded-xl bg-white border-slate-200 text-slate-900"
+                    />
+                    {adjustExpiryDate && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setAdjustExpiryDate("")}
+                        className="h-9 px-2.5 text-[11px] font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 border-slate-200 rounded-xl cursor-pointer"
+                        title="ล้างวันหมดอายุ"
+                      >
+                        ล้าง
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex justify-end gap-2 pt-2">
