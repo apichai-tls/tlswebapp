@@ -114,6 +114,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     reason: "",
   });
   
+  const [filterPosOnly, setFilterPosOnly] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(true);
   const [showTopup, setShowTopup] = useState(false);
@@ -362,8 +363,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         matchesPayment = job.paymentChannel === paymentChannelFilter;
       }
     }
+
+    // POS Filter
+    let matchesPos = true;
+    if (filterPosOnly) {
+      matchesPos = job.source === 'pos' || (job.type as string) === 'in_store';
+    }
     
-    return matchesSearch && matchesDate && matchesStatus && matchesArea && matchesPayment;
+    return matchesSearch && matchesDate && matchesStatus && matchesArea && matchesPayment && matchesPos;
   });
 
   const sortedJobs = [...filteredJobs];
@@ -515,6 +522,15 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           </div>
           
           <div className="flex items-center gap-4 bg-white border border-slate-200 rounded-md px-3 py-1.5 h-10">
+            <Label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={filterPosOnly}
+                onChange={e => setFilterPosOnly(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-xs font-bold text-slate-700">POS</span>
+            </Label>
             <Label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={showCompleted} onChange={e => setShowCompleted(e.target.checked)} className="rounded border-slate-300" />
               <span className="text-xs font-medium text-slate-700">Show Completed</span>
