@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw } from "lucide-react";
-import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles } from "lucide-react";
+import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
   type PaymentChannelType, 
@@ -26,6 +26,9 @@ export function AdminSettings() {
   const [editingList, setEditingList] = useState<PriceList | null>(null);
   const [name, setName] = useState("");
   const [servicePrices, setServicePrices] = useState<Record<string, number>>({});
+  const [isCorporateCatalog, setIsCorporateCatalog] = useState(true);
+  const [customItems, setCustomItems] = useState<PriceListItem[]>([]);
+  const [catalogSearch, setCatalogSearch] = useState("");
 
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<ShopLocation | null>(null);
@@ -254,6 +257,16 @@ export function AdminSettings() {
 
   const handleDuplicate = (baseList: PriceList) => {
     setName(`${baseList.name} (Copy)`);
+    const isCorp = Boolean(baseList.isCorporate || (baseList.customItems && baseList.customItems.length > 0));
+    setIsCorporateCatalog(isCorp);
+    if (isCorp && baseList.customItems) {
+      setCustomItems(baseList.customItems.map(it => ({
+        ...it,
+        id: `ITEM-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`
+      })));
+    } else {
+      setCustomItems([]);
+    }
     setServicePrices({ ...baseList.servicePrices });
     setEditingList(null);
     setIsModalOpen(true);
@@ -262,6 +275,13 @@ export function AdminSettings() {
   const handleEdit = (list: PriceList) => {
     setEditingList(list);
     setName(list.name);
+    const isCorp = Boolean(list.isCorporate || (list.customItems && list.customItems.length > 0));
+    setIsCorporateCatalog(isCorp);
+    if (isCorp && list.customItems) {
+      setCustomItems([...list.customItems]);
+    } else {
+      setCustomItems([]);
+    }
     setServicePrices({ ...list.servicePrices });
     setIsModalOpen(true);
   };
@@ -280,22 +300,58 @@ export function AdminSettings() {
       return;
     }
 
-    // Clean up: If override matches the base price, remove it so it inherits naturally
-    const cleanedServicePrices: Record<string, number> = {};
-    for (const [serviceId, price] of Object.entries(servicePrices)) {
-      const baseService = services.find(s => s.id === serviceId);
-      if (baseService && baseService.price === price) {
-        continue; // Inherit from base
+    if (isCorporateCatalog) {
+      const validItems = customItems.filter(it => it.name.trim().length > 0);
+      if (validItems.length === 0) {
+        toast.error("กรุณาระบุรายการสินค้าสำหรับสัญญานี้อย่างน้อย 1 รายการ");
+        return;
       }
-      cleanedServicePrices[serviceId] = price;
-    }
 
-    if (editingList) {
-      priceListStore.updatePriceList(editingList.id, { name, servicePrices: cleanedServicePrices });
-      toast.success("Price list updated");
+      if (editingList) {
+        priceListStore.updatePriceList(editingList.id, {
+          name: name.trim(),
+          isCorporate: true,
+          customItems: validItems,
+          servicePrices: {},
+        });
+        toast.success("อัปเดตแคตตาล็อกสัญญา Corporate สำเร็จ");
+      } else {
+        priceListStore.addPriceList({
+          name: name.trim(),
+          isCorporate: true,
+          customItems: validItems,
+          servicePrices: {},
+        });
+        toast.success("สร้างแคตตาล็อกสัญญา Corporate ใหม่สำเร็จ");
+      }
     } else {
-      priceListStore.addPriceList({ name, servicePrices: cleanedServicePrices });
-      toast.success("Price list created");
+      // Clean up: If override matches the base price, remove it so it inherits naturally
+      const cleanedServicePrices: Record<string, number> = {};
+      for (const [serviceId, price] of Object.entries(servicePrices)) {
+        const baseService = services.find(s => s.id === serviceId);
+        if (baseService && baseService.price === price) {
+          continue; // Inherit from base
+        }
+        cleanedServicePrices[serviceId] = price;
+      }
+
+      if (editingList) {
+        priceListStore.updatePriceList(editingList.id, {
+          name: name.trim(),
+          isCorporate: false,
+          customItems: undefined,
+          servicePrices: cleanedServicePrices,
+        });
+        toast.success("Price list updated");
+      } else {
+        priceListStore.addPriceList({
+          name: name.trim(),
+          isCorporate: false,
+          customItems: undefined,
+          servicePrices: cleanedServicePrices,
+        });
+        toast.success("Price list created");
+      }
     }
     setIsModalOpen(false);
   };
@@ -462,6 +518,19 @@ export function AdminSettings() {
             onClick={() => {
               setName("");
               setServicePrices({});
+              setIsCorporateCatalog(true);
+              const initialItems: PriceListItem[] = services
+                .filter(s => s.isActive !== false && s.category !== 'PACKAGE')
+                .map(s => ({
+                  id: s.id,
+                  serviceId: s.id,
+                  name: s.name,
+                  nameEn: s.nameEn || null,
+                  category: s.category || "GENERAL",
+                  unit: s.unit || "ชิ้น",
+                  price: s.price || 0,
+                }));
+              setCustomItems(initialItems);
               setEditingList(null);
               setIsModalOpen(true);
             }} 
@@ -476,14 +545,27 @@ export function AdminSettings() {
             {priceLists.map(list => (
               <div key={list.id} className="p-5 flex flex-col md:flex-row md:items-center justify-between hover:bg-slate-50 transition-colors gap-4">
                 <div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h4 className="font-bold text-slate-900 text-lg">{list.name}</h4>
                     {list.isDefault && (
                       <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-none font-black uppercase text-[9px] tracking-wider px-2 py-0.5 rounded-md">Default Base</Badge>
                     )}
+                    {(list.isCorporate || (list.customItems && list.customItems.length > 0)) && (
+                      <Badge className="bg-amber-100 text-amber-900 border-amber-300 font-extrabold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
+                        <Building size={11} className="text-amber-700" /> Corporate Catalog
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-xs text-slate-500 mt-1 font-medium bg-slate-100 inline-block px-2 py-0.5 rounded-full border border-slate-200">
-                    <span className="text-slate-700 font-bold">{Object.keys(list.servicePrices).length}</span> overridden prices
+                    {list.isCorporate || (list.customItems && list.customItems.length > 0) ? (
+                      <>
+                        <span className="text-amber-800 font-bold">{list.customItems?.length || 0}</span> contract items (สินค้าตามสัญญา)
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-slate-700 font-bold">{Object.keys(list.servicePrices || {}).length}</span> overridden prices
+                      </>
+                    )}
                   </p>
                 </div>
                 <div className="flex gap-2 shrink-0">
@@ -975,97 +1057,373 @@ export function AdminSettings() {
         <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col p-0 overflow-hidden rounded-2xl border-none shadow-2xl">
           <form onSubmit={handleSubmit} className="flex flex-col h-full max-h-[90vh]">
             <DialogHeader className="p-8 bg-slate-900 text-white shrink-0">
-              <DialogTitle className="text-2xl font-black tracking-tight">
-                {editingList ? "Edit Price List" : "Create New Price List"}
+              <DialogTitle className="text-2xl font-black tracking-tight flex items-center gap-2.5">
+                {isCorporateCatalog ? <Building className="text-amber-400" size={26} /> : <Tag className="text-indigo-400" size={26} />}
+                {editingList 
+                  ? (isCorporateCatalog ? "Edit Corporate B2B Catalog" : "Edit Price List") 
+                  : (isCorporateCatalog ? "Create Corporate B2B Catalog" : "Create New Price List")}
               </DialogTitle>
               <DialogDescription className="text-slate-300 text-sm mt-1">
-                Define the name and set custom overrides for service items. Empty fields will fall back to the base price.
+                {isCorporateCatalog 
+                  ? "กำหนดรายการสินค้าและราคาเฉพาะสัญญาสำหรับบริษัทนี้ สามารถเพิ่ม/ลบรายการและกำหนดราคาได้อย่างอิสระ" 
+                  : "กำหนดชื่อและราคา Override สำหรับบริการที่ต้องการ ช่องที่เว้นไว้จะใช้ราคามาตรฐานของร้าน"}
               </DialogDescription>
             </DialogHeader>
 
             <div className="flex-1 overflow-y-auto p-8 bg-slate-50/50">
               <div className="space-y-8">
+                {/* Catalog Type Switcher */}
+                <div className="space-y-2">
+                  <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                    Catalog Type / ประเภทตารางราคา
+                  </Label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCorporateCatalog(true);
+                        if (customItems.length === 0) {
+                          const initialItems: PriceListItem[] = services
+                            .filter(s => s.isActive !== false && s.category !== 'PACKAGE')
+                            .map(s => ({
+                              id: s.id,
+                              serviceId: s.id,
+                              name: s.name,
+                              nameEn: s.nameEn || null,
+                              category: s.category || "GENERAL",
+                              unit: s.unit || "ชิ้น",
+                              price: servicePrices[s.id] ?? s.price ?? 0,
+                            }));
+                          setCustomItems(initialItems);
+                        }
+                      }}
+                      className={`p-4 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                        isCorporateCatalog
+                          ? "border-amber-400 bg-amber-50/70 shadow-sm ring-2 ring-amber-400/20"
+                          : "border-slate-200 bg-white hover:bg-slate-50 text-slate-600"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-extrabold text-sm flex items-center gap-2 text-amber-950">
+                          <Building size={16} className="text-amber-600" />
+                          Corporate B2B Catalog
+                        </span>
+                        {isCorporateCatalog && (
+                          <span className="text-[10px] font-black uppercase bg-amber-500 text-white px-2 py-0.5 rounded-full">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-amber-900/80 leading-relaxed font-medium">
+                        ตารางสินค้าเฉพาะของบริษัทนี้ สามารถเพิ่ม/ลบรายการและกำหนดราคาเฉพาะสัญญาได้อิสระ
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsCorporateCatalog(false)}
+                      className={`p-4 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                        !isCorporateCatalog
+                          ? "border-indigo-400 bg-indigo-50/70 shadow-sm ring-2 ring-indigo-400/20"
+                          : "border-slate-200 bg-white hover:bg-slate-50 text-slate-600"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-extrabold text-sm flex items-center gap-2 text-indigo-950">
+                          <Tag size={16} className="text-indigo-600" />
+                          Standard Price Override
+                        </span>
+                        {!isCorporateCatalog && (
+                          <span className="text-[10px] font-black uppercase bg-indigo-600 text-white px-2 py-0.5 rounded-full">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-indigo-900/80 leading-relaxed font-medium">
+                        ใช้รายการสินค้าเดียวกับร้านทั้งหมด และกำหนดเฉพาะราคาลดพิเศษบางรายการ
+                      </p>
+                    </button>
+                  </div>
+                </div>
+
                 <div className="space-y-3">
-                  <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">Price List Identification</Label>
+                  <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                    {isCorporateCatalog ? "Company / Contract Identification" : "Price List Identification"}
+                  </Label>
                   <Input 
                     required 
                     value={name} 
                     onChange={e => setName(e.target.value)} 
-                    placeholder="e.g. Wholesale Partners, VIP Members" 
+                    placeholder={isCorporateCatalog ? "e.g. Corporate - Hotel Marriott, Corporate - Bangkok Hospital" : "e.g. Wholesale Partners, VIP Members"} 
                     className="h-14 bg-white text-lg font-bold border-slate-200 focus-visible:ring-indigo-500 rounded-xl shadow-sm"
                   />
                 </div>
 
-                <div className="space-y-3">
-                  <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">Pricing Configuration</Label>
-                  <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
-                    <table className="w-full text-sm text-left">
-                      <thead className="bg-slate-100/50 border-b border-slate-200 text-[10px] uppercase font-black text-slate-500 tracking-wider">
-                        <tr>
-                          <th className="px-6 py-4">Service Name</th>
-                          <th className="px-6 py-4 w-[140px]">Base Price</th>
-                          <th className="px-6 py-4 w-[280px]">Custom Override (฿)</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {services.map(service => (
-                          <tr key={service.id} className="hover:bg-slate-50 transition-colors group">
-                            <td className="px-6 py-4">
-                              <div className="font-bold text-slate-900 text-base">{service.name}</div>
-                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">{service.category}</div>
-                            </td>
-                            <td className="px-6 py-4 font-semibold text-slate-500">
-                              ฿{service.price.toLocaleString()}
-                            </td>
-                            <td className="px-6 py-4">
-                              <div className="flex items-center gap-2">
-                                <div className="relative flex-1">
-                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
-                                  <Input 
-                                    type="number" 
-                                    step="0.01"
-                                    className={`h-11 w-full pl-8 font-bold rounded-xl transition-all ${servicePrices[service.id] !== undefined && servicePrices[service.id] !== service.price ? "border-indigo-300 bg-indigo-50 text-indigo-900 focus-visible:ring-indigo-500" : "border-slate-200 bg-slate-50 focus-visible:ring-slate-400"}`} 
-                                    value={servicePrices[service.id] ?? service.price}
-                                    onChange={e => handlePriceChange(service.id, e.target.value)}
-                                  />
-                                </div>
-                                {servicePrices[service.id] !== undefined && servicePrices[service.id] !== service.price ? (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => {
-                                      setServicePrices(prev => {
-                                        const next = { ...prev };
-                                        delete next[service.id];
-                                        return next;
-                                      });
-                                    }}
-                                    className="h-11 px-2.5 text-xs font-semibold text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl shrink-0 cursor-pointer"
-                                    title="รีเซ็ตกลับไปใช้ราคามาตรฐาน (Revert to Base Price)"
-                                  >
-                                    <RotateCcw size={12} className="mr-1" /> Revert
-                                  </Button>
-                                ) : (
-                                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1 bg-slate-100 rounded-md shrink-0">
-                                    Base
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                {isCorporateCatalog ? (
+                  /* ======================================================== */
+                  /* CORPORATE B2B CATALOG: INDEPENDENT ITEMS TABLE           */
+                  /* ======================================================== */
+                  <div className="space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <Label className="text-xs font-black text-slate-400 uppercase tracking-widest block mb-1">
+                          Contract Product Items (รายการสินค้าเฉพาะของบริษัทนี้)
+                        </Label>
+                        <p className="text-xs text-slate-500 font-medium">
+                          ลบรายการที่ไม่ใช้ออกได้ หรือกดเพิ่มรายการใหม่เฉพาะของลูกค้ารายนี้ได้อิสระ
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="relative">
+                          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <Input
+                            placeholder="ค้นหารายการ..."
+                            value={catalogSearch}
+                            onChange={e => setCatalogSearch(e.target.value)}
+                            className="h-9 pl-8 w-44 text-xs bg-white rounded-xl"
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            const newItem: PriceListItem = {
+                              id: `ITEM-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+                              name: "",
+                              nameEn: "",
+                              category: "B2B",
+                              unit: "ชิ้น",
+                              price: 0,
+                            };
+                            setCustomItems(prev => [newItem, ...prev]);
+                            toast.success("เพิ่มแถวสินค้าใหม่แล้ว กรุณากรอกชื่อและราคา");
+                          }}
+                          className="h-9 px-3 text-xs bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl gap-1.5 shadow-sm cursor-pointer shrink-0"
+                        >
+                          <Plus size={14} /> เพิ่มสินค้าเฉพาะบริษัท
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                      <div className="max-h-[420px] overflow-y-auto">
+                        <table className="w-full text-sm text-left">
+                          <thead className="bg-amber-50/70 border-b border-amber-200/60 text-[10px] uppercase font-black text-amber-950 tracking-wider sticky top-0 z-10">
+                            <tr>
+                              <th className="px-4 py-3 w-[45px]">#</th>
+                              <th className="px-4 py-3">ชื่อสินค้า / บริการเฉพาะ</th>
+                              <th className="px-4 py-3 w-[140px]">หมวดหมู่</th>
+                              <th className="px-4 py-3 w-[110px]">หน่วยนับ</th>
+                              <th className="px-4 py-3 w-[150px]">ราคาตามสัญญา (฿)</th>
+                              <th className="px-4 py-3 w-[60px] text-center">ลบ</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {customItems.length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="text-center py-10 text-slate-400 text-xs">
+                                  ยังไม่มีรายการสินค้าในสัญญานี้ กด "+ เพิ่มสินค้าเฉพาะบริษัท" เพื่อเริ่มสร้าง
+                                </td>
+                              </tr>
+                            ) : (
+                              customItems
+                                .map((item, index) => ({ item, index }))
+                                .filter(({ item }) => {
+                                  if (!catalogSearch.trim()) return true;
+                                  const q = catalogSearch.toLowerCase();
+                                  return (
+                                    item.name.toLowerCase().includes(q) ||
+                                    (item.nameEn && item.nameEn.toLowerCase().includes(q)) ||
+                                    (item.category && item.category.toLowerCase().includes(q))
+                                  );
+                                })
+                                .map(({ item, index }) => (
+                                  <tr key={item.id || index} className="hover:bg-amber-50/20 transition-colors">
+                                    <td className="px-4 py-2.5 text-xs font-mono text-slate-400 font-bold">
+                                      {index + 1}
+                                    </td>
+                                    <td className="px-4 py-2.5">
+                                      <Input
+                                        placeholder="ระบุชื่อสินค้า/บริการ e.g. ผ้าปูเตียง 350 เส้น"
+                                        value={item.name}
+                                        onChange={e => {
+                                          const val = e.target.value;
+                                          setCustomItems(prev => {
+                                            const next = [...prev];
+                                            next[index] = { ...next[index], name: val };
+                                            return next;
+                                          });
+                                        }}
+                                        className="h-9 text-xs font-bold text-slate-900 bg-white border-slate-200 rounded-xl"
+                                      />
+                                    </td>
+                                    <td className="px-4 py-2.5">
+                                      <Input
+                                        placeholder="Category"
+                                        value={item.category || ""}
+                                        onChange={e => {
+                                          const val = e.target.value.toUpperCase();
+                                          setCustomItems(prev => {
+                                            const next = [...prev];
+                                            next[index] = { ...next[index], category: val };
+                                            return next;
+                                          });
+                                        }}
+                                        className="h-9 text-xs font-bold uppercase text-slate-700 bg-white border-slate-200 rounded-xl"
+                                      />
+                                    </td>
+                                    <td className="px-4 py-2.5">
+                                      <Input
+                                        placeholder="e.g. ผืน, ชิ้น"
+                                        value={item.unit || ""}
+                                        onChange={e => {
+                                          const val = e.target.value;
+                                          setCustomItems(prev => {
+                                            const next = [...prev];
+                                            next[index] = { ...next[index], unit: val };
+                                            return next;
+                                          });
+                                        }}
+                                        className="h-9 text-xs text-slate-700 bg-white border-slate-200 rounded-xl"
+                                      />
+                                    </td>
+                                    <td className="px-4 py-2.5">
+                                      <div className="relative">
+                                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
+                                        <Input
+                                          type="number"
+                                          step="0.01"
+                                          value={item.price}
+                                          onChange={e => {
+                                            const val = parseFloat(e.target.value) || 0;
+                                            setCustomItems(prev => {
+                                              const next = [...prev];
+                                              next[index] = { ...next[index], price: val };
+                                              return next;
+                                            });
+                                          }}
+                                          className="h-9 text-xs font-bold font-mono pl-7 bg-white border-amber-300 focus-visible:ring-amber-500 rounded-xl text-amber-950"
+                                        />
+                                      </div>
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() => {
+                                          setCustomItems(prev => prev.filter((_, i) => i !== index));
+                                        }}
+                                        className="h-8 w-8 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer"
+                                        title="ลบรายการนี้ออกจากสัญญา"
+                                      >
+                                        <Trash2 size={14} />
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="p-3 bg-slate-50 border-t border-slate-200 text-xs font-bold text-slate-600 flex justify-between items-center">
+                        <span>จำนวนรายการในสัญญานี้: <strong className="text-amber-800">{customItems.length}</strong> รายการ</span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const newItem: PriceListItem = {
+                              id: `ITEM-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+                              name: "",
+                              nameEn: "",
+                              category: "B2B",
+                              unit: "ชิ้น",
+                              price: 0,
+                            };
+                            setCustomItems(prev => [...prev, newItem]);
+                          }}
+                          className="h-7 text-xs border-dashed border-amber-400 text-amber-800 hover:bg-amber-100 rounded-lg cursor-pointer"
+                        >
+                          <Plus size={12} className="mr-1" /> เพิ่มอีก 1 รายการ
+                        </Button>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  /* ======================================================== */
+                  /* STANDARD PRICE OVERRIDES TABLE                           */
+                  /* ======================================================== */
+                  <div className="space-y-3">
+                    <Label className="text-xs font-black text-slate-400 uppercase tracking-widest">Pricing Configuration</Label>
+                    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                      <table className="w-full text-sm text-left">
+                        <thead className="bg-slate-100/50 border-b border-slate-200 text-[10px] uppercase font-black text-slate-500 tracking-wider">
+                          <tr>
+                            <th className="px-6 py-4">Service Name</th>
+                            <th className="px-6 py-4 w-[140px]">Base Price</th>
+                            <th className="px-6 py-4 w-[280px]">Custom Override (฿)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {services.map(service => (
+                            <tr key={service.id} className="hover:bg-slate-50 transition-colors group">
+                              <td className="px-6 py-4">
+                                <div className="font-bold text-slate-900 text-base">{service.name}</div>
+                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">{service.category}</div>
+                              </td>
+                              <td className="px-6 py-4 font-semibold text-slate-500">
+                                ฿{service.price.toLocaleString()}
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="flex items-center gap-2">
+                                  <div className="relative flex-1">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
+                                    <Input 
+                                      type="number" 
+                                      step="0.01"
+                                      className={`h-11 w-full pl-8 font-bold rounded-xl transition-all ${servicePrices[service.id] !== undefined && servicePrices[service.id] !== service.price ? "border-indigo-300 bg-indigo-50 text-indigo-900 focus-visible:ring-indigo-500" : "border-slate-200 bg-slate-50 focus-visible:ring-slate-400"}`} 
+                                      value={servicePrices[service.id] ?? service.price}
+                                      onChange={e => handlePriceChange(service.id, e.target.value)}
+                                    />
+                                  </div>
+                                  {servicePrices[service.id] !== undefined && servicePrices[service.id] !== service.price ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => {
+                                        setServicePrices(prev => {
+                                          const next = { ...prev };
+                                          delete next[service.id];
+                                          return next;
+                                        });
+                                      }}
+                                      className="h-11 px-2.5 text-xs font-semibold text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl shrink-0 cursor-pointer"
+                                      title="รีเซ็ตกลับไปใช้ราคามาตรฐาน (Revert to Base Price)"
+                                    >
+                                      <RotateCcw size={12} className="mr-1" /> Revert
+                                    </Button>
+                                  ) : (
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1 bg-slate-100 rounded-md shrink-0">
+                                      Base
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
             <DialogFooter className="p-6 border-t border-slate-100 bg-white shrink-0">
-              <Button type="button" variant="ghost" onClick={() => setIsModalOpen(false)} className="h-12 rounded-xl px-6 font-semibold">Cancel</Button>
-              <Button type="submit" className="h-12 rounded-xl px-8 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-lg shadow-indigo-200">
-                {editingList ? "Save Price List" : "Create Price List"}
+              <Button type="button" variant="ghost" onClick={() => setIsModalOpen(false)} className="h-12 rounded-xl px-6 font-semibold cursor-pointer">Cancel</Button>
+              <Button type="submit" className="h-12 rounded-xl px-8 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-lg shadow-indigo-200 cursor-pointer">
+                {editingList ? "บันทึกสัญญา / ตารางราคา" : "สร้างสัญญา / ตารางราคา"}
               </Button>
             </DialogFooter>
           </form>

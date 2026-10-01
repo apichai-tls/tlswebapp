@@ -156,10 +156,30 @@ export async function GET() {
       dropoffCoords: { lat: j.dropoffLat, lng: j.dropoffLng },
     }));
 
-    const priceLists = priceListsRaw.map(pl => ({
-      ...pl,
-      servicePrices: JSON.parse(pl.servicePrices || '{}'),
-    }));
+    const priceLists = priceListsRaw.map(pl => {
+      let parsedJson: any = {};
+      try {
+        parsedJson = JSON.parse(pl.servicePrices || '{}');
+      } catch {
+        parsedJson = {};
+      }
+
+      const isCorporate = Boolean(
+        parsedJson.isCorporateCatalog || 
+        (Array.isArray(parsedJson.customItems) && parsedJson.customItems.length > 0)
+      );
+      const customItems = Array.isArray(parsedJson.customItems) ? parsedJson.customItems : undefined;
+      const servicePrices = parsedJson.servicePrices && typeof parsedJson.servicePrices === 'object'
+        ? parsedJson.servicePrices
+        : (Array.isArray(parsedJson.customItems) ? {} : parsedJson);
+
+      return {
+        ...pl,
+        isCorporate,
+        customItems,
+        servicePrices,
+      };
+    });
 
     const settings: Record<string, string> = {};
     settingsRaw.forEach(s => {

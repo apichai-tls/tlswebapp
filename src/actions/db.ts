@@ -1210,14 +1210,44 @@ export async function getRiderTransactionsAction(riderId: string) {
 
 // PRICE LISTS
 export async function addPriceListAction(data: any) {
-  const pData = { ...data, servicePrices: JSON.stringify(data.servicePrices || {}) };
+  let sPrices = "{}";
+  if (typeof data.servicePrices === "string") {
+    sPrices = data.servicePrices;
+  } else if (data.isCorporate || data.customItems) {
+    sPrices = JSON.stringify({
+      isCorporateCatalog: true,
+      customItems: data.customItems || [],
+      servicePrices: data.servicePrices || {}
+    });
+  } else {
+    sPrices = JSON.stringify(data.servicePrices || {});
+  }
+
+  const pData = {
+    name: data.name,
+    isDefault: Boolean(data.isDefault),
+    servicePrices: sPrices
+  };
   return prisma.priceList.create({ data: pData });
 }
 
 export async function updatePriceListAction(id: string, updates: any) {
-  const data: any = { ...updates };
-  if (updates.servicePrices) {
-    data.servicePrices = JSON.stringify(updates.servicePrices);
+  const data: any = {};
+  if (updates.name !== undefined) data.name = updates.name;
+  if (updates.isDefault !== undefined) data.isDefault = updates.isDefault;
+
+  if (updates.servicePrices !== undefined || updates.customItems !== undefined || updates.isCorporate !== undefined) {
+    if (typeof updates.servicePrices === "string") {
+      data.servicePrices = updates.servicePrices;
+    } else if (updates.isCorporate || updates.customItems) {
+      data.servicePrices = JSON.stringify({
+        isCorporateCatalog: true,
+        customItems: updates.customItems || [],
+        servicePrices: updates.servicePrices || {}
+      });
+    } else {
+      data.servicePrices = JSON.stringify(updates.servicePrices || {});
+    }
   }
   return prisma.priceList.update({ where: { id }, data });
 }

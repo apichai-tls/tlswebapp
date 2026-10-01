@@ -52,11 +52,23 @@ export interface POI {
   distanceKm?: number;
 }
 
+export interface PriceListItem {
+  id: string;
+  serviceId?: string;
+  name: string;
+  nameEn?: string | null;
+  category?: string;
+  unit?: string;
+  price: number;
+}
+
 export interface PriceList {
   id: string;
   name: string;
   isDefault?: boolean;
+  isCorporate?: boolean;
   servicePrices: Record<string, number>; // maps serviceId -> price
+  customItems?: PriceListItem[];
 }
 
 export interface CustomerAddress {

@@ -39,7 +39,8 @@ import {
   Store,
   Clock,
   Truck,
-  MapPin
+  MapPin,
+  Building
 } from "lucide-react";
 import { trousers, skirt, dress, socks } from "@lucide/lab";
 import { Button } from "@/components/ui/button";
@@ -947,6 +948,13 @@ const getCategoryStyles = (category: string) => {
       icon: <Layers size={24} />
     };
   }
+  if (cat.includes("CORP") || cat.includes("B2B") || cat.includes("CONTRACT")) {
+    return {
+      bg: "bg-indigo-500/10 text-indigo-500 border-indigo-200/50 dark:border-indigo-900/30",
+      hover: "hover:border-indigo-400 hover:shadow-indigo-500/5",
+      icon: <Building size={24} />
+    };
+  }
   // Default fallback
   return {
     bg: "bg-slate-500/10 text-slate-500 border-slate-200/50 dark:border-slate-800/30",
@@ -1127,6 +1135,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [confirmReturnJob, setConfirmReturnJob] = useState<Job | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
+  const [showAllStoreServices, setShowAllStoreServices] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isMemberRate, setIsMemberRate] = useState(false);
@@ -1735,9 +1744,44 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return getBusinessDay(openedAt) !== getBusinessDay(now);
   }, [activeShift]);
 
+  // Check if selectedCustomer has a Corporate Catalog PriceList with customItems
+  const activeCorpPriceList = useMemo(() => {
+    if (!selectedCustomer?.priceListId) return null;
+    const pl = priceLists.find(p => p.id === selectedCustomer.priceListId);
+    if (pl && (pl.isCorporate || (pl.customItems && pl.customItems.length > 0)) && pl.customItems && pl.customItems.length > 0) {
+      return pl;
+    }
+    return null;
+  }, [selectedCustomer?.priceListId, priceLists]);
+
+  // Convert customItems to ServiceItem structure when using corporate catalog
+  const corporateServices = useMemo<ServiceItem[]>(() => {
+    if (!activeCorpPriceList?.customItems) return [];
+    return activeCorpPriceList.customItems.map(item => ({
+      id: item.id,
+      name: item.name,
+      nameEn: item.nameEn || item.name,
+      price: item.price,
+      memberPrice: item.price,
+      category: item.category || "CORPORATE",
+      unit: item.unit || "ชิ้น",
+      isActive: true,
+    }));
+  }, [activeCorpPriceList]);
+
+  // Auto-reset contract view and category when customer switches
+  useEffect(() => {
+    setShowAllStoreServices(false);
+    setSelectedCategory("All");
+  }, [selectedCustomer?.id, selectedCustomer?.priceListId]);
+
   const getProductPrice = useCallback((product: ServiceItem) => {
     if (selectedCustomer?.priceListId) {
       const pl = priceLists.find(p => p.id === selectedCustomer.priceListId);
+      if (pl && (pl.isCorporate || (pl.customItems && pl.customItems.length > 0)) && pl.customItems) {
+        const found = pl.customItems.find(it => it.id === product.id || it.serviceId === product.id);
+        if (found) return found.price;
+      }
       if (pl && pl.servicePrices && pl.servicePrices[product.id] !== undefined) {
         return pl.servicePrices[product.id];
       }
@@ -1751,7 +1795,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (prev.length === 0) return prev;
       return prev.map(item => {
         if (item.category === "PACKAGE" || item.name === "PACKAGE" || item.id === "topup-member-item") return item;
-        const service = services.find(s => s.id === item.id);
+        const service = services.find(s => s.id === item.id) || corporateServices.find(s => s.id === item.id);
         if (!service) return item;
         const newPrice = getProductPrice(service);
         return {
@@ -1761,7 +1805,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         };
       });
     });
-  }, [selectedCustomer, isMemberRate, services, priceLists, getProductPrice]);
+  }, [selectedCustomer, isMemberRate, services, priceLists, getProductPrice, corporateServices]);
 
   const isNearClosing = useMemo(() => {
     if (!activeShift) return false;
@@ -1817,20 +1861,22 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Dynamically compute unique categories from active services (excluding PACKAGE)
   const categories = useMemo(() => {
-    const activeServices = services.filter(s => s.isActive !== false && s.category !== "PACKAGE");
+    const sourceServices = (activeCorpPriceList && !showAllStoreServices) ? corporateServices : services;
+    const activeServices = sourceServices.filter(s => s.isActive !== false && s.category !== "PACKAGE");
     const uniqueCats = Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
     return ["All", ...uniqueCats];
-  }, [services]);
+  }, [services, corporateServices, activeCorpPriceList, showAllStoreServices]);
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const s of services) {
+    const sourceServices = (activeCorpPriceList && !showAllStoreServices) ? corporateServices : services;
+    for (const s of sourceServices) {
       if (s.isActive !== false && s.category && s.category !== "PACKAGE") {
         counts[s.category] = (counts[s.category] || 0) + 1;
       }
     }
     return counts;
-  }, [services]);
+  }, [services, corporateServices, activeCorpPriceList, showAllStoreServices]);
 
 
   // Auto-apply member rate and auto-select Member payment method if customer has wallet balance
@@ -1861,7 +1907,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Filter products based on category and search (matching both Thai and English names, excluding PACKAGE)
   const filteredProducts = useMemo(() => {
-    const activeServices = services.filter(p => p.isActive !== false && p.category !== "PACKAGE");
+    const sourceServices = (activeCorpPriceList && !showAllStoreServices) ? corporateServices : services;
+    const activeServices = sourceServices.filter(p => p.isActive !== false && p.category !== "PACKAGE");
     return activeServices.filter(p => {
       const matchesCategory = selectedCategory === "All" || p.category === selectedCategory;
       const nameMatch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
@@ -1869,7 +1916,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const matchesSearch = nameMatch || nameEnMatch;
       return matchesCategory && matchesSearch;
     });
-  }, [selectedCategory, searchQuery, services]);
+  }, [selectedCategory, searchQuery, services, corporateServices, activeCorpPriceList, showAllStoreServices]);
 
   // Cart logic
   const addToCart = (product: ServiceItem, customPrice?: number) => {
@@ -3625,6 +3672,49 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             </div>
           )}
 
+          {/* Corporate B2B Contract Indicator Banner */}
+          {activeCorpPriceList && (
+            <div className="mb-3.5 p-3 rounded-2xl bg-indigo-50/90 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-between gap-3 shrink-0 shadow-xs">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <Building size={16} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-black text-indigo-950 dark:text-indigo-200 truncate">
+                      {activeCorpPriceList.name}
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300">
+                      {showAllStoreServices 
+                        ? (currentLanguage === "en" ? "Viewing Store Catalog" : "กำลังดูสินค้าทั้งหมดของร้าน")
+                        : (currentLanguage === "en" ? `Contract Catalog (${corporateServices.length} items)` : `แคตตาล็อกตามสัญญา (${corporateServices.length} รายการ)`)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-indigo-700/80 dark:text-indigo-400 font-medium truncate">
+                    {showAllStoreServices 
+                      ? (currentLanguage === "en" ? "Contract prices will be applied automatically when adding to cart." : "ราคาสัญญาจะถูกนำมาคำนวณอัตโนมัติเมื่อเลือกสินค้า")
+                      : (currentLanguage === "en" ? "Showing company-specific contract catalog and special rates." : "แสดงเฉพาะรายการสินค้าและราคาตามสัญญาขององค์กรนี้")}
+                  </p>
+                </div>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setShowAllStoreServices(!showAllStoreServices);
+                  setSelectedCategory("All");
+                  playAudioFeedback("click");
+                }}
+                className="shrink-0 h-8 text-xs font-bold rounded-xl border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 cursor-pointer"
+              >
+                {showAllStoreServices
+                  ? (currentLanguage === "en" ? "Show Contract Only" : "ดูเฉพาะสินค้าสัญญา")
+                  : (currentLanguage === "en" ? "Show Store Catalog" : "ดูสินค้าทั้งหมดของร้าน")}
+              </Button>
+            </div>
+          )}
+
         {/* Categories Header / Back Navigation */}
         <div className="flex items-center gap-3 pb-3.5 shrink-0 select-none">
           {selectedCategory !== "All" || searchQuery ? (
@@ -3646,13 +3736,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           
           <h2 className="text-xs font-black text-foreground uppercase tracking-wider">
             {selectedCategory === "All" 
-              ? (searchQuery ? `Search Results: "${searchQuery}"` : "Service Categories") 
+              ? (searchQuery 
+                  ? `Search Results: "${searchQuery}"` 
+                  : (activeCorpPriceList && !showAllStoreServices ? (currentLanguage === "en" ? "Contract Items" : "รายการสินค้าตามสัญญา") : (currentLanguage === "en" ? "Service Categories" : "หมวดหมู่บริการ"))) 
               : selectedCategory}
           </h2>
         </div>
 
         {/* Dynamic Category Portal vs Product Grid View */}
-        {selectedCategory === "All" && !searchQuery ? (
+        {selectedCategory === "All" && !searchQuery && (!activeCorpPriceList || showAllStoreServices || categories.filter(cat => cat !== "All").length > 1) ? (
           <div className="flex-1 overflow-y-auto pr-1 min-h-0 select-none">
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 pb-4">
               {categories.filter(cat => cat !== "All").map(cat => {
