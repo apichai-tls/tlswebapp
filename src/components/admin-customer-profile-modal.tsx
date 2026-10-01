@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 
 import { format } from "date-fns";
-import { type Customer, type CustomerAddress, type CustomerCoupon, customerStore, shopStore, walletApprovalStore } from "@/lib/store";
+import { type Customer, type CustomerAddress, type CustomerCoupon, customerStore, shopStore, walletApprovalStore, priceListStore } from "@/lib/store";
 import { api } from "@/lib/api";
 import { useSyncExternalStore, useState, useEffect, useMemo } from "react";
 import { useJobs } from "@/lib/use-jobs";
@@ -96,6 +96,13 @@ export function AdminCustomerProfileModal({
 
   const pendingWalletMap = useSyncExternalStore(walletApprovalStore.subscribe, walletApprovalStore.getSnapshot, walletApprovalStore.getSnapshot);
   const pendingCount = customer?.id ? (pendingWalletMap.byCustomer[customer.id] || 0) : 0;
+
+  const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
+  const assignedPriceList = useMemo(() => {
+    if (!customer?.priceListId || customer.priceListId === "regular") return "Regular (Standard Base)";
+    const found = priceLists.find(p => p.id === customer.priceListId);
+    return found ? `${found.name}${found.isDefault ? " (Default)" : ""}` : customer.priceListId;
+  }, [customer?.priceListId, priceLists]);
 
   // Main 3 Tabs: "profile" | "orders" | "tickets"
   const [activeTab, setActiveTab] = useState<"profile" | "orders" | "tickets">("profile");
@@ -730,6 +737,13 @@ export function AdminCustomerProfileModal({
                         <div className="text-[11px] font-semibold text-slate-400 mb-0.5">Tier & Profile ID:</div>
                         <div className="text-xs font-bold text-slate-800">
                           {(customer.isCorporate || customer.tier === "corporate") ? "Corporate B2B" : customer.isVIP ? "VIP" : customer.isMember ? "MEMBER" : "Standard"} • {custCode}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] font-semibold text-slate-400 mb-0.5">Price List (ตารางราคาที่ใช้):</div>
+                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <Tag size={12} className="text-indigo-600" />
+                          <span>{assignedPriceList}</span>
                         </div>
                       </div>
                     </div>

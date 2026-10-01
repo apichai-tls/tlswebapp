@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { 
   Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, 
-  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check 
+  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag 
 } from "lucide-react";
 import { customerStore, priceListStore, poiStore, walletApprovalStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
@@ -367,14 +367,20 @@ export function AdminCustomerDialog({
 
       let finalPriceListId = priceListId;
       if (customerTier === "corporate") {
-        const corpPl = priceLists.find(p => p.name.toLowerCase().includes("corporate") || p.name.toLowerCase().includes("b2b"));
-        if (corpPl && priceListId === "regular") finalPriceListId = corpPl.id;
+        if (priceListId === "regular" || !priceListId) {
+          const corpPl = priceLists.find(p => p.name.toLowerCase().includes("corporate") || p.name.toLowerCase().includes("b2b"));
+          if (corpPl) finalPriceListId = corpPl.id;
+        }
       } else if (isMemberBool) {
-        const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
-        if (ml) finalPriceListId = ml.id;
+        if (priceListId === "regular" || !priceListId) {
+          const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
+          if (ml) finalPriceListId = ml.id;
+        }
       } else {
-        const rl = priceLists.find(p => p.isDefault);
-        if (rl) finalPriceListId = rl.id;
+        if (priceListId === "regular" || !priceListId) {
+          const rl = priceLists.find(p => p.isDefault);
+          if (rl) finalPriceListId = rl.id;
+        }
       }
 
       // Route Thai phone to primary phone, international to secondaryPhone
@@ -664,6 +670,10 @@ export function AdminCustomerDialog({
                       if (newTier === "corporate") {
                         setIsCorporate(true);
                         setRequiresTaxInvoice(true);
+                        const corpPl = priceLists.find(p => p.name.toLowerCase().includes("corporate") || p.name.toLowerCase().includes("b2b"));
+                        if (corpPl) {
+                          setPriceListId(corpPl.id);
+                        }
                       } else {
                         setIsCorporate(false);
                       }
@@ -687,7 +697,7 @@ export function AdminCustomerDialog({
 
               {/* Row 3A: Corporate B2B Details Banner */}
               {customerTier === "corporate" && (
-                <div className="bg-gradient-to-r from-amber-50/90 via-orange-50/70 to-amber-50/90 border border-amber-200/90 rounded-2xl p-3.5 space-y-2 shadow-2xs">
+                <div className="bg-gradient-to-r from-amber-50/90 via-orange-50/70 to-amber-50/90 border border-amber-200/90 rounded-2xl p-3.5 space-y-2.5 shadow-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-black uppercase tracking-wider text-amber-950 flex items-center gap-1.5">
                       <Building size={14} className="text-amber-600" />
@@ -700,6 +710,23 @@ export function AdminCustomerDialog({
                   <p className="text-[11px] text-amber-900 leading-relaxed font-medium">
                     ระบบเปิดตัวเลือกข้อมูลใบกำกับภาษี (Tax Invoice) และกำหนดระดับราคาสำหรับลูกค้าองค์กร/B2B โดยอัตโนมัติ
                   </p>
+                  <div className="pt-2 border-t border-amber-200/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                      <Tag size={13} className="text-amber-700" /> ตารางราคาที่ใช้ (Price List):
+                    </span>
+                    <select
+                      value={priceListId}
+                      onChange={e => setPriceListId(e.target.value)}
+                      className="h-8 text-xs font-semibold bg-white border border-amber-300 rounded-xl px-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-2xs cursor-pointer"
+                    >
+                      <option value="regular">Regular (Standard Base)</option>
+                      {priceLists.map(pl => (
+                        <option key={pl.id} value={pl.id}>
+                          {pl.name} {pl.isDefault ? "(Default Base)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               )}
 
