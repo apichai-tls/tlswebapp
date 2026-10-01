@@ -458,6 +458,17 @@ export function AdminSettings() {
               <p className="text-xs text-slate-500 font-medium">Create unlimited price lists to assign to your customers.</p>
             </div>
           </div>
+          <Button 
+            onClick={() => {
+              setName("");
+              setServicePrices({});
+              setEditingList(null);
+              setIsModalOpen(true);
+            }} 
+            className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-sm cursor-pointer"
+          >
+            <Plus size={16} className="mr-2" /> Add Price List
+          </Button>
         </div>
         
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
