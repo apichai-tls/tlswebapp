@@ -24,7 +24,7 @@ export interface LatLng {
   lng: number;
 }
 
-export type CustomerTier = "regular" | "bronze" | "silver" | "gold" | "platinum";
+export type CustomerTier = "regular" | "bronze" | "silver" | "gold" | "platinum" | "standard" | "member" | "vip" | "corporate";
 
 export interface ShopLocation {
   id: string;

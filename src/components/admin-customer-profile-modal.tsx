@@ -519,6 +519,13 @@ export function AdminCustomerProfileModal({
                       </span>
                     )}
 
+                    {(customer.isCorporate || customer.tier === "corporate") && (
+                      <span className="bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-full flex items-center gap-1 shadow-2xs">
+                        <Building size={10} />
+                        Corporate B2B
+                      </span>
+                    )}
+
                     {customer.brand === "noname_laundry" && (
                       <span className="bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 text-[10px] font-bold uppercase rounded-md shadow-2xs">
                         Noname
@@ -722,7 +729,7 @@ export function AdminCustomerProfileModal({
                       <div>
                         <div className="text-[11px] font-semibold text-slate-400 mb-0.5">Tier & Profile ID:</div>
                         <div className="text-xs font-bold text-slate-800">
-                          {customer.isVIP ? "VIP" : customer.isMember ? "MEMBER" : "Standard"} • {custCode}
+                          {(customer.isCorporate || customer.tier === "corporate") ? "Corporate B2B" : customer.isVIP ? "VIP" : customer.isMember ? "MEMBER" : "Standard"} • {custCode}
                         </div>
                       </div>
                     </div>

@@ -84,7 +84,7 @@ export function AdminCustomerDialog({
   const [nickName, setNickName] = useState("");
   const [gender, setGender] = useState("Rather not say");
   const [dob, setDob] = useState("");
-  const [customerTier, setCustomerTier] = useState<"member" | "vip" | "standard">("standard");
+  const [customerTier, setCustomerTier] = useState<"member" | "vip" | "standard" | "corporate">("standard");
 
   // Dual Phones & Channels
   const [phone, setPhone] = useState("");
@@ -139,7 +139,15 @@ export function AdminCustomerDialog({
         setNickName(customer.nickName || "");
         setGender(customer.gender || "Rather not say");
         setDob(customer.dob || "");
-        setCustomerTier(customer.isVIP ? "vip" : customer.isMember ? "member" : "standard");
+        setCustomerTier(
+          customer.isCorporate || customer.tier === "corporate"
+            ? "corporate"
+            : customer.isVIP || customer.tier === "vip"
+            ? "vip"
+            : customer.isMember || customer.tier === "member"
+            ? "member"
+            : "standard"
+        );
 
         // Dual Phone resolution on Dialog Open:
         const rawP = (customer.phone || "").trim();
@@ -353,11 +361,15 @@ export function AdminCustomerDialog({
 
     setIsSaving(true);
     try {
+      const isCorporateBool = customerTier === "corporate" || isCorporate;
       const isMemberBool = customerTier === "member" || customerTier === "vip" || Boolean(memberId.trim());
       const isVIPBool = customerTier === "vip";
 
       let finalPriceListId = priceListId;
-      if (isMemberBool) {
+      if (customerTier === "corporate") {
+        const corpPl = priceLists.find(p => p.name.toLowerCase().includes("corporate") || p.name.toLowerCase().includes("b2b"));
+        if (corpPl && priceListId === "regular") finalPriceListId = corpPl.id;
+      } else if (isMemberBool) {
         const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
         if (ml) finalPriceListId = ml.id;
       } else {
@@ -400,7 +412,8 @@ export function AdminCustomerDialog({
         taxId: requiresTaxInvoice ? taxId.trim() || null : null,
         companyName: requiresTaxInvoice ? companyName.trim() || null : null,
         isVIP: isVIPBool,
-        isCorporate,
+        isCorporate: isCorporateBool,
+        tier: customerTier,
         isMember: isMemberBool,
         isWhatsapp,
         passwordHash: initialPin.trim() || undefined,
@@ -648,6 +661,12 @@ export function AdminCustomerDialog({
                     onChange={e => {
                       const newTier = e.target.value as any;
                       setCustomerTier(newTier);
+                      if (newTier === "corporate") {
+                        setIsCorporate(true);
+                        setRequiresTaxInvoice(true);
+                      } else {
+                        setIsCorporate(false);
+                      }
                       if ((newTier === "member" || newTier === "vip") && !memberStartDate) {
                         const now = new Date();
                         setMemberStartDate(now.toISOString().split("T")[0]);
@@ -661,9 +680,28 @@ export function AdminCustomerDialog({
                     <option value="standard">Standard</option>
                     <option value="member">Member</option>
                     <option value="vip">VIP Gold</option>
+                    <option value="corporate">Corporate B2B (ลูกค้าองค์กร / บริษัท)</option>
                   </select>
                 </div>
               </div>
+
+              {/* Row 3A: Corporate B2B Details Banner */}
+              {customerTier === "corporate" && (
+                <div className="bg-gradient-to-r from-amber-50/90 via-orange-50/70 to-amber-50/90 border border-amber-200/90 rounded-2xl p-3.5 space-y-2 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black uppercase tracking-wider text-amber-950 flex items-center gap-1.5">
+                      <Building size={14} className="text-amber-600" />
+                      ลูกค้าประเภทองค์กร / บริษัท (Corporate B2B Account)
+                    </span>
+                    <span className="text-[10px] font-extrabold text-amber-800 bg-white px-2.5 py-0.5 rounded-full border border-amber-300 shadow-2xs">
+                      CORPORATE B2B
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-amber-900 leading-relaxed font-medium">
+                    ระบบเปิดตัวเลือกข้อมูลใบกำกับภาษี (Tax Invoice) และกำหนดระดับราคาสำหรับลูกค้าองค์กร/B2B โดยอัตโนมัติ
+                  </p>
+                </div>
+              )}
 
               {/* Row 3: Membership Details (Member ID, Start Date, Expiry Date) */}
               {(customerTier === "member" || customerTier === "vip" || Boolean(memberId)) && (

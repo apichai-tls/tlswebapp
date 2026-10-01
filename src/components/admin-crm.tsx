@@ -113,8 +113,8 @@ const getAvatarStyles = (customer: Customer) => {
   if (customer.isMember) {
     return "bg-gradient-to-br from-indigo-500 to-indigo-600 border-indigo-300 text-white shadow-indigo-150 shadow-sm";
   }
-  if (customer.isCorporate) {
-    return "bg-gradient-to-br from-slate-600 to-slate-700 border-slate-450 text-white shadow-slate-200 shadow-sm";
+  if (customer.isCorporate || customer.tier === "corporate") {
+    return "bg-gradient-to-br from-amber-600 to-amber-700 border-amber-450 text-white shadow-amber-200 shadow-sm";
   }
   // Standard
   return "bg-gradient-to-br from-slate-400 to-slate-500 border-slate-350 text-white shadow-sm";
@@ -136,10 +136,10 @@ const getAvatarBadge = (customer: Customer) => {
       </span>
     );
   }
-  if (customer.isCorporate) {
+  if (customer.isCorporate || customer.tier === "corporate") {
     return (
-      <span className="absolute -top-1 -right-1 w-4.5 h-4.5 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm z-10">
-        <Building size={8} className="text-slate-500" />
+      <span className="absolute -top-1 -right-1 w-4.5 h-4.5 rounded-full bg-white border border-amber-200 flex items-center justify-center shadow-sm z-10" title="Corporate B2B">
+        <Building size={8} className="text-amber-700" />
       </span>
     );
   }
@@ -751,9 +751,9 @@ export function AdminCRM({
   const statsCount = useMemo(() => {
     return {
       all: customers.length,
-      vip: customers.filter(c => c.isVIP).length,
-      member: customers.filter(c => c.isMember).length,
-      corporate: customers.filter(c => c.isCorporate).length,
+      vip: customers.filter(c => c.isVIP || c.tier === "vip").length,
+      member: customers.filter(c => c.isMember || c.tier === "member").length,
+      corporate: customers.filter(c => c.isCorporate || c.tier === "corporate").length,
       balance: customers.filter(c => (c.creditBalance || 0) > 0).length
     };
   }, [customers]);
@@ -943,9 +943,9 @@ export function AdminCRM({
       }
 
       // 2. Tab filter
-      if (activeTab === "vip") return c.isVIP;
-      if (activeTab === "member") return c.isMember;
-      if (activeTab === "corporate") return c.isCorporate;
+      if (activeTab === "vip") return Boolean(c.isVIP || c.tier === "vip");
+      if (activeTab === "member") return Boolean(c.isMember || c.tier === "member" || c.tier === "vip");
+      if (activeTab === "corporate") return Boolean(c.isCorporate || c.tier === "corporate");
       if (activeTab === "balance") return (c.creditBalance || 0) > 0;
       
       return true;
@@ -1640,10 +1640,10 @@ export function AdminCRM({
                               MEMBER {selectedCustomerForReport.memberId ? `#${selectedCustomerForReport.memberId}` : ""}
                             </Badge>
                           )}
-                          {selectedCustomerForReport.isCorporate && (
-                            <Badge className="bg-slate-100 text-slate-700 border-slate-300 text-[10px] font-bold flex items-center gap-1">
+                          {(selectedCustomerForReport.isCorporate || selectedCustomerForReport.tier === "corporate") && (
+                            <Badge className="bg-amber-50 text-amber-800 border-amber-300 text-[10px] font-bold flex items-center gap-1">
                               <Building size={11} />
-                              CORP
+                              CORP B2B
                             </Badge>
                           )}
                         </h4>
@@ -2777,10 +2777,10 @@ export function AdminCRM({
                                       VIP
                                     </Badge>
                                   )}
-                                  {customer.isCorporate && (
-                                    <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/30 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
-                                      <Building size={8} className="text-indigo-500" /> 
-                                      B2B
+                                  {(customer.isCorporate || customer.tier === "corporate") && (
+                                    <Badge className="bg-amber-50 text-amber-800 border border-amber-200/50 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md">
+                                      <Building size={8} className="text-amber-600" /> 
+                                      CORP B2B
                                     </Badge>
                                   )}
                                   {isNewCustomer ? (
