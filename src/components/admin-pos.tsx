@@ -40,7 +40,8 @@ import {
   Clock,
   Truck,
   MapPin,
-  Building
+  Building,
+  Receipt
 } from "lucide-react";
 import { trousers, skirt, dress, socks } from "@lucide/lab";
 import { Button } from "@/components/ui/button";
@@ -1892,6 +1893,22 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
   }, [selectedCustomer, isStandardPlan]);
 
+  // Auto-apply customer-specific VAT treatment (e.g. Corporate B2B contract VAT)
+  useEffect(() => {
+    if (selectedCustomer?.vatType && selectedCustomer.vatType !== "default") {
+      setVatType(selectedCustomer.vatType as any);
+      if (selectedCustomer.vatType === "exclusive") {
+        toast.info(currentLanguage === "en" ? "Exclusive VAT (+7%) auto-applied for this customer" : "ใช้การคำนวณแยก VAT 7% ตามสัญญาของลูกค้ารายนี้");
+      } else if (selectedCustomer.vatType === "inclusive") {
+        toast.info(currentLanguage === "en" ? "Inclusive VAT (7%) auto-applied for this customer" : "ใช้การคำนวณรวม VAT 7% ตามสัญญาของลูกค้ารายนี้");
+      } else if (selectedCustomer.vatType === "none") {
+        toast.info(currentLanguage === "en" ? "No VAT auto-applied for this customer" : "ลูกค้ารายนี้ได้รับการยกเว้นภาษี (No VAT)");
+      }
+    } else {
+      setVatType(normalizeVatType(settings?.vatType));
+    }
+  }, [selectedCustomer?.id, selectedCustomer?.vatType, settings?.vatType, currentLanguage]);
+
   // Force isPaid to true and reset paymentMethod if credit conditions change
   // Merged into one effect to avoid circular isPaid <-> paymentMethod loop
   useEffect(() => {
@@ -3689,6 +3706,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         ? (currentLanguage === "en" ? "Viewing Store Catalog" : "กำลังดูสินค้าทั้งหมดของร้าน")
                         : (currentLanguage === "en" ? `Contract Catalog (${corporateServices.length} items)` : `แคตตาล็อกตามสัญญา (${corporateServices.length} รายการ)`)}
                     </span>
+                    {vatType !== "none" && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300">
+                        {vatType === "exclusive" 
+                          ? (currentLanguage === "en" ? `Exclude VAT (+${vatRate}%)` : `แยก VAT (+${vatRate}%)`)
+                          : (currentLanguage === "en" ? `Include VAT (${vatRate}%)` : `รวม VAT (${vatRate}%)`)}
+                      </span>
+                    )}
                   </div>
                   <p className="text-[11px] text-indigo-700/80 dark:text-indigo-400 font-medium truncate">
                     {showAllStoreServices 
@@ -4793,6 +4817,23 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   <span className="font-bold">+฿{expressSurcharge.toLocaleString()}</span>
                 </div>
               )}
+
+              {/* VAT Selector & Breakdown */}
+              <div className="flex justify-between items-center text-xs font-semibold text-muted-foreground pt-1 border-t border-border/60">
+                <span className="flex items-center gap-1 font-bold text-foreground">
+                  <Receipt size={12} className="text-primary" />
+                  <span>VAT:</span>
+                </span>
+                <select
+                  value={vatType}
+                  onChange={(e) => setVatType(e.target.value as any)}
+                  className="bg-background text-foreground border border-input rounded px-2 py-0.5 text-[11px] font-bold outline-none cursor-pointer focus:ring-1 focus:ring-primary"
+                >
+                  <option value="none">{currentLanguage === "en" ? "No VAT (0%)" : "ไม่คิด VAT (0%)"}</option>
+                  <option value="inclusive">{currentLanguage === "en" ? `Incl. VAT (${vatRate}%)` : `รวมใน (${vatRate}%)`}</option>
+                  <option value="exclusive">{currentLanguage === "en" ? `Exclude VAT (+${vatRate}%)` : `แยกนอก (+${vatRate}%)`}</option>
+                </select>
+              </div>
 
               {vatType === "exclusive" && vatRate > 0 && (
                 <div className="flex justify-between text-xs font-semibold text-muted-foreground">

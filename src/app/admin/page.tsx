@@ -1091,16 +1091,27 @@ export default function AdminPage() {
 
 
   useEffect(() => {
-    // Only apply global VAT settings when NOT editing an existing job.
+    // Only apply global or customer VAT settings when NOT editing an existing job.
     // When editing a job, VAT is already restored from job.remark in handleEditFullJob.
     if (editingJobId) return;
-    if (systemSettings?.vatType) {
+    const rate = parseFloat(systemSettings?.vatRate || "7") || 7;
+    setDialogVatRate(rate);
+
+    if (selectedProfileCustomer?.vatType && selectedProfileCustomer.vatType !== "default") {
+      setDialogVatType(selectedProfileCustomer.vatType as any);
+      if (selectedProfileCustomer.vatType === "exclusive") {
+        toast.info(currentLanguage === "en" ? `Customer contract: Exclude VAT (+${rate}%)` : `ลูกค้ามีข้อตกลง: แยกภาษีมูลค่าเพิ่ม (+${rate}%)`);
+      } else if (selectedProfileCustomer.vatType === "inclusive") {
+        toast.info(currentLanguage === "en" ? `Customer contract: Include VAT (${rate}%)` : `ลูกค้ามีข้อตกลง: รวมภาษีมูลค่าเพิ่ม (${rate}%)`);
+      } else if (selectedProfileCustomer.vatType === "none") {
+        toast.info(currentLanguage === "en" ? "Customer contract: No VAT" : "ลูกค้ามีข้อตกลง: ไม่คิดภาษีมูลค่าเพิ่ม");
+      }
+    } else if (systemSettings?.vatType) {
       setDialogVatType(systemSettings.vatType as any);
     } else {
       setDialogVatType("none");
     }
-    setDialogVatRate(parseFloat(systemSettings?.vatRate || "7") || 7);
-  }, [systemSettings?.vatType, systemSettings?.vatRate, editingJobId]);
+  }, [systemSettings?.vatType, systemSettings?.vatRate, selectedProfileCustomer?.id, selectedProfileCustomer?.vatType, editingJobId, currentLanguage]);
 
   const [showAllStoreServicesInDialog, setShowAllStoreServicesInDialog] = useState(false);
 
@@ -4931,6 +4942,13 @@ export default function AdminPage() {
                                           ? (currentLanguage === "en" ? "Store Catalog" : "สินค้าทั้งหมดของร้าน")
                                           : (currentLanguage === "en" ? `Contract (${dialogCorporateServices.length} items)` : `สัญญา (${dialogCorporateServices.length} รายการ)`)}
                                       </span>
+                                      {dialogVatType !== "none" && (
+                                        <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                                          {dialogVatType === "exclusive" 
+                                            ? (currentLanguage === "en" ? `Exclude VAT (+${dialogVatRate}%)` : `แยก VAT (+${dialogVatRate}%)`)
+                                            : (currentLanguage === "en" ? `Include VAT (${dialogVatRate}%)` : `รวม VAT (${dialogVatRate}%)`)}
+                                        </span>
+                                      )}
                                     </div>
                                   </div>
                                 </div>
@@ -5546,16 +5564,33 @@ export default function AdminPage() {
                             </div>
                           )}
 
-                          {/* VAT Row */}
+                          {/* VAT Treatment Selector & Breakdown */}
+                          <div className="flex justify-between items-center text-[10px] text-slate-400 py-1 border-t border-slate-800">
+                            <span className="font-bold flex items-center gap-1 text-slate-300">
+                              <Receipt className="w-3 h-3 text-indigo-400" />
+                              <span>VAT:</span>
+                            </span>
+                            <select
+                              value={dialogVatType}
+                              disabled={isPaidJob}
+                              onChange={(e) => setDialogVatType(e.target.value as any)}
+                              className="bg-slate-900 text-slate-200 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] font-bold outline-none focus:border-indigo-500 cursor-pointer disabled:opacity-50"
+                            >
+                              <option value="none">{currentLanguage === "en" ? "No VAT (0%)" : "ไม่คิด VAT (0%)"}</option>
+                              <option value="inclusive">{currentLanguage === "en" ? `Include VAT (${dialogVatRate}%)` : `รวมใน (${dialogVatRate}%)`}</option>
+                              <option value="exclusive">{currentLanguage === "en" ? `Exclude VAT (+${dialogVatRate}%)` : `แยกนอก (+${dialogVatRate}%)`}</option>
+                            </select>
+                          </div>
+
                           {dialogVatType === "exclusive" && dialogVatRate > 0 && (
-                            <div className="flex justify-between text-xs font-semibold text-slate-400 py-1 border-t border-slate-800">
+                            <div className="flex justify-between text-xs font-semibold text-slate-400 py-0.5">
                               <span>VAT ({dialogVatRate}%)</span>
                               <span className="font-bold text-white">+฿{dialogVatAmount.toFixed(2)}</span>
                             </div>
                           )}
 
                           {dialogVatType === "inclusive" && dialogVatRate > 0 && (
-                            <div className="flex justify-between text-xs font-bold text-emerald-500 py-1 border-t border-slate-800">
+                            <div className="flex justify-between text-xs font-bold text-emerald-500 py-0.5">
                               <span>
                                 {currentLanguage === "en" ? `Incl. VAT ${dialogVatRate}%` : `รวม VAT ${dialogVatRate}%`}
                               </span>

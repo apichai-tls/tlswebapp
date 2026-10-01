@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { 
   Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, 
-  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag 
+  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag, Receipt 
 } from "lucide-react";
 import { customerStore, priceListStore, poiStore, walletApprovalStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
@@ -121,6 +121,7 @@ export function AdminCustomerDialog({
   const [memberStartDate, setMemberStartDate] = useState("");
   const [memberExpiryDate, setMemberExpiryDate] = useState("");
   const [priceListId, setPriceListId] = useState("regular");
+  const [customerVatType, setCustomerVatType] = useState<"default" | "inclusive" | "exclusive" | "none">("default");
   const [isSaving, setIsSaving] = useState(false);
 
   const localDataForSearch = useMemo(() => pois.map(p => ({ 
@@ -215,6 +216,7 @@ export function AdminCustomerDialog({
         setMemberStartDate(customer.memberStartDate ? new Date(customer.memberStartDate).toISOString().split("T")[0] : "");
         setMemberExpiryDate(customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split("T")[0] : "");
         setPriceListId(customer.priceListId || "regular");
+        setCustomerVatType((customer.vatType as any) || "default");
         setSelectedLocation(null);
       } else {
         // Reset all states cleanly - no mock defaults
@@ -254,6 +256,7 @@ export function AdminCustomerDialog({
         setMemberStartDate("");
         setMemberExpiryDate("");
         setPriceListId("regular");
+        setCustomerVatType("default");
         setSelectedLocation(null);
       }
     }
@@ -409,6 +412,7 @@ export function AdminCustomerDialog({
         defaultAddress: address.trim(),
         defaultCoords: coords,
         priceListId: finalPriceListId,
+        vatType: customerVatType,
         email: email.trim() || null,
         lineId: lineId.trim() || null,
         language: "th",
@@ -710,22 +714,40 @@ export function AdminCustomerDialog({
                   <p className="text-[11px] text-amber-900 leading-relaxed font-medium">
                     ระบบเปิดตัวเลือกข้อมูลใบกำกับภาษี (Tax Invoice) และกำหนดระดับราคาสำหรับลูกค้าองค์กร/B2B โดยอัตโนมัติ
                   </p>
-                  <div className="pt-2 border-t border-amber-200/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
-                      <Tag size={13} className="text-amber-700" /> ตารางราคาที่ใช้ (Price List):
-                    </span>
-                    <select
-                      value={priceListId}
-                      onChange={e => setPriceListId(e.target.value)}
-                      className="h-8 text-xs font-semibold bg-white border border-amber-300 rounded-xl px-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-2xs cursor-pointer"
-                    >
-                      <option value="regular">Regular (Standard Base)</option>
-                      {priceLists.map(pl => (
-                        <option key={pl.id} value={pl.id}>
-                          {pl.name} {pl.isDefault ? "(Default Base)" : ""}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="pt-2 border-t border-amber-200/60 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                        <Tag size={13} className="text-amber-700" /> ตารางราคา (Price List):
+                      </span>
+                      <select
+                        value={priceListId}
+                        onChange={e => setPriceListId(e.target.value)}
+                        className="h-8.5 text-xs font-semibold bg-white border border-amber-300 rounded-xl px-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-2xs cursor-pointer w-full"
+                      >
+                        <option value="regular">Regular (Standard Base)</option>
+                        {priceLists.map(pl => (
+                          <option key={pl.id} value={pl.id}>
+                            {pl.name} {pl.isDefault ? "(Default Base)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                        <Receipt size={13} className="text-amber-700" /> รูปแบบภาษี (VAT Treatment):
+                      </span>
+                      <select
+                        value={customerVatType}
+                        onChange={e => setCustomerVatType(e.target.value as any)}
+                        className="h-8.5 text-xs font-semibold bg-white border border-amber-300 rounded-xl px-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-2xs cursor-pointer w-full"
+                      >
+                        <option value="default">🏢 ตามค่าเริ่มต้นของร้าน (Default)</option>
+                        <option value="inclusive">📥 รวม VAT 7% ในราคาแล้ว (Inclusive VAT)</option>
+                        <option value="exclusive">📤 คิด VAT 7% แยกต่างหาก (Exclusive VAT +7%)</option>
+                        <option value="none">🚫 ไม่คิด VAT / ยกเว้นภาษี (No VAT)</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1057,6 +1079,24 @@ export function AdminCustomerDialog({
                       />
                     </div>
                   </div>
+
+                  {customerTier !== "corporate" && (
+                    <div className="pt-2 border-t border-amber-200/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                        <Receipt size={13} className="text-amber-700" /> รูปแบบภาษี (VAT Treatment):
+                      </span>
+                      <select
+                        value={customerVatType}
+                        onChange={e => setCustomerVatType(e.target.value as any)}
+                        className="h-8.5 text-xs font-semibold bg-white border border-amber-300 rounded-xl px-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-2xs cursor-pointer w-full sm:w-72"
+                      >
+                        <option value="default">🏢 ตามค่าเริ่มต้นของร้าน (Default)</option>
+                        <option value="inclusive">📥 รวม VAT 7% ในราคาแล้ว (Inclusive VAT)</option>
+                        <option value="exclusive">📤 คิด VAT 7% แยกต่างหาก (Exclusive VAT +7%)</option>
+                        <option value="none">🚫 ไม่คิด VAT / ยกเว้นภาษี (No VAT)</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

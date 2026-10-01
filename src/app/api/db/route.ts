@@ -188,6 +188,7 @@ export async function GET() {
 
     const formattedCustomers = customers.map(c => ({
       ...c,
+      vatType: c.vatType || "default",
       defaultCoords: { lat: c.defaultLat, lng: c.defaultLng }
     }));
 

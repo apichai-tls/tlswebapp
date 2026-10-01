@@ -47,6 +47,7 @@ export async function addCustomerAction(data: any) {
       dob: data.dob,
       taxId: data.taxId,
       companyName: data.companyName,
+      vatType: data.vatType || 'default',
       brand: data.brand || 'that_laundry_shop',
       nickName: data.nickName || null,
       gender: data.gender || 'Rather not say',
@@ -149,6 +150,7 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.dob !== undefined) data.dob = updates.dob;
   if (updates.taxId !== undefined) data.taxId = updates.taxId;
   if (updates.companyName !== undefined) data.companyName = updates.companyName;
+  if (updates.vatType !== undefined) data.vatType = updates.vatType;
   if (updates.brand !== undefined) data.brand = updates.brand;
   if (updates.nickName !== undefined) data.nickName = updates.nickName;
   if (updates.gender !== undefined) data.gender = updates.gender;

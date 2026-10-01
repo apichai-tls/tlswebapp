@@ -171,6 +171,7 @@ export interface Customer {
   dob?: string | null;
   taxId?: string | null;
   companyName?: string | null;
+  vatType?: "default" | "inclusive" | "exclusive" | "none" | null;
   passwordHash?: string | null;
   createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
