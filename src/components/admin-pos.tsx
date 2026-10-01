@@ -4818,23 +4818,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 </div>
               )}
 
-              {/* VAT Selector & Breakdown */}
-              <div className="flex justify-between items-center text-xs font-semibold text-muted-foreground pt-1 border-t border-border/60">
-                <span className="flex items-center gap-1 font-bold text-foreground">
-                  <Receipt size={12} className="text-primary" />
-                  <span>VAT:</span>
-                </span>
-                <select
-                  value={vatType}
-                  onChange={(e) => setVatType(e.target.value as any)}
-                  className="bg-background text-foreground border border-input rounded px-2 py-0.5 text-[11px] font-bold outline-none cursor-pointer focus:ring-1 focus:ring-primary"
-                >
-                  <option value="none">{currentLanguage === "en" ? "No VAT (0%)" : "ไม่คิด VAT (0%)"}</option>
-                  <option value="inclusive">{currentLanguage === "en" ? `Incl. VAT (${vatRate}%)` : `รวมใน (${vatRate}%)`}</option>
-                  <option value="exclusive">{currentLanguage === "en" ? `Exclude VAT (+${vatRate}%)` : `แยกนอก (+${vatRate}%)`}</option>
-                </select>
-              </div>
-
               {vatType === "exclusive" && vatRate > 0 && (
                 <div className="flex justify-between text-xs font-semibold text-muted-foreground">
                   <span>VAT ({vatRate}%)</span>
