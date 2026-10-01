@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
@@ -1003,8 +1003,8 @@ export function AdminSettings() {
                       <thead className="bg-slate-100/50 border-b border-slate-200 text-[10px] uppercase font-black text-slate-500 tracking-wider">
                         <tr>
                           <th className="px-6 py-4">Service Name</th>
-                          <th className="px-6 py-4 w-[150px]">Base Price</th>
-                          <th className="px-6 py-4 w-[220px]">Custom Override (฿)</th>
+                          <th className="px-6 py-4 w-[140px]">Base Price</th>
+                          <th className="px-6 py-4 w-[280px]">Custom Override (฿)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
@@ -1018,15 +1018,39 @@ export function AdminSettings() {
                               ฿{service.price.toLocaleString()}
                             </td>
                             <td className="px-6 py-4">
-                              <div className="relative">
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
-                                <Input 
-                                  type="number" 
-                                  step="0.01"
-                                  className={`h-11 w-full pl-8 font-bold rounded-xl transition-all ${servicePrices[service.id] !== undefined && servicePrices[service.id] !== service.price ? "border-indigo-300 bg-indigo-50 text-indigo-900 focus-visible:ring-indigo-500" : "border-slate-200 bg-slate-50 focus-visible:ring-slate-400"}`} 
-                                  value={servicePrices[service.id] ?? service.price}
-                                  onChange={e => handlePriceChange(service.id, e.target.value)}
-                                />
+                              <div className="flex items-center gap-2">
+                                <div className="relative flex-1">
+                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
+                                  <Input 
+                                    type="number" 
+                                    step="0.01"
+                                    className={`h-11 w-full pl-8 font-bold rounded-xl transition-all ${servicePrices[service.id] !== undefined && servicePrices[service.id] !== service.price ? "border-indigo-300 bg-indigo-50 text-indigo-900 focus-visible:ring-indigo-500" : "border-slate-200 bg-slate-50 focus-visible:ring-slate-400"}`} 
+                                    value={servicePrices[service.id] ?? service.price}
+                                    onChange={e => handlePriceChange(service.id, e.target.value)}
+                                  />
+                                </div>
+                                {servicePrices[service.id] !== undefined && servicePrices[service.id] !== service.price ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                      setServicePrices(prev => {
+                                        const next = { ...prev };
+                                        delete next[service.id];
+                                        return next;
+                                      });
+                                    }}
+                                    className="h-11 px-2.5 text-xs font-semibold text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl shrink-0 cursor-pointer"
+                                    title="รีเซ็ตกลับไปใช้ราคามาตรฐาน (Revert to Base Price)"
+                                  >
+                                    <RotateCcw size={12} className="mr-1" /> Revert
+                                  </Button>
+                                ) : (
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1 bg-slate-100 rounded-md shrink-0">
+                                    Base
+                                  </span>
+                                )}
                               </div>
                             </td>
                           </tr>
