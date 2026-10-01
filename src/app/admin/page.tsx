@@ -118,6 +118,7 @@ import {
   PackageOpen,
   ExternalLink,
   Wallet,
+  Building,
   Save,
   FileText,
   RotateCcw,
@@ -734,6 +735,10 @@ export default function AdminPage() {
     const targetPlId = plId || customer?.priceListId;
     if (targetPlId) {
       const customPl = priceLists.find(pl => pl.id === targetPlId);
+      if (customPl && (customPl.isCorporate || (customPl.customItems && customPl.customItems.length > 0)) && customPl.customItems) {
+        const found = customPl.customItems.find(it => it.id === service.id || it.serviceId === service.id);
+        if (found) return found.price;
+      }
       if (customPl && customPl.servicePrices && customPl.servicePrices[service.id] !== undefined) {
         return customPl.servicePrices[service.id];
       }
@@ -756,7 +761,19 @@ export default function AdminPage() {
       return;
     }
 
-    const baseService = services.find(s => s.id === newServiceId);
+    const targetPlId = priceListId || customer?.priceListId;
+    const customPl = targetPlId ? priceLists.find(pl => pl.id === targetPlId) : null;
+    const corpItem = customPl?.customItems?.find(it => it.id === newServiceId);
+    const baseService: ServiceItem | undefined = corpItem ? {
+      id: corpItem.id,
+      name: corpItem.name,
+      nameEn: corpItem.nameEn || corpItem.name,
+      price: corpItem.price,
+      memberPrice: corpItem.price,
+      category: corpItem.category || "B2B",
+      unit: corpItem.unit || "ชิ้น",
+      isActive: true,
+    } : services.find(s => s.id === newServiceId);
     let pricePerKg = baseService ? getServicePrice(baseService, customer, priceListId) : 110;
 
     if (newServiceId === "other") {
@@ -1085,6 +1102,46 @@ export default function AdminPage() {
     setDialogVatRate(parseFloat(systemSettings?.vatRate || "7") || 7);
   }, [systemSettings?.vatType, systemSettings?.vatRate, editingJobId]);
 
+  const [showAllStoreServicesInDialog, setShowAllStoreServicesInDialog] = useState(false);
+
+  // Corporate B2B contract detection for Create/Edit Job dialog
+  const activeDialogCorpPriceList = useMemo(() => {
+    const targetPlId = customerPriceListId || selectedProfileCustomer?.priceListId;
+    if (!targetPlId) return null;
+    const pl = priceLists.find(p => p.id === targetPlId);
+    if (pl && (pl.isCorporate || (pl.customItems && pl.customItems.length > 0)) && pl.customItems && pl.customItems.length > 0) {
+      return pl;
+    }
+    return null;
+  }, [customerPriceListId, selectedProfileCustomer?.priceListId, priceLists]);
+
+  const dialogCorporateServices = useMemo<ServiceItem[]>(() => {
+    if (!activeDialogCorpPriceList?.customItems) return [];
+    return activeDialogCorpPriceList.customItems.map(item => ({
+      id: item.id,
+      name: item.name,
+      nameEn: item.nameEn || item.name,
+      price: item.price,
+      memberPrice: item.price,
+      category: item.category || "B2B",
+      unit: item.unit || "ชิ้น",
+      isActive: true,
+    }));
+  }, [activeDialogCorpPriceList]);
+
+  const dialogActiveServices = useMemo(() => {
+    if (activeDialogCorpPriceList && !showAllStoreServicesInDialog) {
+      return dialogCorporateServices;
+    }
+    return services;
+  }, [activeDialogCorpPriceList, showAllStoreServicesInDialog, dialogCorporateServices, services]);
+
+  // Reset dialog contract toggle and category when customer switches
+  useEffect(() => {
+    setShowAllStoreServicesInDialog(false);
+    setDialogSelectedCategory(null);
+  }, [selectedProfileCustomer?.id, customerPriceListId]);
+
   // Auto-recalculate dialogCart prices when selected customer or price list changes
   useEffect(() => {
     if (editingJobId) return; // Do not overwrite existing job custom prices when editing
@@ -1093,7 +1150,7 @@ export default function AdminPage() {
       let hasChanges = false;
       const updated = prev.map(item => {
         if (item.category === "PACKAGE" || item.id === "other" || (item as any).isCustomPrice || (item.basePrice !== undefined && item.price !== item.basePrice)) return item;
-        const svc = services.find(s => s.id === item.id);
+        const svc = services.find(s => s.id === item.id) || dialogCorporateServices.find(s => s.id === item.id);
         if (!svc) return item;
         const newPrice = getServicePrice(svc, selectedProfileCustomer, customerPriceListId);
         if (newPrice !== item.price) {
@@ -1107,7 +1164,7 @@ export default function AdminPage() {
 
       return updated;
     });
-  }, [selectedProfileCustomer, customerPriceListId, services, getServicePrice, editingJobId]);
+  }, [selectedProfileCustomer, customerPriceListId, services, dialogCorporateServices, getServicePrice, editingJobId]);
 
   const activeShop = useMemo(() => {
     return shopLocations[selectedStoreIndex] || shopLocations[0];
@@ -1115,9 +1172,10 @@ export default function AdminPage() {
 
   // Derived category list (excluding PACKAGE since top-up has its own dialog)
   const categories = useMemo(() => {
-    const activeServices = services.filter(s => s.isActive !== false && s.category !== 'PACKAGE');
+    const sourceServices = (activeDialogCorpPriceList && !showAllStoreServicesInDialog) ? dialogCorporateServices : services;
+    const activeServices = sourceServices.filter(s => s.isActive !== false && s.category !== 'PACKAGE');
     return Array.from(new Set(activeServices.map(s => s.category).filter(Boolean))).sort();
-  }, [services]);
+  }, [services, dialogCorporateServices, activeDialogCorpPriceList, showAllStoreServicesInDialog]);
 
   const visibleCategories = useMemo(() => {
     return categories.filter(cat => cat !== 'PACKAGE');
@@ -1485,9 +1543,9 @@ export default function AdminPage() {
     const itemsList = Array.isArray(job.items) ? job.items : [];
     const mappedCart = itemsList.map((item: any) => {
       // Priority 1: exact serviceId match (most reliable — prevents name collisions like Blouse IRON vs Blouse PCS)
-      const matchedById = item.serviceId ? services.find(s => s.id === item.serviceId) : null;
+      const matchedById = item.serviceId ? (services.find(s => s.id === item.serviceId) || dialogCorporateServices.find(s => s.id === item.serviceId)) : null;
       // Priority 2: name match (fallback for legacy items without serviceId)
-      const matched = matchedById || services.find(s => s.name === item.name || s.nameEn === item.nameEn);
+      const matched = matchedById || services.find(s => s.name === item.name || s.nameEn === item.nameEn) || dialogCorporateServices.find(s => s.name === item.name || s.nameEn === item.nameEn);
       // basePrice: use stored value first, then stored item.price (DB is the truth), then catalog as last resort.
       // Using item.price prevents false-positive "custom price" toast when catalog changes since last save.
       const basePrice = item.basePrice !== undefined ? item.basePrice : (item.price || matched?.price || 0);
@@ -4856,10 +4914,49 @@ export default function AdminPage() {
                         ) : (
 
                           <div className="flex-1 flex flex-col gap-1">
+                            {/* Corporate Contract Banner in Dialog */}
+                            {activeDialogCorpPriceList && (
+                              <div className="p-2.5 rounded-lg bg-indigo-50 border border-indigo-200/80 flex items-center justify-between gap-2 shrink-0 mb-1">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="w-7 h-7 rounded-md bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                                    <Building size={14} />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="text-xs font-black text-indigo-950 truncate">
+                                        {activeDialogCorpPriceList.name}
+                                      </span>
+                                      <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                                        {showAllStoreServicesInDialog 
+                                          ? (currentLanguage === "en" ? "Store Catalog" : "สินค้าทั้งหมดของร้าน")
+                                          : (currentLanguage === "en" ? `Contract (${dialogCorporateServices.length} items)` : `สัญญา (${dialogCorporateServices.length} รายการ)`)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setShowAllStoreServicesInDialog(!showAllStoreServicesInDialog);
+                                    setDialogSelectedCategory(null);
+                                  }}
+                                  className="shrink-0 h-6.5 text-[10.5px] font-bold px-2.5 rounded-md border-indigo-300 text-indigo-700 hover:bg-indigo-100 cursor-pointer"
+                                >
+                                  {showAllStoreServicesInDialog
+                                    ? (currentLanguage === "en" ? "Contract Only" : "ดูเฉพาะสินค้าสัญญา")
+                                    : (currentLanguage === "en" ? "All Services" : "ดูสินค้าทั้งหมดของร้าน")}
+                                </Button>
+                              </div>
+                            )}
+
                             <span className="flex items-center justify-between pb-1.5 border-b border-slate-100 shrink-0 select-none">
                               <Label className="flex items-center gap-1.5 text-xs font-bold text-slate-500 border-none pb-0">
                                 <ArrowDownUp size={14} className="text-purple-600" />
-                                Laundry Service Type
+                                {activeDialogCorpPriceList && !showAllStoreServicesInDialog
+                                  ? (currentLanguage === "en" ? "Corporate Contract Catalog" : "รายการสินค้าตามสัญญา")
+                                  : (dialogSelectedCategory ? dialogSelectedCategory : "Laundry Service Type")}
                               </Label>
                               {dialogSelectedCategory !== null && (
                                 <Button
@@ -4874,7 +4971,7 @@ export default function AdminPage() {
                               )}
                             </span>
 
-                            {dialogSelectedCategory === null ? (
+                            {dialogSelectedCategory === null && (!activeDialogCorpPriceList || showAllStoreServicesInDialog || visibleCategories.length > 1) ? (
                               visibleCategories.length === 0 ? (
                                 <div className="flex-1 flex flex-col items-center justify-center p-6 text-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50 my-2">
                                   <Package size={32} className="mb-2 text-slate-300" />
@@ -4884,7 +4981,7 @@ export default function AdminPage() {
                                   </p>
                                 </div>
                               ) : (
-                                <div className="grid grid-cols-2 grid-rows-[repeat(5,1fr)] gap-2.5 pt-2 flex-1">
+                                <div className={`grid grid-cols-2 gap-2.5 pt-2 flex-1 ${visibleCategories.length <= 4 ? "auto-rows-[48px]" : "grid-rows-[repeat(5,1fr)]"}`}>
                                   {visibleCategories.map((cat) => (
                                     <Button
                                       key={cat}
@@ -4901,7 +4998,7 @@ export default function AdminPage() {
                                     type="button"
                                     variant="outline"
                                     disabled={isPricingLocked}
-                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600"
+                                    className="h-full text-xs font-bold uppercase justify-center hover:bg-rose-50 hover:text-rose-600 border-slate-200 rounded-lg shadow-sm col-span-2 text-rose-600 min-h-[36px]"
                                     onClick={() => {
                                       handleServiceOrSpeedChange("other", serviceSpeed, serviceWeight);
                                       setDialogCart(prev => {
@@ -4926,9 +5023,10 @@ export default function AdminPage() {
                             ) : (
                               <div className="flex-1 flex flex-col gap-2 pt-2">
                                 <div className="grid grid-cols-3 auto-rows-max gap-2 overflow-y-auto flex-1 pr-0.5 animate-in fade-in duration-200">
-                                  {services
-                                    .filter((s) => s.category === dialogSelectedCategory && s.category !== 'PACKAGE')
+                                  {dialogActiveServices
+                                    .filter((s) => (dialogSelectedCategory === null ? true : s.category === dialogSelectedCategory) && s.category !== 'PACKAGE')
                                     .filter((s) => {
+                                      if (activeDialogCorpPriceList && !showAllStoreServicesInDialog) return true;
                                       const name = (s.name || "").toLowerCase();
                                       const en = (s.nameEn || "").toLowerCase();
                                       return !name.includes("delivery") && !en.includes("delivery") &&
@@ -4940,13 +5038,14 @@ export default function AdminPage() {
                                     .map((s) => {
                                       const cartItem = dialogCart.find(item => item.id === s.id);
                                       const quantity = cartItem ? cartItem.quantity : 0;
+                                      const resolvedPrice = getServicePrice(s, selectedProfileCustomer, customerPriceListId);
                                       return (
                                         <Button
                                           key={s.id}
                                           type="button"
                                           variant={quantity > 0 ? "default" : "outline"}
                                           disabled={isPricingLocked}
-                                          className={`relative h-10 text-xs font-semibold justify-center rounded-lg shadow-sm transition-all ${
+                                          className={`relative h-12 text-xs font-semibold flex flex-col items-center justify-center p-1 rounded-lg shadow-sm transition-all ${
                                             quantity > 0 
                                               ? 'bg-indigo-600 text-white hover:bg-indigo-700 font-bold border-none' 
                                               : 'hover:bg-indigo-50 hover:text-indigo-600 border-slate-200'
@@ -4971,7 +5070,6 @@ export default function AdminPage() {
                                                   toast(`⚠️ มีรายการที่ปรับราคาพิเศษอยู่ในตะกร้า — ราคาสินค้าใหม่จะใช้ราคาตามปกติ`, { duration: 3000 });
                                                 }
                                                 const defaultQty = isKiloService ? 2 : 1;
-                                                const resolvedPrice = getServicePrice(s, selectedProfileCustomer, customerPriceListId);
                                                 updated = [...prev, {
                                                   id: s.id,
                                                   name: s.name,
@@ -4989,7 +5087,10 @@ export default function AdminPage() {
                                             });
                                           }}
                                         >
-                                          <span className="truncate pr-3">{s.name}</span>
+                                          <span className="truncate w-full text-center">{s.name}</span>
+                                          <span className={`text-[10px] ${quantity > 0 ? "text-indigo-100" : "text-slate-500 font-bold"}`}>
+                                            ฿{resolvedPrice}{s.unit ? `/${s.unit}` : ''}
+                                          </span>
                                           {quantity > 0 && (
                                             <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[9px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center border border-white shadow-sm animate-in zoom-in duration-200">
                                               {quantity}
