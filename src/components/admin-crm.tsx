@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
@@ -21,9 +21,12 @@ import {
   updateTopUpTransactionSlipAction,
   getCustomerCouponsAction,
   updateCustomerCouponStatusAction,
-  deleteCustomerCouponAction
+  deleteCustomerCouponAction,
+  getCustomerJobsAction,
+  getCustomerJobCountsAction
 } from "@/actions/db";
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
+import { AdminCouponTemplateModal } from "@/components/admin-coupon-template-modal";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
@@ -189,6 +192,7 @@ export function AdminCRM({
   const [couponStatusFilter, setCouponStatusFilter] = useState<"all" | "ACTIVE" | "USED" | "EXPIRED" | "VOID">("all");
   const [couponBrandFilter, setCouponBrandFilter] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [crmIssueCouponModalOpen, setCrmIssueCouponModalOpen] = useState(false);
+  const [couponTemplateModalOpen, setCouponTemplateModalOpen] = useState(false);
   const [copiedCouponId, setCopiedCouponId] = useState<string | null>(null);
   const [couponPage, setCouponPage] = useState(1);
   const couponPageSize = 20;
@@ -240,11 +244,13 @@ export function AdminCRM({
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [selectedCustomerForReport, setSelectedCustomerForReport] = useState<Customer | null>(null);
   const [showOnlyTopup, setShowOnlyTopup] = useState(false);
-  const [reportDateRange, setReportDateRange] = useState<"today" | "7days" | "30days" | "month" | "custom">("30days");
+  const [reportDateRange, setReportDateRange] = useState<"all" | "today" | "7days" | "30days" | "month" | "custom">("all");
   const [reportCustomStartDate, setReportCustomStartDate] = useState("");
   const [reportCustomEndDate, setReportCustomEndDate] = useState("");
   const [reportBranchFilter, setReportBranchFilter] = useState<string>("all");
   const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
+  const [reportCustomerJobs, setReportCustomerJobs] = useState<any[]>([]);
+  const [isLoadingReportJobs, setIsLoadingReportJobs] = useState(false);
 
   // Top-Up History State
   const [allTopUpTxs, setAllTopUpTxs] = useState<any[]>([]);
@@ -436,6 +442,33 @@ export function AdminCRM({
       fetchTopUps();
     }
   }, [searchTerm, activeTab, selectedBrand]);
+  // Fetch full customer jobs history on-demand from DB when selected in Customer Report
+  useEffect(() => {
+    if (!selectedCustomerForReport) {
+      setReportCustomerJobs([]);
+      return;
+    }
+    let isCancelled = false;
+    setIsLoadingReportJobs(true);
+    getCustomerJobsAction(selectedCustomerForReport.id, selectedCustomerForReport.phone)
+      .then((resJobs) => {
+        if (!isCancelled) {
+          setReportCustomerJobs(resJobs || []);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load customer jobs for report:", err);
+        if (!isCancelled) setReportCustomerJobs([]);
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingReportJobs(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedCustomerForReport?.id, selectedCustomerForReport?.phone]);
+
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 
@@ -824,6 +857,18 @@ export function AdminCRM({
     setMergePrimaryCustomer(primary);
     setMergeDuplicateCustomer(duplicate);
     setMergeModalOpen(true);
+
+    // Fetch exact job counts from DB to display true numbers in the modal
+    getCustomerJobCountsAction([primary.id, duplicate.id])
+      .then((counts) => {
+        if (counts[primary.id]) {
+          setMergePrimaryCustomer(prev => prev && prev.id === primary.id ? { ...prev, jobsCount: Math.max(prev.jobsCount, counts[primary.id].count) } : prev);
+        }
+        if (counts[duplicate.id]) {
+          setMergeDuplicateCustomer(prev => prev && prev.id === duplicate.id ? { ...prev, jobsCount: Math.max(prev.jobsCount, counts[duplicate.id].count) } : prev);
+        }
+      })
+      .catch((err) => console.error("Failed to load exact job counts for merge modal:", err));
   };
 
   const handleConfirmMerge = async () => {
@@ -956,11 +1001,20 @@ export function AdminCRM({
     const custId = selectedCustomerForReport.id;
     const custPhoneNorm = normPhone(selectedCustomerForReport.phone);
 
-    // 1. Get all jobs for this customer from the entire job list (jobs)
-    const rawJobs = jobs.filter(j =>
+    // 1. Combine server-fetched on-demand customer jobs with in-memory jobs (deduplicating by id)
+    const jobMap = new Map<string, any>();
+    reportCustomerJobs.forEach(j => {
+      jobMap.set(j.id, { ...j, isTopup: false });
+    });
+    jobs.filter(j =>
       (j.customerId && j.customerId === custId) || 
       (j.customerPhone && custPhoneNorm && normPhone(j.customerPhone) === custPhoneNorm)
-    ).map(j => ({ ...j, isTopup: false }));
+    ).forEach(j => {
+      if (!jobMap.has(j.id)) {
+        jobMap.set(j.id, { ...j, isTopup: false });
+      }
+    });
+    const rawJobs = Array.from(jobMap.values());
 
     // 2. Get all top-up transactions for this customer from allTopUpTxs
     const customerTopups = allTopUpTxs.filter(tx => {
@@ -1047,7 +1101,9 @@ export function AdminCRM({
       const today = new Date();
 
       let dateFilterPassed = true;
-      if (reportDateRange === "today") {
+      if (reportDateRange === "all") {
+        dateFilterPassed = true;
+      } else if (reportDateRange === "today") {
         dateFilterPassed = jobDate >= startOfDay(today) && jobDate <= endOfDay(today);
       } else if (reportDateRange === "7days") {
         dateFilterPassed = jobDate >= startOfDay(subDays(today, 7));
@@ -1074,7 +1130,7 @@ export function AdminCRM({
     });
 
     return filteredMapped;
-  }, [selectedCustomerForReport, jobs, allTopUpTxs, reportBranchFilter, reportDateRange, reportCustomStartDate, reportCustomEndDate, showOnlyTopup]);
+  }, [selectedCustomerForReport, jobs, reportCustomerJobs, allTopUpTxs, reportBranchFilter, reportDateRange, reportCustomStartDate, reportCustomEndDate, showOnlyTopup]);
 
   const handleExportCustomerStatement = () => {
     if (!selectedCustomerForReport) return;
@@ -1403,7 +1459,7 @@ export function AdminCRM({
               }`}
             >
               <Ticket size={14} className={activeTab === "coupons" ? "text-white" : "text-indigo-600"} />
-              <span>คูปองลูกค้า</span>
+              <span>Customer Coupons (คูปองลูกค้า)</span>
               {allCoupons.length > 0 && (
                 <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
                   activeTab === "coupons" ? "bg-white text-indigo-700" : "bg-indigo-100 text-indigo-800"
@@ -1507,9 +1563,10 @@ export function AdminCRM({
                   onChange={(e) => setReportDateRange(e.target.value as any)}
                   className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
                 >
-                  <option value="today">Today</option>
-                  <option value="7days">Last 7 Days</option>
+                  <option value="all">All Time (ทั้งหมด)</option>
                   <option value="30days">Last 30 Days</option>
+                  <option value="7days">Last 7 Days</option>
+                  <option value="today">Today</option>
                   <option value="month">This Month</option>
                   <option value="custom">Custom Range</option>
                 </select>
@@ -1636,7 +1693,10 @@ export function AdminCRM({
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide flex items-center gap-2">
                       <ClipboardList size={16} className="text-indigo-600" />
-                      Job & Top-up History ({customerJobsForReport.length} transactions)
+                      <span>Job & Top-up History ({customerJobsForReport.length} transactions)</span>
+                      {isLoadingReportJobs && (
+                        <Loader2 size={14} className="animate-spin text-indigo-500 ml-1" />
+                      )}
                     </h3>
                   </div>
 
@@ -1748,6 +1808,11 @@ export function AdminCRM({
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  ) : isLoadingReportJobs ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-slate-500 font-bold bg-slate-50 rounded-2xl border border-dashed border-slate-200 gap-2">
+                      <Loader2 size={24} className="animate-spin text-indigo-600" />
+                      <span className="text-xs">กำลังดึงข้อมูลประวัติออร์เดอร์จากฐานข้อมูล...</span>
                     </div>
                   ) : (
                     <div className="text-center py-12 text-slate-400 font-bold bg-slate-50 rounded-2xl border border-dashed border-slate-200">
@@ -1876,7 +1941,14 @@ export function AdminCRM({
                           </TableCell>
                           <TableCell className="py-4">
                             <div className="flex flex-col">
-                              <span className="text-xs font-bold text-slate-900">{customerName}</span>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-xs font-bold text-slate-900">{customerName}</span>
+                                {(tx.Customer?.memberId || tx.Customer?.nickName) && (
+                                  <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-[9px] font-bold px-1 py-0 h-4">
+                                    #{tx.Customer?.memberId || tx.Customer?.nickName}
+                                  </Badge>
+                                )}
+                              </div>
                               <span className="text-[11px] font-medium text-slate-500">{customerPhone}</span>
                             </div>
                           </TableCell>
@@ -2247,7 +2319,7 @@ export function AdminCRM({
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">คูปองทั้งหมด (Total)</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Coupons (คูปองทั้งหมด)</p>
                   <h3 className="text-2xl font-black text-slate-800 mt-1">{couponStats.total}</h3>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
@@ -2257,7 +2329,7 @@ export function AdminCRM({
 
               <div className="bg-emerald-50/50 border border-emerald-200/80 rounded-2xl p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-600">พร้อมใช้งาน (Active)</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-600">Active (พร้อมใช้งาน)</p>
                   <h3 className="text-2xl font-black text-emerald-700 mt-1">{couponStats.active}</h3>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-emerald-100/70 border border-emerald-200 flex items-center justify-center text-emerald-600">
@@ -2267,7 +2339,7 @@ export function AdminCRM({
 
               <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">ใช้งานแล้ว (Used)</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Used (ใช้งานแล้ว)</p>
                   <h3 className="text-2xl font-black text-slate-700 mt-1">{couponStats.used}</h3>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-slate-200/70 border border-slate-300 flex items-center justify-center text-slate-600">
@@ -2277,7 +2349,7 @@ export function AdminCRM({
 
               <div className="bg-amber-50/50 border border-amber-200/80 rounded-2xl p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-600">หมดอายุ / ยกเลิก</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-600">Expired / Void (หมดอายุ/ยกเลิก)</p>
                   <h3 className="text-2xl font-black text-amber-700 mt-1">{couponStats.expiredOrVoid}</h3>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-amber-100/70 border border-amber-200 flex items-center justify-center text-amber-600">
@@ -2293,7 +2365,7 @@ export function AdminCRM({
                 <div className="relative min-w-[240px] flex-1 max-w-sm">
                   <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <Input
-                    placeholder="ค้นหาโค้ด, ชื่อลูกค้า, เบอร์โทร, เหตุผล..."
+                    placeholder="Search code, customer, phone (ค้นหาโค้ด, ชื่อลูกค้า, เบอร์โทร)..."
                     value={couponSearchQuery}
                     onChange={(e) => {
                       setCouponSearchQuery(e.target.value);
@@ -2321,11 +2393,11 @@ export function AdminCRM({
                   }}
                   className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
                 >
-                  <option value="all">สถานะทั้งหมด ({allCoupons.length})</option>
-                  <option value="ACTIVE">พร้อมใช้งาน ({allCoupons.filter(c => c.status === "ACTIVE").length})</option>
-                  <option value="USED">ใช้งานแล้ว ({allCoupons.filter(c => c.status === "USED").length})</option>
-                  <option value="EXPIRED">หมดอายุ ({allCoupons.filter(c => c.status === "EXPIRED").length})</option>
-                  <option value="VOID">ยกเลิก ({allCoupons.filter(c => c.status === "VOID").length})</option>
+                  <option value="all">All Status (สถานะทั้งหมด) ({allCoupons.length})</option>
+                  <option value="ACTIVE">Active (พร้อมใช้งาน) ({allCoupons.filter(c => c.status === "ACTIVE").length})</option>
+                  <option value="USED">Used (ใช้งานแล้ว) ({allCoupons.filter(c => c.status === "USED").length})</option>
+                  <option value="EXPIRED">Expired (หมดอายุ) ({allCoupons.filter(c => c.status === "EXPIRED").length})</option>
+                  <option value="VOID">Void (ยกเลิก) ({allCoupons.filter(c => c.status === "VOID").length})</option>
                 </select>
 
                 {/* Brand Filter */}
@@ -2337,21 +2409,30 @@ export function AdminCRM({
                   }}
                   className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
                 >
-                  <option value="all">ทุกแบรนด์ (All Brands)</option>
+                  <option value="all">All Brands (ทุกแบรนด์)</option>
                   <option value="that_laundry_shop">That Laundry Shop (TLS)</option>
                   <option value="noname_laundry">Noname Laundry</option>
                 </select>
               </div>
 
-              {/* Action: + Issue Coupon Button */}
+              {/* Action: + Issue Coupon & Templates Buttons */}
               <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setCouponTemplateModalOpen(true)}
+                  className="h-9 px-3.5 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 text-slate-700 font-bold text-xs rounded-xl gap-1.5 shadow-2xs cursor-pointer"
+                >
+                  <Layers size={14} className="text-indigo-600" />
+                  <span>Templates (จัดการแม่แบบ)</span>
+                </Button>
                 <Button
                   type="button"
                   onClick={() => setCrmIssueCouponModalOpen(true)}
                   className="h-9 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl gap-1.5 shadow-sm cursor-pointer"
                 >
                   <Plus size={15} />
-                  <span>+ แจกคูปองให้ลูกค้า</span>
+                  <span>+ Issue Coupon (แจกคูปอง)</span>
                 </Button>
               </div>
             </div>
@@ -2361,13 +2442,13 @@ export function AdminCRM({
               <Table>
                 <TableHeader>
                   <TableRow className="bg-slate-50/80 hover:bg-slate-50/80 border-b border-slate-200">
-                    <TableHead className="py-3.5 pl-6 font-bold text-xs text-slate-600 uppercase">รหัสคูปอง & สิทธิประโยชน์</TableHead>
-                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">ชื่อคูปอง</TableHead>
-                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">ลูกค้าผู้ถือสิทธิ์</TableHead>
-                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">เงื่อนไข</TableHead>
-                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">วันหมดอายุ</TableHead>
-                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase text-center">สถานะ</TableHead>
-                    <TableHead className="py-3.5 pr-6 font-bold text-xs text-slate-600 uppercase text-right">จัดการ</TableHead>
+                    <TableHead className="py-3.5 pl-6 font-bold text-xs text-slate-600 uppercase">Coupon Code & Benefit (รหัสคูปอง & ส่วนลด)</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Coupon Name (ชื่อคูปอง)</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Customer (ลูกค้าผู้ถือสิทธิ์)</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Conditions (เงื่อนไข)</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Expiry Date (วันหมดอายุ)</TableHead>
+                    <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase text-center">Status (สถานะ)</TableHead>
+                    <TableHead className="py-3.5 pr-6 font-bold text-xs text-slate-600 uppercase text-right">Action (จัดการ)</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -2455,7 +2536,7 @@ export function AdminCRM({
                                 <p className="text-[11px] text-slate-400 line-clamp-1">{coupon.description}</p>
                               )}
                               {coupon.issuedReason && (
-                                <p className="text-[10px] text-slate-400 italic">เหตุผล: {coupon.issuedReason}</p>
+                                <p className="text-[10px] text-slate-400 italic">Reason (เหตุผล): {coupon.issuedReason}</p>
                               )}
                             </div>
                           </TableCell>
@@ -2467,7 +2548,7 @@ export function AdminCRM({
                                 type="button"
                                 onClick={() => handleOpenProfileByCustomerId(coupon.customerId)}
                                 className="font-bold text-xs text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer text-left block truncate max-w-[180px]"
-                                title="คลิกเพื่อดูโปรไฟล์ลูกค้า"
+                                title="View Customer Profile (ดูโปรไฟล์ลูกค้า)"
                               >
                                 {coupon.customerName || "—"}
                               </button>
@@ -2482,14 +2563,14 @@ export function AdminCRM({
                             <div className="space-y-0.5 text-[11px]">
                               <div>
                                 {coupon.minOrderAmount && coupon.minOrderAmount > 0 ? (
-                                  <span>ขั้นต่ำ: <strong>฿{coupon.minOrderAmount.toLocaleString()}</strong></span>
+                                  <span>Min (ขั้นต่ำ): <strong>฿{coupon.minOrderAmount.toLocaleString()}</strong></span>
                                 ) : (
-                                  <span className="text-slate-400">ไม่มีขั้นต่ำ</span>
+                                  <span className="text-slate-400">No Min (ไม่มีขั้นต่ำ)</span>
                                 )}
                               </div>
                               {coupon.maxDiscount && coupon.maxDiscount > 0 && (
                                 <div className="text-slate-500">
-                                  ลดสูงสุด: <strong>฿{coupon.maxDiscount.toLocaleString()}</strong>
+                                  Max (ลดสูงสุด): <strong>฿{coupon.maxDiscount.toLocaleString()}</strong>
                                 </div>
                               )}
                             </div>
@@ -2503,15 +2584,15 @@ export function AdminCRM({
                                   <span className="font-medium">{format(new Date(coupon.expiryDate), "dd/MM/yyyy")}</span>
                                   {isActive && (
                                     <div className="text-[10px] text-emerald-600 font-semibold">
-                                      เหลืออีก {Math.max(0, Math.ceil((new Date(coupon.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))} วัน
+                                      {Math.max(0, Math.ceil((new Date(coupon.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))} days left (เหลือ {Math.max(0, Math.ceil((new Date(coupon.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))} วัน)
                                     </div>
                                   )}
                                 </div>
                               ) : (
-                                <span className="text-slate-400">ไม่มีวันหมดอายุ</span>
+                                <span className="text-slate-400">No Expiry (ไม่มีวันหมดอายุ)</span>
                               )}
                               <div className="text-[10px] text-slate-400">
-                                ออกเมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt || Date.now()), "dd/MM/yyyy")}
+                                Issued (ออกเมื่อ): {format(new Date(coupon.issuedAt || coupon.createdAt || Date.now()), "dd/MM/yyyy")}
                               </div>
                             </div>
                           </TableCell>
@@ -2520,13 +2601,13 @@ export function AdminCRM({
                           <TableCell className="py-4 text-center">
                             {isActive && (
                               <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 font-bold text-[10px]">
-                                พร้อมใช้งาน
+                                Active (พร้อมใช้งาน)
                               </Badge>
                             )}
                             {isUsed && (
                               <div className="space-y-0.5">
                                 <Badge className="bg-slate-100 text-slate-700 border-slate-200 font-bold text-[10px]">
-                                  ใช้แล้ว
+                                  Used (ใช้งานแล้ว)
                                 </Badge>
                                 {coupon.usedAt && (
                                   <div className="text-[10px] text-slate-400 font-medium">
@@ -2537,12 +2618,12 @@ export function AdminCRM({
                             )}
                             {isExpired && (
                               <Badge className="bg-amber-100 text-amber-800 border-amber-200 font-bold text-[10px]">
-                                หมดอายุ
+                                Expired (หมดอายุ)
                               </Badge>
                             )}
                             {isVoid && (
                               <Badge className="bg-rose-100 text-rose-800 border-rose-200 font-bold text-[10px]">
-                                ยกเลิก
+                                Void (ยกเลิกแล้ว)
                               </Badge>
                             )}
                           </TableCell>
@@ -3776,6 +3857,14 @@ export function AdminCRM({
           open={crmIssueCouponModalOpen}
           onOpenChange={setCrmIssueCouponModalOpen}
           onSuccess={() => fetchCrmCoupons()}
+        />
+      )}
+
+      {/* CRM Coupon Template Management Modal */}
+      {couponTemplateModalOpen && (
+        <AdminCouponTemplateModal
+          open={couponTemplateModalOpen}
+          onOpenChange={setCouponTemplateModalOpen}
         />
       )}
     </div>

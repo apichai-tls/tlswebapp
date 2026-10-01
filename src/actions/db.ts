@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
 import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
+import { type CouponTemplate } from '@/lib/store';
 
 // CUSTOMERS
 export async function addCustomerAction(data: any) {
@@ -844,6 +845,74 @@ export async function getJobsByIdsAction(ids: string[]) {
   });
 }
 
+export async function getCustomerJobsAction(customerId: string, customerPhone?: string | null) {
+  try {
+    if (!customerId && !customerPhone) return [];
+
+    const normPhone = (p?: string | null) => (p || "").replace(/\D/g, "");
+    const rawDigits = normPhone(customerPhone);
+    const last9 = rawDigits.length >= 9 ? rawDigits.slice(-9) : rawDigits;
+
+    const orConditions: any[] = [];
+    if (customerId) {
+      orConditions.push({ customerId });
+    }
+    if (customerPhone && customerPhone.trim()) {
+      orConditions.push({ customerPhone: customerPhone.trim() });
+    }
+    if (last9 && last9.length >= 8) {
+      orConditions.push({ customerPhone: { contains: last9 } });
+    }
+
+    const jobsRaw = await prisma.job.findMany({
+      where: { OR: orConditions },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return jobsRaw.map(j => ({
+      ...j,
+      laundryTypes: j.laundryTypes ? j.laundryTypes.split(',') : [],
+      items: j.itemsJson ? (() => { try { return JSON.parse(j.itemsJson!); } catch { return []; } })() : [],
+      legs: j.legsJson ? (() => { try { return JSON.parse(j.legsJson!); } catch { return undefined; } })() : undefined,
+      pickupCoords: { lat: j.pickupLat, lng: j.pickupLng },
+      dropoffCoords: { lat: j.dropoffLat, lng: j.dropoffLng },
+      createdAt: j.createdAt.toISOString(),
+      updatedAt: j.updatedAt.toISOString(),
+      scheduledAt: j.scheduledAt ? j.scheduledAt.toISOString() : undefined,
+      completedAt: j.completedAt ? j.completedAt.toISOString() : undefined,
+    }));
+  } catch (error: any) {
+    console.error("[getCustomerJobsAction] Error:", error);
+    return [];
+  }
+}
+
+export async function getCustomerJobCountsAction(customerIds: string[]) {
+  try {
+    const validIds = customerIds.filter(Boolean);
+    if (!validIds.length) return {};
+    const counts = await prisma.job.groupBy({
+      by: ['customerId'],
+      where: { customerId: { in: validIds } },
+      _count: { id: true },
+      _sum: { totalAmount: true }
+    });
+    const map: Record<string, { count: number; totalAmount: number }> = {};
+    for (const item of counts) {
+      if (item.customerId) {
+        map[item.customerId] = {
+          count: item._count.id,
+          totalAmount: Number(item._sum.totalAmount) || 0
+        };
+      }
+    }
+    return map;
+  } catch (err: any) {
+    console.error("[getCustomerJobCountsAction] Error:", err);
+    return {};
+  }
+}
+
 export async function updateJobAction(id: string, updates: any) {
   console.log(`[updateJobAction] id: ${id}`, updates);
   const existingJob = await prisma.job.findUnique({ where: { id } });
@@ -946,7 +1015,37 @@ export async function updateJobAction(id: string, updates: any) {
     data.dropoffLng = updates.dropoffCoords.lng;
   }
   if (updates.bagImageUrl !== undefined) data.bagImageUrl = updates.bagImageUrl;
-  if (updates.billImageUrl !== undefined) data.billImageUrl = updates.billImageUrl;
+  if (updates.billImageUrl !== undefined) {
+    if (updates.billImageUrl && existingJob?.billImageUrl) {
+      try {
+        const incomingUrls = JSON.parse(updates.billImageUrl);
+        const existingUrls = JSON.parse(existingJob.billImageUrl);
+        if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
+          // Merge unique URLs so concurrent background uploads (e.g. proforma and receipt) never clobber each other
+          const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
+          // Sort so proforma always comes first, followed by receipt, then other proofs
+          merged.sort((a, b) => {
+            const aIsPf = a.includes("proforma-");
+            const bIsPf = b.includes("proforma-");
+            if (aIsPf && !bIsPf) return -1;
+            if (!aIsPf && bIsPf) return 1;
+            const aIsRc = a.includes("receipt-");
+            const bIsRc = b.includes("receipt-");
+            if (aIsRc && !bIsRc) return 1;
+            if (!aIsRc && bIsRc) return -1;
+            return 0;
+          });
+          data.billImageUrl = JSON.stringify(merged);
+        } else {
+          data.billImageUrl = updates.billImageUrl;
+        }
+      } catch {
+        data.billImageUrl = updates.billImageUrl;
+      }
+    } else {
+      data.billImageUrl = updates.billImageUrl;
+    }
+  }
   if ((updates as any).proformaNumber !== undefined) (data as any).proformaNumber = (updates as any).proformaNumber;
   if ((updates as any).proformaRevision !== undefined) (data as any).proformaRevision = (updates as any).proformaRevision;
   if ((updates as any).proformaCartHash !== undefined) (data as any).proformaCartHash = (updates as any).proformaCartHash;
@@ -2377,9 +2476,28 @@ export async function getWalletTransactionsAction(filters?: {
     if (filters.endDate) where.createdAt.lte = new Date(filters.endDate);
   }
 
-  return await prisma.walletTransaction.findMany({
+  const txs = await prisma.walletTransaction.findMany({
     where,
     orderBy: { createdAt: 'desc' }
+  });
+
+  const customerIds = Array.from(new Set(txs.map(t => t.customerId).filter(Boolean)));
+  const customers = customerIds.length > 0 ? await prisma.customer.findMany({
+    where: { id: { in: customerIds } },
+    select: { id: true, name: true, memberId: true, nickName: true, phone: true }
+  }) : [];
+  const customerMap = new Map(customers.map(c => [c.id, c]));
+
+  return txs.map(tx => {
+    const cust = customerMap.get(tx.customerId);
+    const resolvedMemberId = cust?.memberId 
+      || (cust?.nickName && /^[A-Z0-9_-]+$/i.test(cust.nickName.trim()) ? cust.nickName.trim() : null)
+      || null;
+    return {
+      ...tx,
+      customerMemberId: resolvedMemberId,
+      customerPhone: cust?.phone || null,
+    };
   });
 }
 
@@ -3404,5 +3522,204 @@ export async function deleteCustomerCouponAction(id: string, actor?: { id?: stri
     return { success: false, error: err?.message || "Failed to delete coupon" };
   }
 }
+
+// ---------------------------------------------------------------------------
+// COUPON TEMPLATES (SETTING KEY: "coupon_templates")
+// ---------------------------------------------------------------------------
+const DEFAULT_COUPON_TEMPLATES: CouponTemplate[] = [
+  {
+    id: "tpl-welcome-100",
+    label: "🎁 Welcome Member (ลด ฿100)",
+    codePrefix: "WELCOME100",
+    name: "คูปองต้อนรับสมาชิกใหม่ ลด ฿100",
+    description: "ต้อนรับสมาชิกใหม่ ลด ฿100 เมื่อสั่งซื้อขั้นต่ำ ฿300",
+    discountType: "FIXED",
+    discountValue: 100,
+    minOrderAmount: 300,
+    maxDiscount: null,
+    days: 30,
+    reason: "ต้อนรับสมาชิกใหม่ (Welcome Member)",
+    brand: "all",
+  },
+  {
+    id: "tpl-bday-20",
+    label: "🎂 Birthday Perk (ลด 20%)",
+    codePrefix: "BDAY20",
+    name: "คูปองวันเกิดพิเศษ ลด 20%",
+    description: "สิทธิพิเศษวันเกิด ลด 20% สูงสุด ฿200",
+    discountType: "PERCENTAGE",
+    discountValue: 20,
+    minOrderAmount: 200,
+    maxDiscount: 200,
+    days: 30,
+    reason: "สิทธิพิเศษเดือนเกิดลูกค้า (Birthday Perk)",
+    brand: "all",
+  },
+  {
+    id: "tpl-free-delivery",
+    label: "🚚 Free Delivery (ฟรีค่าส่ง)",
+    codePrefix: "FREEDELIVERY",
+    name: "คูปองฟรีค่าจัดส่ง Delivery",
+    description: "ฟรีค่าจัดส่ง Delivery เมื่อสั่งซื้อขั้นต่ำ ฿150",
+    discountType: "FREE_DELIVERY",
+    discountValue: 0,
+    minOrderAmount: 150,
+    maxDiscount: null,
+    days: 14,
+    reason: "โปรโมชั่นฟรีค่าจัดส่ง Delivery",
+    brand: "all",
+  },
+  {
+    id: "tpl-service-recovery",
+    label: "🛠️ Service Recovery (ลด ฿200)",
+    codePrefix: "SRV200",
+    name: "คูปองชดเชยบริการ Service Recovery ฿200",
+    description: "ชดเชยกรณีบริการล่าช้า หรือเกิดปัญหาการจัดส่ง",
+    discountType: "FIXED",
+    discountValue: 200,
+    minOrderAmount: 0,
+    maxDiscount: null,
+    days: 60,
+    reason: "ชดเชยบริการล่าช้า / ปัญหาการจัดส่ง",
+    brand: "all",
+  },
+  {
+    id: "tpl-loyalty-50",
+    label: "💖 Special Loyalty (ลด ฿50)",
+    codePrefix: "TLS50",
+    name: "คูปองส่วนลดพิเศษ ฿50",
+    description: "สมนาคุณลูกค้าประจำ ลดทันที ฿50",
+    discountType: "FIXED",
+    discountValue: 50,
+    minOrderAmount: 200,
+    maxDiscount: null,
+    days: 30,
+    reason: "สมนาคุณลูกค้าประจำ",
+    brand: "all",
+  },
+];
+
+export async function getCouponTemplatesAction(): Promise<{ success: boolean; templates: CouponTemplate[]; error?: string }> {
+  try {
+    const setting = await prisma.setting.findUnique({ where: { key: "coupon_templates" } });
+    if (!setting || !setting.value) {
+      // Lazy initialize with defaults
+      await prisma.setting.upsert({
+        where: { key: "coupon_templates" },
+        update: { value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
+        create: { key: "coupon_templates", value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
+      });
+      return { success: true, templates: DEFAULT_COUPON_TEMPLATES };
+    }
+    const templates: CouponTemplate[] = JSON.parse(setting.value);
+    return { success: true, templates: Array.isArray(templates) ? templates : DEFAULT_COUPON_TEMPLATES };
+  } catch (err: any) {
+    console.error("[getCouponTemplatesAction] Error:", err);
+    return { success: false, templates: DEFAULT_COUPON_TEMPLATES, error: err?.message };
+  }
+}
+
+export async function saveCouponTemplateAction(
+  template: Partial<CouponTemplate> & { label: string; name: string; discountType: CouponTemplate["discountType"]; discountValue: number }
+): Promise<{ success: boolean; template?: CouponTemplate; templates?: CouponTemplate[]; error?: string }> {
+  try {
+    const res = await getCouponTemplatesAction();
+    let currentTemplates = res.templates || [];
+
+    const now = new Date().toISOString();
+    let savedTemplate: CouponTemplate;
+
+    if (template.id && currentTemplates.some(t => t.id === template.id)) {
+      // Update
+      currentTemplates = currentTemplates.map(t => {
+        if (t.id === template.id) {
+          savedTemplate = {
+            ...t,
+            ...template,
+            label: template.label.trim(),
+            name: template.name.trim(),
+            codePrefix: (template.codePrefix || t.codePrefix || "COUPON").trim().toUpperCase(),
+            description: template.description !== undefined ? (template.description?.trim() || null) : t.description,
+            discountType: template.discountType,
+            discountValue: Number(template.discountValue) || 0,
+            minOrderAmount: template.minOrderAmount != null ? Number(template.minOrderAmount) : null,
+            maxDiscount: template.maxDiscount != null ? Number(template.maxDiscount) : null,
+            days: template.days != null ? Number(template.days) : (t.days || 30),
+            reason: template.reason !== undefined ? (template.reason?.trim() || null) : t.reason,
+            brand: template.brand || t.brand || "all",
+            updatedAt: now,
+          };
+          return savedTemplate;
+        }
+        return t;
+      });
+    } else {
+      // Create
+      savedTemplate = {
+        id: template.id || `tpl-${Date.now()}`,
+        label: template.label.trim(),
+        codePrefix: (template.codePrefix || "COUPON").trim().toUpperCase(),
+        name: template.name.trim(),
+        description: template.description?.trim() || null,
+        discountType: template.discountType,
+        discountValue: Number(template.discountValue) || 0,
+        minOrderAmount: template.minOrderAmount != null ? Number(template.minOrderAmount) : null,
+        maxDiscount: template.maxDiscount != null ? Number(template.maxDiscount) : null,
+        days: template.days != null ? Number(template.days) : 30,
+        reason: template.reason?.trim() || null,
+        brand: template.brand || "all",
+        createdAt: now,
+        updatedAt: now,
+      };
+      currentTemplates.push(savedTemplate);
+    }
+
+    await prisma.setting.upsert({
+      where: { key: "coupon_templates" },
+      update: { value: JSON.stringify(currentTemplates) },
+      create: { key: "coupon_templates", value: JSON.stringify(currentTemplates) },
+    });
+
+    return { success: true, template: savedTemplate!, templates: currentTemplates };
+  } catch (err: any) {
+    console.error("[saveCouponTemplateAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save template" };
+  }
+}
+
+export async function deleteCouponTemplateAction(
+  id: string
+): Promise<{ success: boolean; templates?: CouponTemplate[]; error?: string }> {
+  try {
+    const res = await getCouponTemplatesAction();
+    const currentTemplates = (res.templates || []).filter(t => t.id !== id);
+
+    await prisma.setting.upsert({
+      where: { key: "coupon_templates" },
+      update: { value: JSON.stringify(currentTemplates) },
+      create: { key: "coupon_templates", value: JSON.stringify(currentTemplates) },
+    });
+
+    return { success: true, templates: currentTemplates };
+  } catch (err: any) {
+    console.error("[deleteCouponTemplateAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to delete template" };
+  }
+}
+
+export async function resetCouponTemplatesAction(): Promise<{ success: boolean; templates: CouponTemplate[]; error?: string }> {
+  try {
+    await prisma.setting.upsert({
+      where: { key: "coupon_templates" },
+      update: { value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
+      create: { key: "coupon_templates", value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
+    });
+    return { success: true, templates: DEFAULT_COUPON_TEMPLATES };
+  } catch (err: any) {
+    console.error("[resetCouponTemplatesAction] Error:", err);
+    return { success: false, templates: DEFAULT_COUPON_TEMPLATES, error: err?.message };
+  }
+}
+
 
 

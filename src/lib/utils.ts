@@ -300,16 +300,66 @@ export function isValidPhoneNumber(phone: string | null | undefined): phone is s
 }
 
 /**
+ * Normalizes a Thai phone number into standard 10-digit mobile or 9-digit landline format.
+ * Examples:
+ * - "838181944" -> "0838181944"
+ * - "+66 838181944" -> "0838181944"
+ * - "+66 0855355636" -> "0855355636"
+ * - "93-060-4517" -> "0930604517"
+ * - "26901900" -> "026901900"
+ */
+export function normalizeThaiPhone(phone: string | null | undefined): string {
+  if (!phone) return "";
+  const trimmed = phone.trim();
+  if (trimmed === "-" || trimmed === "--" || trimmed === "+66 --" || trimmed.toLowerCase() === "n/a" || trimmed.toLowerCase() === "null") return "";
+
+  const digits = trimmed.replace(/\D/g, "");
+  // Malformed +66 08x... (12 digits)
+  if (digits.startsWith("660") && digits.length >= 11) {
+    return "0" + digits.slice(3);
+  }
+  // Standard +66 8x... (11 digits)
+  if (digits.startsWith("66") && digits.length === 11) {
+    return "0" + digits.slice(2);
+  }
+  // 9 digits starting with 6, 8, 9 (Thai mobile typed without leading 0)
+  if (digits.length === 9 && /^[689]/.test(digits)) {
+    return "0" + digits;
+  }
+  // 8 digits starting with 2, 3, 4, 5, 7 (Thai landline typed without leading 0)
+  if (digits.length === 8 && /^[2-57]/.test(digits)) {
+    return "0" + digits;
+  }
+  // Standard 10 digits starting with 0
+  if (digits.length === 10 && digits.startsWith("0")) {
+    return digits;
+  }
+  // Standard 9 digits landline starting with 0
+  if (digits.length === 9 && digits.startsWith("0")) {
+    return digits;
+  }
+  return trimmed;
+}
+
+/**
  * Checks whether a phone string represents a valid Thai phone number.
- * (Starts with 0, +66, or 66, and has 9-10 digits)
+ * Supports:
+ * - Starts with +66 or 66 (10-12 digits)
+ * - Starts with 0 (9-10 digits)
+ * - 9 digits starting with 6, 8, 9 (Thai mobile typed without leading 0)
+ * - 8 digits starting with 2, 3, 4, 5, 7 (Thai landline typed without leading 0)
  */
 export function isThaiPhoneNumber(phone: string | null | undefined): boolean {
   if (!isValidPhoneNumber(phone)) return false;
   const trimmed = phone.trim();
-  if (trimmed.startsWith("+66") || trimmed.startsWith("66")) return true;
   const digits = trimmed.replace(/\D/g, "");
-  if (digits.startsWith("66") && (digits.length === 11 || digits.length === 10)) return true;
+  if (/^0+$/.test(digits)) return false;
+
+  if (trimmed.startsWith("+66") || trimmed.startsWith("66")) return true;
+  if (digits.startsWith("66") && (digits.length === 10 || digits.length === 11 || digits.length === 12)) return true;
   if (digits.startsWith("0") && (digits.length === 9 || digits.length === 10)) return true;
+  if (digits.length === 9 && /^[689]/.test(digits)) return true;
+  if (digits.length === 8 && /^[2-57]/.test(digits)) return true;
   return false;
 }
 
@@ -402,27 +452,30 @@ export function resolveCustomerPhones(params: {
   const secPhone = isValidPhoneNumber(customer?.secondaryPhone) ? customer?.secondaryPhone!.trim() : "";
   const addrPhone = customer?.addresses?.map(a => a.contactPhone?.trim()).find(p => isValidPhoneNumber(p)) || "";
 
-  // 1. Candidate Thai phone:
+  // 1. Candidate Thai phone (normalize to standard 08x/02x format):
   let thaiPhone = "";
-  if (isThaiPhoneNumber(rawPhone)) thaiPhone = rawPhone;
-  else if (isThaiPhoneNumber(profilePhone)) thaiPhone = profilePhone;
-  else if (isThaiPhoneNumber(addrPhone)) thaiPhone = addrPhone;
+  if (isThaiPhoneNumber(rawPhone)) thaiPhone = normalizeThaiPhone(rawPhone);
+  else if (isThaiPhoneNumber(profilePhone)) thaiPhone = normalizeThaiPhone(profilePhone);
+  else if (isThaiPhoneNumber(secPhone)) thaiPhone = normalizeThaiPhone(secPhone);
+  else if (isThaiPhoneNumber(addrPhone)) thaiPhone = normalizeThaiPhone(addrPhone);
 
-  // 2. Candidate International/Other phone:
+  // 2. Candidate International/Other phone (must NOT be Thai):
   let intlPhone = "";
-  if (secPhone) intlPhone = secPhone;
-  else if (rawPhone && !isThaiPhoneNumber(rawPhone)) intlPhone = rawPhone;
+  if (secPhone && !isThaiPhoneNumber(secPhone)) intlPhone = secPhone;
   else if (profilePhone && !isThaiPhoneNumber(profilePhone)) intlPhone = profilePhone;
+  else if (rawPhone && !isThaiPhoneNumber(rawPhone)) intlPhone = rawPhone;
   else if (addrPhone && !isThaiPhoneNumber(addrPhone)) intlPhone = addrPhone;
 
-  // 3. Alternate phone (if different from primary)
+  // 3. Alternate phone (if different from primary/thaiPhone)
   let alternatePhone: string | null = null;
   if (intlPhone && intlPhone !== thaiPhone) {
     alternatePhone = intlPhone;
+  } else if (secPhone && secPhone !== thaiPhone && !isThaiPhoneNumber(secPhone)) {
+    alternatePhone = secPhone;
+  } else if (profilePhone && profilePhone !== thaiPhone && !isThaiPhoneNumber(profilePhone)) {
+    alternatePhone = profilePhone;
   } else if (addrPhone && addrPhone !== thaiPhone) {
     alternatePhone = addrPhone;
-  } else if (profilePhone && profilePhone !== thaiPhone) {
-    alternatePhone = profilePhone;
   }
 
   // If customer has NO Thai phone:

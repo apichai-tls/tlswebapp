@@ -21,12 +21,13 @@ import {
   deleteCustomerAddressAction, 
   setPrimaryCustomerAddressAction,
   getCustomerCouponsAction,
-  updateCustomerCouponStatusAction
+  updateCustomerCouponStatusAction,
+  getCustomerJobsAction
 } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
-import { isWalletExpired, isValidPhoneNumber, formatBaht } from "@/lib/utils";
+import { isWalletExpired, isValidPhoneNumber, formatBaht, resolveCustomerPhones, isThaiPhoneNumber } from "@/lib/utils";
 import { toast } from "sonner";
 
 // Helper to extract initials for avatar
@@ -107,6 +108,10 @@ export function AdminCustomerProfileModal({
   const [isLoadingCoupons, setIsLoadingCoupons] = useState(false);
   const [couponStatusFilter, setCouponStatusFilter] = useState<"all" | "ACTIVE" | "USED" | "EXPIRED">("all");
   const [issueCouponModalOpen, setIssueCouponModalOpen] = useState(false);
+
+  // DB Jobs full history state
+  const [dbJobs, setDbJobs] = useState<any[]>([]);
+  const [isLoadingJobs, setIsLoadingJobs] = useState(false);
 
   const fetchCoupons = () => {
     if (!customer?.id) return;
@@ -238,6 +243,13 @@ export function AdminCustomerProfileModal({
         setTickets([]); // Real data only - no seed
       }
 
+      // Fetch customer jobs full history from DB
+      setIsLoadingJobs(true);
+      getCustomerJobsAction(customer.id, customer.phone)
+        .then(res => setDbJobs(res || []))
+        .catch(err => console.error("Failed to load customer jobs for profile modal:", err))
+        .finally(() => setIsLoadingJobs(false));
+
       // Fetch top-up & wallet history
       setIsLoadingTopUps(true);
       setIsLoadingWallet(true);
@@ -253,27 +265,37 @@ export function AdminCustomerProfileModal({
 
       // Fetch customer coupons
       fetchCoupons();
+    } else {
+      setDbJobs([]);
     }
-  }, [open, customer?.id]);
+  }, [open, customer?.id, customer?.phone]);
 
-  // Jobs calculation from actual jobs
+  // Jobs calculation from actual jobs (combining DB on-demand jobs + in-memory jobs)
   const { jobsCount, ltv, customerJobs } = useMemo(() => {
     if (!customer) return { jobsCount: 0, ltv: 0, customerJobs: [] };
     const hasValidPhone = isValidPhoneNumber(customer.phone);
     const cName = (customer.name || "").trim().toLowerCase();
-    const custJobs = jobs.filter(j => {
+
+    const jobMap = new Map<string, any>();
+    dbJobs.forEach(j => jobMap.set(j.id, j));
+
+    jobs.filter(j => {
       if (j.customerId && j.customerId === customer.id) return true;
       if (hasValidPhone && j.customerPhone === customer.phone) return true;
       if (!hasValidPhone && j.customerName && j.customerName.trim().toLowerCase() === cName) return true;
       return false;
+    }).forEach(j => {
+      if (!jobMap.has(j.id)) jobMap.set(j.id, j);
     });
+
+    const custJobs = Array.from(jobMap.values());
     const countedJobs = custJobs.filter(j => isStandardPlan ? j.isPaid : j.status === "completed");
     return {
       customerJobs: custJobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
       jobsCount: countedJobs.length,
       ltv: countedJobs.reduce((sum, j) => sum + (j.totalAmount || j.fee || 0), 0)
     };
-  }, [jobs, customer, isStandardPlan]);
+  }, [jobs, dbJobs, customer, isStandardPlan]);
 
   // Active vs Past jobs (Real data only)
   const { activeJobs, pastJobs, totalWeightProcessed, totalRevenue } = useMemo(() => {
@@ -317,6 +339,10 @@ export function AdminCustomerProfileModal({
     return [];
   }, [localAddresses, customer]);
 
+  const phoneResolution = useMemo(() => {
+    return resolveCustomerPhones({ customer });
+  }, [customer]);
+
   if (!customer) return null;
 
   // Real Computed values
@@ -324,9 +350,14 @@ export function AdminCustomerProfileModal({
   const displayPin = customer.passwordHash ? (customer.passwordHash.length === 6 ? customer.passwordHash : customer.passwordHash) : null;
   const custCode = customer.memberId || `CUST-${customer.id.replace(/\D/g, "").slice(0, 4) || customer.id.slice(0, 6).toUpperCase()}`;
   const genderDisplay = customer.gender === "male" ? "Male (ชาย)" : customer.gender === "female" ? "Female (หญิง)" : (customer.gender && customer.gender !== "Rather not say" ? customer.gender : "—");
-  const thaiWaUrl = getWhatsAppUrl(customer.phone);
-  const intlPhone = customer.secondaryPhone || null;
-  const intlWaUrl = getWhatsAppUrl(intlPhone);
+
+  const displayThaiPhone = phoneResolution.hasThaiPhone ? phoneResolution.primaryPhone : null;
+  const displayIntlPhone = phoneResolution.hasThaiPhone
+    ? (phoneResolution.secondaryPhone && !isThaiPhoneNumber(phoneResolution.secondaryPhone) ? phoneResolution.secondaryPhone : null)
+    : (phoneResolution.primaryPhone && !isThaiPhoneNumber(phoneResolution.primaryPhone) ? phoneResolution.primaryPhone : null);
+
+  const thaiWaUrl = displayThaiPhone ? getWhatsAppUrl(displayThaiPhone) : null;
+  const intlWaUrl = displayIntlPhone ? getWhatsAppUrl(displayIntlPhone) : null;
 
   // Address Actions
   const handleAddAddress = async (e: React.FormEvent) => {
@@ -524,7 +555,7 @@ export function AdminCustomerProfileModal({
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-300/80 hover:bg-emerald-100 transition-colors shadow-2xs cursor-pointer"
-                    title={`Chat on WhatsApp with ${customer.phone}`}
+                    title={`Chat on WhatsApp with ${displayThaiPhone || customer.phone}`}
                   >
                     <MessageCircle size={14} className="text-emerald-600 fill-emerald-100" />
                     <span>WA</span>
@@ -532,13 +563,13 @@ export function AdminCustomerProfileModal({
                 )}
 
                 {/* Secondary/Intl WhatsApp Button (if secondary phone exists) */}
-                {intlPhone && intlWaUrl && (
+                {displayIntlPhone && intlWaUrl && (
                   <a
                     href={intlWaUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-300/80 hover:bg-emerald-100 transition-colors shadow-2xs cursor-pointer"
-                    title={`Chat on WhatsApp (Intl) with ${intlPhone}`}
+                    title={`Chat on WhatsApp (Intl) with ${displayIntlPhone}`}
                   >
                     <MessageCircle size={14} className="text-emerald-600 fill-emerald-100" />
                     <span>WA (Intl)</span>
@@ -723,7 +754,7 @@ export function AdminCustomerProfileModal({
                         </div>
 
                         <div className="font-mono text-base font-black text-slate-900 tracking-wide">
-                          {customer.phone || "—"}
+                          {displayThaiPhone || <span className="text-slate-400 text-xs font-normal italic">ไม่มีเบอร์ไทย (No Thai phone)</span>}
                         </div>
 
                         <div className="flex items-center justify-between text-xs pt-1">
@@ -751,7 +782,7 @@ export function AdminCustomerProfileModal({
                             <Globe size={13} className="text-sky-600" />
                             <span>International Mobile (Country Code)</span>
                           </div>
-                          {intlPhone ? (
+                          {displayIntlPhone ? (
                             customer.isSecondaryWhatsapp ? (
                               <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
                                 <MessageCircle size={10} /> WhatsApp OK
@@ -767,7 +798,7 @@ export function AdminCustomerProfileModal({
                         </div>
 
                         <div className="font-mono text-base font-black text-slate-900 tracking-wide">
-                          {intlPhone || <span className="text-slate-400 text-xs font-normal italic">ไม่มีเบอร์สำรอง (Not provided)</span>}
+                          {displayIntlPhone || <span className="text-slate-400 text-xs font-normal italic">ไม่มีเบอร์ต่างประเทศ (Not provided)</span>}
                         </div>
 
                         <div className="flex items-center justify-between text-xs pt-1">
@@ -782,7 +813,7 @@ export function AdminCustomerProfileModal({
                               <span>Check / Test on WhatsApp ↗</span>
                             </a>
                           ) : (
-                            <span className="text-slate-400 text-[11px]">{intlPhone ? "No WhatsApp configured" : "—"}</span>
+                            <span className="text-slate-400 text-[11px]">{displayIntlPhone ? "No WhatsApp configured" : "—"}</span>
                           )}
                           <span className="text-[11px] text-slate-400 font-medium">Roaming/Expats</span>
                         </div>
@@ -1123,7 +1154,7 @@ export function AdminCustomerProfileModal({
                       }`}
                     >
                       <Ticket size={13} />
-                      Coupons & Vouchers ({coupons.length})
+                      Coupons (คูปองลูกค้า) ({coupons.length})
                     </button>
                   </div>
 
@@ -1141,7 +1172,7 @@ export function AdminCustomerProfileModal({
                       className="h-8 px-3 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 cursor-pointer shadow-2xs"
                     >
                       <Plus size={14} />
-                      + แจกคูปองให้ลูกค้า
+                      + Issue Coupon (แจกคูปอง)
                     </Button>
                   )}
                 </div>
@@ -1346,7 +1377,7 @@ export function AdminCustomerProfileModal({
                     {/* Filter and Summary Bar */}
                     <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-xs font-bold text-slate-500 mr-1">สถานะ:</span>
+                        <span className="text-xs font-bold text-slate-500 mr-1">Status (สถานะ):</span>
                         <button
                           type="button"
                           onClick={() => setCouponStatusFilter("all")}
@@ -1356,7 +1387,7 @@ export function AdminCustomerProfileModal({
                               : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
                           }`}
                         >
-                          ทั้งหมด ({coupons.length})
+                          All (ทั้งหมด) ({coupons.length})
                         </button>
                         <button
                           type="button"
@@ -1367,7 +1398,7 @@ export function AdminCustomerProfileModal({
                               : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
                           }`}
                         >
-                          พร้อมใช้งาน ({coupons.filter(c => c.status === "ACTIVE").length})
+                          Active (พร้อมใช้งาน) ({coupons.filter(c => c.status === "ACTIVE").length})
                         </button>
                         <button
                           type="button"
@@ -1378,7 +1409,7 @@ export function AdminCustomerProfileModal({
                               : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
                           }`}
                         >
-                          ใช้แล้ว ({coupons.filter(c => c.status === "USED").length})
+                          Used (ใช้งานแล้ว) ({coupons.filter(c => c.status === "USED").length})
                         </button>
                         <button
                           type="button"
@@ -1389,14 +1420,14 @@ export function AdminCustomerProfileModal({
                               : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
                           }`}
                         >
-                          หมดอายุ/ยกเลิก ({coupons.filter(c => c.status === "EXPIRED" || c.status === "VOID").length})
+                          Expired / Void (หมดอายุ/ยกเลิก) ({coupons.filter(c => c.status === "EXPIRED" || c.status === "VOID").length})
                         </button>
                       </div>
 
                       <div className="text-xs text-slate-500 font-medium">
                         {isLoadingCoupons && (
                           <span className="flex items-center gap-1.5 text-indigo-600">
-                            <Loader2 size={13} className="animate-spin" /> กำลังโหลดคูปอง...
+                            <Loader2 size={13} className="animate-spin" /> Loading coupons (กำลังโหลดคูปอง)...
                           </span>
                         )}
                       </div>
@@ -1457,22 +1488,22 @@ export function AdminCustomerProfileModal({
                                   <div className="shrink-0">
                                     {isActive && (
                                       <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 font-bold text-[10px]">
-                                        พร้อมใช้งาน
+                                        Active (พร้อมใช้งาน)
                                       </Badge>
                                     )}
                                     {isUsed && (
                                       <Badge className="bg-slate-100 text-slate-700 border-slate-200 font-bold text-[10px]">
-                                        ใช้แล้ว
+                                        Used (ใช้งานแล้ว)
                                       </Badge>
                                     )}
                                     {isExpired && (
                                       <Badge className="bg-amber-100 text-amber-800 border-amber-200 font-bold text-[10px]">
-                                        หมดอายุ
+                                        Expired (หมดอายุ)
                                       </Badge>
                                     )}
                                     {isVoid && (
                                       <Badge className="bg-rose-100 text-rose-800 border-rose-200 font-bold text-[10px]">
-                                        ยกเลิกแล้ว
+                                        Void (ยกเลิกแล้ว)
                                       </Badge>
                                     )}
                                   </div>
@@ -1485,7 +1516,7 @@ export function AdminCustomerProfileModal({
                                       <Ticket size={16} />
                                     </div>
                                     <div>
-                                      <div className="text-[10px] text-slate-400 font-medium">มูลค่าส่วนลด</div>
+                                      <div className="text-[10px] text-slate-400 font-medium">Discount (มูลค่าส่วนลด)</div>
                                       <div className="text-xs font-black">
                                         {renderDiscountBadge(coupon)}
                                       </div>
@@ -1501,7 +1532,7 @@ export function AdminCustomerProfileModal({
                                       type="button"
                                       onClick={() => handleCopyCouponCode(coupon)}
                                       className="text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer p-0.5"
-                                      title="คัดลอกรหัสคูปอง"
+                                      title="Copy Code (คัดลอกรหัสคูปอง)"
                                     >
                                       {copiedCouponId === coupon.id ? (
                                         <Check size={13} className="text-emerald-600" />
@@ -1516,31 +1547,31 @@ export function AdminCustomerProfileModal({
                                 <div className="space-y-1 text-[11px] text-slate-500">
                                   <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
                                     {coupon.minOrderAmount && coupon.minOrderAmount > 0 ? (
-                                      <span>ขั้นต่ำ ฿{coupon.minOrderAmount.toLocaleString()}</span>
+                                      <span>Min (ขั้นต่ำ): ฿{coupon.minOrderAmount.toLocaleString()}</span>
                                     ) : (
-                                      <span>ไม่มีขั้นต่ำ</span>
+                                      <span>No Min (ไม่มีขั้นต่ำ)</span>
                                     )}
                                     {coupon.maxDiscount && coupon.maxDiscount > 0 && (
-                                      <span>ลดสูงสุด ฿{coupon.maxDiscount.toLocaleString()}</span>
+                                      <span>Max (ลดสูงสุด): ฿{coupon.maxDiscount.toLocaleString()}</span>
                                     )}
                                     <span>
                                       {coupon.expiryDate ? (
-                                        `หมดอายุ: ${format(new Date(coupon.expiryDate), "dd/MM/yyyy")}`
+                                        `Expires (หมดอายุ): ${format(new Date(coupon.expiryDate), "dd/MM/yyyy")}`
                                       ) : (
-                                        "ไม่มีวันหมดอายุ"
+                                        "No Expiry (ไม่มีวันหมดอายุ)"
                                       )}
                                     </span>
                                   </div>
 
                                   {coupon.issuedReason && (
                                     <div className="text-slate-400 italic">
-                                      เหตุผล: {coupon.issuedReason}
+                                      Reason (เหตุผล): {coupon.issuedReason}
                                     </div>
                                   )}
 
                                   {isUsed && coupon.usedAt && (
                                     <div className="text-emerald-700 font-medium">
-                                      ใช้งานเมื่อ: {format(new Date(coupon.usedAt), "dd/MM/yyyy HH:mm")} {coupon.usedJobId ? `(บิล ${coupon.usedJobId})` : ""}
+                                      Used on (ใช้งานเมื่อ): {format(new Date(coupon.usedAt), "dd/MM/yyyy HH:mm")} {coupon.usedJobId ? `(Order #${coupon.usedJobId})` : ""}
                                     </div>
                                   )}
                                 </div>
@@ -1549,7 +1580,7 @@ export function AdminCustomerProfileModal({
                                 {isActive && (
                                   <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400">
-                                      ออกให้เมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt || Date.now()), "dd/MM/yyyy")}
+                                      Issued (ออกเมื่อ): {format(new Date(coupon.issuedAt || coupon.createdAt || Date.now()), "dd/MM/yyyy")}
                                     </span>
                                     <Button
                                       type="button"
@@ -1559,7 +1590,7 @@ export function AdminCustomerProfileModal({
                                       className="h-6 px-2 text-[11px] text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-md font-bold cursor-pointer"
                                     >
                                       <Ban size={12} className="mr-1" />
-                                      ยกเลิกคูปอง
+                                      Void (ยกเลิกคูปอง)
                                     </Button>
                                   </div>
                                 )}
@@ -1575,10 +1606,10 @@ export function AdminCustomerProfileModal({
                         </div>
                         <div>
                           <h4 className="font-bold text-slate-700 text-sm">
-                            {couponStatusFilter === "all" ? "ยังไม่มีคูปองสำหรับลูกค้ารายนี้" : "ไม่พบคูปองในสถานะนี้"}
+                            {couponStatusFilter === "all" ? "No coupons for this customer yet (ยังไม่มีคูปองสำหรับลูกค้ารายนี้)" : "No coupons found in this status (ไม่พบคูปองในสถานะนี้)"}
                           </h4>
                           <p className="text-xs text-slate-400 mt-1">
-                            คุณสามารถแจกคูปองส่วนลด วอยเชอร์ หรือฟรีค่าจัดส่งให้ลูกค้ารายนี้ได้ทันที
+                            Issue discount coupons, vouchers, or free delivery to this customer (มอบคูปองส่วนลด วอยเชอร์ หรือฟรีค่าจัดส่งให้ลูกค้ารายนี้)
                           </p>
                         </div>
                         <Button
@@ -1587,7 +1618,7 @@ export function AdminCustomerProfileModal({
                           className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl h-8 px-4 cursor-pointer gap-1.5"
                         >
                           <Plus size={14} />
-                          + แจกคูปองใบแรก
+                          + Issue Coupon (แจกคูปอง)
                         </Button>
                       </div>
                     )}

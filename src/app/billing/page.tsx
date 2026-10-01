@@ -258,15 +258,18 @@ function BillingJobCard({
 
   const status = statusConfig[job.status] || statusConfig.billing;
 
-  const displayDate = job.scheduledAt
+  const rawDate = job.scheduledAt || job.deliveryScheduledAt || job.createdAt;
+  const displayDate = rawDate
     ? new Intl.DateTimeFormat("en-US", {
         day: "numeric",
         month: "short",
         year: "numeric",
         hour: "2-digit",
         minute: "2-digit",
-      }).format(new Date(job.scheduledAt))
+      }).format(new Date(rawDate))
     : "";
+
+  const isWalkIn = job.source === "pos" || (job.type as string) === "in_store";
 
   // Truncate long IDs for display
   const shortId = job.id.length > 10 ? job.id.substring(0, 10) : job.id;
@@ -305,9 +308,16 @@ function BillingJobCard({
         <div className="px-4 pt-3.5 pb-2.5">
           <div className="flex items-center justify-between">
             <div className="min-w-0">
-              <span className="text-[11px] font-mono font-bold text-slate-400 tracking-wide">
-                #{shortId}
-              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-mono font-bold text-slate-400 tracking-wide">
+                  #{shortId}
+                </span>
+                {isWalkIn && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                    Walk-In
+                  </span>
+                )}
+              </div>
               <h3 className="text-[15px] font-extrabold text-slate-900 mt-0.5 truncate">
                 {job.customerName || "General Customer"}
               </h3>
@@ -690,11 +700,6 @@ export default function BillingPage() {
         if (branch?.area !== user.area) return false;
       }
 
-      // Hide if Walk-In (source is 'pos' or type is 'in_store')
-      if (j.source === 'pos' || (j.type as string) === 'in_store') {
-        return false;
-      }
-
       return true;
     })
     .filter((j) => {
@@ -706,7 +711,11 @@ export default function BillingPage() {
         (j.customerPhone || "").toLowerCase().includes(q)
       );
     })
-    .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+    .sort((a, b) => {
+      const timeA = new Date(a.scheduledAt || a.deliveryScheduledAt || a.createdAt).getTime();
+      const timeB = new Date(b.scheduledAt || b.deliveryScheduledAt || b.createdAt).getTime();
+      return timeA - timeB;
+    });
 
   // Polling — refresh every 10 s (skip when tab hidden)
   useEffect(() => {

@@ -166,6 +166,10 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
     const branchObj = shops.find((s) => s.id === effectiveBranchId || s.name === tx.branchId) || shops[0] || null;
     const receiptNo = tx.referenceId || `TU-${tx.id.slice(0, 8).toUpperCase()}`;
     const paidAmount = Math.max(0, (tx.amount || 0) - (tx.bonusAmount || 0));
+    const memberCode = tx.customerMemberId 
+      || customerObj?.memberId 
+      || (customerObj?.nickName && /^[A-Z0-9_-]+$/i.test(customerObj.nickName.trim()) ? customerObj.nickName.trim() : null)
+      || null;
 
     const rdata: ReceiptData = {
       id: receiptNo,
@@ -173,7 +177,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
       createdAt: new Date(tx.createdAt),
       customerName: tx.customerName || customerObj?.name || "Customer",
       customerPhone: customerObj?.phone || "-",
-      customerId: tx.customerId,
+      customerId: memberCode ? `#${memberCode}` : tx.customerId,
       deliveryAddress: customerObj?.defaultAddress || null,
       items: [
         {
@@ -289,12 +293,14 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
     return transactions.filter((tx) => {
       const matchName = tx.customerName?.toLowerCase().includes(q);
       const matchId = tx.customerId?.toLowerCase().includes(q);
+      const memberId = tx.customerMemberId || customers.find((c) => c.id === tx.customerId)?.memberId;
+      const matchMember = memberId?.toLowerCase().includes(q);
       const matchRef = tx.referenceId?.toLowerCase().includes(q);
       const matchReason = tx.reason?.toLowerCase().includes(q);
       const matchStaff = tx.createdByName?.toLowerCase().includes(q);
-      return matchName || matchId || matchRef || matchReason || matchStaff;
+      return matchName || matchId || matchMember || matchRef || matchReason || matchStaff;
     });
-  }, [transactions, searchQuery]);
+  }, [transactions, searchQuery, customers]);
 
   // Summary Counts
   const counts = useMemo(() => {
@@ -452,7 +458,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
   // Export CSV
   const handleExportCSV = () => {
     let csv = "\uFEFF"; // UTF-8 BOM
-    csv += "Date,Time,Customer,Type,Direction,Amount,Balance Before,Balance After,Reference,Reason,Branch,Created By,Status,Approved By,Approved At\n";
+    csv += "Date,Time,Customer,Member ID,Type,Direction,Amount,Balance Before,Balance After,Reference,Reason,Branch,Created By,Status,Approved By,Approved At\n";
 
     filteredTransactions.forEach((tx) => {
       const d = new Date(tx.createdAt);
@@ -460,8 +466,9 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
       const timeStr = format(d, "HH:mm:ss");
       const shopName = getCleanBranchName(shops.find((s) => s.id === tx.branchId)?.name || tx.branchId);
       const approvedAtStr = tx.approvedAt ? format(new Date(tx.approvedAt), "yyyy-MM-dd HH:mm") : "-";
+      const memberId = tx.customerMemberId || customers.find((c) => c.id === tx.customerId)?.memberId || "-";
 
-      csv += `"${dateStr}","${timeStr}","${tx.customerName || "-"}","${tx.type}","${tx.direction}","${tx.amount}","${tx.balanceBefore}","${tx.balanceAfter}","${tx.referenceId || "-"}","${(tx.reason || "").replace(/"/g, '""')}","${shopName}","${tx.createdByName || "-"}","${tx.approvalStatus}","${tx.approvedByName || "-"}","${approvedAtStr}"\n`;
+      csv += `"${dateStr}","${timeStr}","${tx.customerName || "-"}","${memberId}","${tx.type}","${tx.direction}","${tx.amount}","${tx.balanceBefore}","${tx.balanceAfter}","${tx.referenceId || "-"}","${(tx.reason || "").replace(/"/g, '""')}","${shopName}","${tx.createdByName || "-"}","${tx.approvalStatus}","${tx.approvedByName || "-"}","${approvedAtStr}"\n`;
     });
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -834,12 +841,29 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
 
                       {/* Customer */}
                       <TableCell className="py-3.5">
-                        <div className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                          {tx.customerName || "Unnamed Customer"}
-                        </div>
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          ID: {tx.customerId ? tx.customerId.slice(0, 8) : "-"}
-                        </div>
+                        {(() => {
+                          const linkedCust = customers.find((c) => c.id === tx.customerId)
+                            || (tx.customerName ? customers.find((c) => c.name?.trim().toLowerCase() === tx.customerName.trim().toLowerCase()) : null);
+                          const memberId = tx.customerMemberId || linkedCust?.memberId;
+                          return (
+                            <div className="space-y-0.5">
+                              <div className="text-xs font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5 flex-wrap">
+                                <span>{tx.customerName || "Unnamed Customer"}</span>
+                                {memberId && (
+                                  <Badge className="bg-amber-100 dark:bg-amber-950/70 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-800 text-[9px] font-black px-1.5 py-0 h-4">
+                                    #{memberId}
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5">
+                                {memberId && (
+                                  <span className="text-indigo-600 dark:text-indigo-400 font-bold">M: {memberId} •</span>
+                                )}
+                                <span>ID: {tx.customerId ? tx.customerId.slice(0, 8) : "-"}</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </TableCell>
 
                       {/* Type & Ref */}
@@ -1314,6 +1338,13 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
             const branchObj = shops.find((s) => s.id === effectiveBranchId || s.name === inspectTx.branchId);
             const cleanBranch = getCleanBranchName(branchObj?.name || (inspectTx.branchId && !shops.some(s => s.id === inspectTx.branchId) ? inspectTx.branchId : null));
             const cleanReject = inspectTx.rejectReason?.replace(/\s*\[Task:\s*[^\]]+\]/i, "").trim() || "";
+            const linkedCustomer = customers.find((c) => c.id === inspectTx.customerId)
+              || (inspectTx.customerName ? customers.find((c) => c.name?.trim().toLowerCase() === inspectTx.customerName.trim().toLowerCase()) : null);
+            const memberCode = inspectTx.customerMemberId 
+              || linkedCustomer?.memberId 
+              || (linkedCustomer?.nickName && /^[A-Z0-9_-]+$/i.test(linkedCustomer.nickName.trim()) ? linkedCustomer.nickName.trim() : null)
+              || (linkedCustomer?.name?.match(/\((SR\d+|OF\d+|CC\d+|PTY\d+|S1\d+|\w+\d+)\)/)?.[1])
+              || null;
 
             return (
               <div className="flex flex-col max-h-[85vh]">
@@ -1347,8 +1378,23 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                   <div className="grid grid-cols-2 gap-3 bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800">
                     <div>
                       <div className="text-[11px] font-medium text-slate-400">ลูกค้า (Customer)</div>
-                      <div className="font-bold text-slate-800 dark:text-slate-200">{inspectTx.customerName}</div>
-                      <div className="text-[11px] text-slate-400 font-mono">ID: {inspectTx.customerId ? inspectTx.customerId.slice(0, 8) : "-"}</div>
+                      <div className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 flex-wrap">
+                        <span>{inspectTx.customerName}</span>
+                        {memberCode && (
+                          <Badge className="bg-amber-100 dark:bg-amber-950/70 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-800 text-[10px] font-black px-1.5 py-0 shadow-2xs">
+                            Member #{memberCode}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-500 font-mono flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className={memberCode ? "text-indigo-600 dark:text-indigo-400 font-bold" : "text-slate-400"}>
+                          Member: {memberCode || "-"}
+                        </span>
+                        <span>•</span>
+                        <span className="text-slate-400">
+                          ID: {inspectTx.customerId ? inspectTx.customerId.slice(0, 8) : "-"}
+                        </span>
+                      </div>
                     </div>
                     <div>
                       <div className="text-[11px] font-medium text-slate-400">สาขา (Branch)</div>

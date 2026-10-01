@@ -108,6 +108,23 @@ export interface CustomerCoupon {
   updatedAt?: string | Date;
 }
 
+export interface CouponTemplate {
+  id: string;
+  label: string;
+  codePrefix: string;
+  name: string;
+  description?: string | null;
+  discountType: 'FIXED' | 'PERCENTAGE' | 'FREE_DELIVERY' | 'CASH_VOUCHER';
+  discountValue: number;
+  minOrderAmount?: number | null;
+  maxDiscount?: number | null;
+  days: number;
+  reason?: string | null;
+  brand?: string;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+}
+
 export interface Customer {
   id: string;
   name: string;
@@ -1082,6 +1099,8 @@ export interface WalletTransactionItem {
   id: string;
   customerId: string;
   customerName: string;
+  customerMemberId?: string | null;
+  customerPhone?: string | null;
   type: string;
   amount: number;
   direction: string;

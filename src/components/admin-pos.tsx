@@ -1347,8 +1347,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setProformaReceiptNumber("");
     setProformaRevision(0);
     setLastProformaCartHash("");
-    capturedReceiptUrlsRef.current = [];
-    setSessionCapturedReceiptUrls([]);
     // Reset VAT to current system settings defaults
     setVatType(normalizeVatType(settings?.vatType));
     setVatRate(parseFloat(settings?.vatRate || "7") || 7);
@@ -2246,6 +2244,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         proformaId: cleanBaseProforma,
         proformaRevision: jobProformaRevision,
         createdAt: receiptDate,
+        customerId: latestJob.customerId || selectedCustomer?.id,
         customerName: latestJob.customerName || "Walk-In",
         customerPhone: latestJob.customerPhone || "-",
         deliveryAddress: (latestJob as any).deliveryAddress || (latestJob.dropoffLocation && latestJob.dropoffLocation !== activeShop?.name ? latestJob.dropoffLocation : undefined) || selectedCustomer?.defaultAddress || undefined,
@@ -2266,6 +2265,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         status: latestJob.status,
         adminNotesJson: latestJob.adminNotesJson,
         deliveryFee: latestJob.fee || 0,
+        walletBalance: latestJob.walletBalanceAfter != null
+          ? latestJob.walletBalanceAfter
+          : (latestJob.walletBalance != null
+            ? latestJob.walletBalance
+            : (selectedCustomer?.creditBalance || 0)),
+        isMember: latestJob.isMember !== undefined
+          ? Boolean(latestJob.isMember)
+          : Boolean(selectedCustomer?.isMember),
         autoCapture: true
       };
     }
@@ -2803,6 +2810,26 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           memberExpiryDate: updates.memberExpiryDate !== undefined ? updates.memberExpiryDate : prev.memberExpiryDate,
           priceListId: updates.priceListId !== undefined ? updates.priceListId : prev.priceListId
         } : null);
+
+        if (finalJob) {
+          finalJob = {
+            ...finalJob,
+            walletBalanceAfter: confirmedBalance,
+            customerId: selectedCustomer.id,
+            isMember: updates.isMember !== undefined ? updates.isMember : (selectedCustomer.isMember || balanceAdjustment > 0),
+          };
+          await jobStore.updateJobDetails(finalJob.id, {
+            walletBalanceAfter: confirmedBalance,
+            customerId: selectedCustomer.id,
+          } as any);
+        }
+      } else if (finalJob && selectedCustomer) {
+        finalJob = {
+          ...finalJob,
+          walletBalanceAfter: selectedCustomer.creditBalance ?? null,
+          customerId: selectedCustomer.id,
+          isMember: selectedCustomer.isMember ?? false,
+        };
       }
 
       if (isPaidFlag && selectedCustomer?.isNew && selectedCustomer?.id) {
@@ -2848,6 +2875,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               items: resolvedItems,
               proformaNumber: targetProformaNum,
               proformaRevision: effectiveRev,
+              walletBalanceAfter: finalJob.walletBalanceAfter,
             } as any),
             items: resolvedItems,
             isDraft: true,
@@ -2855,6 +2883,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             proformaId: cleanBaseProforma,
             jobId: targetJobId,
             autoCapture: false,
+            walletBalance: finalJob.walletBalanceAfter != null ? finalJob.walletBalanceAfter : undefined,
           };
 
           Promise.resolve().then(async () => {
@@ -4911,6 +4940,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           onCloseComplete={() => {
             setIsDraftPreview(false);
             setLatestJob(null);
+            capturedReceiptUrlsRef.current = [];
+            setSessionCapturedReceiptUrls([]);
           }}
           onBillImageUploaded={(newUrl) => {
             if (!capturedReceiptUrlsRef.current.includes(newUrl)) {
@@ -4930,6 +4961,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           onCloseComplete={() => {
             setIsDraftPreview(false);
             setLatestJob(null);
+            capturedReceiptUrlsRef.current = [];
+            setSessionCapturedReceiptUrls([]);
           }}
           onBillImageUploaded={(newUrl) => {
             if (!capturedReceiptUrlsRef.current.includes(newUrl)) {
@@ -5280,7 +5313,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           </Button>
                         ) : (
                           <>
-                            {job.subStatus === "ready" && !isSpectatorMode && (
+                            {((job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service')) && (job.status === "delivery" || job.subStatus === "ready") && job.status !== "completed" && job.status !== "cancel" && !isSpectatorMode && (
                               <Button
                                 size="sm"
                                 type="button"
@@ -5290,7 +5323,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 className="h-8 font-bold text-xs bg-indigo-650 hover:bg-indigo-700 text-white rounded-lg px-3 cursor-pointer shrink-0 flex items-center gap-1 shadow-sm"
                               >
                                 <Check size={12} />
-                                {currentLanguage === "en" ? "Return" : "คืนผ้าสำเร็จ"}
+                                <span>Customer Picked Up</span>
                               </Button>
                             )}
                           </>
@@ -5546,15 +5579,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           <DialogHeader className="shrink-0 mb-3">
             <DialogTitle className="text-base font-black text-foreground flex items-center gap-2">
               <CheckCircle2 className="text-indigo-500" size={18} />
-              <span>{currentLanguage === "en" ? "Confirm Clothes Return" : "ยืนยันการคืนผ้า"}</span>
+              <span>{currentLanguage === "en" ? "Confirm Customer Picked Up" : "ยืนยันลูกค้ารับผ้าแล้ว (Customer Picked Up)"}</span>
             </DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4">
             <p className="text-xs text-muted-foreground font-semibold leading-relaxed">
               {currentLanguage === "en"
-                ? `Are you sure you want to mark Order #${formatJobDisplayId(confirmReturnJob?.id)} as returned? This will set its status to Completed.`
-                : `คุณแน่ใจหรือไม่ที่จะทำรายการคืนผ้าสำหรับใบสั่งซื้อ #${formatJobDisplayId(confirmReturnJob?.id)}? การดำเนินการนี้จะตั้งค่าสถานะเป็น 'เสร็จสิ้น' (Completed)`}
+                ? `Are you sure you want to mark Order #${formatJobDisplayId(confirmReturnJob?.id)} as picked up by customer? This will set its status to Completed.`
+                : `ยืนยันว่าลูกค้ารับผ้าแล้วสำหรับ Order #${formatJobDisplayId(confirmReturnJob?.id)}? การดำเนินการนี้จะเปลี่ยนสถานะเป็น 'เสร็จสิ้น' (Completed)`}
             </p>
 
             <DialogFooter className="pt-2 border-t border-border gap-2">
@@ -5572,11 +5605,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 onClick={async () => {
                   if (!confirmReturnJob) return;
                   try {
-                    await jobStore.completeJob(confirmReturnJob.id);
+                    const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                    await jobStore.completeJob(confirmReturnJob.id, undefined, 'delivery', actorDetails);
                     toast.success(
                       currentLanguage === "en"
-                        ? `Order #${formatJobDisplayId(confirmReturnJob.id)} marked as completed (returned).`
-                        : `ทำรายการคืนผ้าสำหรับใบสั่งซื้อ #${formatJobDisplayId(confirmReturnJob.id)} เรียบร้อยแล้ว`
+                        ? `Order #${formatJobDisplayId(confirmReturnJob.id)} marked as completed (Customer Picked Up).`
+                        : `บันทึกรายการ Order #${formatJobDisplayId(confirmReturnJob.id)}: Customer Picked Up เรียบร้อย`
                     );
                     setConfirmReturnJob(null);
                   } catch (e) {
@@ -5585,7 +5619,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 }}
                 className="h-9 bg-indigo-650 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-indigo-650/15 border-none"
               >
-                {currentLanguage === "en" ? "Confirm Return" : "ยืนยันคืนผ้า"}
+                <span>Customer Picked Up</span>
               </Button>
             </DialogFooter>
           </div>

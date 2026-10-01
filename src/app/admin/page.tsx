@@ -2127,9 +2127,10 @@ export default function AdminPage() {
         if (isNoService) {
           return paymentMethod === 'paid' ? 'completed' : 'tba';
         }
-        // Normal laundry job
+        // Normal laundry job: when marked 'ready', move to 'delivery' status for all jobs (including Walk-In)
+        // so that finished laundry waits in Delivery column for actual handover to customer
         if (!isAlreadyCompleted && editingSubStatus === 'ready') {
-          return (isWalkIn && !isDelivery) ? 'completed' : 'delivery';
+          return 'delivery';
         }
         // If creating a new Delivery-only job, start directly in Process (billing)
         if (!editingJobId && !isPickup && isDelivery) {
@@ -4262,35 +4263,44 @@ export default function AdminPage() {
                             <div className="relative flex items-center">
                               <Input
                                 id="custPhone"
-                                placeholder="Phone number"
-                                value={customerPhone || phoneResolution.primaryPhone || ""}
-                                readOnly={true}
-                                className="h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all font-mono"
+                                placeholder="08x-xxx-xxxx หรือ เบอร์ต่างชาติ"
+                                value={customerPhone}
+                                onChange={(e) => setCustomerPhone(e.target.value)}
+                                className="h-8 text-xs bg-white text-slate-700 font-mono border-slate-200"
                               />
                             </div>
                             {/* If customer has an alternate/secondary phone (e.g. international mobile or address contact phone) */}
-                            {phoneResolution.secondaryPhone && (
-                              <div className="flex items-center justify-between gap-1 text-[10px] pt-0.5 text-slate-500 overflow-hidden">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    setCustomerPhone(phoneResolution.secondaryPhone!);
-                                  }}
-                                  className="flex items-center gap-1 text-slate-600 hover:text-sky-700 font-mono transition-colors text-left truncate cursor-pointer group"
-                                  title="คลิกเพื่อสลับมาใช้เบอร์นี้สำหรับออเดอร์นี้"
-                                >
-                                  <Globe size={10} className="text-sky-600 shrink-0" />
-                                  <span className="truncate group-hover:underline">{phoneResolution.secondaryPhone}</span>
-                                  <span className="text-[8px] text-slate-400 font-sans shrink-0">(สลับ)</span>
-                                </button>
-                                {phoneResolution.isSecondaryWhatsapp && (
-                                  <span className="text-[8px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200 shrink-0">
-                                    WhatsApp
-                                  </span>
-                                )}
-                              </div>
-                            )}
+                            {Boolean(phoneResolution.secondaryPhone || (selectedProfileCustomer?.secondaryPhone && selectedProfileCustomer.phone)) && (() => {
+                              const p1 = phoneResolution.primaryPhone || selectedProfileCustomer?.phone || "";
+                              const p2 = phoneResolution.secondaryPhone || selectedProfileCustomer?.secondaryPhone || "";
+                              if (!p2 || p1 === p2) return null;
+                              const isCurrentlyP2 = customerPhone === p2;
+                              const targetSwapPhone = isCurrentlyP2 ? p1 : p2;
+                              const isTargetIntl = !isThaiPhoneNumber(targetSwapPhone);
+
+                              return (
+                                <div className="flex items-center justify-between gap-1 text-[10px] pt-0.5 text-slate-500 overflow-hidden">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setCustomerPhone(targetSwapPhone);
+                                    }}
+                                    className="flex items-center gap-1 text-slate-600 hover:text-sky-700 font-mono transition-colors text-left truncate cursor-pointer group"
+                                    title={`คลิกเพื่อสลับไปใช้เบอร์ ${targetSwapPhone}`}
+                                  >
+                                    {isTargetIntl ? <Globe size={10} className="text-sky-600 shrink-0" /> : <span className="text-[10px]">🇹🇭</span>}
+                                    <span className="truncate group-hover:underline">{targetSwapPhone}</span>
+                                    <span className="text-[8px] text-slate-400 font-sans shrink-0">(สลับ)</span>
+                                  </button>
+                                  {phoneResolution.isSecondaryWhatsapp && (
+                                    <span className="text-[8px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200 shrink-0">
+                                      WhatsApp
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
 
@@ -5683,7 +5693,7 @@ export default function AdminPage() {
                             <Button 
                               type="button"
                               variant="outline"
-                              disabled={dialogCart.length === 0 || !editingJobId}
+                              disabled={(dialogCart.length === 0 && (dialogTotal || 0) <= 0) || !editingJobId}
                               onClick={() => {
                                 const cartHash = computeCartHash({
                                   items: dialogCart,
@@ -5754,7 +5764,7 @@ export default function AdminPage() {
                               disabled={
                                 isSubmitting || 
                                 isDetailLoading || 
-                                dialogCart.length === 0 || 
+                                (dialogCart.length === 0 && (dialogTotal || 0) <= 0) || 
                                 isCartLocked || 
                                 isPaidJob || 
                                 (!isWalkIn && paymentMethod !== 'paid') || 
@@ -6297,8 +6307,31 @@ export default function AdminPage() {
                         </div>
                       )}
                       <div className="flex items-center justify-between gap-3 w-full flex-wrap">
-                        {/* Left: Unlock Paid & Refund Action Buttons */}
+                        {/* Left: Complete Handover, Unlock Paid & Refund Action Buttons */}
                         <div className="flex items-center gap-2">
+                          {editingJobId && activeJob?.status === 'delivery' && (isWalkIn && !isDelivery) && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800 h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs"
+                              onClick={async () => {
+                                try {
+                                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                                  await jobStore.completeJob(editingJobId, undefined, "delivery", actorDetails);
+                                  toast.success(`Order #${formatJobDisplayId(editingJobId)}: Customer Picked Up (Completed)`);
+                                  setDialogOpen(false);
+                                  resetDialogForm();
+                                } catch (e: any) {
+                                  toast.error(`ไม่สามารถปิดงานได้: ${e.message}`);
+                                }
+                              }}
+                              title="Customer Picked Up - ลูกค้ามารับผ้าแล้ว และเปลี่ยนสถานะเป็น Completed"
+                            >
+                              <CheckCircle2 size={14} className="text-emerald-600" />
+                              <span>Customer Picked Up</span>
+                            </Button>
+                          )}
                           {canUnlockPaid && (
                             <Button
                               type="button"

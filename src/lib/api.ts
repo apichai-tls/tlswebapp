@@ -583,6 +583,29 @@ export const api = {
       delete cleanUpdates.billNo;
     }
 
+    // Safely merge billImageUrl arrays so concurrent uploads do not overwrite each other in memory
+    if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl && existingJob.billImageUrl) {
+      try {
+        const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
+        const existingUrls = JSON.parse(existingJob.billImageUrl);
+        if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
+          const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
+          merged.sort((a, b) => {
+            const aIsPf = a.includes("proforma-");
+            const bIsPf = b.includes("proforma-");
+            if (aIsPf && !bIsPf) return -1;
+            if (!aIsPf && bIsPf) return 1;
+            const aIsRc = a.includes("receipt-");
+            const bIsRc = b.includes("receipt-");
+            if (aIsRc && !bIsRc) return 1;
+            if (!aIsRc && bIsRc) return -1;
+            return 0;
+          });
+          cleanUpdates.billImageUrl = JSON.stringify(merged);
+        }
+      } catch {}
+    }
+
     if (cleanUpdates.status === undefined && existingJob.status === 'tba' && (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)) {
       cleanUpdates.status = 'pending';
     }
@@ -630,6 +653,29 @@ export const api = {
     // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
     if (cleanUpdates.billNo !== undefined && (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
       delete cleanUpdates.billNo;
+    }
+
+    // Safely merge billImageUrl arrays in optimistic update as well
+    if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl && existingJob.billImageUrl) {
+      try {
+        const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
+        const existingUrls = JSON.parse(existingJob.billImageUrl);
+        if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
+          const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
+          merged.sort((a, b) => {
+            const aIsPf = a.includes("proforma-");
+            const bIsPf = b.includes("proforma-");
+            if (aIsPf && !bIsPf) return -1;
+            if (!aIsPf && bIsPf) return 1;
+            const aIsRc = a.includes("receipt-");
+            const bIsRc = b.includes("receipt-");
+            if (aIsRc && !bIsRc) return 1;
+            if (!aIsRc && bIsRc) return -1;
+            return 0;
+          });
+          cleanUpdates.billImageUrl = JSON.stringify(merged);
+        }
+      } catch {}
     }
 
     if (cleanUpdates.status === undefined && existingJob.status === 'tba' && (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)) {

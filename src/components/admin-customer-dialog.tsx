@@ -18,7 +18,7 @@ import { TopUpDialog } from "@/components/top-up-dialog";
 import { addCustomerAddressAction } from "@/actions/db";
 import { CountryCodeInput } from "@/components/ui/country-code-input";
 import { parseFullPhone } from "@/lib/country-codes";
-import { formatBaht } from "@/lib/utils";
+import { formatBaht, isThaiPhoneNumber, normalizeThaiPhone } from "@/lib/utils";
 import { format } from "date-fns";
 
 const BANGKOK_DISTRICTS = [
@@ -141,17 +141,46 @@ export function AdminCustomerDialog({
         setDob(customer.dob || "");
         setCustomerTier(customer.isVIP ? "vip" : customer.isMember ? "member" : "standard");
 
-        setPhone(customer.phone || "");
-        setIsWhatsapp(customer.isWhatsapp || false);
-        if (customer.secondaryPhone) {
-          const { countryCode, nationalNumber } = parseFullPhone(customer.secondaryPhone);
+        // Dual Phone resolution on Dialog Open:
+        const rawP = (customer.phone || "").trim();
+        const rawSec = (customer.secondaryPhone || "").trim();
+
+        let resolvedThai = "";
+        let resolvedIntl = "";
+        let resolvedIsWhatsapp = customer.isWhatsapp || false;
+        let resolvedIsSecWhatsapp = customer.isSecondaryWhatsapp || false;
+
+        if (isThaiPhoneNumber(rawP)) {
+          resolvedThai = normalizeThaiPhone(rawP);
+          if (rawSec && rawSec !== rawP) {
+            resolvedIntl = rawSec;
+          }
+        } else if (rawSec && isThaiPhoneNumber(rawSec)) {
+          resolvedThai = normalizeThaiPhone(rawSec);
+          if (rawP && rawP !== rawSec) {
+            resolvedIntl = rawP;
+          }
+          resolvedIsWhatsapp = customer.isSecondaryWhatsapp || false;
+          resolvedIsSecWhatsapp = customer.isWhatsapp || false;
+        } else if (rawP) {
+          // Customer has only an international/foreign phone in customer.phone
+          resolvedIntl = rawP;
+          resolvedIsSecWhatsapp = customer.isWhatsapp || false;
+        } else if (rawSec) {
+          resolvedIntl = rawSec;
+        }
+
+        setPhone(resolvedThai);
+        setIsWhatsapp(resolvedIsWhatsapp);
+        if (resolvedIntl) {
+          const { countryCode, nationalNumber } = parseFullPhone(resolvedIntl);
           setIntlCountryCode(countryCode || "+1");
-          setSecondaryPhone(nationalNumber || customer.secondaryPhone);
+          setSecondaryPhone(nationalNumber || resolvedIntl);
         } else {
           setIntlCountryCode("+1");
           setSecondaryPhone("");
         }
-        setIsSecondaryWhatsapp(customer.isSecondaryWhatsapp || false);
+        setIsSecondaryWhatsapp(resolvedIsSecWhatsapp);
         setLineId(customer.lineId || "");
         setEmail(customer.email || "");
         setInitialPin(customer.passwordHash || "");
@@ -302,7 +331,10 @@ export function AdminCustomerDialog({
       toast.error("กรุณาระบุชื่อ-นามสกุล (Full Name is required)");
       return;
     }
-    const cleanPhone = phone.trim();
+    let cleanPhone = phone.trim();
+    if (cleanPhone && isThaiPhoneNumber(cleanPhone)) {
+      cleanPhone = normalizeThaiPhone(cleanPhone);
+    }
     // Combine secondary phone with intl country code if typed
     let finalSecondaryPhone = secondaryPhone.trim();
     if (finalSecondaryPhone && !finalSecondaryPhone.startsWith("+") && intlCountryCode) {
@@ -333,13 +365,26 @@ export function AdminCustomerDialog({
         if (rl) finalPriceListId = rl.id;
       }
 
+      // Route Thai phone to primary phone, international to secondaryPhone
+      let targetPrimaryPhone = cleanPhone;
+      let targetSecondaryPhone = finalSecondaryPhone || null;
+
+      if (!targetPrimaryPhone && targetSecondaryPhone) {
+        // Customer only has an international phone
+        targetPrimaryPhone = targetSecondaryPhone;
+        targetSecondaryPhone = null;
+      } else if (targetPrimaryPhone && targetSecondaryPhone && targetPrimaryPhone === targetSecondaryPhone) {
+        // Avoid identical duplication
+        targetSecondaryPhone = null;
+      }
+
       const customerData = {
         name: name.trim().toUpperCase(),
-        phone: cleanPhone || finalSecondaryPhone || "-",
+        phone: targetPrimaryPhone || "-",
         brand,
         nickName: nickName.trim() || null,
         gender,
-        secondaryPhone: finalSecondaryPhone || null,
+        secondaryPhone: targetSecondaryPhone,
         isSecondaryWhatsapp,
         roomNo: roomNo.trim() || null,
         sourceSystem,

@@ -404,9 +404,11 @@ export function A5ReceiptContent({
   const isMember =
     receiptData.isMember !== undefined ? receiptData.isMember : Boolean(targetCustomer?.isMember);
   const walletBalance =
-    receiptData.walletBalance !== undefined
+    receiptData.walletBalance !== undefined && receiptData.walletBalance !== null
       ? receiptData.walletBalance
-      : targetCustomer?.creditBalance || 0;
+      : ((receiptData as any).walletBalanceAfter !== undefined && (receiptData as any).walletBalanceAfter !== null
+        ? (receiptData as any).walletBalanceAfter
+        : (targetCustomer?.creditBalance || 0));
   const isWalletSufficient = isMember && walletBalance >= (receiptData.total || 0);
 
   // Extract Payments History
@@ -777,8 +779,13 @@ export function A5ReceiptContent({
               <h3 className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-0.5">
                 {currentLanguage === "en" ? "BILLED TO" : "ลูกค้า"}
               </h3>
-              <p className={`${isUltraCompact ? "text-xs" : "text-sm"} font-bold text-neutral-900 leading-tight`}>
-                {receiptData.customerName}
+              <p className={`${isUltraCompact ? "text-xs" : "text-sm"} font-bold text-neutral-900 leading-tight flex items-center gap-1.5 flex-wrap`}>
+                <span>{receiptData.customerName}</span>
+                {receiptData.customerId && !receiptData.customerId.includes("-") && (
+                  <span className="text-[10px] font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                    {receiptData.customerId.startsWith("#") ? receiptData.customerId : `#${receiptData.customerId}`}
+                  </span>
+                )}
               </p>
               <p className="text-xs text-neutral-600 font-mono mt-0.5">{receiptData.customerPhone}</p>
               {receiptData.deliveryAddress && (

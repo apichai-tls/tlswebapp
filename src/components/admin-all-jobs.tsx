@@ -1281,6 +1281,30 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                  )}
                               </div>
                             </div>
+
+                            {status === 'delivery' && ((job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service')) && (
+                              <div className="pt-2 border-t border-slate-100 mt-2">
+                                <Button
+                                  size="sm"
+                                  type="button"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    try {
+                                      const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                                      await jobStore.completeJob(job.id, undefined, "delivery", actorDetails);
+                                      toast.success(`Order #${formatJobDisplayId(job.id)}: Customer Picked Up (Completed)`);
+                                    } catch (err: any) {
+                                      toast.error(`ไม่สามารถปิดงานได้: ${err.message}`);
+                                    }
+                                  }}
+                                  className="w-full h-7 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center justify-center gap-1.5 shadow-xs cursor-pointer border-none"
+                                  title="Customer Picked Up (ลูกค้ารับผ้าแล้ว)"
+                                >
+                                  <CheckCircle2 size={13} />
+                                  <span>Customer Picked Up</span>
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         );
                       })}

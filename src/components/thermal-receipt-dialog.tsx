@@ -279,11 +279,13 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   const isMember = (job as any).isMember !== undefined 
     ? Boolean((job as any).isMember) 
     : Boolean(cust?.isMember);
-  const walletBalance = (job as any).walletBalance !== undefined 
-    ? (job as any).walletBalance 
-    : ((job as any).creditBalance !== undefined 
-      ? (job as any).creditBalance 
-      : (cust?.creditBalance || 0));
+  const walletBalance = (job as any).walletBalanceAfter !== undefined && (job as any).walletBalanceAfter !== null
+    ? (job as any).walletBalanceAfter
+    : ((job as any).walletBalance !== undefined 
+      ? (job as any).walletBalance 
+      : ((job as any).creditBalance !== undefined 
+        ? (job as any).creditBalance 
+        : (cust?.creditBalance || 0)));
   const isJobPaid = Boolean((job as any).isShopPaid || rawJob.isShopPaid || job.isPaid || (totalPayments >= jobTotal && jobTotal > 0));
   const receiptDate = (isJobPaid && paymentTime && !isNaN(paymentTime.getTime()))
     ? paymentTime
@@ -764,6 +766,14 @@ export function ThermalReceiptDialog({
             <span className="shrink-0">CUSTOMER:</span>
             <span className="truncate text-right font-bold text-neutral-900 flex-1 min-w-0">{receiptData.customerName}</span>
           </div>
+          {receiptData.customerId && !receiptData.customerId.includes("-") && (
+            <div className="flex justify-between">
+              <span>MEMBER ID:</span>
+              <span className="font-mono font-bold text-neutral-900">
+                {receiptData.customerId.startsWith("#") ? receiptData.customerId : `#${receiptData.customerId}`}
+              </span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span>PHONE:</span>
             <span>{receiptData.customerPhone}</span>
