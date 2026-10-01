@@ -114,7 +114,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     reason: "",
   });
   
-  const [filterPosOnly, setFilterPosOnly] = useState(false);
+  const [showPos, setShowPos] = useState(true);
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(true);
   const [showTopup, setShowTopup] = useState(false);
@@ -364,13 +364,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       }
     }
 
-    // POS Filter
-    let matchesPos = true;
-    if (filterPosOnly) {
-      matchesPos = job.source === 'pos' || (job.type as string) === 'in_store';
+    // POS Filter: default is checked (show all). If unchecked, filter out POS jobs
+    if (!showPos) {
+      const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+      if (isPos) return false;
     }
     
-    return matchesSearch && matchesDate && matchesStatus && matchesArea && matchesPayment && matchesPos;
+    return matchesSearch && matchesDate && matchesStatus && matchesArea && matchesPayment;
   });
 
   const sortedJobs = [...filteredJobs];
@@ -525,8 +525,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             <Label className="flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
-                checked={filterPosOnly}
-                onChange={e => setFilterPosOnly(e.target.checked)}
+                checked={showPos}
+                onChange={e => setShowPos(e.target.checked)}
                 className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
               />
               <span className="text-xs font-bold text-slate-700">POS</span>
