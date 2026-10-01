@@ -2337,6 +2337,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         isMember: latestJob.isMember !== undefined
           ? Boolean(latestJob.isMember)
           : Boolean(selectedCustomer?.isMember),
+        memberId: (latestJob as any).memberId || (latestJob as any).customerMemberId || selectedCustomer?.memberId || null,
         autoCapture: true
       };
     }
@@ -2371,8 +2372,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       proformaId: displayProforma,
       createdAt: draftDate,
       customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
+      customerId: selectedCustomer?.id,
       customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
       deliveryAddress: resolvedDraftAddress,
+      isMember: Boolean(selectedCustomer?.isMember),
+      memberId: selectedCustomer?.memberId || null,
+      walletBalance: selectedCustomer?.creditBalance,
       items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
       subtotal: subtotal,
       expressSurcharge: expressSurcharge,

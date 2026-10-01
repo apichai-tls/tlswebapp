@@ -2947,6 +2947,7 @@ export default function AdminPage() {
         customerName: customerName || "Walk-In",
         customerPhone: customerPhone || selectedProfileCustomer?.phone || selectedProfileCustomer?.secondaryPhone || "-",
         isMember: selectedProfileCustomer?.isMember !== undefined ? selectedProfileCustomer.isMember : (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.isMember : undefined),
+        memberId: selectedProfileCustomer?.memberId || (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.memberId : undefined) || null,
         walletBalance: selectedProfileCustomer?.creditBalance !== undefined ? selectedProfileCustomer.creditBalance : undefined,
         deliveryAddress: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || null),
         dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || activeShop?.address || ""),

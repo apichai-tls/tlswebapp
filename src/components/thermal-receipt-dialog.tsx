@@ -117,6 +117,7 @@ export interface ReceiptData {
   deliveryFee?: number;
   jobType?: string;
   isMember?: boolean;
+  memberId?: string | null;
   walletBalance?: number;
   proformaId?: string;
   jobId?: string;
@@ -278,7 +279,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
 
   const isMember = (job as any).isMember !== undefined 
     ? Boolean((job as any).isMember) 
-    : Boolean(cust?.isMember);
+    : Boolean(cust?.isMember || cust?.memberId || cust?.tier === "member" || cust?.tier === "vip");
+  const memberId = (job as any).memberId || (job as any).customerMemberId || cust?.memberId || null;
   const walletBalance = (job as any).walletBalanceAfter !== undefined && (job as any).walletBalanceAfter !== null
     ? (job as any).walletBalanceAfter
     : ((job as any).walletBalance !== undefined 
@@ -341,6 +343,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     jobType: job.type || (rawJob as any).type || "full_service",
     customerId: job.customerId || (rawJob as any).customerId || cust?.id,
     isMember,
+    memberId,
     walletBalance,
     proformaId: cleanBaseProforma || rawProformaId,  // base number only — display layers append -R{n}
     proformaRevision: proformaRevision,
@@ -766,11 +769,13 @@ export function ThermalReceiptDialog({
             <span className="shrink-0">CUSTOMER:</span>
             <span className="truncate text-right font-bold text-neutral-900 flex-1 min-w-0">{receiptData.customerName}</span>
           </div>
-          {receiptData.customerId && !receiptData.customerId.includes("-") && (
+          {(receiptData.memberId || receiptData.isMember) && (
             <div className="flex justify-between">
               <span>MEMBER ID:</span>
               <span className="font-mono font-bold text-neutral-900">
-                {receiptData.customerId.startsWith("#") ? receiptData.customerId : `#${receiptData.customerId}`}
+                {receiptData.memberId 
+                  ? (receiptData.memberId.startsWith("#") ? receiptData.memberId : `#${receiptData.memberId}`)
+                  : (receiptData.customerId && !receiptData.customerId.includes("-") ? `#${receiptData.customerId}` : "MEMBER")}
               </span>
             </div>
           )}

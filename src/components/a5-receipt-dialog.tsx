@@ -402,7 +402,9 @@ export function A5ReceiptContent({
 
 
   const isMember =
-    receiptData.isMember !== undefined ? receiptData.isMember : Boolean(targetCustomer?.isMember);
+    receiptData.isMember !== undefined ? receiptData.isMember : Boolean(targetCustomer?.isMember || targetCustomer?.memberId);
+  const effectiveMemberId =
+    receiptData.memberId || targetCustomer?.memberId || (isMember && targetCustomer?.id && !targetCustomer.id.includes("-") ? targetCustomer.id : null);
   const walletBalance =
     receiptData.walletBalance !== undefined && receiptData.walletBalance !== null
       ? receiptData.walletBalance
@@ -781,13 +783,22 @@ export function A5ReceiptContent({
               </h3>
               <p className={`${isUltraCompact ? "text-xs" : "text-sm"} font-bold text-neutral-900 leading-tight flex items-center gap-1.5 flex-wrap`}>
                 <span>{receiptData.customerName}</span>
-                {receiptData.customerId && !receiptData.customerId.includes("-") && (
-                  <span className="text-[10px] font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
-                    {receiptData.customerId.startsWith("#") ? receiptData.customerId : `#${receiptData.customerId}`}
+                {(effectiveMemberId || isMember) && (
+                  <span className="text-[10.5px] font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                    {effectiveMemberId 
+                      ? (effectiveMemberId.startsWith("#") ? effectiveMemberId : `#${effectiveMemberId}`)
+                      : "MEMBER"}
                   </span>
                 )}
               </p>
-              <p className="text-xs text-neutral-600 font-mono mt-0.5">{receiptData.customerPhone}</p>
+              <div className="flex items-center gap-2 mt-0.5 text-xs text-neutral-600 font-mono">
+                <span>{receiptData.customerPhone}</span>
+                {(effectiveMemberId || isMember) && (
+                  <span className="font-bold text-indigo-700">
+                    • MEMBER ID: {effectiveMemberId ? (effectiveMemberId.startsWith("#") ? effectiveMemberId : `#${effectiveMemberId}`) : "MEMBER"}
+                  </span>
+                )}
+              </div>
               {receiptData.deliveryAddress && (
                 <p className={`${isUltraCompact ? "text-[10px]" : "text-[11px]"} text-neutral-600 mt-0.5 leading-snug break-words`}>
                   {receiptData.deliveryAddress}

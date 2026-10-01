@@ -110,6 +110,12 @@ export async function generateThermalReceiptImage(
           <span>CUSTOMER:</span>
           <span style="font-weight: bold; color: #171717;">${receiptData.customerName || "Walk-In"}</span>
         </div>
+        ${(receiptData.memberId || receiptData.isMember) ? `
+        <div style="display: flex; justify-content: space-between;">
+          <span>MEMBER ID:</span>
+          <span style="font-family: monospace; font-weight: bold; color: #171717;">${receiptData.memberId ? (receiptData.memberId.startsWith("#") ? receiptData.memberId : `#${receiptData.memberId}`) : "MEMBER"}</span>
+        </div>
+        ` : ""}
         <div style="display: flex; justify-content: space-between;">
           <span>PHONE:</span>
           <span>${receiptData.customerPhone || "-"}</span>
