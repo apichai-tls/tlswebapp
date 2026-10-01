@@ -1549,7 +1549,7 @@ export function AdminCustomerProfileModal({
                                 {isActive && (
                                   <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400">
-                                      ออกให้เมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt), "dd/MM/yyyy")}
+                                      ออกให้เมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt || Date.now()), "dd/MM/yyyy")}
                                     </span>
                                     <Button
                                       type="button"

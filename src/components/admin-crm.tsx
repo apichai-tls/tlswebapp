@@ -2511,7 +2511,7 @@ export function AdminCRM({
                                 <span className="text-slate-400">ไม่มีวันหมดอายุ</span>
                               )}
                               <div className="text-[10px] text-slate-400">
-                                ออกเมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt), "dd/MM/yyyy")}
+                                ออกเมื่อ: {format(new Date(coupon.issuedAt || coupon.createdAt || Date.now()), "dd/MM/yyyy")}
                               </div>
                             </div>
                           </TableCell>
