@@ -2455,6 +2455,21 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     if (loadedJobId) {
       const targetJob = jobs.find(j => j.id === loadedJobId) || latestJob;
+      const itemsPayload = cart.map(item => ({
+        name: item.name,
+        nameEn: item.nameEn || item.name,
+        quantity: item.quantity,
+        price: item.price,
+        basePrice: item.basePrice,
+        serviceId: item.id,
+        category: item.category,
+        unit: item.unit || 'pcs'
+      }));
+      await jobStore.updateJobDetails(loadedJobId, {
+        items: itemsPayload as any,
+        totalAmount: total,
+        paymentChannel: "Beam Checkout / QR",
+      });
       setOnlinePaymentJob({
         id: loadedJobId,
         billNo: targetJob?.billNo,
@@ -5949,6 +5964,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         isOpen={!!onlinePaymentJob}
         onClose={() => setOnlinePaymentJob(null)}
         job={onlinePaymentJob}
+        customAmount={onlinePaymentJob?.totalAmount ?? undefined}
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
             await jobStore.updateJobDetails(onlinePaymentJob.id, {

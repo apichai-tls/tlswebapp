@@ -1559,6 +1559,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         isOpen={!!onlinePaymentJob}
         onClose={() => setOnlinePaymentJob(null)}
         job={onlinePaymentJob}
+        customAmount={onlinePaymentJob?.totalAmount ?? undefined}
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
             await jobStore.updateJobDetails(onlinePaymentJob.id, {

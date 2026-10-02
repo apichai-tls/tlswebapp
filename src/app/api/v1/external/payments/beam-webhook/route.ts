@@ -209,6 +209,7 @@ export async function POST(req: Request) {
         isShopPaid: true,
         paymentMethod: paymentMethodCode,
         paymentChannel,
+        totalAmount: paidAmount,
         csoPaidAt: now,
         shopPaidAt: now,
         subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus, // advance to wash

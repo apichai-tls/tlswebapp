@@ -402,6 +402,7 @@ export default function AdminPage() {
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [onlinePaymentJob, setOnlinePaymentJob] = useState<Job | null>(null);
+  const [isStartingBeamPayment, setIsStartingBeamPayment] = useState(false);
   const [isVersionOutdated, setIsVersionOutdated] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const clientBuildTime = process.env.NEXT_PUBLIC_BUILD_TIME;
@@ -3166,6 +3167,73 @@ export default function AdminPage() {
     }
   };
 
+  const handleOpenBeamPaymentFromDialog = async () => {
+    if (!editingJobId || isStartingBeamPayment) return;
+    setIsStartingBeamPayment(true);
+    try {
+      const current = jobs.find((j) => j.id === editingJobId) || activeJob;
+      if (!current) return;
+
+      const itemsPayload = dialogCart.map((item) => ({
+        name: item.name,
+        nameEn: item.nameEn || item.name,
+        quantity: item.quantity,
+        price: item.price,
+        basePrice: item.basePrice,
+        serviceId: item.id,
+        category: item.category,
+        unit: item.unit || "pcs",
+      }));
+
+      const uniqueCategories = Array.from(
+        new Set(dialogCart.map((item) => item.category).filter(Boolean))
+      );
+      const derivedLaundryTypes =
+        uniqueCategories.length > 0 ? uniqueCategories : undefined;
+
+      const subtotal = dialogCart.reduce(
+        (sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)),
+        0
+      );
+      const expressRate =
+        serviceSpeed === "express_50" ? 0.5 : serviceSpeed === "express_100" ? 1 : 0;
+      const surcharge = expressRate > 0 ? safeCeil(subtotal * expressRate) : 0;
+      const discountVal = showDialogDiscount
+        ? (subtotal + surcharge) * (dialogDiscountPercent / 100)
+        : 0;
+
+      const updatedData: Partial<Job> = {
+        items: itemsPayload as any,
+        totalAmount: dialogTotal,
+        fee,
+        discount: discountVal,
+        discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
+        paymentChannel: paymentChannel || "Beam Checkout",
+        serviceType: dialogCart[0]?.id || current.serviceType || "wash_fold",
+        ...(derivedLaundryTypes ? { laundryTypes: derivedLaundryTypes as any } : {}),
+      };
+
+      // Persist to store & DB immediately so the job reflects the new price and items
+      await jobStore.updateJobDetails(editingJobId, updatedData);
+
+      if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+        Object.assign(originalJobRef.current, updatedData);
+      }
+
+      const updatedJob = {
+        ...current,
+        ...updatedData,
+      };
+
+      setOnlinePaymentJob(updatedJob);
+    } catch (err: any) {
+      console.error("Failed to update job before opening Beam Payment:", err);
+      toast.error("ไม่สามารถอัปเดตราคาก่อนชำระเงินได้");
+    } finally {
+      setIsStartingBeamPayment(false);
+    }
+  };
+
   const handleCreateNewJobRef = useRef(handleCreateNewJob);
   handleCreateNewJobRef.current = handleCreateNewJob;
   const stableHandleCreateNewJob = useCallback(() => {
@@ -5754,11 +5822,9 @@ export default function AdminPage() {
                                 {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      const current = jobs.find(j => j.id === editingJobId) || activeJob;
-                                      if (current) setOnlinePaymentJob(current);
-                                    }}
-                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors"
+                                    disabled={isStartingBeamPayment}
+                                    onClick={handleOpenBeamPaymentFromDialog}
+                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors disabled:opacity-50"
                                     title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
                                   >
                                     <Zap size={11} className="fill-white" />
@@ -6430,11 +6496,9 @@ export default function AdminPage() {
                                 {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      const current = jobs.find(j => j.id === editingJobId) || activeJob;
-                                      if (current) setOnlinePaymentJob(current);
-                                    }}
-                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors"
+                                    disabled={isStartingBeamPayment}
+                                    onClick={handleOpenBeamPaymentFromDialog}
+                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors disabled:opacity-50"
                                     title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
                                   >
                                     <Zap size={11} className="fill-white" />
@@ -7238,6 +7302,7 @@ export default function AdminPage() {
         isOpen={!!onlinePaymentJob}
         onClose={() => setOnlinePaymentJob(null)}
         job={onlinePaymentJob}
+        customAmount={onlinePaymentJob?.totalAmount ?? undefined}
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
             await jobStore.updateJobDetails(onlinePaymentJob.id, {

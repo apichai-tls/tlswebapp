@@ -84,7 +84,7 @@ export function OnlinePaymentDialog({
     if (job.isPaid) {
       setIsPaidSuccess(true);
       setPaidDetails({
-        amount: job.totalAmount || 0,
+        amount: amountToPay,
         channel: job.paymentChannel || "Beam Checkout",
       });
       return;

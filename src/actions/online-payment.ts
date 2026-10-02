@@ -68,6 +68,7 @@ async function markJobAsPaidInDb(params: {
       isShopPaid: true,
       paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
       paymentChannel: channelName,
+      totalAmount: paidAmount,
       csoPaidAt: now,
       shopPaidAt: now,
       subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus,
@@ -176,6 +177,7 @@ export async function createJobOnlinePaymentAction(
         where: { id: job.id },
         data: {
           adminNotesJson: JSON.stringify(adminNotesObj),
+          ...(Math.abs((job.totalAmount || 0) - amount) >= 0.01 ? { totalAmount: amount } : {}),
         },
       });
     } catch (dbErr) {
