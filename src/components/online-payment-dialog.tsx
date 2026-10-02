@@ -23,6 +23,7 @@ import {
   AlertCircle,
   Share2,
   Check,
+  Receipt,
 } from "lucide-react";
 import {
   createJobOnlinePaymentAction,
@@ -250,12 +251,33 @@ export function OnlinePaymentDialog({
               <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl px-4 py-2 text-xs font-medium text-emerald-800 dark:text-emerald-300">
                 ยอดชำระ: <b>฿{(paidDetails?.amount || amountToPay).toLocaleString()}</b> • ช่องทาง: <b>{paidDetails?.channel || "Beam Checkout"}</b>
               </div>
-              <Button
-                onClick={onClose}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10 mt-2 rounded-xl"
-              >
-                เสร็จสิ้น / ปิดหน้าต่าง
-              </Button>
+              <div className="grid grid-cols-2 gap-2 w-full pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onClose}
+                  className="w-full text-xs font-bold h-10 rounded-xl border-slate-300 hover:bg-slate-100"
+                >
+                  ปิดหน้าต่าง
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    if (onPaymentSuccess && job) {
+                      onPaymentSuccess({
+                        jobId: job.id,
+                        amount: paidDetails?.amount || amountToPay,
+                        channel: paidDetails?.channel || "Beam Checkout",
+                      });
+                    }
+                    onClose();
+                  }}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10 rounded-xl shadow-sm flex items-center justify-center gap-1.5 text-xs"
+                >
+                  <Receipt size={14} />
+                  <span>ดู / พิมพ์ใบเสร็จ</span>
+                </Button>
+              </div>
             </div>
           ) : loading ? (
             /* LOADING STATE */

@@ -22,6 +22,8 @@ import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId } from "@/lib/
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds, UNASSIGNED_BRANCH_ID } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
+import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
+import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -104,6 +106,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [onlinePaymentJob, setOnlinePaymentJob] = useState<Job | null>(null);
+  const [receiptJob, setReceiptJob] = useState<Job | null>(null);
+  const [showReceipt, setShowReceipt] = useState(false);
   
   const [reopenDialog, setReopenDialog] = useState<{
     isOpen: boolean;
@@ -871,6 +875,23 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             Beam Pay
                           </Button>
                         )}
+                        {(job.isPaid || isJobFullyPaid(job)) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setReceiptJob(job);
+                              setShowReceipt(true);
+                            }}
+                            className="h-5 px-1.5 text-[9px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 mt-1 rounded flex items-center gap-1 mx-auto cursor-pointer shadow-2xs"
+                            title="ดู / พิมพ์ใบเสร็จรับเงิน (Receipt)"
+                          >
+                            <Receipt size={9} />
+                            ใบเสร็จ
+                          </Button>
+                        )}
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
@@ -1323,6 +1344,23 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     Beam Pay
                                   </Button>
                                 )}
+                                {(job.isPaid || isJobFullyPaid(job)) && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setReceiptJob(job);
+                                      setShowReceipt(true);
+                                    }}
+                                    className="h-5 px-1.5 text-[9px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded flex items-center gap-1 cursor-pointer shadow-2xs"
+                                    title="ดู / พิมพ์ใบเสร็จรับเงิน (Receipt)"
+                                  >
+                                    <Receipt size={9} />
+                                    ใบเสร็จ
+                                  </Button>
+                                )}
                               </div>
                             </div>
 
@@ -1520,10 +1558,41 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             } as any);
             const { refreshDb } = await import("@/lib/api");
             await refreshDb();
+            const updated = jobStore.getSnapshot().find(j => j.id === onlinePaymentJob.id) || onlinePaymentJob;
+            setReceiptJob({ ...updated, isPaid: true, isShopPaid: true, paymentChannel: paidInfo.channel } as Job);
+            setShowReceipt(true);
           }
           setOnlinePaymentJob(null);
         }}
       />
+
+      {/* Receipt Viewer & Printer Dialog for AllJobs */}
+      {receiptJob && (
+        systemSettings?.receiptPaperSize === "A5" ? (
+          <A5ReceiptDialog
+            open={showReceipt}
+            onOpenChange={(open) => {
+              setShowReceipt(open);
+              if (!open) setReceiptJob(null);
+            }}
+            receiptData={formatJobToReceiptData(receiptJob)}
+            activeShop={shopLocations.find(s => s.id === receiptJob?.branchId) || shopLocations[0]}
+            currentLanguage={systemSettings?.language || "th"}
+          />
+        ) : (
+          <ThermalReceiptDialog
+            open={showReceipt}
+            onOpenChange={(open) => {
+              setShowReceipt(open);
+              if (!open) setReceiptJob(null);
+            }}
+            receiptData={formatJobToReceiptData(receiptJob)}
+            activeShop={shopLocations.find(s => s.id === receiptJob?.branchId) || shopLocations[0]}
+            receiptPaperSize={systemSettings?.receiptPaperSize || "80mm"}
+            currentLanguage={systemSettings?.language || "th"}
+          />
+        )
+      )}
     </div>
   );
 });

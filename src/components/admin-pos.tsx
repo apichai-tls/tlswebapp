@@ -2976,8 +2976,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       setLatestJob(finalJob);
 
-      // [AUTO-PROFORMA for POS] If paying and proforma snapshot not yet captured, auto-capture in background (matching All Jobs conditions)
-      if (finalJob && isPaidFlag && targetProformaNum) {
+      // [AUTO-PROFORMA for POS] If proforma snapshot not yet captured, auto-capture in background (including Beam online orders)
+      if (finalJob && targetProformaNum) {
         const cleanBaseProforma = cleanProformaNumber(targetProformaNum);
         const effectiveRev = effectiveRevision || 0;
         const proformaFilename = `proforma-${cleanBaseProforma}-rev${effectiveRev}.png`;
@@ -5953,6 +5953,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             if (updated) {
               setLatestJob(updated);
             }
+            setIsDraftPreview(false);
             setShowReceipt(true);
             playAudioFeedback("success");
             const { refreshDb } = await import("@/lib/api");

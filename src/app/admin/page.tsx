@@ -5764,6 +5764,22 @@ export default function AdminPage() {
                                     <span>Beam QR Pay (฿{dialogTotal.toLocaleString()})</span>
                                   </button>
                                 )}
+                                {editingJobId && isPaidJob && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingJobId(editingJobId);
+                                      setIsDraftPreview(false);
+                                      setIsPaymentEvent(false);
+                                      setShowReceipt(true);
+                                    }}
+                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-violet-600 hover:bg-violet-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors"
+                                    title="ดู / พิมพ์ใบเสร็จรับเงิน (Receipt)"
+                                  >
+                                    <Receipt size={11} />
+                                    <span>ดู / พิมพ์ใบเสร็จรับเงิน</span>
+                                  </button>
+                                )}
                                 {selectedProfileCustomer?.isMember && (
                                   <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
                                     <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
@@ -6422,6 +6438,22 @@ export default function AdminPage() {
                                   >
                                     <Zap size={11} className="fill-white" />
                                     <span>Beam QR Pay (฿{dialogTotal.toLocaleString()})</span>
+                                  </button>
+                                )}
+                                {editingJobId && isPaidJob && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingJobId(editingJobId);
+                                      setIsDraftPreview(false);
+                                      setIsPaymentEvent(false);
+                                      setShowReceipt(true);
+                                    }}
+                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-violet-600 hover:bg-violet-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors"
+                                    title="ดู / พิมพ์ใบเสร็จรับเงิน (Receipt)"
+                                  >
+                                    <Receipt size={11} />
+                                    <span>ดู / พิมพ์ใบเสร็จรับเงิน</span>
                                   </button>
                                 )}
                               </div>
@@ -7213,6 +7245,13 @@ export default function AdminPage() {
               paymentChannel: paidInfo.channel,
             } as any);
             await refreshDb();
+            const current = jobs.find(j => j.id === onlinePaymentJob.id) || activeJob;
+            if (current) {
+              setEditingJobId(current.id);
+              setIsDraftPreview(false);
+              setIsPaymentEvent(true);
+              setShowReceipt(true);
+            }
           }
           setOnlinePaymentJob(null);
         }}
