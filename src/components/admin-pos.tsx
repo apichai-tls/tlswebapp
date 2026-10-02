@@ -2701,8 +2701,15 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const timestamp = new Date().toISOString();
       const shiftId = CASHIER_SHIFT_ENABLED ? activeShift?.id : undefined;
 
+      const isBeamOnlineChannel = Boolean(
+        effectivePaymentChannel?.toLowerCase().includes("beam") ||
+        effectivePaymentChannel?.toLowerCase().includes("gateway") ||
+        posPaymentChannel?.toLowerCase().includes("beam") ||
+        posPaymentChannel?.toLowerCase().includes("gateway")
+      );
+
       const payAmt = loadedJob ? (total - existingPayments.reduce((s, p) => s + p.amount, 0)) : total;
-      if (isPaid && payAmt > 0) {
+      if (!isBeamOnlineChannel && isPaid && payAmt > 0) {
         const paymentRecord: any = { 
           amount: payAmt, 
           method: paymentMethod, 
@@ -2723,7 +2730,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       const finalPayments = [...existingPayments, ...newPayments];
       const totalPaid = finalPayments.reduce((s, p) => s + p.amount, 0);
-      const isPaidFlag = isPaid || totalPaid >= total;
+      const isPaidFlag = isBeamOnlineChannel ? false : (isPaid || totalPaid >= total);
 
       // Determine backward-compatible payment method & channel
       let finalMethod: any = paymentMethod;
@@ -3071,7 +3078,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           effectivePromoDiscount
         );
       }
-      const isBeamOnline = (finalChannel?.toLowerCase().includes("beam") || finalChannel?.toLowerCase().includes("gateway")) && !isPaidFlag;
+      const isBeamOnline = (finalChannel?.toLowerCase().includes("beam") || finalChannel?.toLowerCase().includes("gateway") || isBeamOnlineChannel) && !isPaidFlag;
       if (isBeamOnline && finalJob) {
         setOnlinePaymentJob({
           id: finalJob.id,
@@ -4677,7 +4684,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       if (!ch) {
                         setIsPaid(false);
                       } else {
-                        setIsPaid(true);
+                        const isOnlineGateway = ch.toLowerCase().includes("gateway") || ch.toLowerCase().includes("beam");
+                        setIsPaid(!isOnlineGateway);
                         const method = mapChannelNameToMethod(ch, activePaymentChannels);
                         setPaymentMethod(method);
                       }
