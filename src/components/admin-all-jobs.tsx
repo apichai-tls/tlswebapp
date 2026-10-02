@@ -855,7 +855,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             {job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                           </Badge>
                         )}
-                        {!isJobFullyPaid(job) && !job.isPaid && (job.totalAmount || 0) > 0 && (
+                        {!isJobFullyPaid(job) && !job.isPaid && (job.totalAmount || 0) > 0 && (job.paymentChannel?.toLowerCase().includes("gateway") || job.paymentChannel?.toLowerCase().includes("beam")) && (
                           <Button
                             size="sm"
                             variant="outline"

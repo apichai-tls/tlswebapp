@@ -5750,7 +5750,7 @@ export default function AdminPage() {
                                   ))}
 
                                 </select>
-                                {editingJobId && !isPaidJob && dialogTotal > 0 && (
+                                {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
                                   <button
                                     type="button"
                                     onClick={() => {
@@ -6410,7 +6410,7 @@ export default function AdminPage() {
                                     </option>
                                   ))}
                                 </select>
-                                {editingJobId && !isPaidJob && dialogTotal > 0 && (
+                                {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
                                   <button
                                     type="button"
                                     onClick={() => {
