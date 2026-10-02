@@ -246,68 +246,146 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     return Array.from(new Set([...configured, ...fromJobs]));
   }, [systemSettings, jobs]);
 
-  // Filter Logic
-  const filteredJobs = jobs.filter((job) => {
-    // 0. Manager Role Filter
-    if (user?.role === 'manager' && !isCSO) {
-      if (job.status === 'tba') return false;
-    }
-
-    // 0.1 Brand Filter
-    if (selectedBrand !== "ALL") {
-      const jobBrand = job.brand || "that_laundry_shop";
-      if (jobBrand !== selectedBrand) return false;
-    }
-
+  // Filter Logic (Memoized & High Performance with Early Exits)
+  const filteredJobs = useMemo(() => {
     const searchLower = searchTerm.toLowerCase().trim();
-    const statusLabel = statusConfig[job.status]?.label || "";
-    const customer = findMatchingCustomer(customers, {
-      customerId: job.customerId,
-      customerName: job.customerName,
-      customerPhone: job.customerPhone,
-    });
 
-    const pickupRiderObj = riders.find(r => r.id === job.pickupRiderId);
-    const deliveryRiderObj = riders.find(r => r.id === job.deliveryRiderId);
-    const shopObj = shopLocations.find(s => s.id === job.branchId);
+    return jobs.filter((job) => {
+      // 0. Manager Role Filter
+      if (user?.role === 'manager' && !isCSO) {
+        if (job.status === 'tba') return false;
+      }
 
-    const itemsMatch = Array.isArray(job.items) && job.items.some((item: any) => 
-      item && item.name && typeof item.name === 'string' && item.name.toLowerCase().includes(searchLower)
-    );
+      // 0.1 Brand Filter
+      if (selectedBrand !== "ALL") {
+        const jobBrand = job.brand || "that_laundry_shop";
+        if (jobBrand !== selectedBrand) return false;
+      }
 
-    const adminLogsMatch = Array.isArray(job.adminLogs) && job.adminLogs.some((log: any) => 
-      (log && log.text && typeof log.text === 'string' && log.text.toLowerCase().includes(searchLower)) ||
-      (log && log.userName && typeof log.userName === 'string' && log.userName.toLowerCase().includes(searchLower))
-    );
+      // POS Filter: when checked, show ONLY POS jobs
+      if (posOnly) {
+        const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+        if (!isPos) return false;
+      }
 
-    const matchesSearch = 
-      !searchLower ||
-      job.id.toLowerCase().includes(searchLower) ||
-      (job.billNo && job.billNo.toLowerCase().includes(searchLower)) ||
-      (job.customerName && job.customerName.toLowerCase().includes(searchLower)) ||
-      (job.customerPhone && job.customerPhone.includes(searchLower)) ||
-      (job.pickupLocation && job.pickupLocation.toLowerCase().includes(searchLower)) ||
-      (job.pickupRoom && job.pickupRoom.toLowerCase().includes(searchLower)) ||
-      (job.dropoffLocation && job.dropoffLocation.toLowerCase().includes(searchLower)) ||
-      (job.dropoffRoom && job.dropoffRoom.toLowerCase().includes(searchLower)) ||
-      (job.remark && job.remark.toLowerCase().includes(searchLower)) ||
-      (job.adminNote && job.adminNote.toLowerCase().includes(searchLower)) ||
-      (job.adminNotesJson && job.adminNotesJson.toLowerCase().includes(searchLower)) ||
-      adminLogsMatch ||
-      itemsMatch ||
-      (pickupRiderObj && pickupRiderObj.name && pickupRiderObj.name.toLowerCase().includes(searchLower)) ||
-      (deliveryRiderObj && deliveryRiderObj.name && deliveryRiderObj.name.toLowerCase().includes(searchLower)) ||
-      statusLabel.toLowerCase().includes(searchLower) ||
-      job.status.toLowerCase().includes(searchLower) ||
-      (job.serviceType && job.serviceType.toLowerCase().includes(searchLower)) ||
-      (job.serviceSpeed && job.serviceSpeed.toLowerCase().includes(searchLower)) ||
-      (job.paymentChannel && job.paymentChannel.toLowerCase().includes(searchLower)) ||
-      (job.paymentMethod && job.paymentMethod.toLowerCase().includes(searchLower)) ||
-      (shopObj && (
-        (shopObj.name && shopObj.name.toLowerCase().includes(searchLower)) ||
-        getBranchShortName(shopObj.name).toLowerCase().includes(searchLower)
-      )) ||
-      (customer && (
+      // Branch Filter (Excel-style Multi-Select)
+      const isAllBranchesSelected = selectedBranchIds.length >= shopLocations.length;
+      if (!isAllBranchesSelected && selectedBranchIds.length > 0) {
+        if (job.branchId) {
+          if (!selectedBranchIds.includes(job.branchId)) return false;
+        } else {
+          if (!selectedBranchIds.includes(UNASSIGNED_BRANCH_ID)) return false;
+        }
+      } else if (selectedBranchIds.length === 0) {
+        return false;
+      }
+
+      // Status Filter
+      if (statusFilter !== "all") {
+        if (job.status !== statusFilter) return false;
+      } else {
+        if (job.status === 'completed' && !showCompleted && viewMode === "list") return false;
+        if (job.status === 'cancel' && !showCancelled && viewMode === "list") return false;
+        if (job.status === 'topup' && !showTopup) return false;
+      }
+
+      // Payment Channel Filter
+      if (paymentChannelFilter !== "ALL") {
+        const pc = job.paymentChannel?.toUpperCase() || "";
+        if (paymentChannelFilter === "Cash / COD") {
+          if (pc !== "CASH / COD" && pc !== "CASH") return false;
+        } else if (paymentChannelFilter === "Transfer") {
+          if (pc !== "TRANSFER" && pc !== "BANK TRANSFER") return false;
+        } else if (paymentChannelFilter === "Credit Card") {
+          if (pc !== "CREDIT CARD" && pc !== "CREDIT") return false;
+        } else {
+          if (job.paymentChannel !== paymentChannelFilter) return false;
+        }
+      }
+
+      // Date Filter
+      let matchesDate = true;
+      const isActive = !['completed', 'cancel', 'return'].includes(job.status);
+      if (dateFilter === "today") {
+        matchesDate = isSameDay(new Date(job.createdAt), today) || 
+                      isActive || 
+                      (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
+                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
+                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
+                      (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
+      } else if (dateFilter === "yesterday") {
+        matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
+                      (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
+                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
+                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
+                      (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
+      } else if (dateFilter === "custom") {
+        const jobDate = new Date(job.createdAt);
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        matchesDate = (jobDate >= start && jobDate <= end) || 
+                      (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
+                      (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
+                      (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
+      }
+      if (!matchesDate) return false;
+
+      // Search Filter: only evaluate heavy lookups if search query is NOT empty!
+      if (!searchLower) return true;
+
+      const statusLabel = statusConfig[job.status]?.label || "";
+      const pickupRiderObj = riders.find(r => r.id === job.pickupRiderId);
+      const deliveryRiderObj = riders.find(r => r.id === job.deliveryRiderId);
+      const shopObj = shopLocations.find(s => s.id === job.branchId);
+
+      const itemsMatch = Array.isArray(job.items) && job.items.some((item: any) => 
+        item && item.name && typeof item.name === 'string' && item.name.toLowerCase().includes(searchLower)
+      );
+
+      const adminLogsMatch = Array.isArray(job.adminLogs) && job.adminLogs.some((log: any) => 
+        (log && log.text && typeof log.text === 'string' && log.text.toLowerCase().includes(searchLower)) ||
+        (log && log.userName && typeof log.userName === 'string' && log.userName.toLowerCase().includes(searchLower))
+      );
+
+      const basicMatch = 
+        job.id.toLowerCase().includes(searchLower) ||
+        (job.billNo && job.billNo.toLowerCase().includes(searchLower)) ||
+        (job.customerName && job.customerName.toLowerCase().includes(searchLower)) ||
+        (job.customerPhone && job.customerPhone.includes(searchLower)) ||
+        (job.pickupLocation && job.pickupLocation.toLowerCase().includes(searchLower)) ||
+        (job.pickupRoom && job.pickupRoom.toLowerCase().includes(searchLower)) ||
+        (job.dropoffLocation && job.dropoffLocation.toLowerCase().includes(searchLower)) ||
+        (job.dropoffRoom && job.dropoffRoom.toLowerCase().includes(searchLower)) ||
+        (job.remark && job.remark.toLowerCase().includes(searchLower)) ||
+        (job.adminNote && job.adminNote.toLowerCase().includes(searchLower)) ||
+        (job.adminNotesJson && job.adminNotesJson.toLowerCase().includes(searchLower)) ||
+        adminLogsMatch ||
+        itemsMatch ||
+        (pickupRiderObj && pickupRiderObj.name && pickupRiderObj.name.toLowerCase().includes(searchLower)) ||
+        (deliveryRiderObj && deliveryRiderObj.name && deliveryRiderObj.name.toLowerCase().includes(searchLower)) ||
+        statusLabel.toLowerCase().includes(searchLower) ||
+        job.status.toLowerCase().includes(searchLower) ||
+        (job.serviceType && job.serviceType.toLowerCase().includes(searchLower)) ||
+        (job.serviceSpeed && job.serviceSpeed.toLowerCase().includes(searchLower)) ||
+        (job.paymentChannel && job.paymentChannel.toLowerCase().includes(searchLower)) ||
+        (job.paymentMethod && job.paymentMethod.toLowerCase().includes(searchLower)) ||
+        (shopObj && (
+          (shopObj.name && shopObj.name.toLowerCase().includes(searchLower)) ||
+          getBranchShortName(shopObj.name).toLowerCase().includes(searchLower)
+        ));
+
+      if (basicMatch) return true;
+
+      // Only search customer DB if not matched above
+      const customer = findMatchingCustomer(customers, {
+        customerId: job.customerId,
+        customerName: job.customerName,
+        customerPhone: job.customerPhone,
+      });
+
+      return Boolean(customer && (
         (customer.name && customer.name.toLowerCase().includes(searchLower)) ||
         (customer.phone && customer.phone.includes(searchLower)) ||
         (customer.memberId && customer.memberId.toLowerCase().includes(searchLower)) ||
@@ -319,90 +397,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         (customer.taxId && customer.taxId.toLowerCase().includes(searchLower)) ||
         (customer.remark && customer.remark.toLowerCase().includes(searchLower))
       ));
+    });
+  }, [
+    jobs, user?.role, isCSO, selectedBrand, posOnly, selectedBranchIds, shopLocations,
+    statusFilter, showCompleted, showCancelled, showTopup, viewMode, paymentChannelFilter,
+    dateFilter, today, yesterday, startDate, endDate, searchTerm, riders, customers
+  ]);
 
-    let matchesDate = true;
-    const isActive = !['completed', 'cancel', 'return'].includes(job.status);
-    
-    if (dateFilter === "today") {
-      matchesDate = isSameDay(new Date(job.createdAt), today) || 
-                    isActive || 
-                    (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
-                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
-                    (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
-                    (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
-    } else if (dateFilter === "yesterday") {
-      matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
-                    (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
-                    (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
-                    (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
-                    (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
-    } else if (dateFilter === "custom") {
-      const jobDate = new Date(job.createdAt);
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      matchesDate = (jobDate >= start && jobDate <= end) || 
-                    (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
-                    (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
-                    (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
+  const sortedJobs = useMemo(() => {
+    const list = [...filteredJobs];
+    if (paymentSort === 'asc') {
+      list.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? -1 : 1));
+    } else if (paymentSort === 'desc') {
+      list.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? 1 : -1));
     }
-
-    let matchesStatus = true;
-    if (statusFilter !== "all") {
-      matchesStatus = job.status === statusFilter;
-    } else {
-      if (job.status === 'completed' && !showCompleted && viewMode === "list") matchesStatus = false;
-      if (job.status === 'cancel' && !showCancelled && viewMode === "list") matchesStatus = false;
-      // Hide topup jobs by default — only show when showTopup toggle is on
-      if (job.status === 'topup' && !showTopup) matchesStatus = false;
-    }
-
-    // Branch Filter (Excel-style Multi-Select)
-    let matchesBranch = true;
-    const isAllBranchesSelected =
-      selectedBranchIds.length >= shopLocations.length;
-
-    if (!isAllBranchesSelected && selectedBranchIds.length > 0) {
-      if (job.branchId) {
-        matchesBranch = selectedBranchIds.includes(job.branchId);
-      } else {
-        matchesBranch = selectedBranchIds.includes(UNASSIGNED_BRANCH_ID);
-      }
-    } else if (selectedBranchIds.length === 0) {
-      matchesBranch = false;
-    }
-
-    // Payment Channel Filter
-    let matchesPayment = true;
-    if (paymentChannelFilter !== "ALL") {
-      const pc = job.paymentChannel?.toUpperCase() || "";
-      if (paymentChannelFilter === "Cash / COD") {
-        matchesPayment = pc === "CASH / COD" || pc === "CASH";
-      } else if (paymentChannelFilter === "Transfer") {
-        matchesPayment = pc === "TRANSFER" || pc === "BANK TRANSFER";
-      } else if (paymentChannelFilter === "Credit Card") {
-        matchesPayment = pc === "CREDIT CARD" || pc === "CREDIT";
-      } else {
-        matchesPayment = job.paymentChannel === paymentChannelFilter;
-      }
-    }
-
-    // POS Filter: when checked, show ONLY POS jobs
-    if (posOnly) {
-      const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
-      if (!isPos) return false;
-    }
-    
-    return matchesSearch && matchesDate && matchesStatus && matchesBranch && matchesPayment;
-  });
-
-  const sortedJobs = [...filteredJobs];
-  if (paymentSort === 'asc') {
-    sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? -1 : 1));
-  } else if (paymentSort === 'desc') {
-    sortedJobs.sort((a, b) => (a.isPaid === b.isPaid ? 0 : a.isPaid ? 1 : -1));
-  }
+    return list;
+  }, [filteredJobs, paymentSort]);
 
   const getTotalDuration = (start: Date, end: Date) => {
     const diffMs = end.getTime() - start.getTime();

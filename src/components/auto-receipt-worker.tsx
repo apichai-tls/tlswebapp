@@ -32,11 +32,33 @@ export function AutoReceiptWorker() {
       const systemSettings = settingsStore.getSnapshot();
       const isA5 = systemSettings?.receiptPaperSize === "A5";
 
-      // 1. Find jobs that are paid but missing receipt image
+      const now = Date.now();
+      const MAX_JOB_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours window: NEVER touch historical jobs!
+
+      // 1. Find newly paid jobs (specifically from Beam or recent cashier checkout) missing receipt image
       const pendingPaidJob = jobs.find((job) => {
         if (!job.id || job.id === "DRAFT") return false;
         if (processingRef.current.has(job.id)) return false;
         if (completedRef.current.has(`receipt_${job.id}`)) return false;
+
+        // Skip historical or finished jobs immediately
+        if (['completed', 'cancel', 'return'].includes(job.status)) {
+          completedRef.current.add(`receipt_${job.id}`);
+          return false;
+        }
+
+        // Only process jobs updated or paid recently (within the last 2 hours)
+        const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
+        const jobPaidTime = (job as any).shopPaidAt
+          ? new Date((job as any).shopPaidAt).getTime()
+          : (job as any).csoPaidAt
+          ? new Date((job as any).csoPaidAt).getTime()
+          : jobUpdatedTime;
+
+        if (now - jobPaidTime > MAX_JOB_AGE_MS && now - jobUpdatedTime > MAX_JOB_AGE_MS) {
+          completedRef.current.add(`receipt_${job.id}`);
+          return false;
+        }
 
         const isPaid = job.isPaid || isJobFullyPaid(job);
         if (!isPaid) return false;
@@ -54,7 +76,12 @@ export function AutoReceiptWorker() {
           (url) => typeof url === "string" && (url.includes(`receipt-${job.id}`) || url.includes("/receipt-"))
         );
 
-        return !hasReceipt;
+        if (hasReceipt) {
+          completedRef.current.add(`receipt_${job.id}`);
+          return false;
+        }
+
+        return true;
       });
 
       if (pendingPaidJob) {
@@ -104,16 +131,29 @@ export function AutoReceiptWorker() {
           isWorkingRef.current = false;
         }
 
-        return; // process 1 per interval to keep CPU smooth
+        return; // process 1 per interval to keep CPU 100% smooth
       }
 
-      // 2. Check for jobs that have a proformaNumber but missing proforma image
+      // 2. Check for recent active jobs that have a proformaNumber but missing proforma image
       const pendingProformaJob = jobs.find((job) => {
         if (!job.id || job.id === "DRAFT") return false;
-        const targetProforma = (job as any).proformaNumber || (job as any).proformaReceiptNumber;
-        if (!targetProforma) return false;
         if (processingRef.current.has(job.id)) return false;
         if (completedRef.current.has(`proforma_${job.id}`)) return false;
+
+        // Skip historical or finished jobs
+        if (['completed', 'cancel', 'return'].includes(job.status)) {
+          completedRef.current.add(`proforma_${job.id}`);
+          return false;
+        }
+
+        const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
+        if (now - jobUpdatedTime > MAX_JOB_AGE_MS) {
+          completedRef.current.add(`proforma_${job.id}`);
+          return false;
+        }
+
+        const targetProforma = (job as any).proformaNumber || (job as any).proformaReceiptNumber;
+        if (!targetProforma) return false;
 
         let bills: string[] = [];
         try {
@@ -127,7 +167,12 @@ export function AutoReceiptWorker() {
           (url) => typeof url === "string" && (url.includes("proforma-") || url.includes("/proforma-"))
         );
 
-        return !hasProforma;
+        if (hasProforma) {
+          completedRef.current.add(`proforma_${job.id}`);
+          return false;
+        }
+
+        return true;
       });
 
       if (pendingProformaJob) {
@@ -183,18 +228,15 @@ export function AutoReceiptWorker() {
       }
     };
 
-    // Run queue check every 4 seconds, and on initial mount
-    processQueue();
-    const interval = setInterval(processQueue, 4000);
+    // Run queue check every 8 seconds (lightweight, non-intrusive)
+    const interval = setInterval(processQueue, 8000);
 
-    // Also subscribe to jobStore changes to trigger immediately when an order changes to PAID
-    const unsubscribe = jobStore.subscribe(() => {
-      processQueue();
-    });
+    // Initial check after 3 seconds to let initial render settle
+    const initialTimer = setTimeout(processQueue, 3000);
 
     return () => {
       clearInterval(interval);
-      unsubscribe();
+      clearTimeout(initialTimer);
     };
   }, []);
 
