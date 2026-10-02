@@ -115,7 +115,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     reason: "",
   });
   
-  const [showPos, setShowPos] = useState(true);
+  const [posOnly, setPosOnly] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(true);
   const [showTopup, setShowTopup] = useState(false);
@@ -382,10 +382,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       }
     }
 
-    // POS Filter: default is checked (show all). If unchecked, filter out POS jobs
-    if (!showPos) {
+    // POS Filter: when checked, show ONLY POS jobs
+    if (posOnly) {
       const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
-      if (isPos) return false;
+      if (!isPos) return false;
     }
     
     return matchesSearch && matchesDate && matchesStatus && matchesBranch && matchesPayment;
@@ -536,14 +536,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           </div>
           
           <div className="flex items-center gap-4 bg-white border border-slate-200 rounded-md px-3 py-1.5 h-10">
-            <Label className="flex items-center gap-1.5 cursor-pointer">
+            <Label className="flex items-center gap-1.5 cursor-pointer" title="แสดงเฉพาะงาน POS (POS Only)">
               <input
                 type="checkbox"
-                checked={showPos}
-                onChange={e => setShowPos(e.target.checked)}
-                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                checked={posOnly}
+                onChange={e => setPosOnly(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
               />
-              <span className="text-xs font-bold text-slate-700">POS</span>
+              <span className={`text-xs font-bold transition-colors ${posOnly ? "text-indigo-600 font-extrabold" : "text-slate-700"}`}>
+                POS
+              </span>
             </Label>
             <Label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={showCompleted} onChange={e => setShowCompleted(e.target.checked)} className="rounded border-slate-300" />
