@@ -7,7 +7,11 @@ export const dynamic = 'force-dynamic'
 export async function POST(req: Request) {
   try {
     const rawBody = await req.text()
-    const signature = req.headers.get('x-beam-signature') || req.headers.get('X-Beam-Signature')
+    const signature =
+      req.headers.get('x-beam-signature') ||
+      req.headers.get('beam-signature') ||
+      req.headers.get('x-signature') ||
+      req.headers.get('signature')
 
     // Verify HMAC-SHA256 signature if webhook secret is configured
     if (process.env.BEAM_WEBHOOK_SECRET) {
@@ -25,12 +29,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
     }
 
-    console.log(`[Beam Webhook] Event: ${payload.event || payload.type || 'unknown'}`)
+    const eventHeader = req.headers.get('x-beam-event') || req.headers.get('beam-event')
+    const event =
+      eventHeader ||
+      payload.event ||
+      payload.type ||
+      (payload.status === 'SUCCEEDED' ? 'charge.succeeded' : payload.status === 'PAID' ? 'payment_link.paid' : 'unknown')
 
-    const event = payload.event || payload.type
-    const data = payload.data || payload
+    console.log(`[Beam Webhook] Event: ${event}`)
 
-    // We process charge.succeeded, payment_link.paid, and bolt_intent.paid
+    // We process charge.succeeded, payment_link.paid, bolt_intent.paid, and payment.succeeded
     const successEvents = [
       'charge.succeeded',
       'payment_link.paid',
@@ -43,24 +51,35 @@ export async function POST(req: Request) {
       return NextResponse.json({ received: true, ignored: true, event })
     }
 
-    // Resolve order / job ID from reference_id, order object, or metadata
+    // Resolve order / job ID from referenceId, order object, or metadata
     const orderId =
-      data.reference_id ||
-      data.referenceId ||
-      data.order?.referenceId ||
-      data.order?.reference_id ||
-      data.metadata?.orderId ||
-      data.metadata?.jobId ||
-      data.metadata?.reference_id
+      payload.referenceId ||
+      payload.reference_id ||
+      payload.order?.referenceId ||
+      payload.order?.reference_id ||
+      payload.data?.referenceId ||
+      payload.data?.reference_id ||
+      payload.data?.order?.referenceId ||
+      payload.data?.order?.reference_id ||
+      payload.metadata?.orderId ||
+      payload.metadata?.jobId ||
+      payload.metadata?.reference_id
 
     if (!orderId) {
-      console.warn('[Beam Webhook] Missing order reference_id in payload:', data)
+      console.warn('[Beam Webhook] Missing order referenceId in payload:', payload)
       return NextResponse.json({ error: 'Missing reference_id in payload' }, { status: 400 })
     }
 
-    const job = await prisma.job.findUnique({
+    // Lookup job by primary ID first, then fallback to billNo
+    let job = await prisma.job.findUnique({
       where: { id: orderId }
     })
+
+    if (!job) {
+      job = await prisma.job.findFirst({
+        where: { billNo: orderId }
+      })
+    }
 
     if (!job) {
       console.warn(`[Beam Webhook] Job not found for reference_id: ${orderId}`)
@@ -69,13 +88,62 @@ export async function POST(req: Request) {
 
     // Resolve payment amount (Beam amounts may be in minor currency satang if integer > 1000, or standard float)
     let paidAmount = job.totalAmount || 0
-    if (data.amount !== undefined) {
-      const rawAmt = parseFloat(data.amount)
-      paidAmount = rawAmt > 10000 && Number.isInteger(rawAmt) ? rawAmt / 100 : rawAmt
+    const rawAmtVal =
+      payload.amount ??
+      payload.order?.netAmount ??
+      payload.data?.amount ??
+      payload.data?.order?.netAmount
+
+    if (rawAmtVal !== undefined) {
+      const num = parseFloat(rawAmtVal)
+      if (!isNaN(num)) {
+        if (job.totalAmount && Math.abs(num - job.totalAmount * 100) < 1) {
+          paidAmount = job.totalAmount
+        } else if (num > 10000 && Number.isInteger(num)) {
+          paidAmount = num / 100
+        } else {
+          paidAmount = num
+        }
+      }
     }
 
-    const paymentMethodCode = data.payment_method || data.paymentMethod || 'promptpay'
-    const chargeId = data.id || data.charge_id || 'BEAM-' + Date.now()
+    // Determine payment method details
+    let paymentMethodCode = 'transfer'
+    let paymentChannel = 'Beam (PromptPay)'
+
+    const pm = payload.paymentMethod || payload.data?.paymentMethod
+    if (pm) {
+      if (typeof pm === 'string') {
+        paymentMethodCode = pm.toLowerCase().includes('card') ? 'card' : 'transfer'
+        paymentChannel = `Beam (${pm.toUpperCase()})`
+      } else if (typeof pm === 'object') {
+        const pmType = (pm.paymentMethodType || pm.type || '').toUpperCase()
+        if (pmType === 'CARD' || pm.card) {
+          paymentMethodCode = 'card'
+          const brand = pm.card?.brand ? `${pm.card.brand} ` : ''
+          const last4 = pm.card?.last4 ? `****${pm.card.last4}` : ''
+          paymentChannel = `Beam (Card ${brand}${last4})`.trim()
+        } else if (pmType === 'QR_PROMPT_PAY' || pm.qrPromptPay) {
+          paymentMethodCode = 'transfer'
+          paymentChannel = 'Beam (PromptPay)'
+        } else if (pmType === 'MOBILE_BANKING' || pm.mobileBanking) {
+          paymentMethodCode = 'transfer'
+          paymentChannel = 'Beam (Mobile Banking)'
+        } else {
+          paymentMethodCode = 'transfer'
+          paymentChannel = `Beam (${pmType || 'Gateway'})`
+        }
+      }
+    }
+
+    const chargeId =
+      payload.chargeId ||
+      payload.id ||
+      payload.data?.chargeId ||
+      payload.data?.id ||
+      payload.paymentLinkId ||
+      'BEAM-' + Date.now()
+
     const now = new Date()
 
     // Parse existing payments from adminNotesJson
@@ -90,10 +158,21 @@ export async function POST(req: Request) {
       }
     } catch {}
 
+    // Idempotency: avoid recording the exact same charge twice
+    if (job.isPaid && existingPayments.some((p: any) => p.chargeId === chargeId)) {
+      console.log(`[Beam Webhook] Job ${job.id} already marked as paid with charge ${chargeId}`)
+      return NextResponse.json({
+        success: true,
+        message: 'Payment already recorded previously',
+        orderId: job.id,
+        isPaid: true
+      })
+    }
+
     const newPaymentEntry = {
       amount: paidAmount,
-      method: paymentMethodCode === 'card' ? 'card' : 'transfer',
-      channel: `Beam Checkout (${paymentMethodCode.toUpperCase()})`,
+      method: paymentMethodCode,
+      channel: paymentChannel,
       timestamp: now.toISOString(),
       chargeId
     }
@@ -102,12 +181,12 @@ export async function POST(req: Request) {
 
     // Update Job to Paid
     const updatedJob = await prisma.job.update({
-      where: { id: orderId },
+      where: { id: job.id },
       data: {
         isPaid: true,
         isShopPaid: true,
-        paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
-        paymentChannel: `Beam (${paymentMethodCode.toUpperCase()})`,
+        paymentMethod: paymentMethodCode,
+        paymentChannel,
         csoPaidAt: now,
         shopPaidAt: now,
         subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus, // advance to wash
@@ -115,7 +194,7 @@ export async function POST(req: Request) {
       }
     })
 
-    console.log(`✔ [Beam Webhook] Job ${orderId} successfully marked as PAID (Amount: ${paidAmount} THB)`)
+    console.log(`✔ [Beam Webhook] Job ${job.id} successfully marked as PAID (Amount: ${paidAmount} THB, Channel: ${paymentChannel})`)
 
     return NextResponse.json({
       success: true,

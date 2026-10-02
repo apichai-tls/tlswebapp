@@ -102,22 +102,76 @@ export function verifyServiceApiKey(req: Request): boolean {
 
 /**
  * Verify Beam Checkout HMAC-SHA256 webhook signature
+ * 
+ * According to official Beam Checkout documentation:
+ * 1. Decode base64-encoded HMAC key received from Beam Lighthouse into bytes.
+ * 2. Calculate HMAC-SHA256 over raw unformatted JSON body bytes.
+ * 3. Base64-encode the result and compare with X-Beam-Signature header (constant-time).
+ * Includes fallbacks for hex encoding and raw string secrets for maximum compatibility.
  */
 export function verifyBeamWebhookSignature(
   rawBody: string,
   signatureHeader: string | null,
-  secret: string = process.env.BEAM_WEBHOOK_SECRET || 'beam_sec_live_test_123'
+  secret: string = process.env.BEAM_WEBHOOK_SECRET || ''
 ): boolean {
-  if (!signatureHeader) return false
+  if (!signatureHeader || !secret) return false
+
   try {
-    const computedSignature = crypto
-      .createHmac('sha256', secret)
-      .update(rawBody)
-      .digest('hex')
-    return crypto.timingSafeEqual(
-      Buffer.from(computedSignature, 'utf8'),
-      Buffer.from(signatureHeader.trim(), 'utf8')
-    )
+    // Strip prefixes like 'sha256=' or 'v1=' and trim whitespace
+    const cleanHeader = signatureHeader.replace(/^sha256=/i, '').replace(/^v1=/i, '').trim()
+
+    // 1. Primary: Official Beam method (base64-decoded key buffer -> base64 digest)
+    try {
+      const keyBuffer = Buffer.from(secret, 'base64')
+      const expectedBase64 = crypto
+        .createHmac('sha256', keyBuffer)
+        .update(rawBody)
+        .digest('base64')
+
+      const bufActual = Buffer.from(cleanHeader)
+      const bufExpected = Buffer.from(expectedBase64)
+      if (bufActual.length === bufExpected.length && crypto.timingSafeEqual(bufActual, bufExpected)) {
+        return true
+      }
+
+      // Fallback 1b: base64-decoded key buffer -> hex digest
+      const expectedHex = crypto
+        .createHmac('sha256', keyBuffer)
+        .update(rawBody)
+        .digest('hex')
+
+      const bufHexExpected = Buffer.from(expectedHex)
+      if (bufActual.length === bufHexExpected.length && crypto.timingSafeEqual(bufActual, bufHexExpected)) {
+        return true
+      }
+    } catch {}
+
+    // 2. Secondary: Raw secret string -> base64 digest
+    try {
+      const rawSecretBase64 = crypto
+        .createHmac('sha256', secret)
+        .update(rawBody)
+        .digest('base64')
+
+      const bufActual = Buffer.from(cleanHeader)
+      const bufRawExpected = Buffer.from(rawSecretBase64)
+      if (bufActual.length === bufRawExpected.length && crypto.timingSafeEqual(bufActual, bufRawExpected)) {
+        return true
+      }
+
+      // Secondary 2b: Raw secret string -> hex digest
+      const rawSecretHex = crypto
+        .createHmac('sha256', secret)
+        .update(rawBody)
+        .digest('hex')
+
+      const bufRawHexExpected = Buffer.from(rawSecretHex)
+      if (bufActual.length === bufRawHexExpected.length && crypto.timingSafeEqual(bufActual, bufRawHexExpected)) {
+        return true
+      }
+    } catch {}
+
+    return false
   } catch {
     return false
   }
