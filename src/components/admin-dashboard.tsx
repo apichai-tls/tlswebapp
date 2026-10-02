@@ -4,12 +4,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import {
-  Clock, Truck, CheckCircle2, Map, User, MapPin, Navigation, CalendarDays,
+  Clock, Truck, CheckCircle2, User, Building, MapPin, Navigation, CalendarDays,
   Banknote, Coins, ArrowUpRight, Zap, ClipboardCheck, Trophy, Sparkles, AlertTriangle,
   LayoutGrid, List, Search, Layers, RefreshCw
 } from "lucide-react";
 import { format } from "date-fns";
-import { shopStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
+import { shopStore, settingsStore, type Job, type JobStatus, type Customer } from "@/lib/store";
+import { useCustomers } from "@/lib/use-customers";
 import { AdminLiveMap } from "@/components/map-loader";
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, useCallback } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -147,7 +148,75 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
   );
   
   const currentLanguage = settings?.language || "th";
-  // Only display TODAY'S jobs for the dashboard
+  const [customerSegment, setCustomerSegment] = useState<"retail" | "corporate" | "all">("retail");
+
+  const customers = useCustomers();
+
+  const { customerIdMap, customerPhoneMap } = useMemo(() => {
+    const idMap = new Map<string, Customer>();
+    const phoneMap = new Map<string, Customer>();
+    for (const c of customers) {
+      if (c.id) idMap.set(c.id, c);
+      const p1 = (c.phone || "").replace(/\D/g, "");
+      if (p1.length >= 8) phoneMap.set(p1.slice(-9), c);
+      const p2 = (c.secondaryPhone || "").replace(/\D/g, "");
+      if (p2.length >= 8) phoneMap.set(p2.slice(-9), c);
+    }
+    return { customerIdMap: idMap, customerPhoneMap: phoneMap };
+  }, [customers]);
+
+  const getJobCustomerInfo = useCallback((job: Job): { isCorp: boolean; companyName?: string | null; customer?: Customer } => {
+    let c: Customer | undefined;
+    if (job.customerId && customerIdMap.has(job.customerId)) {
+      c = customerIdMap.get(job.customerId);
+    } else {
+      const cleanPhone = (job.customerPhone || "").replace(/\D/g, "");
+      if (cleanPhone.length >= 8) {
+        c = customerPhoneMap.get(cleanPhone.slice(-9));
+      }
+    }
+    const isCorp = Boolean(c && (c.isCorporate || c.tier === "corporate"));
+    return { isCorp, companyName: c?.companyName, customer: c };
+  }, [customerIdMap, customerPhoneMap]);
+
+  const isJobCorporate = useCallback((job: Job): boolean => {
+    return getJobCustomerInfo(job).isCorp;
+  }, [getJobCustomerInfo]);
+
+  // Segment counts for today
+  const segmentCounts = useMemo(() => {
+    const now = new Date();
+    const tYear = now.getFullYear();
+    const tMonth = now.getMonth();
+    const tDate = now.getDate();
+
+    let retail = 0;
+    let corporate = 0;
+    let total = 0;
+
+    for (const j of jobs) {
+      if (!j.createdAt) continue;
+      const d = new Date(j.createdAt);
+      if (d.getDate() === tDate && d.getMonth() === tMonth && d.getFullYear() === tYear) {
+        total++;
+        if (isJobCorporate(j)) corporate++;
+        else retail++;
+      }
+    }
+
+    return { retail, corporate, all: total };
+  }, [jobs, isJobCorporate]);
+
+  // Filter jobs by selected customer segment
+  const segmentJobs = useMemo(() => {
+    if (customerSegment === "all") return jobs;
+    if (customerSegment === "corporate") {
+      return jobs.filter((j) => isJobCorporate(j));
+    }
+    return jobs.filter((j) => !isJobCorporate(j));
+  }, [jobs, customerSegment, isJobCorporate]);
+
+  // Only display TODAY'S jobs for the dashboard based on segment
   const { todaysJobs, pendingCount, activeCount, completedCount } = useMemo(() => {
     const now = new Date();
     const tYear = now.getFullYear();
@@ -159,7 +228,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
     let active = 0;
     let completed = 0;
 
-    for (const j of jobs) {
+    for (const j of segmentJobs) {
       if (!j.createdAt) continue;
       const d = new Date(j.createdAt);
       if (d.getDate() === tDate && d.getMonth() === tMonth && d.getFullYear() === tYear) {
@@ -176,7 +245,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
       activeCount: active,
       completedCount: completed,
     };
-  }, [jobs]);
+  }, [segmentJobs]);
 
   const displayedJobs = useMemo(() => {
     if (activeTab === "all") return todaysJobs;
@@ -186,7 +255,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
     return todaysJobs.filter(j => j.status === activeTab);
   }, [todaysJobs, activeTab]);
 
-  // Financial Summary
+  // Financial Summary based on segmentJobs
   const { filteredCompletedJobs, monthlyRevenue, monthlyRiderPayout, platformProfit } = useMemo(() => {
     const now = new Date();
     const currentMonth = now.getMonth();
@@ -195,7 +264,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
     const lastMonth = lastMonthDate.getMonth();
     const lastMonthYear = lastMonthDate.getFullYear();
 
-    const filtered = jobs.filter(j => {
+    const filtered = segmentJobs.filter(j => {
       if (j.status !== 'completed') return false;
 
       const date = new Date(j.completedAt || j.createdAt);
@@ -225,7 +294,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
       monthlyRiderPayout: riderPayout,
       platformProfit: profit,
     };
-  }, [jobs, financePeriod]);
+  }, [segmentJobs, financePeriod]);
 
   // Task KPI count for top banner
   const { activeTasksCount, stuckOverdueTasksCount } = useMemo(() => {
@@ -295,7 +364,7 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
             {isAdmin
-              ? `Tracking ${todaysJobs.length} jobs scheduled today · ${activeTasksCount} active team tasks`
+              ? `Tracking ${todaysJobs.length} ${customerSegment === "corporate" ? (currentLanguage === "en" ? "corporate" : "ลูกค้าองค์กร") : customerSegment === "retail" ? (currentLanguage === "en" ? "retail" : "ลูกค้าทั่วไป") : ""} jobs scheduled today · ${activeTasksCount} active team tasks`
               : `Personal workspace and action center for ${currentUserName}`}
           </p>
         </div>
@@ -401,6 +470,81 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
       ) : (
         /* ── SECTION 2: OPERATIONS & LOGISTICS VIEW ── */
         <div className="space-y-6 animate-in fade-in duration-200">
+          {/* Customer Segment Filter: [ 👤 ทั่วไป (Retail) ] [ 🏢 องค์กร (Corporate) ] [ ทั้งหมด ] */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-2.5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs">
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                {currentLanguage === "en" ? "Customer Segment:" : "กลุ่มลูกค้า:"}
+              </span>
+              <span className="text-[11px] text-slate-500 font-medium">
+                {customerSegment === "retail" 
+                  ? (currentLanguage === "en" ? "Viewing retail (B2C) operations & financials" : "กำลังแสดงเฉพาะลูกค้าทั่วไป (Retail / B2C)")
+                  : customerSegment === "corporate"
+                  ? (currentLanguage === "en" ? "Viewing corporate (B2B) operations & financials" : "กำลังแสดงเฉพาะลูกค้าองค์กร (Corporate / B2B)")
+                  : (currentLanguage === "en" ? "Viewing all operations & financials" : "กำลังแสดงภาพรวมทั้งหมด")}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/80 self-start sm:self-auto shrink-0">
+              {/* 1. Retail (Default) */}
+              <button
+                type="button"
+                onClick={() => setCustomerSegment("retail")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  customerSegment === "retail"
+                    ? "bg-white text-indigo-700 shadow-2xs font-extrabold"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <User size={14} className={customerSegment === "retail" ? "text-indigo-600" : "text-slate-400"} />
+                <span>{currentLanguage === "en" ? "Retail" : "ทั่วไป (Retail)"}</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  customerSegment === "retail" ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-600"
+                }`}>
+                  {segmentCounts.retail}
+                </span>
+              </button>
+
+              {/* 2. Corporate */}
+              <button
+                type="button"
+                onClick={() => setCustomerSegment("corporate")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  customerSegment === "corporate"
+                    ? "bg-white text-amber-700 shadow-2xs font-extrabold"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Building size={14} className={customerSegment === "corporate" ? "text-amber-600" : "text-slate-400"} />
+                <span>{currentLanguage === "en" ? "Corporate" : "องค์กร (Corporate)"}</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  customerSegment === "corporate" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-600"
+                }`}>
+                  {segmentCounts.corporate}
+                </span>
+              </button>
+
+              {/* 3. All */}
+              <button
+                type="button"
+                onClick={() => setCustomerSegment("all")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  customerSegment === "all"
+                    ? "bg-white text-slate-900 shadow-2xs font-extrabold"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Layers size={14} className={customerSegment === "all" ? "text-slate-800" : "text-slate-400"} />
+                <span>{currentLanguage === "en" ? "All" : "ทั้งหมด"}</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  customerSegment === "all" ? "bg-slate-200 text-slate-800" : "bg-slate-200 text-slate-600"
+                }`}>
+                  {segmentCounts.all}
+                </span>
+              </button>
+            </div>
+          </div>
+
           {/* Stats Cards */}
           <motion.div
             className="grid grid-cols-1 sm:grid-cols-3 gap-4"
@@ -476,7 +620,13 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                       Gross
                     </span>
                   </div>
-                  <p className="text-[10px] text-slate-500 mt-4 leading-relaxed font-medium">Sum of all service fees from {filteredCompletedJobs.length} completed orders for this period.</p>
+                  <p className="text-[10px] text-slate-500 mt-4 leading-relaxed font-medium">
+                    {customerSegment === "corporate"
+                      ? `Sum of service fees from ${filteredCompletedJobs.length} completed corporate orders for this period.`
+                      : customerSegment === "retail"
+                      ? `Sum of service fees from ${filteredCompletedJobs.length} completed retail orders for this period.`
+                      : `Sum of all service fees from ${filteredCompletedJobs.length} completed orders for this period.`}
+                  </p>
                 </div>
 
                 <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm relative overflow-hidden group">
@@ -484,7 +634,13 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                   <div className="flex items-baseline gap-2">
                     <h3 className="text-3xl font-bold text-indigo-600">฿{monthlyRiderPayout.toLocaleString()}</h3>
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-4 leading-relaxed font-medium">Payout calculated at 2 THB/km. Total payment due to independent riders.</p>
+                  <p className="text-[10px] text-slate-400 mt-4 leading-relaxed font-medium">
+                    {customerSegment === "corporate"
+                      ? "Rider payouts for corporate orders."
+                      : customerSegment === "retail"
+                      ? "Rider payouts for retail orders."
+                      : "Payout calculated at 2 THB/km. Total payment due to independent riders."}
+                  </p>
                 </div>
 
                 <div className="bg-indigo-600 rounded-2xl p-6 text-white shadow-xl shadow-indigo-200/50 relative overflow-hidden group">
@@ -493,7 +649,13 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                   </div>
                   <p className="text-indigo-200 text-xs font-bold uppercase tracking-widest mb-1">Platform Earnings</p>
                   <h3 className="text-3xl font-bold text-white">฿{platformProfit.toLocaleString()}</h3>
-                  <p className="text-[10px] text-indigo-200/60 mt-4 leading-relaxed font-medium">Net generated after rider payouts (excl. fixed costs).</p>
+                  <p className="text-[10px] text-indigo-200/60 mt-4 leading-relaxed font-medium">
+                    {customerSegment === "corporate"
+                      ? "Net corporate earnings after rider payouts (excl. fixed costs)."
+                      : customerSegment === "retail"
+                      ? "Net retail earnings after rider payouts (excl. fixed costs)."
+                      : "Net generated after rider payouts (excl. fixed costs)."}
+                  </p>
                 </div>
               </motion.div>
             </>
@@ -574,7 +736,15 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                               </TableCell>
                               <TableCell>
                                 <div className="flex flex-col">
-                                  <span className="text-xs font-medium text-slate-900">{job.customerName}</span>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-xs font-medium text-slate-900">{job.customerName}</span>
+                                    {getJobCustomerInfo(job).isCorp && (
+                                      <Badge variant="outline" className="bg-amber-50 text-amber-800 border-amber-200 text-[9px] py-0 px-1 font-bold flex items-center gap-0.5 shrink-0">
+                                        <Building size={9} />
+                                        <span>{getJobCustomerInfo(job).companyName || (currentLanguage === "en" ? "Corporate" : "องค์กร")}</span>
+                                      </Badge>
+                                    )}
+                                  </div>
                                   <span className="text-[10px] text-slate-400 font-mono">{job.customerPhone}</span>
                                 </div>
                               </TableCell>
@@ -599,7 +769,11 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                       ) : (
                         <TableRow>
                           <TableCell colSpan={5} className="h-48 text-center text-slate-400 text-xs">
-                            No jobs found for the selected category.
+                            {customerSegment === "corporate"
+                              ? (currentLanguage === "en" ? "No corporate jobs found for today." : "ไม่พบงานของลูกค้าองค์กรสำหรับวันนี้")
+                              : customerSegment === "retail"
+                              ? (currentLanguage === "en" ? "No retail jobs found for today." : "ไม่พบงานของลูกค้าทั่วไปสำหรับวันนี้")
+                              : (currentLanguage === "en" ? "No jobs scheduled for today." : "ไม่พบงานสำหรับวันนี้")}
                           </TableCell>
                         </TableRow>
                       )}
