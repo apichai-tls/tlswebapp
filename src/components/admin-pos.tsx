@@ -42,8 +42,10 @@ import {
   MapPin,
   Building,
   Receipt,
-  Ticket
+  Ticket,
+  QrCode
 } from "lucide-react";
+import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { trousers, skirt, dress, socks } from "@lucide/lab";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1403,6 +1405,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "transfer" | "card" | "credit">("cash");
   const [posPaymentChannel, setPosPaymentChannel] = useState<string>("");
   const [isPaid, setIsPaid] = useState(false);
+  const [onlinePaymentJob, setOnlinePaymentJob] = useState<any | null>(null);
 
   useEffect(() => {
     setReceivedCash("");
@@ -2440,6 +2443,33 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     };
   }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, totalDiscount, effectivePromoDiscount, appliedPromo, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision, deliveryAddress, localDeliveryPrice, deliveryServiceType]);
 
+  const handleStartBeamPayment = async () => {
+    if (isSpectatorMode) {
+      toast.error(currentLanguage === "en" ? "Spectator Mode - Actions are disabled" : "โหมดผู้เฝ้าดู - ไม่สามารถทำรายการได้");
+      return;
+    }
+    if (cart.length === 0) {
+      toast.error(currentLanguage === "en" ? "Cart is empty" : "ตะกร้าว่างเปล่า กรุณาเลือกสินค้าก่อน");
+      return;
+    }
+
+    if (loadedJobId) {
+      const targetJob = jobs.find(j => j.id === loadedJobId) || latestJob;
+      setOnlinePaymentJob({
+        id: loadedJobId,
+        billNo: targetJob?.billNo,
+        totalAmount: total,
+        customerName: selectedCustomer?.name || targetJob?.customerName,
+        customerPhone: selectedCustomer?.phone || targetJob?.customerPhone,
+      });
+      return;
+    }
+
+    // Save order first as billing order with Beam Checkout channel, then open OnlinePaymentDialog
+    setIsPaid(false);
+    setPosPaymentChannel("Beam Checkout / QR");
+    await handleCheckout();
+  };
 
   const handleCheckout = async () => {
     if (isSpectatorMode) {
@@ -2787,7 +2817,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           isPaid: isPaidFlag,
           isShopPaid: isPaidFlag, // POS payment always marks shop as paid
           paymentMethod: isPaidFlag ? finalMethod : undefined,
-          paymentChannel: isPaidFlag ? finalChannel : undefined,
+          paymentChannel: isPaidFlag ? finalChannel : (finalChannel || undefined),
           remark: finalRemark,
           adminNotesJson: paymentsJsonStr,
           status: updateStatus,
@@ -2839,7 +2869,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           isPaid: isPaidFlag,
           isShopPaid: isPaidFlag, // POS payment always marks shop as paid
           paymentMethod: isPaidFlag ? finalMethod : undefined,
-          paymentChannel: isPaidFlag ? finalChannel : undefined,
+          paymentChannel: isPaidFlag ? finalChannel : (finalChannel || undefined),
           remark: finalRemark,
           adminNotesJson: paymentsJsonStr,
           createdBy: user?.name || user?.email || "POS Counter",
@@ -3041,8 +3071,19 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           effectivePromoDiscount
         );
       }
-      setShowReceipt(true);
-      playAudioFeedback("success");
+      const isBeamOnline = (finalChannel?.toLowerCase().includes("beam") || finalChannel?.toLowerCase().includes("gateway")) && !isPaidFlag;
+      if (isBeamOnline && finalJob) {
+        setOnlinePaymentJob({
+          id: finalJob.id,
+          billNo: finalJob.billNo,
+          totalAmount: finalJob.totalAmount || total,
+          customerName: finalJob.customerName,
+          customerPhone: finalJob.customerPhone,
+        });
+      } else {
+        setShowReceipt(true);
+        playAudioFeedback("success");
+      }
 
       let descriptionMsg = `Order for ${selectedCustomer ? selectedCustomer.name : "Walk-In"} has been recorded.`;
       if (isPaidFlag) {
@@ -4765,6 +4806,37 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     </motion.div>
                   )}
 
+                  {(effectivePaymentChannel.toLowerCase().includes("beam") || effectivePaymentChannel.toLowerCase().includes("gateway")) && (
+                    <motion.div
+                      key="beam-panel"
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="w-full flex flex-col items-center bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-900 rounded-xl p-3 space-y-2 text-left"
+                    >
+                      <div className="w-full flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-5 h-5 rounded-md bg-indigo-600 text-white flex items-center justify-center text-xs font-black">⚡</span>
+                          <span className="text-xs font-extrabold text-indigo-950 dark:text-indigo-200">Beam Checkout</span>
+                        </div>
+                        <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 text-[8.5px] font-bold">QR / App / Card</Badge>
+                      </div>
+
+                      <p className="text-[10px] text-slate-600 dark:text-slate-300 text-center leading-tight">
+                        เปิด QR Code ให้ลูกค้าสแกนจ่าย หรือส่งลิงก์ชำระเงิน (ระบบตรวจจับยอดเงินอัตโนมัติ)
+                      </p>
+
+                      <Button
+                        type="button"
+                        onClick={handleStartBeamPayment}
+                        className="w-full h-8 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <QrCode size={13} />
+                        <span>เปิด QR Code ชำระเงิน Beam</span>
+                      </Button>
+                    </motion.div>
+                  )}
+
 
                   {isPaid && paymentMethod === "transfer" && false && (
                     <motion.div
@@ -5127,9 +5199,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
                 onClick={handleCheckout}
                 className={`flex-[2] h-11 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 border-none text-white cursor-pointer ${
-                  isPaid 
-                    ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-950/20" 
-                    : "bg-primary hover:bg-primary/90 shadow-brand/20"
+                  (effectivePaymentChannel.toLowerCase().includes("beam") || effectivePaymentChannel.toLowerCase().includes("gateway"))
+                    ? "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-950/20"
+                    : isPaid 
+                      ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-950/20" 
+                      : "bg-primary hover:bg-primary/90 shadow-brand/20"
                 }`}
               >
                 {isProcessing ? (
@@ -5140,7 +5214,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   />
                 ) : (
                   <>
-                    {isPaid ? (
+                    {(effectivePaymentChannel.toLowerCase().includes("beam") || effectivePaymentChannel.toLowerCase().includes("gateway")) ? (
+                      <>
+                        <Zap size={14} className="fill-indigo-200 text-indigo-200" />
+                        <span>Beam QR Pay ฿{total.toFixed(2)}</span>
+                      </>
+                    ) : isPaid ? (
                       <>
                         <Banknote size={14} />
                         <span>Pay ฿{total.toFixed(2)}</span>
@@ -5856,6 +5935,33 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Beam Online Payment Dialog */}
+      <OnlinePaymentDialog
+        isOpen={!!onlinePaymentJob}
+        onClose={() => setOnlinePaymentJob(null)}
+        job={onlinePaymentJob}
+        onPaymentSuccess={async (paidInfo) => {
+          if (onlinePaymentJob) {
+            await jobStore.updateJobDetails(onlinePaymentJob.id, {
+              isPaid: true,
+              isShopPaid: true,
+              paymentChannel: paidInfo.channel,
+            } as any);
+            const all = jobStore.getSnapshot();
+            const updated = all.find(j => j.id === onlinePaymentJob.id);
+            if (updated) {
+              setLatestJob(updated);
+            }
+            setShowReceipt(true);
+            playAudioFeedback("success");
+            const { refreshDb } = await import("@/lib/api");
+            await refreshDb();
+          }
+          setOnlinePaymentJob(null);
+        }}
+      />
+
       {renderActiveShiftDetailsDialog()}
     </div>
   );

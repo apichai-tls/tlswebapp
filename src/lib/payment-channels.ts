@@ -16,6 +16,7 @@ export const DEFAULT_PAYMENT_CHANNELS: PaymentChannelItem[] = [
   { id: "promptpay", name: "PromptPay", type: "transfer", enabled: true, isSystem: true },
   { id: "credit_card", name: "Credit Card", type: "card", enabled: true, isSystem: true },
   { id: "gateway", name: "Gateway", type: "card", enabled: true, isSystem: true },
+  { id: "beam_checkout", name: "Beam Checkout / QR", type: "card", enabled: true, isSystem: true, description: "ชำระเงินออนไลน์ผ่าน Beam (PromptPay / Mobile Banking / Card)" },
   { id: "deduct_member", name: "Deduct Member", type: "wallet", enabled: true, isSystem: true, requiresMember: true },
   { id: "hq_credit", name: "HQ/Credit", type: "credit", enabled: true, isSystem: true },
 ];
@@ -23,7 +24,7 @@ export const DEFAULT_PAYMENT_CHANNELS: PaymentChannelItem[] = [
 export const PAYMENT_TYPE_LABELS: Record<PaymentChannelType, { label: string; color: string }> = {
   cash: { label: "เงินสด (Cash)", color: "bg-emerald-100 text-emerald-800 border-emerald-200" },
   transfer: { label: "โอนเงิน (Transfer/QR)", color: "bg-blue-100 text-blue-800 border-blue-200" },
-  card: { label: "บัตรเครดิต (Card)", color: "bg-purple-100 text-purple-800 border-purple-200" },
+  card: { label: "บัตรเครดิต / Gateway (Card)", color: "bg-purple-100 text-purple-800 border-purple-200" },
   wallet: { label: "วอลเล็ทสมาชิก (Wallet)", color: "bg-amber-100 text-amber-800 border-amber-200" },
   credit: { label: "เครดิต / ค้างชำระ (Credit)", color: "bg-rose-100 text-rose-800 border-rose-200" },
   other: { label: "อื่นๆ (Other)", color: "bg-slate-100 text-slate-800 border-slate-200" },
@@ -76,6 +77,7 @@ export function mapChannelNameToMethod(
 
   // Fallback pattern matching
   const lower = channelName.toLowerCase();
+  if (lower.includes("beam")) return "card";
   if (lower.includes("transfer") || lower.includes("promptpay") || lower.includes("โอน")) return "transfer";
   if (lower.includes("card") || lower.includes("gateway") || lower.includes("บัตร")) return "card";
   if (lower.includes("member") || lower.includes("wallet") || lower.includes("credit") || lower.includes("hq")) return "credit";

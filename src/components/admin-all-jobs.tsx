@@ -21,6 +21,7 @@ import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobSt
 import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds, UNASSIGNED_BRANCH_ID } from "@/components/branch-filter-dropdown";
+import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -102,6 +103,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [onlinePaymentJob, setOnlinePaymentJob] = useState<Job | null>(null);
   
   const [reopenDialog, setReopenDialog] = useState<{
     isOpen: boolean;
@@ -853,6 +855,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             {job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                           </Badge>
                         )}
+                        {!isJobFullyPaid(job) && !job.isPaid && (job.totalAmount || 0) > 0 && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOnlinePaymentJob(job);
+                            }}
+                            className="h-5 px-1.5 text-[9px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 mt-1 rounded flex items-center gap-1 mx-auto cursor-pointer shadow-2xs"
+                            title="สร้าง QR Code / ลิงก์ชำระเงินออนไลน์ผ่าน Beam"
+                          >
+                            <Zap size={9} className="fill-indigo-600 text-indigo-600" />
+                            Beam Pay
+                          </Button>
+                        )}
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
@@ -1289,6 +1307,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                                   </span>
                                 )}
+                                {!isJobFullyPaid(job) && !job.isPaid && (job.totalAmount || 0) > 0 && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOnlinePaymentJob(job);
+                                    }}
+                                    className="h-5 px-1.5 text-[9px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded flex items-center gap-1 cursor-pointer shadow-2xs"
+                                    title="สร้าง QR Code / ลิงก์ชำระเงินออนไลน์ผ่าน Beam"
+                                  >
+                                    <Zap size={9} className="fill-indigo-600 text-indigo-600" />
+                                    Beam Pay
+                                  </Button>
+                                )}
                               </div>
                             </div>
 
@@ -1471,6 +1505,25 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Beam Online Payment Dialog */}
+      <OnlinePaymentDialog
+        isOpen={!!onlinePaymentJob}
+        onClose={() => setOnlinePaymentJob(null)}
+        job={onlinePaymentJob}
+        onPaymentSuccess={async (paidInfo) => {
+          if (onlinePaymentJob) {
+            await jobStore.updateJobDetails(onlinePaymentJob.id, {
+              isPaid: true,
+              isShopPaid: true,
+              paymentChannel: paidInfo.channel,
+            } as any);
+            const { refreshDb } = await import("@/lib/api");
+            await refreshDb();
+          }
+          setOnlinePaymentJob(null);
+        }}
+      />
     </div>
   );
 });

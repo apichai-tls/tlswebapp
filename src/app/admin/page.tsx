@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
+import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 
 
 import { Input } from "@/components/ui/input";
@@ -399,6 +400,7 @@ export default function AdminPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [onlinePaymentJob, setOnlinePaymentJob] = useState<Job | null>(null);
   const [isVersionOutdated, setIsVersionOutdated] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const clientBuildTime = process.env.NEXT_PUBLIC_BUILD_TIME;
@@ -5748,6 +5750,20 @@ export default function AdminPage() {
                                   ))}
 
                                 </select>
+                                {editingJobId && !isPaidJob && dialogTotal > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const current = jobs.find(j => j.id === editingJobId) || activeJob;
+                                      if (current) setOnlinePaymentJob(current);
+                                    }}
+                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors"
+                                    title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
+                                  >
+                                    <Zap size={11} className="fill-white" />
+                                    <span>Beam QR Pay (฿{dialogTotal.toLocaleString()})</span>
+                                  </button>
+                                )}
                                 {selectedProfileCustomer?.isMember && (
                                   <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
                                     <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
@@ -6394,6 +6410,20 @@ export default function AdminPage() {
                                     </option>
                                   ))}
                                 </select>
+                                {editingJobId && !isPaidJob && dialogTotal > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const current = jobs.find(j => j.id === editingJobId) || activeJob;
+                                      if (current) setOnlinePaymentJob(current);
+                                    }}
+                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors"
+                                    title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
+                                  >
+                                    <Zap size={11} className="fill-white" />
+                                    <span>Beam QR Pay (฿{dialogTotal.toLocaleString()})</span>
+                                  </button>
+                                )}
                               </div>
 
                               <div className="space-y-0.5">
@@ -7167,6 +7197,24 @@ export default function AdminPage() {
               }
             }, 400);
           }
+        }}
+      />
+
+      {/* Beam Online Payment Dialog */}
+      <OnlinePaymentDialog
+        isOpen={!!onlinePaymentJob}
+        onClose={() => setOnlinePaymentJob(null)}
+        job={onlinePaymentJob}
+        onPaymentSuccess={async (paidInfo) => {
+          if (onlinePaymentJob) {
+            await jobStore.updateJobDetails(onlinePaymentJob.id, {
+              isPaid: true,
+              isShopPaid: true,
+              paymentChannel: paidInfo.channel,
+            } as any);
+            await refreshDb();
+          }
+          setOnlinePaymentJob(null);
         }}
       />
 
