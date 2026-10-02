@@ -25,6 +25,29 @@ interface BranchFilterDropdownProps {
   align?: "left" | "right";
 }
 
+/**
+ * Strips prefix brand names and parentheses so only the clean branch name remains.
+ * E.g. "That Laundry Shop (Phattanakarn)" -> "Phattanakarn"
+ * E.g. "That Laundry Shop (Pattaya)" -> "Pattaya"
+ * E.g. "That Laundry Shop (15 Sukhumvit Residences)" -> "15 Sukhumvit Residences"
+ */
+export function getCleanBranchName(name?: string | null): string {
+  if (!name || name === "-") return "-";
+  // Matches "That Laundry Shop (15 Sukhumvit Residences)" or any "... (Branch Name)"
+  const parenMatch = name.match(/\(([^)]+)\)/);
+  if (parenMatch && parenMatch[1]?.trim()) {
+    return parenMatch[1].trim();
+  }
+  // Matches "That Laundry Shop - Branch Name"
+  const dashParts = name.split(/[-–—]/);
+  if (dashParts.length > 1 && /that\s*laundry\s*shop|tls/i.test(dashParts[0])) {
+    return dashParts.slice(1).join("-").trim();
+  }
+  // Strip "That Laundry Shop" or "TLS" prefix
+  const stripped = name.replace(/^(that\s*laundry\s*shop|tls)\s*[:—–-]?\s*/i, "").trim();
+  return stripped || name;
+}
+
 export function BranchFilterDropdown({
   branches,
   selectedIds,
@@ -107,14 +130,7 @@ export function BranchFilterDropdown({
       }
       const b = branches.find((item) => item.id === singleId);
       if (b) {
-        return (
-          <span className="flex items-center gap-1 truncate">
-            {b.area && (
-              <span className="text-[10px] font-black text-indigo-600">[{b.area}]</span>
-            )}
-            <span className="truncate">{b.name}</span>
-          </span>
-        );
+        return <span className="truncate font-semibold">{getCleanBranchName(b.name)}</span>;
       }
     }
     if (selectedIds.length > 1) {
@@ -128,7 +144,7 @@ export function BranchFilterDropdown({
       );
     }
     return <span className="text-slate-400">เลือกสาขา (None)</span>;
-  }, [isAllSelected, isNoneSelected, selectedIds, branches, placeholder]);
+  }, [isAllSelected, selectedIds, branches, placeholder]);
 
   return (
     <div className={`relative inline-block text-left ${className}`} ref={containerRef}>
@@ -186,8 +202,7 @@ export function BranchFilterDropdown({
           <div className="max-h-60 overflow-y-auto py-1 px-1 space-y-0.5">
             {branches.map((b) => {
               const isChecked = selectedIds.includes(b.id);
-              const area = b.area || "BKK";
-              const isPattaya = area.toUpperCase().includes("PTY");
+              const cleanName = getCleanBranchName(b.name);
 
               return (
                 <label
@@ -206,19 +221,7 @@ export function BranchFilterDropdown({
                     className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shrink-0"
                   />
                   <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                    <span
-                      className={`text-[10px] font-black px-1.5 py-0.2 rounded shrink-0 ${
-                        isPattaya
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-blue-100 text-blue-800"
-                      }`}
-                    >
-                      {area}
-                    </span>
-                    <span className="truncate">{b.name}</span>
-                    {b.isMain && (
-                      <span className="text-[9px] font-bold text-slate-400 shrink-0">(HQ)</span>
-                    )}
+                    <span className="truncate text-slate-800 font-semibold">{cleanName}</span>
                   </div>
                 </label>
               );
@@ -243,10 +246,7 @@ export function BranchFilterDropdown({
                     className="w-4 h-4 rounded border-slate-300 text-slate-600 focus:ring-slate-500 cursor-pointer shrink-0"
                   />
                   <div className="flex items-center gap-1.5 flex-1 min-w-0 text-slate-500">
-                    <span className="text-[10px] font-bold px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded shrink-0">
-                      Other
-                    </span>
-                    <span className="truncate italic">งานไม่ระบุสาขา (Unassigned)</span>
+                    <span className="truncate italic">ไม่ระบุสาขา (Unassigned)</span>
                   </div>
                 </label>
               </>
@@ -332,7 +332,7 @@ export function UserBranchBadge({
   if (user.area === "BKK") {
     return (
       <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-md bg-blue-50 text-blue-700 border border-blue-200">
-        [BKK] ทุกสาขา
+        BKK ทุกสาขา
       </span>
     );
   }
@@ -340,7 +340,7 @@ export function UserBranchBadge({
   if (user.area === "PTY") {
     return (
       <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-md bg-amber-50 text-amber-700 border border-amber-200">
-        [PTY] ทุกสาขา
+        PTY ทุกสาขา
       </span>
     );
   }
@@ -358,16 +358,9 @@ export function UserBranchBadge({
   if (ids.length === 1) {
     const branch = branches.find((b) => b.id === ids[0]);
     if (branch) {
-      const isPattaya = (branch.area || "").toUpperCase().includes("PTY");
       return (
-        <span
-          className={`px-1.5 py-0.5 text-[9px] font-bold rounded-md border ${
-            isPattaya
-              ? "bg-amber-50 text-amber-800 border-amber-200"
-              : "bg-blue-50 text-blue-800 border-blue-200"
-          }`}
-        >
-          [{branch.area || "BKK"}] {branch.name}
+        <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
+          {getCleanBranchName(branch.name)}
         </span>
       );
     }
@@ -376,7 +369,7 @@ export function UserBranchBadge({
   if (ids.length > 1) {
     const matchedNames = branches
       .filter((b) => ids.includes(b.id))
-      .map((b) => b.name)
+      .map((b) => getCleanBranchName(b.name))
       .join(", ");
     return (
       <span
@@ -394,3 +387,4 @@ export function UserBranchBadge({
     </span>
   );
 }
+
