@@ -27,6 +27,7 @@ import {
 import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
+import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
 
 
 import { Input } from "@/components/ui/input";
@@ -7257,6 +7258,8 @@ export default function AdminPage() {
         }}
       />
 
+      {/* Silent Background Auto-Receipt Worker */}
+      <AutoReceiptWorker />
     </ProtectedRoute>
   );
 }
