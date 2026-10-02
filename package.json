@@ -13,6 +13,7 @@
     "deploy:staging": "bash scripts/deploy-staging.sh",
     "deploy:prod": "bash scripts/deploy-prod.sh",
     "sync:test": "npx tsx scripts/sync_prod_to_test.ts",
+    "sync:from-test": "npx tsx scripts/sync_test_to_local.ts",
     "cap:sync": "npx cap sync android",
     "cap:open": "npx cap open android"
   },
