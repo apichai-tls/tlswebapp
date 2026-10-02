@@ -4,8 +4,9 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-# POS Development Branch Rule
-- All modifications and development related to the POS system (including cashier shifts, checkout flows, receipt printing, and POS-related settings) must be done exclusively on the `feature/pos-new` branch. Never perform POS modifications directly on the `main` branch.
+# Development Branch Rule
+- The primary active development branch is `feature/multi-brand-crm`. All ongoing feature work (including CRM, multi-brand, corporate pricing, POS integrations, customer coupons, and settings) must be done on the `feature/multi-brand-crm` branch.
+- When ready for production deployment, changes from `feature/multi-brand-crm` are merged into `main` and pushed to `origin/main`.
 
 # Playwright Test Execution Rule
 - Do NOT run Playwright or E2E tests automatically after UI or layout modifications unless explicitly requested by the user.
