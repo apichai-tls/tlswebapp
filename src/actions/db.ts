@@ -1151,6 +1151,26 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
 
+  // If job is cancelled, restore any CustomerCoupon that was marked USED
+  if (updates.status === 'cancel') {
+    try {
+      const promoMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+      const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
+      await prisma.customerCoupon.updateMany({
+        where: {
+          OR: [
+            { usedJobId: id, status: "USED" },
+            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED" }] : []),
+          ],
+        },
+        data: { status: "ACTIVE", usedAt: null, usedJobId: null },
+      });
+      console.log(`[CustomerCoupon] Restored coupon to ACTIVE on cancel for job ${id}`);
+    } catch (err) {
+      console.warn("[CustomerCoupon] Void/restore on cancel failed:", err);
+    }
+  }
+
   return updatedJob;
 }
 
@@ -3119,6 +3139,21 @@ export async function processRefundAndCorrectAction(data: {
       const promoMatch = originalJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
       if (promoMatch && promoMatch[1]) {
         const pCode = promoMatch[1].trim().toUpperCase();
+        try {
+          await prisma.customerCoupon.updateMany({
+            where: {
+              OR: [
+                { usedJobId: data.jobId, status: "USED" },
+                { code: { equals: pCode, mode: "insensitive" as const }, status: "USED" },
+              ],
+            },
+            data: { status: "ACTIVE", usedAt: null, usedJobId: null },
+          });
+          console.log(`[CustomerCoupon] Restored coupon to ACTIVE on refund for job ${data.jobId}`);
+        } catch (err) {
+          console.warn("[CustomerCoupon] Void/restore in job refund failed:", err);
+        }
+
         const promoBase = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
         const promoKey = process.env.TLS_PROMO_API_KEY || "tls_pos_live_4cd242ae264a906fd734de04396617407bdb59f74d67bcac";
         fetch(`${promoBase}/api/pos/promo/void`, {

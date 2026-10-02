@@ -14,7 +14,100 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ valid: false, error: "กรุณาระบุรหัสส่วนลด" }, { status: 400 });
     }
 
-    // 1. Anti-Reuse Validation: Check if this customer has already used this promo code in any non-canceled job
+    // 1. Check if this is a CustomerCoupon in the local database
+    const localCoupon = await prisma.customerCoupon.findFirst({
+      where: {
+        code: { equals: promoCode, mode: "insensitive" },
+      },
+      include: {
+        customer: true,
+      },
+    });
+
+    if (localCoupon) {
+      const now = new Date();
+      if (localCoupon.status === "USED") {
+        return NextResponse.json({
+          valid: false,
+          error: `คูปองนี้ถูกใช้งานไปแล้ว${localCoupon.usedJobId ? ` (บิล #${localCoupon.usedJobId})` : ""}`,
+        }, { status: 200 });
+      }
+
+      if (localCoupon.status === "VOID") {
+        return NextResponse.json({ valid: false, error: "คูปองนี้ถูกยกเลิกการใช้งานแล้ว (VOID)" }, { status: 200 });
+      }
+
+      if (localCoupon.status === "EXPIRED" || (localCoupon.expiryDate && new Date(localCoupon.expiryDate) < now)) {
+        if (localCoupon.status !== "EXPIRED") {
+          await prisma.customerCoupon.update({ where: { id: localCoupon.id }, data: { status: "EXPIRED" } }).catch(() => {});
+        }
+        return NextResponse.json({ valid: false, error: "คูปองนี้หมดอายุการใช้งานแล้ว" }, { status: 200 });
+      }
+
+      // Check customer matching if coupon was issued to a specific customer
+      if (localCoupon.customerId) {
+        const phoneDigits = (customerPhone || "").replace(/\D/g, "");
+        const localCustPhoneDigits = (localCoupon.customerPhone || localCoupon.customer?.phone || "").replace(/\D/g, "");
+        
+        const matchesId = Boolean(customerId && localCoupon.customerId === customerId);
+        const matchesPhone = Boolean(phoneDigits.length >= 8 && localCustPhoneDigits.length >= 8 && phoneDigits.slice(-8) === localCustPhoneDigits.slice(-8));
+
+        if (customerId && !matchesId && !matchesPhone) {
+          const ownerName = localCoupon.customerName || localCoupon.customer?.name || "ลูกค้าท่านอื่น";
+          return NextResponse.json({
+            valid: false,
+            error: `คูปองนี้เป็นของลูกค้า "${ownerName}" เท่านั้น`,
+          }, { status: 200 });
+        }
+      }
+
+      // Check minimum order amount
+      if (localCoupon.minOrderAmount != null && localCoupon.minOrderAmount > 0) {
+        if ((orderTotal || 0) < localCoupon.minOrderAmount) {
+          return NextResponse.json({
+            valid: false,
+            error: `ยอดสั่งซื้อขั้นต่ำสำหรับคูปองนี้คือ ฿${localCoupon.minOrderAmount.toLocaleString()} (ยอดปัจจุบัน ฿${(orderTotal || 0).toLocaleString()})`,
+          }, { status: 200 });
+        }
+      }
+
+      // Calculate discount amount
+      let calcDiscount = 0;
+      const isDeliveryOnly = localCoupon.discountType === "FREE_DELIVERY";
+      const discountType = localCoupon.discountType === "PERCENTAGE" ? "PERCENTAGE" : "FIXED";
+      const discountTarget = isDeliveryOnly ? "DELIVERY" : "ALL";
+
+      if (isDeliveryOnly) {
+        const feeVal = Number(body.deliveryFee) || 0;
+        calcDiscount = feeVal > 0 ? (localCoupon.discountValue ? Math.min(localCoupon.discountValue, feeVal) : feeVal) : 0;
+      } else if (localCoupon.discountType === "PERCENTAGE") {
+        calcDiscount = ((orderTotal || 0) * localCoupon.discountValue) / 100;
+        if (localCoupon.maxDiscount != null && localCoupon.maxDiscount > 0) {
+          calcDiscount = Math.min(calcDiscount, localCoupon.maxDiscount);
+        }
+      } else {
+        // FIXED or CASH_VOUCHER
+        calcDiscount = Math.min(localCoupon.discountValue, orderTotal || 0);
+      }
+      calcDiscount = Math.round(calcDiscount * 100) / 100;
+
+      return NextResponse.json({
+        valid: true,
+        isCustomerCoupon: true,
+        couponId: localCoupon.id,
+        code: localCoupon.code,
+        name: localCoupon.name,
+        description: localCoupon.description || localCoupon.name,
+        discountType,
+        discountTarget,
+        discountValue: localCoupon.discountValue,
+        discountAmount: calcDiscount,
+        maxDiscount: localCoupon.maxDiscount ?? null,
+        minOrderAmount: localCoupon.minOrderAmount ?? null,
+      });
+    }
+
+    // 2. Anti-Reuse Validation for general marketing promo codes: Check if this customer has already used this promo code in any non-canceled job
     const searchConditions: any[] = [];
     if (customerId) {
       searchConditions.push({ customerId });

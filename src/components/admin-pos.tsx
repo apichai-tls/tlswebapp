@@ -41,7 +41,8 @@ import {
   Truck,
   MapPin,
   Building,
-  Receipt
+  Receipt,
+  Ticket
 } from "lucide-react";
 import { trousers, skirt, dress, socks } from "@lucide/lab";
 import { Button } from "@/components/ui/button";
@@ -68,12 +69,14 @@ import {
   poiStore,
   getDirectDistance,
   type Customer, 
+  type CustomerCoupon,
   type ServiceType,
   type ServiceItem,
   type Job,
   type CashierShift,
   type LatLng
 } from "@/lib/store";
+import { getCustomerCouponsAction } from "@/actions/db";
 import { getRoute } from "@/lib/map-api";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -1140,6 +1143,34 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isMemberRate, setIsMemberRate] = useState(false);
+  const [availableCoupons, setAvailableCoupons] = useState<CustomerCoupon[]>([]);
+  const [loadingCoupons, setLoadingCoupons] = useState(false);
+
+  // Fetch active customer coupons when selectedCustomer changes
+  useEffect(() => {
+    if (!selectedCustomer?.id) {
+      setAvailableCoupons([]);
+      return;
+    }
+    let active = true;
+    setLoadingCoupons(true);
+    getCustomerCouponsAction({ customerId: selectedCustomer.id, status: "ACTIVE" })
+      .then((res) => {
+        if (active && res.success && res.coupons) {
+          setAvailableCoupons(res.coupons as unknown as CustomerCoupon[]);
+        }
+      })
+      .catch((err) => {
+        console.error("[POS] Failed to fetch customer coupons:", err);
+        if (active) setAvailableCoupons([]);
+      })
+      .finally(() => {
+        if (active) setLoadingCoupons(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedCustomer?.id]);
 
   useEffect(() => {
     walletApprovalStore.refreshPendingMap().catch(() => {});
@@ -2087,8 +2118,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return Math.max(0, Math.round(rawTotal * 100) / 100);
   }, [subtotal, expressSurcharge, totalDiscount, vatType, vatRate, manualAdjustment]);
 
-  const handleApplyPromo = async () => {
-    const code = promoCodeInput.trim().toUpperCase();
+  const handleApplyPromo = async (codeOverride?: unknown) => {
+    const targetCode = typeof codeOverride === "string" ? codeOverride : promoCodeInput;
+    const code = targetCode.trim().toUpperCase();
     if (!code) return;
 
     const custId = selectedCustomer?.id;
@@ -2099,6 +2131,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       setPromoError(currentLanguage === "en" ? "Please select a customer before using promo code" : "กรุณาเลือกลูกค้าหรือระบุข้อมูลลูกค้าก่อนใช้โค้ดส่วนลด");
       toast.error(currentLanguage === "en" ? "Please select a customer before using promo code" : "กรุณาเลือกลูกค้าหรือระบุข้อมูลลูกค้าก่อนใช้โค้ดส่วนลด");
       return;
+    }
+
+    if (typeof codeOverride === "string") {
+      setPromoCodeInput(codeOverride);
+      setShowDiscount(true);
     }
 
     setPromoLoading(true);
@@ -2175,6 +2212,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, receiptNo, orderTotal, discountAmount: discountAmt }),
       });
+      setAvailableCoupons(prev => prev.filter(c => c.code.toUpperCase() !== code.toUpperCase()));
     } catch (e) {
       console.warn("[PromoCode] Redeem failed (non-blocking):", e);
     }
@@ -4840,7 +4878,79 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               )}
 
 
- 
+              {/* Customer Available Coupons Banner */}
+              {availableCoupons.length > 0 && (
+                <div className="py-2 px-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-foreground space-y-1.5 my-1">
+                  <div className="flex items-center justify-between text-[11px] font-bold text-amber-700 dark:text-amber-400">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles size={13} className="text-amber-500 shrink-0" />
+                      {currentLanguage === "en" ? `Available Coupons (${availableCoupons.length})` : `ลูกค้ามีคูปอง (${availableCoupons.length} ใบ)`}
+                    </span>
+                    {appliedPromo && (
+                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                        <Check size={11} /> {appliedPromo.code}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-0.5">
+                    {availableCoupons.map((coupon) => {
+                      const isApplied = appliedPromo?.code?.toUpperCase() === coupon.code.toUpperCase();
+                      const discountLabel = coupon.discountType === "PERCENTAGE" 
+                        ? `ลด ${coupon.discountValue}%` 
+                        : coupon.discountType === "FREE_DELIVERY"
+                        ? (currentLanguage === "en" ? "Free Delivery" : "ฟรีค่าจัดส่ง")
+                        : `ลด ฿${coupon.discountValue}`;
+                      const minOrderLabel = coupon.minOrderAmount ? ` • ขั้นต่ำ ฿${coupon.minOrderAmount.toLocaleString()}` : "";
+                      
+                      return (
+                        <div 
+                          key={coupon.id} 
+                          className={`flex items-center justify-between gap-1.5 p-1.5 rounded-lg border text-[10px] transition-all ${
+                            isApplied 
+                              ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-800 dark:text-emerald-200 font-bold" 
+                              : "bg-background/90 border-border/80 hover:border-amber-500/60"
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1">
+                              <span className="font-mono font-black tracking-wide text-foreground">{coupon.code}</span>
+                              <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300 font-bold">
+                                {discountLabel}
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-muted-foreground truncate">
+                              {coupon.name}{minOrderLabel}
+                            </p>
+                          </div>
+                          {isApplied ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAppliedPromo(null);
+                                setPromoCodeInput("");
+                                setPromoError(null);
+                              }}
+                              className="px-2 py-0.5 rounded text-[9px] font-bold text-rose-500 hover:bg-rose-500/10 cursor-pointer"
+                            >
+                              {currentLanguage === "en" ? "Remove" : "ยกเลิก"}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleApplyPromo(coupon.code)}
+                              disabled={promoLoading}
+                              className="px-2 py-1 rounded bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[9px] cursor-pointer shadow-xs disabled:opacity-50 transition-colors whitespace-nowrap"
+                            >
+                              {promoLoading ? "..." : (currentLanguage === "en" ? "Apply" : "ใช้คูปอง")}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Discount & Promo Section */}
               {showDiscount && (
                 <div className="space-y-1.5 py-1.5 border-t border-border/60">
