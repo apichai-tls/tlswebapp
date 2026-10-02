@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
 import { useRiders } from "@/lib/use-riders";
-import { shopStore, shiftStore, jobStore, walletApprovalStore, type CashierShift } from "@/lib/store";
+import { shopStore, shiftStore, jobStore, walletApprovalStore, type CashierShift, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,8 @@ import {
   Eye,
   Package,
   User,
+  Building,
+  Layers,
   Clock,
   Lock,
   FileText,
@@ -70,6 +72,33 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
   const [dateRange, setDateRange] = useState<"today" | "7days" | "30days" | "month" | "custom">("30days");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
+  const [customerSegment, setCustomerSegment] = useState<"retail" | "corporate" | "all">("retail");
+
+  const { customerIdMap, customerPhoneMap } = useMemo(() => {
+    const idMap = new Map<string, Customer>();
+    const phoneMap = new Map<string, Customer>();
+    for (const c of customers) {
+      if (c.id) idMap.set(c.id, c);
+      const p1 = (c.phone || "").replace(/\D/g, "");
+      if (p1.length >= 8) phoneMap.set(p1.slice(-9), c);
+      const p2 = (c.secondaryPhone || "").replace(/\D/g, "");
+      if (p2.length >= 8) phoneMap.set(p2.slice(-9), c);
+    }
+    return { customerIdMap: idMap, customerPhoneMap: phoneMap };
+  }, [customers]);
+
+  const isJobCorporate = useCallback((job: any): boolean => {
+    let c: Customer | undefined;
+    if (job.customerId && customerIdMap.has(job.customerId)) {
+      c = customerIdMap.get(job.customerId);
+    } else {
+      const cleanPhone = (job.customerPhone || "").replace(/\D/g, "");
+      if (cleanPhone.length >= 8) {
+        c = customerPhoneMap.get(cleanPhone.slice(-9));
+      }
+    }
+    return Boolean(c && (c.isCorporate || c.tier === "corporate"));
+  }, [customerIdMap, customerPhoneMap]);
   
   // Tab-specific filters/search
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>("all");
@@ -194,6 +223,39 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     });
   }, [jobs, selectedBranch, dateRange, customStartDate, customEndDate]);
 
+  // Segment counts for jobs within selected timeframe & branch
+  const segmentCounts = useMemo(() => {
+    let retail = 0;
+    let corporate = 0;
+    filteredJobs.forEach((job) => {
+      if (isJobCorporate(job)) {
+        corporate++;
+      } else {
+        retail++;
+      }
+    });
+    return {
+      retail,
+      corporate,
+      all: filteredJobs.length,
+    };
+  }, [filteredJobs, isJobCorporate]);
+
+  // Jobs filtered by customer segment specifically for Overview Dashboard
+  const overviewJobs = useMemo(() => {
+    if (customerSegment === "all") return filteredJobs;
+    if (customerSegment === "corporate") return filteredJobs.filter((j) => isJobCorporate(j));
+    return filteredJobs.filter((j) => !isJobCorporate(j));
+  }, [filteredJobs, customerSegment, isJobCorporate]);
+
+  // CRM customer count by segment
+  const segmentCustomersCount = useMemo(() => {
+    if (customerSegment === "all") return customers.length;
+    if (customerSegment === "corporate") {
+      return customers.filter((c) => c.isCorporate || c.tier === "corporate").length;
+    }
+    return customers.filter((c) => !c.isCorporate && c.tier !== "corporate").length;
+  }, [customers, customerSegment]);
 
   // Metric summaries for Overview Panel
   const overviewStats = useMemo(() => {
@@ -209,7 +271,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
     const productSales: Record<string, { count: number; revenue: number }> = {};
 
-    filteredJobs.forEach(job => {
+    overviewJobs.forEach(job => {
       if (job.status === "cancel") {
         cancelledCount++;
         return;
@@ -281,7 +343,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       },
       topProducts
     };
-  }, [filteredJobs]);
+  }, [overviewJobs]);
 
   // --- Sales Trend & Operations Volume Chart States & Logic ---
   const [trendMetric, setTrendMetric] = useState<"both" | "sales" | "volume">("both");
@@ -428,8 +490,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       }
     }
 
-    // Populate data from filteredJobs
-    filteredJobs.forEach((job) => {
+    // Populate data from overviewJobs
+    overviewJobs.forEach((job) => {
       if (job.status === "cancel") return;
       if (!job.createdAt) return;
       const jobTime = new Date(job.createdAt).getTime();
@@ -446,7 +508,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     });
 
     return buckets;
-  }, [filteredJobs, dateRange, customStartDate, customEndDate]);
+  }, [overviewJobs, dateRange, customStartDate, customEndDate]);
 
   // Calculations for chart scaling and coordinates
   const trendChartStats = useMemo(() => {
@@ -729,7 +791,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     if (subTab === "overview") {
       csvContent += "Overview Statistics\n";
       csvContent += `Branch,${selectedBranch === "all" ? "All Branches" : (shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}\n`;
-      csvContent += `Date Range,${dateRange}\n\n`;
+      csvContent += `Date Range,${dateRange}\n`;
+      csvContent += `Customer Segment,${customerSegment === "corporate" ? "Corporate" : customerSegment === "retail" ? "Retail" : "All"}\n\n`;
       
       csvContent += "Metric,Value\n";
       csvContent += `Total Paid Revenue,฿${overviewStats.totalRevenue.toFixed(2)}\n`;
@@ -1005,6 +1068,72 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       {/* 1. OVERVIEW DASHBOARD */}
       {subTab === "overview" && (
         <>
+          {/* Customer Segment Filter Bar: Retail (Default) / Corporate / All */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-850 p-2.5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs">
+            <div className="flex items-center gap-2 px-2 text-xs font-black text-slate-700 dark:text-slate-200 uppercase tracking-wide">
+              <Building size={15} className="text-indigo-600 dark:text-indigo-400" />
+              <span>กลุ่มลูกค้า / Customer Segment</span>
+            </div>
+            <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl">
+              {/* 1. Retail (Default) */}
+              <button
+                type="button"
+                onClick={() => setCustomerSegment("retail")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  customerSegment === "retail"
+                    ? "bg-white dark:bg-slate-700 text-indigo-700 dark:text-indigo-300 shadow-xs font-extrabold"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <User size={14} className={customerSegment === "retail" ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400"} />
+                <span>ทั่วไป (Retail)</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
+                  customerSegment === "retail" ? "bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                }`}>
+                  {segmentCounts.retail}
+                </span>
+              </button>
+
+              {/* 2. Corporate */}
+              <button
+                type="button"
+                onClick={() => setCustomerSegment("corporate")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  customerSegment === "corporate"
+                    ? "bg-white dark:bg-slate-700 text-amber-700 dark:text-amber-400 shadow-xs font-extrabold"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <Building size={14} className={customerSegment === "corporate" ? "text-amber-600 dark:text-amber-400" : "text-slate-400"} />
+                <span>องค์กร (Corporate)</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
+                  customerSegment === "corporate" ? "bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                }`}>
+                  {segmentCounts.corporate}
+                </span>
+              </button>
+
+              {/* 3. All */}
+              <button
+                type="button"
+                onClick={() => setCustomerSegment("all")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  customerSegment === "all"
+                    ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-xs font-extrabold"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <Layers size={14} className={customerSegment === "all" ? "text-slate-800 dark:text-slate-200" : "text-slate-400"} />
+                <span>ทั้งหมด</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
+                  customerSegment === "all" ? "bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                }`}>
+                  {segmentCounts.all}
+                </span>
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
               <div className="absolute top-0 right-0 p-4 opacity-5">
@@ -1019,10 +1148,12 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                 </div>
                 <span className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-bold flex items-center gap-0.5">
                   <TrendingUp size={12} />
-                  +14%
+                  {customerSegment === "corporate" ? "Corp" : customerSegment === "retail" ? "Retail" : "+14%"}
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold font-sans">Active: {activeBranchName}</p>
+              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold font-sans">
+                Active: {activeBranchName} • {customerSegment === "corporate" ? "Corporate Only" : customerSegment === "retail" ? "Retail Only" : "All Customers"}
+              </p>
             </div>
 
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
@@ -1041,7 +1172,9 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                   Jobs
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">Pending completion: {overviewStats.pendingCount} bills</p>
+              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">
+                Pending completion: {overviewStats.pendingCount} bills ({customerSegment === "corporate" ? "Corp" : customerSegment === "retail" ? "Retail" : "All"})
+              </p>
             </div>
 
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
@@ -1059,7 +1192,9 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                   Value
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">Calculated from total paid receipts</p>
+              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">
+                Calculated from paid receipts ({customerSegment === "corporate" ? "Corp" : customerSegment === "retail" ? "Retail" : "All"})
+              </p>
             </div>
 
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-5 relative overflow-hidden">
@@ -1068,16 +1203,28 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
               </div>
               <div className="flex justify-between items-start">
                 <div>
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Active CRM Users</span>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                    {customerSegment === "corporate" ? "Corporate CRM Accounts" : customerSegment === "retail" ? "Retail CRM Users" : "Active CRM Users"}
+                  </span>
                   <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 mt-1.5">
-                    {customers.length}
+                    {segmentCustomersCount}
                   </h3>
                 </div>
-                <span className="p-2 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 text-xs font-bold">
-                  Users
+                <span className={`p-2 rounded-xl text-xs font-bold ${
+                  customerSegment === "corporate"
+                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                    : "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                }`}>
+                  {customerSegment === "corporate" ? "Corporate" : customerSegment === "retail" ? "Retail" : "Users"}
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">Registered customer profiles</p>
+              <p className="text-[10px] text-slate-400 mt-4.5 font-semibold">
+                {customerSegment === "corporate"
+                  ? "Registered corporate client profiles"
+                  : customerSegment === "retail"
+                  ? "Registered retail customer profiles"
+                  : "Registered customer profiles"}
+              </p>
             </div>
           </div>
 
@@ -1387,7 +1534,11 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                 {trendChartStats.totalSales === 0 && trendChartStats.totalVolume === 0 && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-6">
                     <div className="bg-slate-100/90 dark:bg-slate-800/90 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-xs font-bold shadow-xs">
-                      ไม่มีข้อมูลออเดอร์ในช่วงเวลาที่เลือก (No order data in this timeframe)
+                      {customerSegment === "corporate"
+                        ? "ไม่มีข้อมูลออเดอร์ของลูกค้าองค์กรในช่วงเวลาที่เลือก (No corporate orders in this timeframe)"
+                        : customerSegment === "retail"
+                        ? "ไม่มีข้อมูลออเดอร์ของลูกค้าทั่วไปในช่วงเวลาที่เลือก (No retail orders in this timeframe)"
+                        : "ไม่มีข้อมูลออเดอร์ในช่วงเวลาที่เลือก (No order data in this timeframe)"}
                     </div>
                   </div>
                 )}
@@ -1449,20 +1600,32 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
-                  {overviewStats.topProducts.map((p, idx) => (
-                    <tr key={idx}>
-                      <td className="py-3 flex items-center gap-2">
-                        <span className="w-5 h-5 bg-indigo-500/10 text-indigo-500 rounded-full flex items-center justify-center font-black text-[10px]">#{idx + 1}</span>
-                        {p.name}
-                      </td>
-                      <td className="py-3 text-center font-bold">
-                        {p.count.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </td>
-                      <td className="py-3 text-right text-indigo-600 dark:text-indigo-400 font-black">
-                        ฿{p.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {overviewStats.topProducts.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="py-8 text-center text-slate-400 font-medium">
+                        {customerSegment === "corporate"
+                          ? "ไม่มีข้อมูลยอดขายสินค้าของลูกค้าองค์กรในช่วงนี้"
+                          : customerSegment === "retail"
+                          ? "ไม่มีข้อมูลยอดขายสินค้าของลูกค้าทั่วไปในช่วงนี้"
+                          : "ไม่มีข้อมูลยอดขายสินค้าในช่วงนี้"}
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    overviewStats.topProducts.map((p, idx) => (
+                      <tr key={idx}>
+                        <td className="py-3 flex items-center gap-2">
+                          <span className="w-5 h-5 bg-indigo-500/10 text-indigo-500 rounded-full flex items-center justify-center font-black text-[10px]">#{idx + 1}</span>
+                          {p.name}
+                        </td>
+                        <td className="py-3 text-center font-bold">
+                          {p.count.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-3 text-right text-indigo-600 dark:text-indigo-400 font-black">
+                          ฿{p.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
