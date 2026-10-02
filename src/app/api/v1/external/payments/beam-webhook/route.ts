@@ -38,13 +38,30 @@ export async function POST(req: Request) {
 
     console.log(`[Beam Webhook] Event: ${event}`)
 
-    // We process charge.succeeded, payment_link.paid, bolt_intent.paid, and payment.succeeded
+    // We process charge.succeeded, payment_link.paid, bolt_intent.paid, purchase.succeeded, and payment.succeeded
     const successEvents = [
       'charge.succeeded',
       'payment_link.paid',
       'bolt_intent.paid',
-      'payment.succeeded'
+      'payment.succeeded',
+      'purchase.succeeded'
     ]
+
+    // Handle failure / cancellation events cleanly with 200 OK so Beam doesn't retry
+    if (event === 'charge.failed' || event === 'card_authorization.failed' || event === 'bolt_intent.canceled' || event === 'bolt_intent.expired') {
+      console.warn(`[Beam Webhook] Payment unsuccessful or canceled event received: ${event}`)
+      return NextResponse.json({ received: true, event, status: 'acknowledged_failure' })
+    }
+
+    if (event === 'refund.succeeded' || event === 'refund.failed') {
+      console.log(`[Beam Webhook] Refund event received: ${event}`)
+      return NextResponse.json({ received: true, event, status: 'acknowledged_refund' })
+    }
+
+    if (event === 'transaction.created') {
+      console.log(`[Beam Webhook] Accounting ledger event received: ${event}`)
+      return NextResponse.json({ received: true, event, status: 'acknowledged_transaction' })
+    }
 
     if (event && !successEvents.includes(event)) {
       // Return 200 OK for other events so Beam doesn't retry
@@ -158,9 +175,14 @@ export async function POST(req: Request) {
       }
     } catch {}
 
-    // Idempotency: avoid recording the exact same charge twice
-    if (job.isPaid && existingPayments.some((p: any) => p.chargeId === chargeId)) {
-      console.log(`[Beam Webhook] Job ${job.id} already marked as paid with charge ${chargeId}`)
+    // Idempotency: avoid recording duplicate payment if job is already marked as paid via Beam or this charge is already recorded
+    const isAlreadyPaidViaBeam =
+      job.isPaid &&
+      (existingPayments.some((p: any) => p.chargeId === chargeId || (p.channel && p.channel.toLowerCase().includes('beam'))) ||
+        (job.paymentChannel && job.paymentChannel.toLowerCase().includes('beam')))
+
+    if (isAlreadyPaidViaBeam) {
+      console.log(`[Beam Webhook] Job ${job.id} is already marked as paid via Beam. Acknowledging event: ${event}`)
       return NextResponse.json({
         success: true,
         message: 'Payment already recorded previously',
