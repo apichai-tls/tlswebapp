@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   User,
   ShieldCheck,
@@ -42,6 +42,8 @@ import {
   type RoleItem,
 } from "@/actions/roles";
 import { useAuth } from "@/providers/auth-provider";
+import { shopStore } from "@/lib/store";
+import { BranchFilterDropdown, getUserAssignedBranchIds, UserBranchBadge } from "@/components/branch-filter-dropdown";
 
 interface AdminUser {
   id: string;
@@ -53,6 +55,7 @@ interface AdminUser {
   password?: string;
   permissions: string;
   area?: string | null;
+  branchId?: string | null;
   isActive?: boolean;
 }
 
@@ -217,6 +220,11 @@ export function sortUsersByDeptAndHead(userList: AdminUser[], deptsList: Departm
 
 export function AdminUsers() {
   const { user } = useAuth();
+  const shopLocations = useSyncExternalStore(
+    shopStore.subscribe,
+    shopStore.getSnapshot,
+    shopStore.getSnapshot
+  );
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [departments, setDepartments] = useState<DepartmentItem[]>([]);
   const [roles, setRoles] = useState<RoleItem[]>([]);
@@ -244,7 +252,7 @@ export function AdminUsers() {
   const [role, setRole] = useState("staff");
   const [department, setDepartment] = useState("branch_ops");
   const [isDepartmentHead, setIsDepartmentHead] = useState(false);
-  const [area, setArea] = useState("BKK");
+  const [selectedBranchIds, setSelectedBranchIds] = useState<string[]>([]);
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
 
   // Department Modal State
@@ -314,7 +322,7 @@ export function AdminUsers() {
     setRole(roles[0]?.key || "staff");
     setDepartment(departments[0]?.key || "branch_ops");
     setIsDepartmentHead(false);
-    setArea("BKK");
+    setSelectedBranchIds(shopLocations.map((s) => s.id));
     setSelectedPerms([]);
     setEditingId(null);
     setIsEditing(false);
@@ -336,7 +344,7 @@ export function AdminUsers() {
           : "branch_ops")
     );
     setIsDepartmentHead(user.isDepartmentHead ?? false);
-    setArea(user.area || "BKK");
+    setSelectedBranchIds(getUserAssignedBranchIds(user, shopLocations));
     try {
       setSelectedPerms(JSON.parse(user.permissions));
     } catch (e) {
@@ -368,6 +376,12 @@ export function AdminUsers() {
     e.preventDefault();
     if (!email || !name) return toast.error("Email and Name are required");
 
+    const isAll =
+      selectedBranchIds.length === shopLocations.length ||
+      selectedBranchIds.length === 0;
+    const userArea = isAll ? "ALL" : selectedBranchIds.join(",");
+    const userBranchId = isAll ? null : (selectedBranchIds[0] || null);
+
     setIsSavingUser(true);
     try {
       if (editingId) {
@@ -378,7 +392,8 @@ export function AdminUsers() {
           role,
           department,
           isDepartmentHead,
-          area: area || null,
+          area: userArea,
+          branchId: userBranchId,
           permissions: selectedPerms,
         });
         if (!res?.success) throw new Error(res?.error || "Failed to update user");
@@ -390,6 +405,8 @@ export function AdminUsers() {
             if (raw) {
               const parsed = JSON.parse(raw);
               parsed.permissions = selectedPerms;
+              parsed.area = userArea;
+              parsed.branchId = userBranchId;
               localStorage.setItem("authUser", JSON.stringify(parsed));
             }
           } catch {}
@@ -405,7 +422,8 @@ export function AdminUsers() {
           role,
           department,
           isDepartmentHead,
-          area: area || null,
+          area: userArea,
+          branchId: userBranchId,
           permissions: selectedPerms,
         });
         if (!res?.success) throw new Error(res?.error || "Failed to create user");
@@ -443,6 +461,7 @@ export function AdminUsers() {
         role: u.role,
         department: u.department || null,
         area: u.area || null,
+        branchId: u.branchId || null,
         permissions: JSON.parse(u.permissions),
         isActive: !isResigning,
       });
@@ -724,16 +743,18 @@ export function AdminUsers() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Area / Branch</label>
-                <select
-                  value={area}
-                  onChange={(e) => setArea(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10 cursor-pointer"
-                >
-                  <option value="ALL">ALL (All Branches)</option>
-                  <option value="BKK">BKK (Bangkok)</option>
-                  <option value="PTY">PTY (Pattaya)</option>
-                </select>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Assigned Branch (สาขาที่สังกัด)
+                </label>
+                <BranchFilterDropdown
+                  branches={shopLocations}
+                  selectedIds={selectedBranchIds}
+                  onChange={setSelectedBranchIds}
+                  includeUnassigned={false}
+                  placeholder="All Branches (ทุกสาขา)"
+                  className="w-full"
+                  triggerClassName="w-full h-10 bg-slate-50 border-slate-200 text-slate-900 font-bold"
+                />
               </div>
             </div>
 
@@ -982,11 +1003,7 @@ export function AdminUsers() {
                               >
                                 {roleObj?.name || user.role}
                               </span>
-                              {user.area && (
-                                <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-md bg-blue-50 text-blue-700 border border-blue-100">
-                                  {user.area}
-                                </span>
-                              )}
+                              <UserBranchBadge user={user} branches={shopLocations} />
                             </div>
                           </div>
                         </td>

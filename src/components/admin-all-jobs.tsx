@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useSyncExternalStore } from "react";
+import React, { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
@@ -20,6 +20,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
 import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
+import { BranchFilterDropdown, getUserAssignedBranchIds, UNASSIGNED_BRANCH_ID } from "@/components/branch-filter-dropdown";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -120,7 +121,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [showTopup, setShowTopup] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null);
-  const [filterArea, setFilterArea] = useState<string>("ALL");
+  const [selectedBranchIds, setSelectedBranchIds] = useState<string[]>([]);
+  const isInitialBranchSetRef = useRef(false);
   const [activeKanbanColumn, setActiveKanbanColumn] = useState<JobStatus>("pickup");
   
   const { user } = useAuth();
@@ -217,10 +219,18 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   }, [dateFilter, startDate, endDate]);
 
   useEffect(() => {
-    if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
-      setFilterArea(user.area);
+    if (shopLocations.length === 0 || isInitialBranchSetRef.current) return;
+    if (user?.role === 'manager') {
+      const userBranches = getUserAssignedBranchIds(user, shopLocations);
+      if (userBranches.length > 0 && userBranches.length < shopLocations.length) {
+        setSelectedBranchIds(userBranches);
+        isInitialBranchSetRef.current = true;
+        return;
+      }
     }
-  }, [user]);
+    setSelectedBranchIds([...shopLocations.map((s) => s.id), UNASSIGNED_BRANCH_ID]);
+    isInitialBranchSetRef.current = true;
+  }, [user, shopLocations]);
 
   const availablePaymentChannels = useMemo(() => {
     const configured = getPaymentChannels(systemSettings).map((c) => c.name);
@@ -342,11 +352,19 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       if (job.status === 'topup' && !showTopup) matchesStatus = false;
     }
 
-    // Area Filter
-    let matchesArea = true;
-    if (filterArea !== "ALL") {
-      const branch = shopLocations.find(s => s.id === job.branchId);
-      matchesArea = branch?.area === filterArea;
+    // Branch Filter (Excel-style Multi-Select)
+    let matchesBranch = true;
+    const isAllBranchesSelected =
+      selectedBranchIds.length >= shopLocations.length;
+
+    if (!isAllBranchesSelected && selectedBranchIds.length > 0) {
+      if (job.branchId) {
+        matchesBranch = selectedBranchIds.includes(job.branchId);
+      } else {
+        matchesBranch = selectedBranchIds.includes(UNASSIGNED_BRANCH_ID);
+      }
+    } else if (selectedBranchIds.length === 0) {
+      matchesBranch = false;
     }
 
     // Payment Channel Filter
@@ -370,7 +388,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       if (isPos) return false;
     }
     
-    return matchesSearch && matchesDate && matchesStatus && matchesArea && matchesPayment;
+    return matchesSearch && matchesDate && matchesStatus && matchesBranch && matchesPayment;
   });
 
   const sortedJobs = [...filteredJobs];
@@ -496,17 +514,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             />
           </div>
 
-          <div className="relative">
-            <select
-              value={filterArea}
-              onChange={(e) => setFilterArea(e.target.value)}
-              className="h-10 text-xs border border-slate-200 rounded-md px-3 bg-white font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 shadow-sm"
-            >
-              <option value="ALL">All Areas</option>
-              <option value="BKK">BKK</option>
-              <option value="PTY">PTY</option>
-            </select>
-          </div>
+          <BranchFilterDropdown
+            branches={shopLocations}
+            selectedIds={selectedBranchIds}
+            onChange={setSelectedBranchIds}
+            includeUnassigned={true}
+            placeholder="All Branches"
+          />
 
           <div className="relative">
             <select

@@ -21,6 +21,7 @@ export async function getUsers() {
         email: true,
         role: true,
         area: true,
+        branchId: true,
         department: true,
         isDepartmentHead: true,
         permissions: true,
