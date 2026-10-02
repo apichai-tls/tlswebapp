@@ -147,6 +147,35 @@ export async function getBeamChargesByReference(referenceId: string): Promise<Be
 }
 
 /**
+ * Get Payment Link details directly from Beam API
+ */
+export async function getBeamPaymentLink(paymentLinkId: string): Promise<BeamApiResult<any>> {
+  try {
+    const { baseUrl, authHeader } = getBeamConfig();
+    const response = await fetch(`${baseUrl}/api/v1/payment-links/${paymentLinkId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/json',
+      },
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}` };
+    }
+
+    const resData = await response.json();
+    return {
+      success: true,
+      data: resData,
+    };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Disable a Beam Payment Link
  */
 export async function disableBeamPaymentLink(paymentLinkId: string): Promise<boolean> {
@@ -164,3 +193,4 @@ export async function disableBeamPaymentLink(paymentLinkId: string): Promise<boo
     return false;
   }
 }
+

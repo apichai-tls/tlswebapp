@@ -43,10 +43,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ received: true, ignored: true, event })
     }
 
-    // Resolve order / job ID from reference_id or metadata
+    // Resolve order / job ID from reference_id, order object, or metadata
     const orderId =
       data.reference_id ||
       data.referenceId ||
+      data.order?.referenceId ||
+      data.order?.reference_id ||
       data.metadata?.orderId ||
       data.metadata?.jobId ||
       data.metadata?.reference_id

@@ -97,7 +97,20 @@ export function OnlinePaymentDialog({
       .then((res) => {
         if (!isMounted) return;
         setLoading(false);
-        if (res.success && res.paymentUrl) {
+        if (res.isAlreadyPaid) {
+          setIsPaidSuccess(true);
+          setPaidDetails({
+            amount: amountToPay,
+            channel: "Beam Checkout",
+          });
+          if (onPaymentSuccess) {
+            onPaymentSuccess({
+              jobId: job.id,
+              amount: amountToPay,
+              channel: "Beam Checkout",
+            });
+          }
+        } else if (res.success && res.paymentUrl) {
           setPaymentData(res);
         } else {
           setError(res.error || "ไม่สามารถสร้างลิงก์ชำระเงินออนไลน์ได้");
