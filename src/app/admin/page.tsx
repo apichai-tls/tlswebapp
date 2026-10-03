@@ -3208,7 +3208,7 @@ export default function AdminPage() {
         fee,
         discount: discountVal,
         discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
-        paymentChannel: paymentChannel || "Beam Checkout",
+        paymentChannel: paymentChannel || "Gateway",
         serviceType: dialogCart[0]?.id || current.serviceType || "wash_fold",
         ...(derivedLaundryTypes ? { laundryTypes: derivedLaundryTypes as any } : {}),
       };
@@ -5828,7 +5828,7 @@ export default function AdminPage() {
                                     title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
                                   >
                                     <Zap size={11} className="fill-white" />
-                                    <span>Beam QR Pay (฿{dialogTotal.toLocaleString()})</span>
+                                    <span>Beam Payment (฿{dialogTotal.toLocaleString()})</span>
                                   </button>
                                 )}
                                 {selectedProfileCustomer?.isMember && (
@@ -6486,7 +6486,7 @@ export default function AdminPage() {
                                     title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
                                   >
                                     <Zap size={11} className="fill-white" />
-                                    <span>Beam QR Pay (฿{dialogTotal.toLocaleString()})</span>
+                                    <span>Beam Payment (฿{dialogTotal.toLocaleString()})</span>
                                   </button>
                                 )}
                               </div>

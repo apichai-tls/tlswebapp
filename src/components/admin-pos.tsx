@@ -2468,7 +2468,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       await jobStore.updateJobDetails(loadedJobId, {
         items: itemsPayload as any,
         totalAmount: total,
-        paymentChannel: "Beam Checkout / QR",
+        paymentChannel: "Gateway",
       });
       setOnlinePaymentJob({
         id: loadedJobId,
@@ -2480,9 +2480,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       return;
     }
 
-    // Save order first as billing order with Beam Checkout channel, then open OnlinePaymentDialog
+    // Save order first as billing order with Gateway channel, then open OnlinePaymentDialog
     setIsPaid(false);
-    setPosPaymentChannel("Beam Checkout / QR");
+    setPosPaymentChannel("Gateway");
     await handleCheckout();
   };
 

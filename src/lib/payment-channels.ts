@@ -15,8 +15,7 @@ export const DEFAULT_PAYMENT_CHANNELS: PaymentChannelItem[] = [
   { id: "transfer", name: "Transfer", type: "transfer", enabled: true, isSystem: true },
   { id: "promptpay", name: "PromptPay", type: "transfer", enabled: true, isSystem: true },
   { id: "credit_card", name: "Credit Card", type: "card", enabled: true, isSystem: true },
-  { id: "gateway", name: "Gateway", type: "card", enabled: true, isSystem: true },
-  { id: "beam_checkout", name: "Beam Checkout / QR", type: "card", enabled: true, isSystem: true, description: "ชำระเงินออนไลน์ผ่าน Beam (PromptPay / Mobile Banking / Card)" },
+  { id: "gateway", name: "Gateway", type: "card", enabled: true, isSystem: true, description: "ชำระเงินออนไลน์ผ่าน Beam Gateway (PromptPay / Mobile Banking / Card)" },
   { id: "deduct_member", name: "Deduct Member", type: "wallet", enabled: true, isSystem: true, requiresMember: true },
   { id: "hq_credit", name: "HQ/Credit", type: "credit", enabled: true, isSystem: true },
 ];
@@ -35,7 +34,10 @@ export function parsePaymentChannels(rawJson?: string | null): PaymentChannelIte
   try {
     const parsed = JSON.parse(rawJson);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
+      const filtered = parsed.filter(
+        (c) => c.id !== "beam_checkout" && !c.name?.toLowerCase().includes("beam")
+      );
+      return filtered.length > 0 ? filtered : DEFAULT_PAYMENT_CHANNELS;
     }
   } catch (e) {
     console.error("Failed to parse paymentChannels setting:", e);
