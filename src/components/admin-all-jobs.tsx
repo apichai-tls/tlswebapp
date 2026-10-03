@@ -869,23 +869,6 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             {job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                           </Badge>
                         )}
-                        {(job.isPaid || isJobFullyPaid(job)) && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setReceiptJob(job);
-                              setShowReceipt(true);
-                            }}
-                            className="h-5 px-1.5 text-[9px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 mt-1 rounded flex items-center gap-1 mx-auto cursor-pointer shadow-2xs"
-                            title="ดู / พิมพ์ใบเสร็จรับเงิน (Receipt)"
-                          >
-                            <Receipt size={9} />
-                            ใบเสร็จ
-                          </Button>
-                        )}
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
@@ -1321,23 +1304,6 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                   <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid || isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
                                     {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                                   </span>
-                                )}
-                                {(job.isPaid || isJobFullyPaid(job)) && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setReceiptJob(job);
-                                      setShowReceipt(true);
-                                    }}
-                                    className="h-5 px-1.5 text-[9px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded flex items-center gap-1 cursor-pointer shadow-2xs"
-                                    title="ดู / พิมพ์ใบเสร็จรับเงิน (Receipt)"
-                                  >
-                                    <Receipt size={9} />
-                                    ใบเสร็จ
-                                  </Button>
                                 )}
                               </div>
                             </div>
