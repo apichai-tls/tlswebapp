@@ -869,22 +869,6 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             {job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                           </Badge>
                         )}
-                        {!isJobFullyPaid(job) && !job.isPaid && (job.totalAmount || 0) > 0 && (job.paymentChannel?.toLowerCase().includes("gateway") || job.paymentChannel?.toLowerCase().includes("beam")) && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOnlinePaymentJob(job);
-                            }}
-                            className="h-5 px-1.5 text-[9px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 mt-1 rounded flex items-center gap-1 mx-auto cursor-pointer shadow-2xs"
-                            title="สร้าง QR Code / ลิงก์ชำระเงินออนไลน์ผ่าน Beam"
-                          >
-                            <Zap size={9} className="fill-indigo-600 text-indigo-600" />
-                            Beam Pay
-                          </Button>
-                        )}
                         {(job.isPaid || isJobFullyPaid(job)) && (
                           <Button
                             size="sm"
@@ -1337,22 +1321,6 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                   <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid || isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
                                     {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                                   </span>
-                                )}
-                                {!isJobFullyPaid(job) && !job.isPaid && (job.totalAmount || 0) > 0 && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setOnlinePaymentJob(job);
-                                    }}
-                                    className="h-5 px-1.5 text-[9px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded flex items-center gap-1 cursor-pointer shadow-2xs"
-                                    title="สร้าง QR Code / ลิงก์ชำระเงินออนไลน์ผ่าน Beam"
-                                  >
-                                    <Zap size={9} className="fill-indigo-600 text-indigo-600" />
-                                    Beam Pay
-                                  </Button>
                                 )}
                                 {(job.isPaid || isJobFullyPaid(job)) && (
                                   <Button
