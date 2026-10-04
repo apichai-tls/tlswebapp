@@ -51,8 +51,6 @@ export function AutoReceiptWorker() {
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
         const jobPaidTime = (job as any).shopPaidAt
           ? new Date((job as any).shopPaidAt).getTime()
-          : (job as any).csoPaidAt
-          ? new Date((job as any).csoPaidAt).getTime()
           : jobUpdatedTime;
 
         if (now - jobPaidTime > MAX_JOB_AGE_MS && now - jobUpdatedTime > MAX_JOB_AGE_MS) {
@@ -60,7 +58,7 @@ export function AutoReceiptWorker() {
           return false;
         }
 
-        const isPaid = job.isPaid || isJobFullyPaid(job);
+        const isPaid = isJobFullyPaid(job);
         if (!isPaid) return false;
 
         let bills: string[] = [];
