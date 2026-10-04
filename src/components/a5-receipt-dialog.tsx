@@ -351,6 +351,8 @@ export function A5ReceiptDialog({
     }
   };
 
+  if (!receiptData) return null;
+
   return (
     <>
       <Dialog
@@ -368,7 +370,7 @@ export function A5ReceiptDialog({
           <div className="flex flex-col items-center bg-neutral-800 min-h-full pb-6">
             <div className="w-full bg-neutral-900 p-4 border-b border-neutral-700 flex justify-between items-center sticky top-0 z-20 shadow-md">
               <h2 className="text-white font-bold text-sm">
-                {receiptData.isDraft
+                {receiptData?.isDraft
                   ? currentLanguage === "en"
                     ? "A5 Proforma Invoice Preview"
                     : "ตัวอย่างใบแจ้งหนี้ Proforma A5"
@@ -377,7 +379,7 @@ export function A5ReceiptDialog({
                   : "ตัวอย่างใบเสร็จ A5"}
               </h2>
               <div className="flex gap-2">
-                {receiptData.isDraft && Boolean((receiptData.jobId && receiptData.jobId !== "DRAFT") || (receiptData.id && receiptData.id !== "DRAFT")) && (
+                {receiptData?.isDraft && Boolean((receiptData.jobId && receiptData.jobId !== "DRAFT") || (receiptData.id && receiptData.id !== "DRAFT")) && (
                   <Button
                     onClick={handleForceReSaveProforma}
                     disabled={isSavingImage || isPrinting}
@@ -456,7 +458,7 @@ export function A5ReceiptDialog({
                 onClick={() => onOpenChange(false)}
                 className="w-full bg-neutral-900 border border-neutral-700 hover:bg-neutral-950 text-white font-bold h-10 rounded-xl text-xs cursor-pointer shadow-sm"
               >
-                {receiptData.isDraft
+                {receiptData?.isDraft
                   ? currentLanguage === "en"
                     ? "Close Preview"
                     : "ปิดหน้าต่าง"
@@ -470,7 +472,7 @@ export function A5ReceiptDialog({
       </Dialog>
 
       {/* Print-only layout portalled directly to document.body */}
-      {mounted &&
+      {mounted && receiptData &&
         createPortal(
           <div className="hidden print:block print-root print-root-a5">
             <A5ReceiptContent
@@ -496,6 +498,8 @@ export function A5ReceiptContent({
   activeShop,
   currentLanguage = "en",
 }: A5ReceiptContentProps) {
+  if (!receiptData) return null;
+
   const customers = useSyncExternalStore(
     customerStore.subscribe,
     customerStore.getSnapshot,

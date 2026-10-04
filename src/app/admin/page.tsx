@@ -1713,7 +1713,6 @@ export default function AdminPage() {
     const initialDiscountPercent = initialDiscountOn ? (job.discountPercent || 0) : 0;
     const initialVatType = vatMatch ? (vatMatch[1].toLowerCase() as any) : ((systemSettings?.vatType as any) || "none");
     const initialVatRate = vatMatch ? parseFloat(vatMatch[2]) : (parseFloat(systemSettings?.vatRate || "7") || 7);
-    const initialDeliveryTime = format(roundToNearest30(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm");
 
     // Initial cart hash: compute from loaded cart items and initial state so that
     // subsequent modifications are accurately detected without false positive revision bumps.
@@ -1936,8 +1935,13 @@ export default function AdminPage() {
     setIsDeliveryLobby(job.remark ? job.remark.includes("Delivery: Leave at Lobby") : false);
     setIsDeliveryMeet(job.remark ? job.remark.includes("Delivery: Meet up") : false);
     setIsFreeDelivery(job.remark ? job.remark.includes("Free Delivery") : false);
-    setPickupScheduledTime(format(roundToNearest30(new Date(job.pickupScheduledAt || job.scheduledAt || Date.now())), "yyyy-MM-dd'T'HH:mm"));
-    setDeliveryScheduledTime(format(roundToNearest30(new Date(job.deliveryScheduledAt || Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
+    const safeDate = (val: any, fallbackMs: number) => {
+      if (!val) return new Date(fallbackMs);
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? new Date(fallbackMs) : d;
+    };
+    setPickupScheduledTime(format(roundToNearest30(safeDate(job.pickupScheduledAt || job.scheduledAt, Date.now())), "yyyy-MM-dd'T'HH:mm"));
+    setDeliveryScheduledTime(format(roundToNearest30(safeDate(job.deliveryScheduledAt, Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
     setPickupRiderId(job.pickupRiderId || "");
     setDeliveryRiderId(job.deliveryRiderId || "");
 
@@ -7180,56 +7184,60 @@ export default function AdminPage() {
       />
 
       {receiptPaperSize === "A5" ? (
-        <A5ReceiptDialog
-          open={showReceipt}
-          onOpenChange={setShowReceipt}
-          receiptData={dialogReceiptData}
-          activeShop={activeShop}
-          currentLanguage={currentLanguage}
-          onCloseComplete={() => {
-            const wasDraft = isDraftPreview;
-            lastPaidProformaInfoRef.current = null;
-            setIsDraftPreview(false);
-            setIsPaymentEvent(false);
-            if (!wasDraft && !dialogOpen) {
-              resetDialogStates();
-            }
-          }}
-          onBillImageUploaded={(newUrl) => {
-            setBillImageUrls(prev => {
-              if (!prev.includes(newUrl)) {
-                return [...prev, newUrl];
+        dialogReceiptData && (
+          <A5ReceiptDialog
+            open={showReceipt}
+            onOpenChange={setShowReceipt}
+            receiptData={dialogReceiptData}
+            activeShop={activeShop}
+            currentLanguage={currentLanguage}
+            onCloseComplete={() => {
+              const wasDraft = isDraftPreview;
+              lastPaidProformaInfoRef.current = null;
+              setIsDraftPreview(false);
+              setIsPaymentEvent(false);
+              if (!wasDraft && !dialogOpen) {
+                resetDialogStates();
               }
-              return prev;
-            });
-          }}
-        />
+            }}
+            onBillImageUploaded={(newUrl) => {
+              setBillImageUrls(prev => {
+                if (!prev.includes(newUrl)) {
+                  return [...prev, newUrl];
+                }
+                return prev;
+              });
+            }}
+          />
+        )
       ) : (
-        <ThermalReceiptDialog
-          open={showReceipt}
-          onOpenChange={setShowReceipt}
-          receiptData={dialogReceiptData}
-          activeShop={activeShop}
-          receiptPaperSize={receiptPaperSize}
-          currentLanguage={currentLanguage}
-          onCloseComplete={() => {
-            const wasDraft = isDraftPreview;
-            lastPaidProformaInfoRef.current = null;
-            setIsDraftPreview(false);
-            setIsPaymentEvent(false);
-            if (!wasDraft && !dialogOpen) {
-              resetDialogStates();
-            }
-          }}
-          onBillImageUploaded={(newUrl) => {
-            setBillImageUrls(prev => {
-              if (!prev.includes(newUrl)) {
-                return [...prev, newUrl];
+        dialogReceiptData && (
+          <ThermalReceiptDialog
+            open={showReceipt}
+            onOpenChange={setShowReceipt}
+            receiptData={dialogReceiptData}
+            activeShop={activeShop}
+            receiptPaperSize={receiptPaperSize}
+            currentLanguage={currentLanguage}
+            onCloseComplete={() => {
+              const wasDraft = isDraftPreview;
+              lastPaidProformaInfoRef.current = null;
+              setIsDraftPreview(false);
+              setIsPaymentEvent(false);
+              if (!wasDraft && !dialogOpen) {
+                resetDialogStates();
               }
-              return prev;
-            });
-          }}
-        />
+            }}
+            onBillImageUploaded={(newUrl) => {
+              setBillImageUrls(prev => {
+                if (!prev.includes(newUrl)) {
+                  return [...prev, newUrl];
+                }
+                return prev;
+              });
+            }}
+          />
+        )
       )}
       {/* Top Up Dialog — standalone member wallet top-up */}
       <TopUpDialog
