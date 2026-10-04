@@ -1593,7 +1593,13 @@ export default function AdminPage() {
     setEditingSubStatus(job.subStatus || null);
     setIsStuck(job.isStuck || false);
     setDialogSelectedCategory(null);
-    const itemsList = Array.isArray(job.items) ? job.items : [];
+    const itemsList = Array.isArray(job.items) 
+      ? job.items 
+      : (job.itemsJson 
+          ? (() => { try { return JSON.parse(job.itemsJson); } catch { return []; } })() 
+          : (typeof (job as any).items === "string" 
+              ? (() => { try { return JSON.parse((job as any).items); } catch { return []; } })() 
+              : []));
     const mappedCart = itemsList.map((item: any) => {
       // Priority 1: exact serviceId match (most reliable — prevents name collisions like Blouse IRON vs Blouse PCS)
       const matchedById = item.serviceId ? (services.find(s => s.id === item.serviceId) || dialogCorporateServices.find(s => s.id === item.serviceId)) : null;
@@ -1781,7 +1787,7 @@ export default function AdminPage() {
       basePrice = Math.round(totalMinusFee / multiplier);
     }
     if (mappedCart.length > 0) {
-      basePrice = mappedCart.reduce((sum, item) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
+      basePrice = mappedCart.reduce((sum: number, item: any) => sum + Math.ceil((item.price || 0) * (item.quantity || 0)), 0);
     }
 
     
@@ -2197,8 +2203,6 @@ export default function AdminPage() {
       }
     } else {
       // ── Save Changes flow (isPayment === false) ────────────────────
-      // Rule: Proforma is only created if user explicitly pressed Proforma button
-      // If user did NOT press Proforma button, DO NOT bump revision and DO NOT auto-create a Proforma!
       if (proformaPressedSinceLastEdit) {
         targetProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT")
           ? cleanProformaNumber(proformaReceiptNumber)
@@ -2206,16 +2210,25 @@ export default function AdminPage() {
         effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
         effectiveProformaCartHash = currentCartHash;
       } else if (existingProformaNum) {
-        // Job already had a proforma from before -> preserve existing without bumping revision!
         targetProformaNum = existingProformaNum;
-        effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
-        effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
+        if (isCartChangedFromLastProforma) {
+          // Items were edited and user clicked Save directly -> bump revision to reflect updated cart!
+          effectiveProformaRevision = (proformaRevision || (isRfJob ? 1 : 0)) + 1;
+          effectiveProformaCartHash = currentCartHash;
+        } else {
+          effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
+          effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
+        }
       } else {
         // Job had NO proforma and user did NOT press Proforma button -> keep null!
         targetProformaNum = null;
         effectiveProformaRevision = 0;
         effectiveProformaCartHash = null;
       }
+
+      setProformaReceiptNumber(targetProformaNum);
+      setProformaRevision(effectiveProformaRevision);
+      setLastProformaCartHash(effectiveProformaCartHash);
     }
     const cannotDeduct = !isAlreadyPaidJob && isPayment && paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal) || isWalletExpired(selectedProfileCustomer));
 
@@ -2542,8 +2555,8 @@ export default function AdminPage() {
           }
         }
 
-        // [AUTO-PROFORMA] If paying and proforma exists, ensure proforma is synchronized, saved, and captured
-        const shouldCaptureProforma = Boolean(targetProformaNum && isPayment);
+        // [AUTO-PROFORMA] If paying or cart changed, ensure proforma is synchronized, saved, and captured
+        const shouldCaptureProforma = Boolean(targetProformaNum && (isPayment || isCartChangedFromLastProforma || proformaPressedSinceLastEdit));
         if (shouldCaptureProforma) {
           let finalProformaNum = targetProformaNum!;
           if (targetEditingJobId.startsWith("RF-")) {
@@ -2587,11 +2600,14 @@ export default function AdminPage() {
               ...formatJobToReceiptData({
                 ...existingJob,
                 id: targetEditingJobId,
+                items: itemsPayload,
+                itemsJson: JSON.stringify(itemsPayload),
                 proformaNumber: finalProformaNum,
                 proformaRevision: finalRevision,
                 remark: (newJobData.remark !== undefined ? newJobData.remark : existingJob?.remark),
                 totalAmount: calculatedTotal,
               } as any),
+              items: itemsPayload,
               isDraft: true,
               proformaRevision: finalRevision,
               proformaId: finalProformaNum,
@@ -2645,7 +2661,9 @@ export default function AdminPage() {
                     const capturedUrl = proformaUrl;
                     // Use functional update to get latest state, but call DB update in a deferred way
                     setBillImageUrls(prev => {
-                      const next = prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev];
+                      const cleanBase = finalProformaNum;
+                      const filtered = prev.filter(u => !u.includes(`proforma-${cleanBase}-`));
+                      const next = [capturedUrl, ...filtered];
                       // Schedule DB update outside React's render (setTimeout = macrotask, safe from setState-in-render)
                       setTimeout(() => {
                         api.updateJob(targetEditingJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
@@ -2744,115 +2762,104 @@ export default function AdminPage() {
           preDeductedBalance = updatedCust?.creditBalance ?? preDeductedBalance;
         }
 
-        // If user explicitly previewed proforma before creating this new job, assign the real proforma number now
-        if (isNewJobProformaRequested && savedJobId) {
-          const newProformaNum = generateProformaBaseNumber(savedJobId);
-          const proformaRemark = `Proforma: ${newProformaNum}`;
+        // [AUTO-PROFORMA for NEW JOB] If previewed or paying → auto-assign + capture in background
+        if (savedJobId && (isNewJobProformaRequested || isPayment)) {
+          const autoProformaNum = generateProformaBaseNumber(savedJobId);
+          const proformaRemark = `Proforma: ${autoProformaNum}`;
           const existingRemark = newJobData.remark || "";
           const updatedRemark = existingRemark
             ? (existingRemark.includes("Proforma:") ? existingRemark : `${proformaRemark} | ${existingRemark}`)
             : proformaRemark;
+
           await jobStore.updateJobDetails(savedJobId, {
-            proformaNumber: newProformaNum,
+            proformaNumber: autoProformaNum,
             proformaRevision: 0,
             proformaCartHash: currentCartHash,
             remark: updatedRemark,
           } as any);
-        }
-        // [AUTO-PROFORMA for NEW JOB] If paying without prior Proforma → auto-assign + capture in background
-        if (isPayment && savedJobId) {
-          const alreadyHasProforma = isNewJobProformaRequested; // was previewed before Pay
-          const autoProformaNum = alreadyHasProforma
-            ? generateProformaBaseNumber(savedJobId)
-            : generateProformaBaseNumber(savedJobId);
-
-          if (!alreadyHasProforma) {
-            // Assign proformaNumber to the newly created job
-            await jobStore.updateJobDetails(savedJobId, {
-              proformaNumber: autoProformaNum,
-              proformaRevision: 0,
-              proformaCartHash: currentCartHash,
-            } as any);
-            setProformaReceiptNumber(autoProformaNum);
-            setProformaRevision(0);
-            if (lastPaidProformaInfoRef) {
-              lastPaidProformaInfoRef.current = { id: autoProformaNum, rev: 0 };
-            }
+          setProformaReceiptNumber(autoProformaNum);
+          setProformaRevision(0);
+          if (lastPaidProformaInfoRef) {
+            lastPaidProformaInfoRef.current = { id: autoProformaNum, rev: 0 };
           }
 
           // Fire background proforma image capture for new jobs (fire-and-forget)
-          if (!alreadyHasProforma) {
-            const newJobReceiptBase = formatJobToReceiptData({
-              ...job,
-              proformaNumber: autoProformaNum,
-              proformaRevision: 0,
-            } as any);
-            const proformaCapData = {
-              ...newJobReceiptBase,
-              isDraft: true,
-              proformaRevision: 0,
-              jobId: savedJobId,
-              autoCapture: false,
-            };
-            const capturedSavedJobId = savedJobId;
-            Promise.resolve().then(async () => {
-              try {
-                const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
-                const proformaBlob = await generateA5ReceiptImage(proformaCapData, activeShop);
-                if (proformaBlob) {
-                  const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
-                  let proformaUrl: string | null = null;
-                  try {
-                    const signRes = await fetch("/api/upload-url", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        entityType: "job",
-                        entityId: capturedSavedJobId,
-                        subType: "proofs",
-                        contentType: "image/png",
-                        filename: proformaFilename,
-                      }),
-                    });
-                    if (signRes.ok) {
-                      const signData = await signRes.json();
-                      if (signData.uploadUrl && signData.publicUrl) {
-                        const putRes = await fetch(signData.uploadUrl, {
-                          method: "PUT",
-                          headers: { "Content-Type": "image/png" },
-                          body: proformaBlob,
-                        });
-                        if (putRes.ok) proformaUrl = signData.publicUrl;
-                      }
+          const newJobReceiptBase = formatJobToReceiptData({
+            ...job,
+            items: itemsPayload,
+            itemsJson: JSON.stringify(itemsPayload),
+            proformaNumber: autoProformaNum,
+            proformaRevision: 0,
+            remark: updatedRemark,
+            totalAmount: calculatedTotal,
+          } as any);
+          const proformaCapData = {
+            ...newJobReceiptBase,
+            items: itemsPayload,
+            isDraft: true,
+            proformaRevision: 0,
+            proformaId: autoProformaNum,
+            jobId: savedJobId,
+            autoCapture: false,
+          };
+          const capturedSavedJobId = savedJobId;
+          Promise.resolve().then(async () => {
+            try {
+              const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
+              const proformaBlob = await generateA5ReceiptImage(proformaCapData, activeShop);
+              if (proformaBlob) {
+                const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
+                let proformaUrl: string | null = null;
+                try {
+                  const signRes = await fetch("/api/upload-url", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      entityType: "job",
+                      entityId: capturedSavedJobId,
+                      subType: "proofs",
+                      contentType: "image/png",
+                      filename: proformaFilename,
+                    }),
+                  });
+                  if (signRes.ok) {
+                    const signData = await signRes.json();
+                    if (signData.uploadUrl && signData.publicUrl) {
+                      const putRes = await fetch(signData.uploadUrl, {
+                        method: "PUT",
+                        headers: { "Content-Type": "image/png" },
+                        body: proformaBlob,
+                      });
+                      if (putRes.ok) proformaUrl = signData.publicUrl;
                     }
-                  } catch {
-                    const file = new File([proformaBlob], proformaFilename, { type: "image/png" });
-                    const fd = new FormData();
-                    fd.append("file", file);
-                    fd.append("entityType", "jobs");
-                    fd.append("entityId", capturedSavedJobId);
-                    fd.append("subType", "proofs");
-                    const localRes = await fetch("/api/upload-local", { method: "POST", body: fd });
-                    const localData = await localRes.json();
-                    if (localData.success && localData.publicUrl) proformaUrl = localData.publicUrl;
                   }
-                  if (proformaUrl) {
-                    const capturedUrl = proformaUrl;
-                    setBillImageUrls(prev => {
-                      const next = prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev];
-                      // Schedule DB update outside React's render cycle (macrotask = safe)
-                      setTimeout(() => {
-                        jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
-                      }, 0);
-                      return next;
-                    });
-                  }
+                } catch {
+                  const file = new File([proformaBlob], proformaFilename, { type: "image/png" });
+                  const fd = new FormData();
+                  fd.append("file", file);
+                  fd.append("entityType", "jobs");
+                  fd.append("entityId", capturedSavedJobId);
+                  fd.append("subType", "proofs");
+                  const localRes = await fetch("/api/upload-local", { method: "POST", body: fd });
+                  const localData = await localRes.json();
+                  if (localData.success && localData.publicUrl) proformaUrl = localData.publicUrl;
                 }
-              } catch (e) {
-                console.warn("[AutoProforma] Background new-job proforma capture failed:", e);
+                if (proformaUrl) {
+                  const capturedUrl = proformaUrl;
+                  setBillImageUrls(prev => {
+                    const next = prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev];
+                    // Schedule DB update outside React's render cycle (macrotask = safe)
+                    setTimeout(() => {
+                      jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
+                    }, 0);
+                    return next;
+                  });
+                }
               }
-            });
-          }
+            } catch (e) {
+              console.warn("[AutoProforma] Background new-job proforma capture failed:", e);
+            }
+          });
         }
 
         // Close dialog immediately — UI updates in 0ms!
@@ -6007,7 +6014,7 @@ export default function AdminPage() {
                             <Button 
                               type="button"
                               variant="outline"
-                              disabled={(dialogCart.length === 0 && (dialogTotal || 0) <= 0) || !editingJobId}
+                              disabled={dialogCart.length === 0 && (dialogTotal || 0) <= 0}
                               onClick={() => {
                                 const cartHash = computeCartHash({
                                   items: dialogCart,

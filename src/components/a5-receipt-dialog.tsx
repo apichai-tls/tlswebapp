@@ -168,7 +168,15 @@ export function A5ReceiptDialog({
             }
           } catch {}
           if (!existingBills.includes(uploadResult.publicUrl)) {
-            const newBills = [...existingBills, uploadResult.publicUrl];
+            const isProforma = uploadResult.publicUrl.includes("proforma-");
+            let newBills: string[];
+            if (isProforma) {
+              const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
+              const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-`));
+              newBills = [uploadResult.publicUrl, ...filtered];
+            } else {
+              newBills = [...existingBills, uploadResult.publicUrl];
+            }
             await jobStore.updateJobDetails(targetJob.id, {
               billImageUrl: JSON.stringify(newBills),
             });

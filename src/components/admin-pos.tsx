@@ -5483,7 +5483,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                             size="sm"
                             type="button"
                             onClick={() => {
-                              const cartItems = (job.items || []).map((it: any, idx: number) => {
+                              const rawItems = Array.isArray(job.items) 
+                                ? job.items 
+                                : (job.itemsJson 
+                                    ? (() => { try { return JSON.parse(job.itemsJson); } catch { return []; } })() 
+                                    : (typeof (job as any).items === "string" 
+                                        ? (() => { try { return JSON.parse((job as any).items); } catch { return []; } })() 
+                                        : []));
+                              const cartItems = rawItems.map((it: any, idx: number) => {
                                 if (it.name === "บริการรับ-ส่ง" || it.nameEn === "Pickup & Delivery Service") {
                                   return {
                                     id: "delivery-pickup-service-item",
@@ -5517,7 +5524,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 };
                               });
 
-                              const deliveryCartItem = cartItems.find(it => it.id === "delivery-pickup-service-item" || it.id === "delivery-only-service-item");
+                              const deliveryCartItem = cartItems.find((it: any) => it.id === "delivery-pickup-service-item" || it.id === "delivery-only-service-item");
                               if (deliveryCartItem) {
                                 setLocalDeliveryPrice(String(deliveryCartItem.price));
                               } else {
@@ -5581,7 +5588,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               }
 
                               const promoAmt = hasValidPromo ? parseFloat(promoMatch![3]) : 0;
-                              const baseTotalForDiscount = cartItems.reduce((sum, item) => {
+                              const baseTotalForDiscount = cartItems.reduce((sum: number, item: any) => {
                                 if (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item") return sum;
                                 return sum + safeCeil((item.price || 0) * (item.quantity || 0));
                               }, 0);

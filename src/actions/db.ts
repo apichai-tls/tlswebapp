@@ -1025,12 +1025,17 @@ export async function updateJobAction(id: string, updates: any) {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           // Merge unique URLs so concurrent background uploads (e.g. proforma and receipt) never clobber each other
           const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
-          // Sort so proforma always comes first, followed by receipt, then other proofs
+          // Sort so highest revision proforma always comes first, followed by receipt, then other proofs
           merged.sort((a, b) => {
             const aIsPf = a.includes("proforma-");
             const bIsPf = b.includes("proforma-");
             if (aIsPf && !bIsPf) return -1;
             if (!aIsPf && bIsPf) return 1;
+            if (aIsPf && bIsPf) {
+              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+              return bRev - aRev;
+            }
             const aIsRc = a.includes("receipt-");
             const bIsRc = b.includes("receipt-");
             if (aIsRc && !bIsRc) return 1;

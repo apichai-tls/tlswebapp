@@ -147,13 +147,20 @@ export function AutoReceiptWorker() {
         }
 
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
+        const targetProforma = (job as any).proformaNumber || (job as any).proformaReceiptNumber;
+        if (!targetProforma) return false;
+        const cleanBaseProforma = cleanProformaNumber(targetProforma) || job.id;
+        const rev = (job as any).proformaRevision || 0;
+        const revKey = `proforma_${job.id}_rev${rev}`;
+
         if (now - jobUpdatedTime > MAX_JOB_AGE_MS) {
-          completedRef.current.add(`proforma_${job.id}`);
+          completedRef.current.add(revKey);
           return false;
         }
 
-        const targetProforma = (job as any).proformaNumber || (job as any).proformaReceiptNumber;
-        if (!targetProforma) return false;
+        if (completedRef.current.has(revKey)) {
+          return false;
+        }
 
         let bills: string[] = [];
         try {
@@ -163,12 +170,13 @@ export function AutoReceiptWorker() {
           }
         } catch {}
 
-        const hasProforma = bills.some(
-          (url) => typeof url === "string" && (url.includes("proforma-") || url.includes("/proforma-"))
+        const revFilename = `proforma-${cleanBaseProforma}-rev${rev}.png`;
+        const hasThisRev = bills.some(
+          (url) => typeof url === "string" && url.includes(revFilename)
         );
 
-        if (hasProforma) {
-          completedRef.current.add(`proforma_${job.id}`);
+        if (hasThisRev) {
+          completedRef.current.add(revKey);
           return false;
         }
 
@@ -209,7 +217,8 @@ export function AutoReceiptWorker() {
                 }
               } catch {}
 
-              const mergedBills = Array.from(new Set([...existingBills, publicUrl]));
+              const cleanFiltered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBaseProforma}-`));
+              const mergedBills = [publicUrl, ...cleanFiltered];
               await jobStore.updateJobDetails(jobId, {
                 billImageUrl: JSON.stringify(mergedBills),
               } as any);
@@ -218,7 +227,7 @@ export function AutoReceiptWorker() {
             }
           }
 
-          completedRef.current.add(`proforma_${jobId}`);
+          completedRef.current.add(`proforma_${jobId}_rev${rev}`);
         } catch (err) {
           console.warn(`[AutoReceiptWorker] Failed to auto-generate proforma for Job #${jobId}:`, err);
         } finally {
