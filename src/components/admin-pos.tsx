@@ -1203,7 +1203,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [manualAdjustment, setManualAdjustment] = useState(0);
   const [serviceSpeed, setServiceSpeed] = useState<string>("standard");
   const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string>("");
-  const [proformaRevision, setProformaRevision] = useState<number>(0);
+  const [proformaRevision, setProformaRevision] = useState<number | null>(null);
   const [lastProformaCartHash, setLastProformaCartHash] = useState<string>("");
   const capturedReceiptUrlsRef = useRef<string[]>([]);
   const [sessionCapturedReceiptUrls, setSessionCapturedReceiptUrls] = useState<string[]>([]);
@@ -1388,7 +1388,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setLocalDeliveryPrice("");
     setDeliveryAddress("");
     setProformaReceiptNumber("");
-    setProformaRevision(0);
+    setProformaRevision(null);
     setLastProformaCartHash("");
     // Reset VAT to current system settings defaults
     setVatType(normalizeVatType(settings?.vatType));
@@ -2401,7 +2401,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
 
     const cleanBaseProforma = cleanProformaNumber(proformaReceiptNumber);
-    const displayProforma = formatProformaNumber(cleanBaseProforma, proformaRevision);
+    const displayProforma = formatProformaNumber(cleanBaseProforma, proformaRevision ?? undefined);
     const isDelivery = Boolean(deliveryServiceType);
     const resolvedDraftAddress = isDelivery 
       ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined)
@@ -2579,7 +2579,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       } else if (!targetProformaNum) {
         // New job — proforma will be generated after addJob() using finalJob.id (see below)
       } else if (cartChangedAfterProforma) {
-        effectiveRevision = proformaRevision + 1;
+        effectiveRevision = (proformaRevision !== null ? proformaRevision : 0) + 1;
         setProformaRevision(effectiveRevision);
         setLastProformaCartHash(currentCartHash);
       }
@@ -2587,8 +2587,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       // If a Proforma quote exists (whether newly issued, unchanged, or revised), ensure its PNG snapshot is captured and uploaded before saving the job
       if (targetProformaNum) {
         try {
-          const effectiveProformaId = `${targetProformaNum}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
-          const filename = `proforma-${cleanProformaNumber(targetProformaNum)}-rev${effectiveRevision}.png`;
+          const effectiveProformaId = `${targetProformaNum}${effectiveRevision !== null && effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
+          const filename = `proforma-${cleanProformaNumber(targetProformaNum)}-rev${effectiveRevision ?? 0}.png`;
           const alreadyCaptured = capturedReceiptUrlsRef.current.some(url => url.includes(filename)) || sessionCapturedReceiptUrls.some(url => url.includes(filename));
 
           if (!alreadyCaptured) {
@@ -2600,7 +2600,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             const tempReceiptData: any = {
               id: effectiveProformaId,
               proformaId: cleanProformaNumber(targetProformaNum),
-              proformaRevision: effectiveRevision,
+              proformaRevision: effectiveRevision ?? 0,
               createdAt: new Date(),
               customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
               customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
@@ -2681,7 +2681,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
       const vatText = vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : "";
       const cleanBaseProforma = cleanProformaNumber(targetProformaNum);
-      const proformaStr = cleanBaseProforma ? `Proforma: ${cleanBaseProforma}${effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "";
+      const proformaStr = cleanBaseProforma ? `Proforma: ${cleanBaseProforma}${effectiveRevision !== null && effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}` : "";
       const promoStr = (showDiscount || appliedPromo || promoCodeInput.trim()) ? (
         appliedPromo
           ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${effectivePromoDiscount})`
@@ -2850,7 +2850,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           billImageUrl: mergedBills.length > 0 ? JSON.stringify(mergedBills) : undefined,
           proformaReceiptNumber: targetProformaNum || undefined,
           proformaNumber: targetProformaNum || undefined,
-          proformaRevision: targetProformaNum ? effectiveRevision : undefined,
+          proformaRevision: targetProformaNum ? (effectiveRevision ?? undefined) : undefined,
           proformaCartHash: targetProformaNum ? (currentCartHash || undefined) : undefined,
         } as any);
 
@@ -2900,7 +2900,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           billImageUrl: allSessionUrls.length > 0 ? JSON.stringify(allSessionUrls) : undefined,
           proformaReceiptNumber: targetProformaNum || undefined,
           proformaNumber: targetProformaNum || undefined,
-          proformaRevision: targetProformaNum ? effectiveRevision : undefined,
+          proformaRevision: targetProformaNum ? (effectiveRevision ?? undefined) : undefined,
           proformaCartHash: targetProformaNum ? (currentCartHash || undefined) : undefined,
         });
 
@@ -5177,7 +5177,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   let targetProformaNum = proformaReceiptNumber;
                   let targetRevision = proformaRevision;
 
-                  if (!targetProformaNum) {
+                  if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
                     if (loadedJobId) {
                       // Existing job — generate from job ID
                       targetProformaNum = generateProformaBaseNumber(loadedJobId);
@@ -5189,10 +5189,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       // New POS job without ID yet — show DRAFT (will be PR-{jobId} after Pay)
                       targetProformaNum = "DRAFT";
                       targetRevision = 0;
+                      setProformaReceiptNumber("DRAFT");
+                      setProformaRevision(0);
+                      setLastProformaCartHash(cartHash);
                     }
                   } else {
-                    if (cartHash !== lastProformaCartHash) {
-                      targetRevision = proformaRevision + 1;
+                    const loadedJob = loadedJobId ? jobs.find(j => j.id === loadedJobId) : null;
+                    const baseHash = (loadedJob as any)?.proformaCartHash || lastProformaCartHash;
+                    const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : false);
+                    if (isCartChanged) {
+                      targetRevision = (proformaRevision !== null ? proformaRevision : 0) + 1;
                       setProformaRevision(targetRevision);
                       setLastProformaCartHash(cartHash);
                     }

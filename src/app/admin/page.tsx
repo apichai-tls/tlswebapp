@@ -991,7 +991,7 @@ export default function AdminPage() {
 
   // Proforma states
   const [proformaReceiptNumber, setProformaReceiptNumber] = useState<string | null>(null);
-  const [proformaRevision, setProformaRevision] = useState<number>(0);
+  const [proformaRevision, setProformaRevision] = useState<number | null>(null);
   const [lastProformaCartHash, setLastProformaCartHash] = useState<string | null>(null);
   // true = user pressed Proforma button at least once since opening this edit session
   // → Save Changes should NOT auto-gen a new image (user already reviewed & confirmed it)
@@ -1340,7 +1340,7 @@ export default function AdminPage() {
     setSelectedProfileCustomer(null);
     setCustomerName("");
     setCustomerPhone("");
-    setProformaRevision(0);
+    setProformaRevision(null);
     setLastProformaCartHash(null);
     setProformaPressedSinceLastEdit(false);
     setIsDraftPreview(false);
@@ -1660,7 +1660,7 @@ export default function AdminPage() {
 
     // Priority 1: dedicated DB fields added in migration add_proforma_fields
     let loadedProformaNum: string | null = (job as any).proformaNumber || null;
-    let loadedRevision: number = (job as any).proformaRevision ?? null;
+    let loadedRevision: number | null = (job as any).proformaRevision !== undefined && (job as any).proformaRevision !== null ? (job as any).proformaRevision : null;
     let loadedCartHash: string | null = (job as any).proformaCartHash || null;
 
     // Priority 2: legacy fallback — parse from remark (old jobs before DB fields)
@@ -1668,8 +1668,8 @@ export default function AdminPage() {
       const existingProformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
       const existingRevisionMatch = job.remark?.match(/Revision:\s*(\d+)/i);
       loadedProformaNum = cleanProformaNumber((job as any).proformaReceiptNumber || (existingProformaMatch ? existingProformaMatch[1] : null)) || null;
-      if (loadedRevision === null) {
-        loadedRevision = existingRevisionMatch ? parseInt(existingRevisionMatch[1], 10) : 0;
+      if (loadedRevision === null && existingRevisionMatch) {
+        loadedRevision = parseInt(existingRevisionMatch[1], 10);
       }
     }
 
@@ -1701,10 +1701,11 @@ export default function AdminPage() {
       }
     }
 
-    if (loadedRevision === null) loadedRevision = 0;
+    const hasExistingProforma = Boolean(loadedProformaNum);
+    const effectiveRevision: number | null = hasExistingProforma ? (loadedRevision ?? 0) : null;
 
     setProformaReceiptNumber(loadedProformaNum);
-    setProformaRevision(loadedRevision);
+    setProformaRevision(effectiveRevision);
 
     const speedMatch = job.remark?.match(/Express\s*(\d+)%/i);
     const initialSpeed = speedMatch ? `express_${speedMatch[1]}` : "standard";
@@ -1727,7 +1728,7 @@ export default function AdminPage() {
       vatRate: initialVatRate,
     });
 
-    setLastProformaCartHash(loadedCartHash || initialLoadedCartHash);
+    setLastProformaCartHash(hasExistingProforma ? (loadedCartHash || initialLoadedCartHash) : null);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
@@ -2156,22 +2157,23 @@ export default function AdminPage() {
 
     const isNewJobProformaRequested = !editingJobId && (proformaReceiptNumber === "DRAFT" || proformaPressedSinceLastEdit);
 
+    const baseCartHashToCompare = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
     const isCartChangedFromLastProforma = Boolean(
-      lastProformaCartHash && currentCartHash !== lastProformaCartHash
+      baseCartHashToCompare && currentCartHash !== baseCartHashToCompare
     );
 
     let targetProformaNum: string | null = null;
-    let effectiveProformaRevision = 0;
+    let effectiveProformaRevision: number | null = null;
     let effectiveProformaCartHash: string | null = null;
 
     if (isPayment) {
       // ── Payment flow (Pay button clicked) ───────────────────────────
       // Rule: Paid job always has a paired Proforma
       // If job already had a Proforma (or was previewed in this session):
-      //   - If cart changed and not previewed in this session -> Bump revision!
+      //   - If cart changed and not previewed in this session -> Auto-bump revision!
       //   - If cart didn't change -> keep current revision.
       // If job NEVER had a Proforma before -> Create Proforma Rev 0 paired with it!
-      const hasPriorProforma = Boolean(existingProformaNum || proformaPressedSinceLastEdit);
+      const hasPriorProforma = Boolean(existingProformaNum || (proformaPressedSinceLastEdit && proformaReceiptNumber && proformaReceiptNumber !== "DRAFT"));
 
       if (hasPriorProforma) {
         targetProformaNum = existingProformaNum || (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT" ? cleanProformaNumber(proformaReceiptNumber) : null);
@@ -2180,12 +2182,12 @@ export default function AdminPage() {
         }
 
         if (isCartChangedFromLastProforma && !proformaPressedSinceLastEdit) {
-          // Items were edited and user clicked Pay directly -> Bump revision!
-          effectiveProformaRevision = (proformaRevision || (isRfJob ? 1 : 0)) + 1;
+          // Items were edited and user clicked Pay directly -> Auto-bump revision!
+          effectiveProformaRevision = (proformaRevision !== null ? proformaRevision : (isRfJob ? 1 : 0)) + 1;
           effectiveProformaCartHash = currentCartHash;
         } else {
-          effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
-          effectiveProformaCartHash = lastProformaCartHash || currentCartHash;
+          effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
+          effectiveProformaCartHash = baseCartHashToCompare || currentCartHash;
         }
       } else {
         // Job NEVER had a Proforma before, but user clicked Pay:
@@ -2199,30 +2201,27 @@ export default function AdminPage() {
       setProformaRevision(effectiveProformaRevision);
       setLastProformaCartHash(effectiveProformaCartHash);
       if (lastPaidProformaInfoRef) {
-        lastPaidProformaInfoRef.current = targetProformaNum ? { id: targetProformaNum, rev: effectiveProformaRevision } : null;
+        lastPaidProformaInfoRef.current = targetProformaNum ? { id: targetProformaNum, rev: effectiveProformaRevision ?? 0 } : null;
       }
     } else {
       // ── Save Changes flow (isPayment === false) ────────────────────
+      // Rule: Revision will ONLY bump if user explicitly pressed Proforma in this session.
+      // Saving edits without pressing Proforma retains the existing revision (or null if never issued).
       if (proformaPressedSinceLastEdit) {
         targetProformaNum = (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT")
           ? cleanProformaNumber(proformaReceiptNumber)
           : (targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null);
-        effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
+        effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
         effectiveProformaCartHash = currentCartHash;
       } else if (existingProformaNum) {
+        // Job had a proforma, but user did NOT press proforma button in this session -> Keep existing revision, do NOT bump!
         targetProformaNum = existingProformaNum;
-        if (isCartChangedFromLastProforma) {
-          // Items were edited and user clicked Save directly -> bump revision to reflect updated cart!
-          effectiveProformaRevision = (proformaRevision || (isRfJob ? 1 : 0)) + 1;
-          effectiveProformaCartHash = currentCartHash;
-        } else {
-          effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision || 1) : (proformaRevision || 0);
-          effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
-        }
+        effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
+        effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
       } else {
         // Job had NO proforma and user did NOT press Proforma button -> keep null!
         targetProformaNum = null;
-        effectiveProformaRevision = 0;
+        effectiveProformaRevision = null;
         effectiveProformaCartHash = null;
       }
 
@@ -2302,7 +2301,7 @@ export default function AdminPage() {
             : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
         : 0,
       remark: [
-        targetProformaNum ? `Proforma: ${cleanProformaNumber(targetProformaNum)}${effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
+        targetProformaNum ? `Proforma: ${cleanProformaNumber(targetProformaNum)}${effectiveProformaRevision !== null && effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
         ...customRemarks,
         showDialogDiscount ? "Discount: on" : "",
         activeIsFreeDelivery ? "Free Delivery" : "",
@@ -2368,7 +2367,7 @@ export default function AdminPage() {
       paymentChannel: paymentChannel || null,
       proformaReceiptNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
-      proformaRevision: targetProformaNum ? (effectiveProformaRevision || 0) : null,
+      proformaRevision: targetProformaNum ? (effectiveProformaRevision !== null ? effectiveProformaRevision : 0) : null,
       proformaCartHash: targetProformaNum ? effectiveProformaCartHash : null,
       creatorRole: editingJobId && existingJob ? ((existingJob as any).creatorRole || (user?.role === 'admin' ? 'admin' : (isCSO ? 'cso' : user?.role))) : (user?.role === 'admin' ? 'admin' : (isCSO ? 'cso' : user?.role)),
       createdBy: editingJobId && existingJob ? (existingJob.createdBy || user?.name || user?.email || "Admin") : (user?.name || user?.email || "Admin"),
@@ -2555,8 +2554,8 @@ export default function AdminPage() {
           }
         }
 
-        // [AUTO-PROFORMA] If paying or cart changed, ensure proforma is synchronized, saved, and captured
-        const shouldCaptureProforma = Boolean(targetProformaNum && (isPayment || isCartChangedFromLastProforma || proformaPressedSinceLastEdit));
+        // [AUTO-PROFORMA] Capture proforma ONLY IF payment occurred or proforma preview was explicitly requested
+        const shouldCaptureProforma = Boolean(targetProformaNum && (isPayment || proformaPressedSinceLastEdit));
         if (shouldCaptureProforma) {
           let finalProformaNum = targetProformaNum!;
           if (targetEditingJobId.startsWith("RF-")) {
@@ -2565,7 +2564,7 @@ export default function AdminPage() {
             finalProformaNum = generateProformaBaseNumber(targetEditingJobId);
           }
           finalProformaNum = cleanProformaNumber(finalProformaNum);
-          const finalRevision = isRfJob ? Math.max(1, effectiveProformaRevision || 1) : effectiveProformaRevision;
+          const finalRevision = isRfJob ? Math.max(1, effectiveProformaRevision ?? 1) : (effectiveProformaRevision ?? 0);
           const finalCartHash = effectiveProformaCartHash;
 
           // Always ensure proforma details are saved to DB
@@ -3018,7 +3017,7 @@ export default function AdminPage() {
         status: editingSubStatus || "billing",
         laundryTypes: derivedLaundryTypes,
         proformaReceiptNumber,
-        proformaRevision,
+        proformaRevision: proformaRevision ?? undefined,
         vatType: dialogVatType,
         vatRate: dialogVatRate,
         deliveryScheduledAt: deliveryScheduledTime ? new Date(deliveryScheduledTime) : undefined,
@@ -3027,7 +3026,7 @@ export default function AdminPage() {
       
       const formatted = formatJobToReceiptData(mockJob);
       formatted.isDraft = true; // Mark as draft preview
-      formatted.proformaRevision = proformaRevision;
+      formatted.proformaRevision = proformaRevision ?? undefined;
       formatted.isPaid = editingJobId ? isPaidJob : false;
       if (!editingJobId || !isPaidJob) {
         formatted.paymentChannel = undefined;
@@ -3050,7 +3049,7 @@ export default function AdminPage() {
       const targetRevision = lastPaidProformaInfoRef.current ? lastPaidProformaInfoRef.current.rev : proformaRevision;
       if (targetProforma) {
         formatted.proformaId = cleanProformaNumber(targetProforma);
-        formatted.proformaRevision = targetRevision;
+        formatted.proformaRevision = targetRevision ?? undefined;
       }
       // Pass promo info for payment receipts too
       if (appliedPromo) {
@@ -6034,7 +6033,7 @@ export default function AdminPage() {
                                 }
                                 let targetRevision = proformaRevision;
 
-                                if (!targetProformaNum || targetProformaNum === "DRAFT") {
+                                if (!targetProformaNum || targetProformaNum === "DRAFT" || targetRevision === null) {
                                   if (editingJobId) {
                                     targetProformaNum = generateProformaBaseNumber(editingJobId);
                                     targetRevision = editingJobId.startsWith("RF-") ? 1 : 0;
@@ -6049,10 +6048,16 @@ export default function AdminPage() {
                                   } else {
                                     targetProformaNum = "DRAFT";
                                     targetRevision = 0;
+                                    setProformaReceiptNumber("DRAFT");
+                                    setProformaRevision(0);
+                                    setLastProformaCartHash(cartHash);
                                   }
                                 } else {
-                                  if (cartHash !== lastProformaCartHash) {
-                                    targetRevision = (proformaRevision || (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
+                                  const currentEditingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                                  const baseHash = (currentEditingJob as any)?.proformaCartHash || lastProformaCartHash;
+                                  const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : ((currentEditingJob?.totalAmount || 0) !== dialogTotal));
+                                  if (isCartChanged) {
+                                    targetRevision = (proformaRevision !== null ? proformaRevision : (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
                                     setProformaRevision(targetRevision);
                                     setLastProformaCartHash(cartHash);
                                     if (editingJobId) {

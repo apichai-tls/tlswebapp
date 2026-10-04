@@ -4,7 +4,7 @@ import React, { useState, useEffect, useSyncExternalStore } from "react";
 import { format } from "date-fns";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Printer, X, Loader2, Wallet } from "lucide-react";
+import { Printer, X, Loader2, Wallet, RefreshCw } from "lucide-react";
 import { ReceiptData, ReceiptItem, getCategoryDisplayName, resolveItemCategory, CATEGORY_ORDER } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
@@ -264,6 +264,93 @@ export function A5ReceiptDialog({
     }
   };
 
+  const [isSavingImage, setIsSavingImage] = useState(false);
+
+  const handleForceReSaveProforma = async () => {
+    if (!receiptData) return;
+    setIsSavingImage(true);
+    try {
+      const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
+      const { jobStore } = await import("@/lib/store");
+      const { api } = await import("@/lib/api");
+      const { toast } = await import("sonner");
+
+      const targetId = (receiptData.jobId && receiptData.jobId !== "DRAFT" ? receiptData.jobId : (receiptData.id && receiptData.id !== "DRAFT" ? receiptData.id : null));
+      const cleanBaseProforma = (receiptData.proformaId && receiptData.proformaId !== "DRAFT" ? receiptData.proformaId : targetId) || "DRAFT";
+      const currentRev = receiptData.proformaRevision || 0;
+
+      const blob = await generateA5ReceiptImage(receiptData, activeShop);
+      if (!blob) throw new Error("Could not generate image");
+
+      const filename = `proforma-${cleanBaseProforma}-rev${currentRev}.png`;
+      let uploadResult: { success: boolean; publicUrl?: string } = { success: false };
+
+      try {
+        const signRes = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entityType: "job",
+            entityId: targetId || "unknown",
+            subType: "proofs",
+            contentType: "image/png",
+            filename,
+          }),
+        });
+        if (signRes.ok) {
+          const signData = await signRes.json();
+          if (signData.uploadUrl && signData.publicUrl) {
+            const putRes = await fetch(signData.uploadUrl, {
+              method: "PUT",
+              headers: { "Content-Type": "image/png" },
+              body: blob,
+            });
+            if (putRes.ok) uploadResult = { success: true, publicUrl: signData.publicUrl };
+          }
+        }
+      } catch (e) {
+        console.warn("GCS signed upload failed, falling back to local:", e);
+      }
+
+      if (!uploadResult.success) {
+        const file = new File([blob], filename, { type: "image/png" });
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("entityType", "jobs");
+        formData.append("entityId", targetId || "unknown");
+        formData.append("subType", "proofs");
+        const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+        uploadResult = await res.json();
+      }
+
+      if (uploadResult.success && uploadResult.publicUrl) {
+        if (targetId && targetId !== "DRAFT") {
+          const currentJob = jobStore.getSnapshot().find((j: any) => j.id === targetId);
+          let existingBills: string[] = [];
+          try {
+            if (currentJob?.billImageUrl) {
+              const parsed = JSON.parse(currentJob.billImageUrl);
+              existingBills = Array.isArray(parsed) ? parsed : [parsed];
+            }
+          } catch {}
+          const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBaseProforma}-rev${currentRev}.png`));
+          const newBills = [uploadResult.publicUrl, ...filtered];
+          await jobStore.updateJobDetails(targetId, { billImageUrl: JSON.stringify(newBills) } as any);
+          await api.updateJob(targetId, { billImageUrl: JSON.stringify(newBills) } as any);
+        }
+        toast.success(currentLanguage === "en" ? "Proforma image saved successfully!" : `บันทึกรูป Proforma (Rev ${currentRev}) เรียบร้อยแล้ว`);
+      } else {
+        throw new Error("Upload failed");
+      }
+    } catch (err) {
+      console.error("Failed to re-save proforma image:", err);
+      const { toast } = await import("sonner");
+      toast.error(currentLanguage === "en" ? "Failed to save image" : "ไม่สามารถบันทึกรูปภาพได้");
+    } finally {
+      setIsSavingImage(false);
+    }
+  };
+
   return (
     <>
       <Dialog
@@ -290,6 +377,23 @@ export function A5ReceiptDialog({
                   : "ตัวอย่างใบเสร็จ A5"}
               </h2>
               <div className="flex gap-2">
+                {receiptData.isDraft && Boolean((receiptData.jobId && receiptData.jobId !== "DRAFT") || (receiptData.id && receiptData.id !== "DRAFT")) && (
+                  <Button
+                    onClick={handleForceReSaveProforma}
+                    disabled={isSavingImage || isPrinting}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-8 px-3 rounded-lg text-xs border-none shadow-md flex items-center gap-1.5 disabled:opacity-70 cursor-pointer"
+                    title={currentLanguage === "en" ? "Re-render and save the latest Proforma image" : "วาดและบันทึกรูป Proforma ใหม่ลงในระบบ"}
+                  >
+                    {isSavingImage ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={14} />
+                    )}
+                    {isSavingImage
+                      ? (currentLanguage === "en" ? "Saving..." : "กำลังบันทึก...")
+                      : (currentLanguage === "en" ? "Re-save Proforma" : "บันทึกรูป Proforma")}
+                  </Button>
+                )}
                 <Button
                   onClick={handlePrint}
                   disabled={isPrinting}

@@ -253,6 +253,9 @@ export interface Job {
   shiftId?: string | null;
   refundId?: string | null;
   refundedFromId?: string | null;
+  proformaNumber?: string | null;
+  proformaRevision?: number | null;
+  proformaCartHash?: string | null;
 }
 
 export interface AdminNoteLog {

@@ -215,7 +215,7 @@ export function AutoReceiptWorker() {
                 }
               } catch {}
 
-              const cleanFiltered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBaseProforma}-`));
+              const cleanFiltered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBaseProforma}-rev${rev}.png`));
               const mergedBills = [publicUrl, ...cleanFiltered];
               await jobStore.updateJobDetails(jobId, {
                 billImageUrl: JSON.stringify(mergedBills),
