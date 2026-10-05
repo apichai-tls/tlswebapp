@@ -978,7 +978,23 @@ export const api = {
     return dbActions.approveWalletTransactionAction(data);
   },
   async rejectWalletTransaction(data: Parameters<typeof dbActions.rejectWalletTransactionAction>[0]) {
-    return dbActions.rejectWalletTransactionAction(data);
+    const res = await dbActions.rejectWalletTransactionAction(data);
+    if (res.updatedCustomer) {
+      const db = initDb();
+      const saved = res.updatedCustomer;
+      db.customers = db.customers.map(c => {
+        if (c.id === saved.id) {
+          return {
+            ...c,
+            creditBalance: saved.creditBalance,
+            updatedAt: saved.updatedAt,
+          };
+        }
+        return c;
+      });
+      api.notify();
+    }
+    return res;
   },
   async bulkApproveWallet(data: Parameters<typeof dbActions.bulkApproveWalletAction>[0]) {
     return dbActions.bulkApproveWalletAction(data);

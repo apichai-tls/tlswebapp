@@ -2625,10 +2625,14 @@ export async function rejectWalletTransactionAction(data: {
   approvedById: string;
   approvedByName: string;
   rejectReason: string;
+  deductFromWallet?: boolean;
 }) {
   const originalTx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
   if (!originalTx) throw new Error("Transaction not found");
   if (originalTx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${originalTx.approvalStatus}`);
+
+  const isCreditTopUp = originalTx.type === 'TOPUP' || originalTx.direction === 'CREDIT';
+  const shouldDeduct = Boolean(data.deductFromWallet && isCreditTopUp);
 
   // 1. Create a follow-up Task so staff can investigate, resolve, and discuss
   const cleanJobId = originalTx.referenceType === 'job' || originalTx.referenceId?.startsWith('RF-') || originalTx.type === 'DEDUCT'
@@ -2647,10 +2651,15 @@ export async function rejectWalletTransactionAction(data: {
     `- **Created By:** ${originalTx.createdByName || "Staff"}`,
     `- **Rejected By:** ${data.approvedByName}`,
     `- **Reject Reason:** ${data.rejectReason}`,
+    shouldDeduct
+      ? `- **Wallet Balance Deduction:** Deducted ฿${originalTx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} from customer wallet.`
+      : `- **Wallet Balance Deduction:** None (marked as Rejected without altering wallet balance).`,
     ``,
     `---`,
     `**Action Required:**`,
-    `รายการนี้ถูก Reject โดยไม่ปรับยอดเงินกลับ กรุณาตรวจสอบและดำเนินการแก้ไข (เช่น ติดต่อลูกค้า, ขอสลิปใหม่, หรือเปลี่ยนช่องทางชำระเงิน) และพูดคุยอัปเดตความคืบหน้าผ่านกล่องข้อความด้านล่างนี้`
+    shouldDeduct
+      ? `รายการ Top-Up นี้ถูก Reject และระบบได้หักยอดเงินคืนออกจาก Wallet ลูกค้าเรียบร้อยแล้ว กรุณาตรวจสอบและดำเนินการแก้ไข (เช่น ติดต่อลูกค้า, ขอสลิปใหม่, หรือเปลี่ยนช่องทางชำระเงิน) และพูดคุยอัปเดตความคืบหน้าผ่านกล่องข้อความด้านล่างนี้`
+      : `รายการนี้ถูก Reject โดยไม่ปรับยอดเงินกลับ กรุณาตรวจสอบและดำเนินการแก้ไข (เช่น ติดต่อลูกค้า, ขอสลิปใหม่, หรือเปลี่ยนช่องทางชำระเงิน) และพูดคุยอัปเดตความคืบหน้าผ่านกล่องข้อความด้านล่างนี้`
   ].filter(Boolean).join("\n");
 
   const attachments = originalTx.slipImageUrl ? [
@@ -2690,52 +2699,150 @@ export async function rejectWalletTransactionAction(data: {
     console.warn("Failed to create auto task for rejected wallet tx:", err);
   }
 
-  // 2. Update original transaction to REJECTED (with linked Task reference)
+  // 2. Run financial update in an atomic transaction
   const storedRejectReason = createdTaskId
     ? `${data.rejectReason} [Task: ${createdTaskId}]`
     : data.rejectReason;
 
-  const updatedTx = await prisma.walletTransaction.update({
-    where: { id: data.id },
-    data: {
-      approvalStatus: 'REJECTED',
-      approvedById: data.approvedById,
-      approvedByName: data.approvedByName,
-      approvedAt: new Date(),
-      rejectReason: storedRejectReason,
-    }
-  });
+  return await prisma.$transaction(async (tx) => {
+    let updatedCustomer: any = null;
+    let reversalWTx: any = null;
+    let balBefore = 0;
+    let balAfter = 0;
 
-  // 3. Write ActivityLog
-  try {
-    await prisma.activityLog.create({
-      data: {
-        entityId: originalTx.customerId,
-        entityType: 'wallet',
-        action: 'WALLET_REJECTED',
-        details: JSON.stringify({
+    if (shouldDeduct) {
+      const currentCust = await tx.customer.findUnique({
+        where: { id: originalTx.customerId }
+      });
+      if (!currentCust) throw new Error("Customer not found");
+
+      balBefore = Number(currentCust.creditBalance || 0);
+      const amountToDeduct = Number(originalTx.amount || 0);
+      balAfter = Math.round((balBefore - amountToDeduct) * 100) / 100;
+
+      // Update customer creditBalance atomically
+      updatedCustomer = await tx.customer.update({
+        where: { id: originalTx.customerId },
+        data: {
+          creditBalance: balAfter,
+          updatedAt: new Date(),
+        }
+      });
+
+      // Create Reversal WalletTransaction record
+      reversalWTx = await tx.walletTransaction.create({
+        data: {
+          customerId: originalTx.customerId,
+          customerName: currentCust.name,
+          type: 'ADJUST_DEDUCT',
+          amount: amountToDeduct,
+          direction: 'DEBIT',
+          balanceBefore: balBefore,
+          balanceAfter: balAfter,
+          referenceId: originalTx.referenceId || originalTx.id,
+          referenceType: 'reversal',
+          reason: `Reversal for rejected Top-Up #${originalTx.referenceId || originalTx.id}: ${data.rejectReason}`,
+          createdById: data.approvedById,
+          createdByName: data.approvedByName,
+          branchId: originalTx.branchId || null,
+          approvalStatus: 'APPROVED',
+          approvedById: data.approvedById,
+          approvedByName: data.approvedByName,
+          approvedAt: new Date(),
           originalTxId: originalTx.id,
-          customerName: originalTx.customerName,
-          type: originalTx.type,
-          amount: originalTx.amount,
-          rejectReason: data.rejectReason,
-          rejectedBy: data.approvedByName,
-          taskId: createdTaskId,
-        }),
-        userId: data.approvedById,
-        userName: data.approvedByName,
+        }
+      });
+
+      // Mark existing transaction as REJECTED if exists
+      const existingTx = await tx.transaction.findFirst({
+        where: {
+          OR: [
+            { id: originalTx.referenceId || originalTx.id },
+            { description: { contains: originalTx.referenceId || originalTx.id } }
+          ]
+        }
+      });
+      if (existingTx) {
+        await tx.transaction.update({
+          where: { id: existingTx.id },
+          data: {
+            status: 'REJECTED',
+            updatedAt: new Date(),
+          }
+        });
+      }
+
+      // Also create an ADJUST_DEDUCT record in Transaction table
+      await tx.transaction.create({
+        data: {
+          id: `REV-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          memberId: originalTx.customerId,
+          amount: amountToDeduct,
+          type: 'ADJUST_DEDUCT',
+          description: JSON.stringify({
+            reason: `Reversal of rejected Top-Up #${originalTx.referenceId || originalTx.id}: ${data.rejectReason}`,
+            originalTxId: originalTx.id,
+            referenceId: originalTx.referenceId,
+            balanceBefore: balBefore,
+            balanceAfter: balAfter,
+            rejectedBy: data.approvedByName,
+          }),
+          status: 'COMPLETED',
+          updatedAt: new Date(),
+        }
+      });
+    }
+
+    // Update original transaction to REJECTED (with linked Task reference)
+    const updatedTx = await tx.walletTransaction.update({
+      where: { id: data.id },
+      data: {
+        approvalStatus: 'REJECTED',
+        approvedById: data.approvedById,
+        approvedByName: data.approvedByName,
+        approvedAt: new Date(),
+        rejectReason: storedRejectReason,
       }
     });
-  } catch (e) {
-    console.warn("Failed to write ActivityLog on wallet reject:", e);
-  }
 
-  return {
-    success: true,
-    originalTx: updatedTx,
-    balanceAfter: originalTx.balanceAfter,
-    taskId: createdTaskId,
-  };
+    // Write ActivityLog
+    try {
+      await tx.activityLog.create({
+        data: {
+          entityId: originalTx.customerId,
+          entityType: 'wallet',
+          action: 'WALLET_REJECTED',
+          details: JSON.stringify({
+            originalTxId: originalTx.id,
+            customerName: originalTx.customerName,
+            type: originalTx.type,
+            amount: originalTx.amount,
+            rejectReason: data.rejectReason,
+            rejectedBy: data.approvedByName,
+            deductedFromWallet: shouldDeduct,
+            balanceBefore: shouldDeduct ? balBefore : undefined,
+            balanceAfter: shouldDeduct ? balAfter : undefined,
+            taskId: createdTaskId,
+          }),
+          userId: data.approvedById,
+          userName: data.approvedByName,
+        }
+      });
+    } catch (e) {
+      console.warn("Failed to write ActivityLog on wallet reject:", e);
+    }
+
+    return {
+      success: true,
+      originalTx: updatedTx,
+      reversalTx: reversalWTx,
+      updatedCustomer,
+      deductedFromWallet: shouldDeduct,
+      balanceBefore: shouldDeduct ? balBefore : undefined,
+      balanceAfter: shouldDeduct ? balAfter : originalTx.balanceAfter,
+      taskId: createdTaskId,
+    };
+  });
 }
 
 export async function bulkApproveWalletAction(data: {

@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useSyncExternalStore, useRef } from "react";
-import { Search, Wallet, Package, Banknote, CreditCard, QrCode, Globe, CheckCircle2, X, Plus, Minus, Crown, Star, UploadCloud, Loader2, Image as ImageIcon, Trash2, AlertTriangle } from "lucide-react";
+import { Search, Wallet, Package, Banknote, CreditCard, QrCode, Globe, CheckCircle2, X, Plus, Minus, Crown, Star, UploadCloud, Loader2, Image as ImageIcon, Trash2, AlertTriangle, Copy, ExternalLink, RefreshCw, Zap } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,6 +26,11 @@ import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate, m
 
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { getCustomerTodayTopUpAction } from "@/actions/db";
+import {
+  createTopUpOnlinePaymentAction,
+  checkTopUpPaymentStatusAction,
+  type CreateOnlinePaymentResult,
+} from "@/actions/online-payment";
 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -50,7 +55,7 @@ const PAYMENT_CHANNELS = [
   { id: "Cash / COD", label: "Cash / COD", icon: Banknote },
   { id: "QR Code", label: "QR Code", icon: QrCode },
   { id: "Credit Card", label: "Credit Card", icon: CreditCard },
-  { id: "Gateway", label: "Payment Gateway", icon: Globe },
+  { id: "BEAM Gateway", label: "BEAM Gateway", icon: Globe },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -135,6 +140,12 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   const [slipUploadProgress, setSlipUploadProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const slipInputRef = useRef<HTMLInputElement>(null);
+
+  // Beam Gateway state
+  const [beamPaymentData, setBeamPaymentData] = useState<CreateOnlinePaymentResult | null>(null);
+  const [isCreatingBeam, setIsCreatingBeam] = useState(false);
+  const [isCheckingBeamStatus, setIsCheckingBeamStatus] = useState(false);
+  const beamPollRef = useRef<NodeJS.Timeout | null>(null);
 
   // Receipt state
   const [showReceipt, setShowReceipt] = useState(false);
@@ -407,6 +418,86 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       return newQty <= 0 ? null : { ...item, quantity: newQty };
     }).filter(Boolean) as CartItem[]);
   };
+
+  // ── Beam Gateway Helpers ──────────────────────────────────────────────────
+  const handleCreateBeamPayment = async () => {
+    if (!selectedCustomer || cartTotal <= 0) return;
+    setIsCreatingBeam(true);
+    try {
+      const res = await createTopUpOnlinePaymentAction({
+        amount: cartTotal,
+        customerId: selectedCustomer.id,
+        customerName: selectedCustomer.name,
+      });
+      if (res.success && res.paymentLinkId) {
+        setBeamPaymentData(res);
+        toast.success("สร้างลิงก์และ QR Code ชำระเงิน Beam สำเร็จ");
+      } else {
+        toast.error(res.error || "สร้างลิงก์ Beam ไม่สำเร็จ");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "เกิดข้อผิดพลาดในการเชื่อมต่อ Beam");
+    } finally {
+      setIsCreatingBeam(false);
+    }
+  };
+
+  const handleCheckBeamStatus = async (showToast = true) => {
+    if (!beamPaymentData?.paymentLinkId) return;
+    setIsCheckingBeamStatus(true);
+    try {
+      const res = await checkTopUpPaymentStatusAction(beamPaymentData.paymentLinkId);
+      if (res.success && res.isPaid) {
+        if (beamPollRef.current) {
+          clearInterval(beamPollRef.current);
+          beamPollRef.current = null;
+        }
+        toast.success(`🎉 ชำระเงินผ่าน Beam สำเร็จแล้ว (฿${formatCurrency(res.paidAmount || cartTotal)})`);
+        await handlePay();
+      } else if (showToast) {
+        toast.info("ยังไม่พบยอดชำระเงิน หรือลูกค้ารอดำเนินการ");
+      }
+    } catch (err: any) {
+      if (showToast) toast.error("ตรวจสอบสถานะไม่สำเร็จ: " + err.message);
+    } finally {
+      setIsCheckingBeamStatus(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!open) {
+      if (beamPollRef.current) {
+        clearInterval(beamPollRef.current);
+        beamPollRef.current = null;
+      }
+      setBeamPaymentData(null);
+      setIsCreatingBeam(false);
+      setIsCheckingBeamStatus(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    return () => {
+      if (beamPollRef.current) clearInterval(beamPollRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (beamPaymentData?.paymentLinkId && !isProcessing && step === "payment") {
+      if (beamPollRef.current) clearInterval(beamPollRef.current);
+      beamPollRef.current = setInterval(() => {
+        handleCheckBeamStatus(false);
+      }, 3000);
+    } else {
+      if (beamPollRef.current) {
+        clearInterval(beamPollRef.current);
+        beamPollRef.current = null;
+      }
+    }
+    return () => {
+      if (beamPollRef.current) clearInterval(beamPollRef.current);
+    };
+  }, [beamPaymentData?.paymentLinkId, isProcessing, step]);
 
   // ── Payment ────────────────────────────────────────────────────────────────
   const handlePay = async () => {
@@ -905,6 +996,106 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                     })}
                   </div>
                 </div>
+
+                {/* BEAM Gateway Panel */}
+                {(paymentChannel === "BEAM Gateway" || paymentChannel === "Gateway") && (
+                  <div className="p-3.5 rounded-xl border border-indigo-200 bg-indigo-50/70 space-y-3 animate-in fade-in duration-200">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                          <Zap size={14} className="fill-white" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-indigo-950">Beam Checkout Gateway</h4>
+                          <p className="text-[10px] text-indigo-700/80">รองรับ PromptPay QR, บัตรเครดิต/เดบิต, และ Mobile Banking</p>
+                        </div>
+                      </div>
+                      <Badge className="bg-indigo-100 text-indigo-800 border-indigo-200 text-[10px] font-bold">
+                        Online Pay
+                      </Badge>
+                    </div>
+
+                    {!beamPaymentData ? (
+                      <Button
+                        type="button"
+                        disabled={isCreatingBeam || cartTotal <= 0}
+                        onClick={handleCreateBeamPayment}
+                        className="w-full h-10 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs gap-1.5 rounded-xl shadow-xs cursor-pointer"
+                      >
+                        {isCreatingBeam ? (
+                          <>
+                            <Loader2 size={13} className="animate-spin" />
+                            <span>กำลังสร้างลิงก์ Beam...</span>
+                          </>
+                        ) : (
+                          <>
+                            <QrCode size={14} />
+                            <span>สร้าง QR Code / ลิงก์ชำระเงิน Beam (฿{formatCurrency(cartTotal)})</span>
+                          </>
+                        )}
+                      </Button>
+                    ) : (
+                      <div className="space-y-3 pt-1">
+                        <div className="flex flex-col sm:flex-row items-center gap-3 p-3 bg-white rounded-xl border border-indigo-100 shadow-2xs">
+                          {beamPaymentData.qrCodeUrl && (
+                            <div className="relative w-32 h-32 p-1.5 bg-white border border-slate-200 rounded-lg shrink-0 shadow-2xs">
+                              <img
+                                src={beamPaymentData.qrCodeUrl}
+                                alt="Beam QR Code"
+                                className="w-full h-full object-contain"
+                              />
+                            </div>
+                          )}
+                          <div className="flex-1 space-y-2 text-center sm:text-left min-w-0">
+                            <div>
+                              <span className="text-[10px] font-bold uppercase text-slate-400">Scan to Pay via QR PromptPay</span>
+                              <p className="text-sm font-extrabold text-slate-900">฿{formatCurrency(beamPaymentData.amount || cartTotal)}</p>
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap justify-center sm:justify-start">
+                              {beamPaymentData.paymentUrl && (
+                                <>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(beamPaymentData.paymentUrl!);
+                                      toast.success("คัดลอกลิงก์ชำระเงินแล้ว");
+                                    }}
+                                    className="h-7 text-[11px] font-bold gap-1 rounded-lg border-indigo-200 text-indigo-700 hover:bg-indigo-50 cursor-pointer"
+                                  >
+                                    <Copy size={11} /> คัดลอกลิงก์
+                                  </Button>
+                                  <a
+                                    href={beamPaymentData.paymentUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    <ExternalLink size={11} /> เปิดหน้าชำระเงิน
+                                  </a>
+                                </>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 justify-center sm:justify-start pt-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                disabled={isCheckingBeamStatus}
+                                onClick={() => handleCheckBeamStatus(true)}
+                                className="h-6 text-[10px] text-indigo-600 hover:bg-indigo-50 p-1 px-2 font-bold cursor-pointer"
+                              >
+                                <RefreshCw size={10} className={isCheckingBeamStatus ? "animate-spin mr-1" : "mr-1"} />
+                                ตรวจสอบสถานะการชำระเงิน
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Payment Slip / Proof Upload */}
                 <div className="space-y-2 pt-2 border-t border-slate-100">

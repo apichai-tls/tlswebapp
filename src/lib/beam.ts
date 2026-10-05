@@ -59,7 +59,7 @@ export async function createBeamPaymentLink(
       linkSettings: {
         card: { isEnabled: true },
         qrPromptPay: { isEnabled: true },
-        mobileBanking: { isEnabled: true },
+        mobileBanking: { isEnabled: false },
         eWallets: { isEnabled: false },
         buyNowPayLater: { isEnabled: false },
       },

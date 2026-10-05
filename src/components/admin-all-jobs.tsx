@@ -121,10 +121,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     reason: "",
   });
   
-  const [posOnly, setPosOnly] = useState(false);
+  const [jobSourceFilter, setJobSourceFilter] = useState<"ALL" | "ONLINE" | "POS">("ALL");
   const [showCompleted, setShowCompleted] = useState(false);
   const [showCancelled, setShowCancelled] = useState(true);
-  const [showTopup, setShowTopup] = useState(false);
+  const [stuckOnly, setStuckOnly] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null);
   const [selectedBranchIds, setSelectedBranchIds] = useState<string[]>([]);
@@ -262,8 +262,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         if (jobBrand !== selectedBrand) return false;
       }
 
-      // POS Filter: when checked, show ONLY POS jobs
-      if (posOnly) {
+      // Job Source Filter: ALL | ONLINE | POS
+      if (jobSourceFilter === "ONLINE") {
+        const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+        if (isPos) return false;
+      } else if (jobSourceFilter === "POS") {
         const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
         if (!isPos) return false;
       }
@@ -280,13 +283,17 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         return false;
       }
 
+      if (job.status === 'topup') return false;
+
+      // Stuck Filter: when checked, show ONLY stuck jobs
+      if (stuckOnly && !job.isStuck) return false;
+
       // Status Filter
       if (statusFilter !== "all") {
         if (job.status !== statusFilter) return false;
       } else {
-        if (job.status === 'completed' && !showCompleted && viewMode === "list") return false;
-        if (job.status === 'cancel' && !showCancelled && viewMode === "list") return false;
-        if (job.status === 'topup' && !showTopup) return false;
+        if (job.status === 'completed' && !showCompleted && viewMode === "list" && !stuckOnly) return false;
+        if (job.status === 'cancel' && !showCancelled && viewMode === "list" && !stuckOnly) return false;
       }
 
       // Payment Channel Filter
@@ -399,8 +406,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       ));
     });
   }, [
-    jobs, user?.role, isCSO, selectedBrand, posOnly, selectedBranchIds, shopLocations,
-    statusFilter, showCompleted, showCancelled, showTopup, viewMode, paymentChannelFilter,
+    jobs, user?.role, isCSO, selectedBrand, jobSourceFilter, stuckOnly, selectedBranchIds, shopLocations,
+    statusFilter, showCompleted, showCancelled, viewMode, paymentChannelFilter,
     dateFilter, today, yesterday, startDate, endDate, searchTerm, riders, customers
   ]);
 
@@ -551,18 +558,44 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             </select>
           </div>
           
+          {/* Job Source Filter: ALL | ONLINE | POS */}
+          <div className="inline-flex rounded-md border border-slate-200 bg-slate-100 p-0.5 h-10 items-center text-xs font-bold shrink-0 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setJobSourceFilter("ALL")}
+              className={`h-full px-3 rounded transition-all cursor-pointer font-bold flex items-center justify-center ${
+                jobSourceFilter === "ALL"
+                  ? "bg-white text-slate-900 shadow-sm font-extrabold"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              ALL
+            </button>
+            <button
+              type="button"
+              onClick={() => setJobSourceFilter("ONLINE")}
+              className={`h-full px-3 rounded transition-all cursor-pointer font-bold flex items-center justify-center ${
+                jobSourceFilter === "ONLINE"
+                  ? "bg-white text-indigo-600 shadow-sm font-extrabold"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              ONLINE
+            </button>
+            <button
+              type="button"
+              onClick={() => setJobSourceFilter("POS")}
+              className={`h-full px-3 rounded transition-all cursor-pointer font-bold flex items-center justify-center ${
+                jobSourceFilter === "POS"
+                  ? "bg-white text-amber-600 shadow-sm font-extrabold"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              POS
+            </button>
+          </div>
+
           <div className="flex items-center gap-4 bg-white border border-slate-200 rounded-md px-3 py-1.5 h-10">
-            <Label className="flex items-center gap-1.5 cursor-pointer" title="แสดงเฉพาะงาน POS (POS Only)">
-              <input
-                type="checkbox"
-                checked={posOnly}
-                onChange={e => setPosOnly(e.target.checked)}
-                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-              />
-              <span className={`text-xs font-bold transition-colors ${posOnly ? "text-indigo-600 font-extrabold" : "text-slate-700"}`}>
-                POS
-              </span>
-            </Label>
             <Label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={showCompleted} onChange={e => setShowCompleted(e.target.checked)} className="rounded border-slate-300" />
               <span className="text-xs font-medium text-slate-700">Show Completed</span>
@@ -571,18 +604,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               <input type="checkbox" checked={showCancelled} onChange={e => setShowCancelled(e.target.checked)} className="rounded border-slate-300" />
               <span className="text-xs font-medium text-slate-700">Show Cancelled</span>
             </Label>
-            <Label className="flex items-center gap-1.5 cursor-pointer">
+            <Label className="flex items-center gap-1.5 cursor-pointer" title="แสดงเฉพาะงาน Stuck (Stuck Only)">
               <input
                 type="checkbox"
-                checked={showTopup}
-                onChange={e => {
-                  setShowTopup(e.target.checked);
-                  // Top-up jobs are not in Kanban columns — switch to list view automatically
-                  if (e.target.checked) setViewMode("list");
-                }}
-                className="rounded border-slate-300"
+                checked={stuckOnly}
+                onChange={e => setStuckOnly(e.target.checked)}
+                className="rounded border-slate-300 text-red-600 focus:ring-red-500 cursor-pointer"
               />
-              <span className="text-xs font-medium text-slate-700">Show Top-up</span>
+              <span className={`text-xs font-bold transition-colors ${stuckOnly ? "text-red-600 font-extrabold" : "text-slate-700"}`}>
+                Stuck
+              </span>
             </Label>
             {isLoadingHistory && <span className="text-[10px] text-slate-400 ml-2 animate-pulse">Loading...</span>}
           </div>
@@ -716,7 +747,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: i * 0.05 }}
-                      className="border-b border-slate-100 hover:bg-slate-50/50 cursor-pointer"
+                      className={`border-b border-slate-100 cursor-pointer ${job.isStuck ? 'bg-red-50/60 hover:bg-red-100/60' : 'hover:bg-slate-50/50'}`}
                     >
                       <TableCell className="align-middle py-2">
                         <div className="flex flex-col gap-1 mb-1.5">
@@ -742,6 +773,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               <RefreshCw size={9} className="animate-spin text-blue-600" />
                               กำลังบันทึก...
                             </span>
+                          )}
+                          {job.isStuck && (
+                            <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-red-100 text-red-700 border-red-200 shrink-0">
+                              Stuck
+                            </Badge>
                           )}
                           {job.source === 'pos' && (
                             <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-amber-50 text-amber-600 border-amber-100">
@@ -865,8 +901,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             SHOP {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                           </Badge>
                         ) : (
-                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid || isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                            {job.isPaid ? 'PAID' : 'UNPAID'}
                           </Badge>
                         )}
                       </TableCell>
@@ -1301,9 +1337,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     SHOP {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
                                   </span>
                                 ) : (
-                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${job.isPaid || isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                                    {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{job.isPaid || isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
-                                  </span>
+                                  <div className="inline-flex items-center gap-1 flex-wrap">
+                                    <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                      {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
+                                    </span>
+                                    {job.isPaid && !isJobFullyPaid(job) && (
+                                      <span className="px-1 py-0.5 rounded uppercase font-bold tracking-wider bg-blue-50 text-blue-700 border border-blue-200 text-[8.5px]" title="CSO Confirmed Payment - Waiting for Shop to Pay">
+                                        CSO PAID
+                                      </span>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             </div>

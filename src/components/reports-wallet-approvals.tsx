@@ -151,6 +151,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [txToReject, setTxToReject] = useState<WalletTransactionItem | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [deductFromWallet, setDeductFromWallet] = useState(true);
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [inspectTx, setInspectTx] = useState<WalletTransactionItem | null>(null);
 
@@ -397,30 +398,41 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
 
     setIsProcessingAction(true);
     try {
+      const isTopUp = txToReject.type === "TOPUP" || txToReject.direction === "CREDIT";
+      const shouldDeduct = isTopUp ? deductFromWallet : false;
+
       const res = await walletApprovalStore.reject(
         txToReject.id,
         user?.id || "system",
         user?.name || user?.email || "Admin",
-        rejectReason.trim()
+        rejectReason.trim(),
+        shouldDeduct
       );
       const createdTaskId = (res as any)?.taskId;
-      toast.success(
-        createdTaskId
-          ? `Rejected #${txToReject.id.slice(0, 8)}. Created Task #${createdTaskId} for follow-up.`
-          : `Rejected transaction #${txToReject.id.slice(0, 8)} successfully`,
-        {
-          action: createdTaskId
-            ? {
-                label: "Open Task",
-                onClick: () => {
-                  window.location.hash = "#tasks";
-                  window.dispatchEvent(new CustomEvent("open-task-modal", { detail: { taskId: createdTaskId } }));
-                },
-              }
-            : undefined,
-          duration: 6000,
-        }
-      );
+      const wasDeducted = (res as any)?.deductedFromWallet;
+      const newBal = (res as any)?.balanceAfter;
+
+      let successMsg = `Rejected transaction #${txToReject.id.slice(0, 8)}.`;
+      if (wasDeducted && newBal !== undefined) {
+        successMsg += ` Deducted ฿${formatCurrency(txToReject.amount)} from ${txToReject.customerName}'s wallet (New balance: ฿${formatCurrency(newBal)}).`;
+      }
+      if (createdTaskId) {
+        successMsg += ` Created Task #${createdTaskId} for follow-up.`;
+      }
+
+      toast.success(successMsg, {
+        action: createdTaskId
+          ? {
+              label: "Open Task",
+              onClick: () => {
+                window.location.hash = "#tasks";
+                window.dispatchEvent(new CustomEvent("open-task-modal", { detail: { taskId: createdTaskId } }));
+              },
+            }
+          : undefined,
+        duration: 7000,
+      });
+
       setRejectModalOpen(false);
       setTxToReject(null);
       setRejectReason("");
@@ -1076,6 +1088,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setTxToReject(tx);
+                                setDeductFromWallet(true);
                                 setRejectReason("");
                                 setRejectModalOpen(true);
                               }}
@@ -1222,47 +1235,137 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
       </Dialog>
 
       {/* 5. Reject Confirmation Dialog */}
-      <Dialog open={rejectModalOpen} onOpenChange={setRejectModalOpen}>
-        <DialogContent className="sm:max-w-md rounded-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-rose-600 text-base font-bold">
-              <ShieldAlert size={18} />
+      <Dialog open={rejectModalOpen} onOpenChange={(open) => {
+        if (!isProcessingAction) {
+          setRejectModalOpen(open);
+          if (!open) {
+            setTxToReject(null);
+            setRejectReason("");
+          }
+        }
+      }}>
+        <DialogContent className="sm:max-w-lg rounded-2xl p-0 overflow-hidden border border-slate-200 shadow-2xl bg-white">
+          <DialogHeader className="px-5 py-4 bg-rose-50 border-b border-rose-100">
+            <DialogTitle className="flex items-center gap-2 text-rose-700 text-base font-bold">
+              <ShieldAlert size={20} className="text-rose-600 shrink-0" />
               <span>Reject Transaction</span>
             </DialogTitle>
           </DialogHeader>
 
-          {txToReject && (
-            <div className="space-y-3 py-2 text-xs">
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-1">
-                <div className="font-bold text-rose-900">
-                  {txToReject.type} ฿{formatCurrency(txToReject.amount)} - {txToReject.customerName}
+          {txToReject && (() => {
+            const isTopUp = txToReject.type === "TOPUP" || txToReject.direction === "CREDIT";
+            const targetCustomer = customers.find((c) => c.id === txToReject.customerId);
+            const currentBalance = Number(targetCustomer?.creditBalance ?? txToReject.balanceAfter ?? 0);
+            const amountToDeduct = Number(txToReject.amount || 0);
+            const expectedBalance = Math.round((currentBalance - amountToDeduct) * 100) / 100;
+            const hasInsufficientBalance = currentBalance < amountToDeduct;
+
+            return (
+              <div className="p-5 space-y-4 text-xs">
+                {/* Transaction Summary Card */}
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge className={isTopUp ? "bg-emerald-100 text-emerald-800 border-none font-bold" : "bg-sky-100 text-sky-800 border-none font-bold"}>
+                        {txToReject.type}
+                      </Badge>
+                      <span className="font-mono text-slate-500 text-[11px]">
+                        Ref: {txToReject.referenceId || txToReject.id.slice(0, 10)}
+                      </span>
+                    </div>
+                    <span className="text-sm font-black text-slate-900">
+                      ฿{formatCurrency(txToReject.amount)}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-700 font-medium">
+                    Customer: <strong className="text-slate-900">{txToReject.customerName}</strong>
+                    {targetCustomer?.memberId && <span className="ml-1 text-slate-500 font-mono">({targetCustomer.memberId})</span>}
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-500">
-                  Transaction will be marked as <strong>Rejected</strong> without altering customer's current balance.
+
+                {isTopUp ? (
+                  <div className="space-y-3">
+                    {/* Real-time Balance Box */}
+                    <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-600 font-medium">Current Wallet Balance:</span>
+                        <strong className="text-slate-900 font-bold text-sm">
+                          ฿{formatCurrency(currentBalance)}
+                        </strong>
+                      </div>
+
+                      {deductFromWallet && (
+                        <div className="flex items-center justify-between text-xs pt-1.5 border-t border-amber-200/60">
+                          <span className="text-slate-600 font-medium">Balance After Reversal:</span>
+                          <strong className={`font-bold text-sm ${expectedBalance < 0 ? "text-rose-600" : "text-emerald-700"}`}>
+                            ฿{formatCurrency(expectedBalance)}
+                          </strong>
+                        </div>
+                      )}
+
+                      {deductFromWallet && hasInsufficientBalance && (
+                        <div className="flex items-start gap-2 p-2.5 bg-rose-100/70 border border-rose-300 rounded-lg text-rose-800 mt-2">
+                          <AlertTriangle size={15} className="shrink-0 text-rose-600 mt-0.5" />
+                          <div className="text-[11px] leading-relaxed">
+                            <strong>Warning: Insufficient Balance!</strong> Customer currently has only ฿{formatCurrency(currentBalance)}. 
+                            Deducting ฿{formatCurrency(amountToDeduct)} will cause their wallet balance to become negative (฿{formatCurrency(expectedBalance)}).
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Deduct from wallet checkbox */}
+                    <label className="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 hover:bg-slate-50/80 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={deductFromWallet}
+                        onChange={(e) => setDeductFromWallet(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
+                      />
+                      <div className="space-y-0.5">
+                        <div className="font-bold text-slate-800 text-xs">
+                          Deduct ฿{formatCurrency(amountToDeduct)} back from customer's wallet
+                        </div>
+                        <div className="text-[11px] text-slate-500 leading-normal">
+                          Automatically reverses the credited balance. Uncheck this only if staff has already manually adjusted the balance in CRM.
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-500 leading-relaxed">
+                    This <strong>{txToReject.type}</strong> transaction will be marked as <strong>Rejected</strong> without altering customer's wallet balance.
+                  </div>
+                )}
+
+                {/* Reason Input */}
+                <div className="space-y-1.5">
+                  <label className="block font-bold text-slate-700 text-xs">
+                    Rejection Reason (Required) *
+                  </label>
+                  <textarea
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder="e.g. Mistaken top-up (wrong customer), invalid payment slip, incorrect account..."
+                    rows={3}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                    autoFocus
+                  />
                 </div>
               </div>
+            );
+          })()}
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  Reject Reason (Required) *
-                </label>
-                <textarea
-                  value={rejectReason}
-                  onChange={(e) => setRejectReason(e.target.value)}
-                  placeholder="e.g. Invalid slip, duplicate payment, incorrect amount..."
-                  rows={3}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-rose-500 focus:outline-none"
-                />
-              </div>
-            </div>
-          )}
-
-          <DialogFooter className="gap-2">
+          <DialogFooter className="px-5 py-3 bg-slate-50 border-t border-slate-100 gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setRejectModalOpen(false)}
+              onClick={() => {
+                setRejectModalOpen(false);
+                setTxToReject(null);
+                setRejectReason("");
+              }}
               disabled={isProcessingAction}
               className="font-bold text-xs rounded-xl cursor-pointer"
             >
@@ -1273,10 +1376,10 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
               size="sm"
               onClick={handleConfirmReject}
               disabled={isProcessingAction || !rejectReason.trim()}
-              className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer"
+              className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer gap-1.5"
             >
-              {isProcessingAction ? <Loader2 size={14} className="animate-spin mr-1" /> : <Ban size={14} className="mr-1" />}
-              Confirm Reject
+              {isProcessingAction ? <Loader2 size={14} className="animate-spin" /> : <Ban size={14} />}
+              <span>Confirm Reject</span>
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1564,6 +1667,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                           const target = inspectTx;
                           setInspectTx(null);
                           setTxToReject(target);
+                          setDeductFromWallet(true);
                           setRejectReason("");
                           setRejectModalOpen(true);
                         }}

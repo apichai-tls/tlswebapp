@@ -324,3 +324,73 @@ export async function syncJobBeamPaymentStatusAction(jobId: string): Promise<{
   };
 }
 
+/**
+ * Create a Beam Payment Link and QR Code for a Member Top-Up
+ */
+export async function createTopUpOnlinePaymentAction(params: {
+  amount: number;
+  customerId: string;
+  customerName?: string;
+}): Promise<CreateOnlinePaymentResult> {
+  try {
+    const amount = Number(params.amount);
+    if (!amount || amount <= 0) {
+      return { success: false, error: 'ยอด Top-Up ต้องมากกว่า 0 บาท' };
+    }
+
+    const referenceId = `TU-${Date.now().toString().slice(-6)}`;
+    const result = await createBeamPaymentLink({
+      referenceId,
+      amount,
+      description: `Member Wallet Top-Up (${params.customerName || params.customerId})`,
+    });
+
+    if (!result.success || !result.data) {
+      return {
+        success: false,
+        error: result.error || 'Failed to create Beam Payment Link',
+      };
+    }
+
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(result.data.url)}`;
+
+    return {
+      success: true,
+      paymentLinkId: result.data.id,
+      paymentUrl: result.data.url,
+      qrCodeUrl,
+      amount,
+    };
+  } catch (err: any) {
+    console.error('[Beam TopUp] createTopUpOnlinePaymentAction error:', err);
+    return {
+      success: false,
+      error: err.message || 'Failed to connect to Beam Payment Gateway',
+    };
+  }
+}
+
+/**
+ * Check payment status of a Top-up Payment Link
+ */
+export async function checkTopUpPaymentStatusAction(paymentLinkId: string): Promise<CheckPaymentStatusResult> {
+  try {
+    const linkCheck = await getBeamPaymentLink(paymentLinkId);
+    if (!linkCheck.success || !linkCheck.data) {
+      return { success: false, isPaid: false, error: linkCheck.error };
+    }
+
+    const isPaid = linkCheck.data.status === 'PAID';
+    return {
+      success: true,
+      isPaid,
+      paidAmount: linkCheck.data.amount ? linkCheck.data.amount / 100 : undefined,
+      paymentChannel: 'BEAM Gateway',
+    };
+  } catch (err: any) {
+    console.error('[Beam TopUp] checkTopUpPaymentStatusAction error:', err);
+    return { success: false, isPaid: false, error: err.message };
+  }
+}
+
+

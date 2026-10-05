@@ -1181,9 +1181,12 @@ export const walletApprovalStore = {
     await this.refreshPendingMap();
     return res;
   },
-  async reject(id: string, userId: string, userName: string, rejectReason: string) {
-    const res = await api.rejectWalletTransaction({ id, approvedById: userId, approvedByName: userName, rejectReason });
+  async reject(id: string, userId: string, userName: string, rejectReason: string, deductFromWallet?: boolean) {
+    const res = await api.rejectWalletTransaction({ id, approvedById: userId, approvedByName: userName, rejectReason, deductFromWallet });
     await this.refreshPendingMap();
+    if ((res as any)?.updatedCustomer) {
+      emitCustomerChange();
+    }
     return res;
   },
   async bulkApprove(ids: string[], userId: string, userName: string) {
