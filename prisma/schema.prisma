@@ -33,6 +33,10 @@ model Customer {
   taxId            String?
   companyName      String?
   vatType          String?   @default("default")
+  corporateCommissionType      String?   @default("default")
+  corporatePickupCommission    Float?    @default(0)
+  corporateDeliveryCommission  Float?    @default(0)
+  corporateCommissionRatePerKm Float?    @default(0)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @default(now()) @updatedAt
   memberExpiryDate DateTime?

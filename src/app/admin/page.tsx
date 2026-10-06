@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
@@ -55,7 +55,9 @@ import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
 import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
-import FeeCalculatorPage from "./fee-calculator/page";
+import { SplitPaymentDialog, type SplitPaymentLine } from "@/components/split-payment-dialog";
+import AdminFeeCalculator from "@/components/admin-fee-calculator";
+import AdminPoiManager from "@/components/admin-poi-manager";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
 import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction } from "@/actions/db";
@@ -128,6 +130,7 @@ import {
   Sparkles,
   Check,
   Ticket,
+  Split,
 } from "lucide-react";
 
 import Link from "next/link";
@@ -242,7 +245,7 @@ export default function AdminPage() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "marketing" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -271,16 +274,18 @@ export default function AdminPage() {
     }
   }, [user?.id, user?.role, user?.department, user?.isDepartmentHead]);
 
-  // Restore tab from URL hash, or auto-navigate to first accessible tab for this user
+  // Restore tab from URL hash/query param, or auto-navigate to first accessible tab for this user
   useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "activity-logs", "reports", "marketing", "tasks"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "marketing", "tasks"];
+    const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
-    if (validTabs.includes(hash)) {
-      // Honour explicit URL hash (e.g. bookmarks / direct links)
-      setActiveTab(hash as any);
+    if (validTabs.includes(targetTab)) {
+      // Honour explicit URL hash or query param (e.g. bookmarks / direct links / redirects)
+      setActiveTab(targetTab as any);
 
-      const searchParams = new URLSearchParams(window.location.search);
       if (searchParams.get("create") === "true") {
         setDialogOpen(true);
         // Clean up query parameters in URL without reloading
@@ -298,12 +303,12 @@ export default function AdminPage() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "marketing" | "tasks"> = [
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks"> = [
       "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "marketing", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
-      if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
+      if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
       return user.permissions?.includes(key) ?? false;
     };
     const firstTab = tabOrder.find(tab => hasPermission(tab));
@@ -385,7 +390,7 @@ export default function AdminPage() {
     };
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "activity-logs" | "reports" | "marketing" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -397,6 +402,8 @@ export default function AdminPage() {
   const [paymentMethod, setPaymentMethod] = useState("unpaid");
   const [shopPaymentMethod, setShopPaymentMethod] = useState("unpaid");
   const [paymentChannel, setPaymentChannel] = useState("");
+  const [showSplitPaymentDialog, setShowSplitPaymentDialog] = useState(false);
+  const [splitPayments, setSplitPayments] = useState<SplitPaymentLine[]>([]);
   const [cashPlaced, setCashPlaced] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
@@ -835,7 +842,7 @@ export default function AdminPage() {
 
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
-    if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
+    if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
     return user?.permissions?.includes(key) ?? false;
   };
 
@@ -1104,9 +1111,29 @@ export default function AdminPage() {
     return getActivePaymentChannels(systemSettings, !!selectedProfileCustomer?.isMember);
   }, [systemSettings, selectedProfileCustomer?.isMember]);
 
+  const splitMemberDeductAmt = useMemo(() => {
+    if (paymentChannel !== "Split Payment" || splitPayments.length < 2) return 0;
+    return splitPayments
+      .filter((s) => s.channel === "Deduct Member")
+      .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+  }, [paymentChannel, splitPayments]);
+
+  const isSplitAmountInvalid = useMemo(() => {
+    if (paymentChannel !== "Split Payment") return false;
+    if (splitPayments.length < 2) return true;
+    const splitTotal = Math.round(splitPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100) / 100;
+    return Math.abs(splitTotal - Math.round(dialogTotal * 100) / 100) > 0.01;
+  }, [paymentChannel, splitPayments, dialogTotal]);
+
   const isCustomerWalletExpired = isWalletExpired(selectedProfileCustomer);
-  const isWalletInsufficient = paymentChannel === "Deduct Member" && !isPaidJob && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
-  const isWalletBlocked = paymentChannel === "Deduct Member" && !isPaidJob && (isWalletInsufficient || isCustomerWalletExpired);
+  const isWalletInsufficient = !isPaidJob && (
+    (paymentChannel === "Deduct Member" && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal)) ||
+    (paymentChannel === "Split Payment" && splitMemberDeductAmt > 0 && ((selectedProfileCustomer?.creditBalance || 0) < splitMemberDeductAmt))
+  );
+  const isWalletBlocked = !isPaidJob && (
+    (paymentChannel === "Deduct Member" && (isWalletInsufficient || isCustomerWalletExpired)) ||
+    (paymentChannel === "Split Payment" && splitMemberDeductAmt > 0 && (isWalletInsufficient || isCustomerWalletExpired))
+  );
 
   useEffect(() => {
     if (isWalletBlocked && !isPaidJob) {
@@ -1335,6 +1362,8 @@ export default function AdminPage() {
 
     setProformaReceiptNumber(null);
     setPaymentChannel("");
+    setSplitPayments([]);
+    setShowSplitPaymentDialog(false);
     setPaymentMethod("unpaid");
     setShopPaymentMethod("unpaid");
     setSelectedProfileCustomer(null);
@@ -1803,6 +1832,40 @@ export default function AdminPage() {
       else if (pm === "credit" || pm === "card") fallbackChannel = "Credit Card";
     }
     setPaymentChannel(fallbackChannel);
+
+    if (job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (Array.isArray(parsed?.payments) && parsed.payments.length >= 2) {
+          setSplitPayments(
+            parsed.payments.map((p: any) => ({
+              id: p.id || `split-${Math.random()}`,
+              channel: p.channel || p.method,
+              amount: Number(p.amount) || 0,
+              note: p.note || "",
+            }))
+          );
+          if (!job.paymentChannel || job.paymentChannel.toLowerCase().includes("split")) {
+            setPaymentChannel("Split Payment");
+          }
+        } else {
+          setSplitPayments([]);
+          if (fallbackChannel === "Split Payment") {
+            setPaymentChannel("");
+          }
+        }
+      } catch {
+        setSplitPayments([]);
+        if (fallbackChannel === "Split Payment") {
+          setPaymentChannel("");
+        }
+      }
+    } else {
+      setSplitPayments([]);
+      if (fallbackChannel === "Split Payment") {
+        setPaymentChannel("");
+      }
+    }
     setServiceType(job.serviceType || "wash_fold");
     setEditingFeeLock(job.fee);
     const matchedCustomer = foundCustomer;
@@ -2133,10 +2196,16 @@ export default function AdminPage() {
     const alreadyPaidTotal = existingPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
     const remainingToPay = Math.max(0, calculatedTotal - alreadyPaidTotal);
 
-    const isAlreadyPaidJob = isPaidJob || Boolean(existingJob?.isShopPaid) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0);
-    const isNewDeduction = paymentChannel === "Deduct Member" && isPayment && !isAlreadyPaidJob;
+    const isSplitPayment = splitPayments.length >= 2;
+    const splitMemberDeductAmt = isSplitPayment 
+      ? splitPayments.filter(s => s.channel === "Deduct Member").reduce((sum, s) => sum + (Number(s.amount) || 0), 0)
+      : 0;
 
-    if (!isAlreadyPaidJob && paymentChannel === "Deduct Member" && !selectedProfileCustomer?.isMember) {
+    const isAlreadyPaidJob = isPaidJob || Boolean(existingJob?.isShopPaid) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0);
+    const isNewDeduction = (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && isPayment && !isAlreadyPaidJob;
+    const effectiveMemberDeduct = isSplitPayment ? splitMemberDeductAmt : remainingToPay;
+
+    if (!isAlreadyPaidJob && (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && !selectedProfileCustomer?.isMember) {
       abortSubmit("Customer is not a member. Cannot use Deduct Member payment channel.");
       return;
     }
@@ -2147,8 +2216,20 @@ export default function AdminPage() {
         return;
       }
       const currentBalance = selectedProfileCustomer?.creditBalance || 0;
-      if (currentBalance < remainingToPay) {
-        abortSubmit(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(remainingToPay)})`);
+      if (currentBalance < effectiveMemberDeduct) {
+        abortSubmit(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(effectiveMemberDeduct)})`);
+        return;
+      }
+    }
+
+    if (isPayment && paymentChannel === "Split Payment") {
+      if (splitPayments.length < 2) {
+        abortSubmit("กรุณาระบุช่องทางการแบ่งชำระอย่างน้อย 2 ช่องทาง หรือเลือกช่องทางการชำระเงินแบบเดี่ยว");
+        return;
+      }
+      const splitTotal = Math.round(splitPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100) / 100;
+      if (Math.abs(splitTotal - Math.round(remainingToPay * 100) / 100) > 0.01) {
+        abortSubmit(`ยอดรวมของการแบ่งชำระ (฿${splitTotal.toFixed(2)}) ไม่ตรงกับยอดที่ต้องชำระ (฿${remainingToPay.toFixed(2)}) กรุณากดแก้ไขยอดแบ่งชำระให้ตรงกับยอดบิล`);
         return;
       }
     }
@@ -2250,7 +2331,10 @@ export default function AdminPage() {
       setProformaRevision(effectiveProformaRevision);
       setLastProformaCartHash(effectiveProformaCartHash);
     }
-    const cannotDeduct = !isAlreadyPaidJob && isPayment && paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < remainingToPay) || isWalletExpired(selectedProfileCustomer));
+    const cannotDeduct = !isAlreadyPaidJob && isPayment && (
+      (paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < remainingToPay) || isWalletExpired(selectedProfileCustomer))) ||
+      (isSplitPayment && splitMemberDeductAmt > 0 && (((selectedProfileCustomer?.creditBalance || 0) < splitMemberDeductAmt) || isWalletExpired(selectedProfileCustomer)))
+    );
 
 
     const newJobData: any = {
@@ -2311,15 +2395,33 @@ export default function AdminPage() {
       deliveryDistance: isDelivery ? deliveryDist : 0,
       distance: (isDelivery && deliveryDist) ? deliveryDist : (isPickup ? pickupDist : 0),
       shiftId: targetShiftId,
-      pickupCommission: (isPickup && !selectedVIPLabel && !activeIsFreeDelivery) 
-        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed')) 
+      pickupCommission: isPickup 
+        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed') && (existingJob.pickupCommission ?? 0) > 0) 
             ? (existingJob.pickupCommission ?? 0) 
-            : Math.floor(pickupDist) * getCommissionRate(systemSettings)) 
+            : calculateRiderCommission({
+                customer: selectedProfileCustomer || (editingJobId ? findMatchingCustomer(customers, { customerId: existingJob?.customerId, customerName: existingJob?.customerName, customerPhone: existingJob?.customerPhone }) : null),
+                isPickup,
+                pickupDist,
+                isDelivery,
+                deliveryDist,
+                systemSettings,
+                isVIP: Boolean(selectedVIPLabel),
+                isFreeDelivery: activeIsFreeDelivery,
+              }).pickupCommission) 
         : 0,
-      deliveryCommission: (isDelivery && !selectedVIPLabel && !activeIsFreeDelivery) 
-        ? ((editingJobId && existingJob && existingJob.status === 'completed') 
+      deliveryCommission: isDelivery 
+        ? ((editingJobId && existingJob && existingJob.status === 'completed' && (existingJob.deliveryCommission ?? 0) > 0) 
             ? (existingJob.deliveryCommission ?? 0) 
-            : Math.floor(deliveryDist) * getCommissionRate(systemSettings)) 
+            : calculateRiderCommission({
+                customer: selectedProfileCustomer || (editingJobId ? findMatchingCustomer(customers, { customerId: existingJob?.customerId, customerName: existingJob?.customerName, customerPhone: existingJob?.customerPhone }) : null),
+                isPickup,
+                pickupDist,
+                isDelivery,
+                deliveryDist,
+                systemSettings,
+                isVIP: Boolean(selectedVIPLabel),
+                isFreeDelivery: activeIsFreeDelivery,
+              }).deliveryCommission) 
         : 0,
       remark: [
         targetProformaNum ? `Proforma: ${cleanProformaNumber(targetProformaNum)}${effectiveProformaRevision !== null && effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
@@ -2342,16 +2444,32 @@ export default function AdminPage() {
         const finalPayments = [...existingPayments];
 
         if (isPayment && remainingToPay > 0) {
-          const pMethod = mapChannelNameToMethod(paymentChannel, getPaymentChannels(systemSettings));
-          finalPayments.push({
-            id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-            amount: remainingToPay,
-            method: pMethod,
-            channel: paymentChannel || "Cash / COD",
-            timestamp: new Date().toISOString(),
-            shiftId: targetShiftId,
-            paidBy: user?.name || user?.email || "Admin"
-          });
+          if (isSplitPayment) {
+            splitPayments.forEach((sp) => {
+              const pMethod = mapChannelNameToMethod(sp.channel, getPaymentChannels(systemSettings));
+              finalPayments.push({
+                id: sp.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`),
+                amount: Number(sp.amount) || 0,
+                method: pMethod,
+                channel: sp.channel,
+                timestamp: new Date().toISOString(),
+                shiftId: targetShiftId,
+                paidBy: user?.name || user?.email || "Admin",
+                note: sp.note || null,
+              });
+            });
+          } else {
+            const pMethod = mapChannelNameToMethod(paymentChannel, getPaymentChannels(systemSettings));
+            finalPayments.push({
+              id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+              amount: remainingToPay,
+              method: pMethod,
+              channel: paymentChannel || "Cash / COD",
+              timestamp: new Date().toISOString(),
+              shiftId: targetShiftId,
+              paidBy: user?.name || user?.email || "Admin"
+            });
+          }
         }
 
         const cleanLogs = finalAdminLogs.map(({ isNew, ...rest }) => rest);
@@ -2367,21 +2485,7 @@ export default function AdminPage() {
       })(),
 
       branchId: shop.id,
-      paymentChannel: (() => {
-        const tempPayments = [...existingPayments];
-        if (isPayment && remainingToPay > 0) {
-          tempPayments.push({
-            channel: paymentChannel || "Cash / COD"
-          });
-        }
-        if (tempPayments.length > 0) {
-          const distinctChannels = Array.from(new Set(
-            tempPayments.map((p: any) => p.channel || p.method).filter(Boolean) as string[]
-          ));
-          return distinctChannels.length > 1 ? "Split Payment" : (distinctChannels[0] || paymentChannel || null);
-        }
-        return paymentChannel || null;
-      })(),
+      paymentChannel: isSplitPayment ? "Split Payment" : (paymentChannel || null),
       proformaReceiptNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaRevision: targetProformaNum ? (effectiveProformaRevision !== null ? effectiveProformaRevision : 0) : null,
@@ -2461,16 +2565,21 @@ export default function AdminPage() {
         const isShopPaidNow_update = isPayment;
         const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
         if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
-          if (paymentChannel === "Deduct Member") {
+          const deductAmt = isSplitPayment ? splitMemberDeductAmt : remainingToPay;
+          if (paymentChannel === "Deduct Member" || (isSplitPayment && splitMemberDeductAmt > 0)) {
             const currentBalance = selectedProfileCustomer.creditBalance || 0;
-            if (currentBalance < remainingToPay) {
-              toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(remainingToPay)})`);
+            if (currentBalance < deductAmt) {
+              toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(deductAmt)})`);
               setIsSubmitting(false);
               return;
             }
           }
           let balAdj = 0;
-          if (paymentChannel === "Deduct Member") balAdj -= remainingToPay;
+          if (isSplitPayment) {
+            if (splitMemberDeductAmt > 0) balAdj -= splitMemberDeductAmt;
+          } else if (paymentChannel === "Deduct Member") {
+            balAdj -= remainingToPay;
+          }
           const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
           if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
           if (balAdj !== 0) {
@@ -2738,15 +2847,20 @@ export default function AdminPage() {
         let preDeductedBalance: number | null = null;
         let walletUpdates: (Partial<Customer> & Record<string, any>) | null = null;
 
-        if (isShopPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member") {
+        const isMemberDeductNeeded_new = isShopPaidNow_new && selectedProfileCustomer && (
+          paymentChannel === "Deduct Member" || (isSplitPayment && splitMemberDeductAmt > 0)
+        );
+        const memberDeductAmt_new = isSplitPayment ? splitMemberDeductAmt : calculatedTotal;
+
+        if (isMemberDeductNeeded_new) {
           // Validate balance is sufficient before proceeding
           const currentBalance = selectedProfileCustomer.creditBalance || 0;
-          if (currentBalance < calculatedTotal) {
-            toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(calculatedTotal)})`);
+          if (currentBalance < memberDeductAmt_new) {
+            toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(memberDeductAmt_new)})`);
             setIsSubmitting(false);
             return;
           }
-          preDeductedBalance = Math.max(0, currentBalance - calculatedTotal);
+          preDeductedBalance = Math.max(0, currentBalance - memberDeductAmt_new);
         }
 
         // Also handle topup packages (balance increase — safe to do after job creation)
@@ -2762,17 +2876,17 @@ export default function AdminPage() {
         savedJobId = job.id;
 
         // Perform atomic wallet deduction with job reference now that job is created
-        if (isShopPaidNow_new && selectedProfileCustomer && paymentChannel === "Deduct Member" && savedJobId) {
+        if (isMemberDeductNeeded_new && savedJobId) {
           const refDisplay = (job as any)?.billNo || savedJobId;
           walletUpdates = { 
-            creditBalanceDelta: -calculatedTotal,
+            creditBalanceDelta: -memberDeductAmt_new,
             walletTxType: 'DEDUCT',
             walletRefId: savedJobId,
             walletRefType: 'job',
             actorId: user?.id || null,
             actorName: user?.name || user?.email || 'Staff',
             branchId: (job as any)?.branchId || activeShop?.id || null,
-            reason: `Order Payment #${refDisplay}`,
+            reason: `Order Payment #${refDisplay}${isSplitPayment ? ' (Split Pay)' : ''}`,
           };
           const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
           preDeductedBalance = updatedCust?.creditBalance ?? preDeductedBalance;
@@ -3431,7 +3545,7 @@ export default function AdminPage() {
               <button onClick={() => handleTabChange("calculator")} className="block w-full text-left">
                 <motion.div
                   whileHover={{ x: 2 }}
-                  className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "calculator" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
+                  className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "calculator" || activeTab === "pois" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
                   title="Distance Calculator"
                 >
                   <Calculator size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -3751,7 +3865,7 @@ export default function AdminPage() {
                       setIsMobileMenuOpen(false);
                     }}
                     className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                      activeTab === "calculator" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      activeTab === "calculator" || activeTab === "pois" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
                     }`}
                   >
                     <Calculator size={18} />
@@ -5559,22 +5673,38 @@ export default function AdminPage() {
                                 {isPickup && isDelivery && <span className="text-slate-600 px-0.5">/</span>}
                                 {isDelivery && <span>D: {deliveryDist} km</span>}
                               </div>
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-1.5">
                                 <span className="text-amber-400 font-medium">Rider Comm:</span>
-                                <span className="font-bold text-amber-400">
-                                  ฿{selectedVIPLabel || activeIsFreeDelivery ? "0" : (
-                                    (isPickup ? (
-                                      (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
-                                        ? (activeJob.pickupCommission ?? 0)
-                                        : Math.floor(pickupDist) * getCommissionRate(systemSettings)
-                                    ) : 0) +
-                                    (isDelivery ? (
-                                      (editingJobId && activeJob && activeJob.status === 'completed')
-                                        ? (activeJob.deliveryCommission ?? 0)
-                                        : Math.floor(deliveryDist) * getCommissionRate(systemSettings)
-                                    ) : 0)
-                                  ).toFixed(0)}
-                                </span>
+                                {(() => {
+                                  const targetCustomer = selectedProfileCustomer || (editingJobId && activeJob ? findMatchingCustomer(customers, { customerId: activeJob.customerId, customerName: activeJob.customerName, customerPhone: activeJob.customerPhone }) : null);
+                                  const comm = calculateRiderCommission({
+                                    customer: targetCustomer,
+                                    isPickup,
+                                    pickupDist,
+                                    isDelivery,
+                                    deliveryDist,
+                                    systemSettings,
+                                    isVIP: Boolean(selectedVIPLabel),
+                                    isFreeDelivery: activeIsFreeDelivery,
+                                  });
+                                  const pVal = (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
+                                    ? (activeJob.pickupCommission ?? 0)
+                                    : comm.pickupCommission;
+                                  const dVal = (editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
+                                    ? (activeJob.deliveryCommission ?? 0)
+                                    : comm.deliveryCommission;
+                                  const totalComm = comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || activeIsFreeDelivery ? 0 : (pVal + dVal));
+                                  return (
+                                    <>
+                                      <span className="font-bold text-amber-400">฿{totalComm.toFixed(0)}</span>
+                                      {comm.isCorporateRule && (
+                                        <span className="text-[8.5px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 py-0.2 rounded font-bold" title={comm.ruleLabel}>
+                                          🏢 Corporate
+                                        </span>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
                             </div>
                           )}
@@ -5819,19 +5949,41 @@ export default function AdminPage() {
                             <div className="grid grid-cols-2 gap-2">
                               {/* Col 1: Payment Channel */}
                               <div className="space-y-0.5">
-                                <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <CreditCard size={11} className="text-slate-500" />
-                                  Payment Channel
-                                </Label>
+                                <div className="flex items-center justify-between">
+                                  <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                    <CreditCard size={11} className="text-slate-500" />
+                                    Payment Channel
+                                  </Label>
+                                  {!isPaidJob && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowSplitPaymentDialog(true)}
+                                      className="text-[9px] font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                      title="Split Payment"
+                                    >
+                                      <Split size={10} />
+                                      <span>Split</span>
+                                    </button>
+                                  )}
+                                </div>
                                 <select
                                   id="payment-channel"
                                   disabled={forceMemberPaymentDialog || isPaidJob}
                                   className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
                                   value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
-                                  onChange={(e) => setPaymentChannel(e.target.value)}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val === "Split Payment") {
+                                      setPaymentChannel("Split Payment");
+                                      setShowSplitPaymentDialog(true);
+                                    } else {
+                                      setPaymentChannel(val);
+                                      setSplitPayments([]);
+                                    }
+                                  }}
                                 >
                                   <option value="">Select Channel</option>
-                                  {paymentChannel && !activePaymentChannels.some(c => c.name === paymentChannel) && (
+                                  {paymentChannel && paymentChannel !== "Split Payment" && !activePaymentChannels.some(c => c.name === paymentChannel) && (
                                     <option value={paymentChannel}>{paymentChannel}</option>
                                   )}
                                   {activePaymentChannels.map((c) => (
@@ -5839,7 +5991,35 @@ export default function AdminPage() {
                                       {c.name}
                                     </option>
                                   ))}
+                                  <option value="Split Payment">Split Payment</option>
                                 </select>
+                                {paymentChannel === "Split Payment" && splitPayments.length >= 2 && (
+                                  <div className="mt-1 p-1.5 rounded-lg bg-indigo-950/60 border border-indigo-500/50 text-[9px] space-y-1 shadow-sm">
+                                    <div className="flex items-center justify-between text-indigo-300 font-bold border-b border-indigo-800/50 pb-0.5">
+                                      <span className="flex items-center gap-1">
+                                        <Split size={10} className="text-indigo-400" />
+                                        แบ่งชำระ {splitPayments.length} ช่องทาง
+                                      </span>
+                                      {!isPaidJob && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setShowSplitPaymentDialog(true)}
+                                          className="text-[8.5px] text-indigo-300 hover:text-white underline cursor-pointer"
+                                        >
+                                          แก้ไขยอด
+                                        </button>
+                                      )}
+                                    </div>
+                                    <div className="space-y-0.5">
+                                      {splitPayments.map((sp, idx) => (
+                                        <div key={sp.id || idx} className="flex justify-between items-center text-slate-300">
+                                          <span className="text-[9px] text-slate-400">{sp.channel}</span>
+                                          <span className="font-mono font-bold text-white text-[9.5px]">฿{Number(sp.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
                                 {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
                                   <button
                                     type="button"
@@ -5864,28 +6044,16 @@ export default function AdminPage() {
 
                               {/* Col 2: Bill No. */}
                               <div className="space-y-0.5">
-                                <Label htmlFor="pos-bill-no" className="flex items-center justify-between text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <span className="flex items-center gap-1">
-                                    <Receipt size={11} className="text-amber-400" />
-                                    Bill No.
-                                  </span>
-                                  {!(user?.role === 'admin' || isCSO) && (
-                                    <span className="flex items-center gap-0.5 text-[8px] text-amber-400 font-medium">
-                                      <LockIcon size={8} /> View
-                                    </span>
-                                  )}
+                                <Label htmlFor="pos-bill-no" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <Receipt size={11} className="text-amber-400" />
+                                  Bill No.
                                 </Label>
                                 <Input
                                   id="pos-bill-no"
                                   value={billNo}
-                                  readOnly={!(user?.role === 'admin' || isCSO)}
-                                  onChange={(e) => {
-                                    if (user?.role === 'admin' || isCSO) {
-                                      setBillNo(e.target.value);
-                                    }
-                                  }}
+                                  onChange={(e) => setBillNo(e.target.value)}
                                   placeholder="e.g. B-1024"
-                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || isCSO) ? 'cursor-not-allowed opacity-60' : ''}`}
+                                  className="h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500"
                                 />
                               </div>
                             </div>
@@ -6010,13 +6178,46 @@ export default function AdminPage() {
 
                           {/* Wallet Insufficient Warning Banner (Only when not expired and not already paid) */}
                           {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isPaidJob && !isCustomerWalletExpired && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
-                            <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold animate-pulse">
+                            <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] space-y-1">
+                              <div className="flex items-center justify-between text-rose-300 font-bold">
+                                <span className="flex items-center gap-1">
+                                  <Wallet size={11} className="text-rose-400" />
+                                  <span>ยอดเงินใน Wallet ไม่พอ</span>
+                                </span>
+                                <span className="font-mono text-rose-200">
+                                  ขาดอีก ฿{(dialogTotal - (selectedProfileCustomer.creditBalance || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                              {(selectedProfileCustomer.creditBalance || 0) > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const walletBal = Math.max(0, selectedProfileCustomer.creditBalance || 0);
+                                    const rem = Math.max(0, Math.round((dialogTotal - walletBal) * 100) / 100);
+                                    setSplitPayments([
+                                      { id: "split-1", channel: "Deduct Member", amount: walletBal },
+                                      { id: "split-2", channel: "Transfer / QR", amount: rem },
+                                    ]);
+                                    setPaymentChannel("Split Payment");
+                                    setShowSplitPaymentDialog(true);
+                                  }}
+                                  className="w-full py-1 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[9px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer shadow"
+                                >
+                                  <Split size={10} />
+                                  <span>แบ่งจ่ายทันที: Wallet (฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString()}) + โอน</span>
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {paymentChannel === "Split Payment" && selectedProfileCustomer?.isMember && !isPaidJob && splitMemberDeductAmt > (selectedProfileCustomer.creditBalance || 0) && (
+                            <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold">
                               <span className="flex items-center gap-1">
                                 <Wallet size={11} className="text-rose-400" />
-                                <span>ยอดเงินใน Wallet ไม่พอ</span>
+                                <span>ยอดแบ่งจ่าย Wallet เกินยอดคงเหลือ</span>
                               </span>
                               <span className="font-mono text-rose-200">
-                                ขาดอีก ฿{(dialogTotal - (selectedProfileCustomer.creditBalance || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                มี {formatBaht(selectedProfileCustomer.creditBalance || 0)} (ตัด ฿{splitMemberDeductAmt.toLocaleString()})
                               </span>
                             </div>
                           )}
@@ -6110,13 +6311,15 @@ export default function AdminPage() {
                                 (!isWalkIn && paymentMethod !== 'paid') || 
                                 (!paymentChannel || !paymentChannel.trim()) || 
                                 isWalletInsufficient || 
-                                (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                                (paymentChannel === "Deduct Member" && isCustomerWalletExpired) ||
+                                isSplitAmountInvalid ||
+                                (paymentChannel === "Split Payment" && splitPayments.length < 2)
                               }
                               onClick={() => handleCreate(true)}
                               className={`flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                                 isPaidJob
                                   ? 'bg-slate-700 text-slate-300'
-                                  : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                                  : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired) || isSplitAmountInvalid
                                     ? 'bg-rose-600/80 hover:bg-rose-600'
                                     : (!isWalkIn && paymentMethod !== 'paid')
                                       ? 'bg-slate-700 text-slate-400'
@@ -6129,11 +6332,15 @@ export default function AdminPage() {
                                     ? "Wallet หมดอายุแล้ว"
                                     : isWalletInsufficient
                                       ? `ยอดเงินใน Wallet ไม่เพียงพอ (มี ${formatBaht(selectedProfileCustomer?.creditBalance || 0)}, ต้องการ ${formatBaht(dialogTotal)})`
-                                      : (!isWalkIn && paymentMethod !== 'paid')
-                                        ? (currentLanguage === "en" ? "Waiting for CSO verification (CSO Paid)" : "รอ CSO ยืนยันสถานะชำระเงิน (CSO Paid)")
-                                        : (!paymentChannel || !paymentChannel.trim())
-                                          ? (currentLanguage === "en" ? "Please select payment channel" : "กรุณาเลือกช่องทางการชำระเงิน")
-                                          : undefined
+                                      : isSplitAmountInvalid
+                                        ? "ยอดแบ่งชำระไม่ตรงกับยอดรวม"
+                                        : (paymentChannel === "Split Payment" && splitPayments.length < 2)
+                                          ? "กรุณาระบุช่องทางการแบ่งชำระให้ครบ"
+                                          : (!isWalkIn && paymentMethod !== 'paid')
+                                            ? (currentLanguage === "en" ? "Waiting for CSO verification (CSO Paid)" : "รอ CSO ยืนยันสถานะชำระเงิน (CSO Paid)")
+                                            : (!paymentChannel || !paymentChannel.trim())
+                                              ? (currentLanguage === "en" ? "Please select payment channel" : "กรุณาเลือกช่องทางการชำระเงิน")
+                                              : undefined
                               }
                             >
                               <Banknote size={12} />
@@ -6143,7 +6350,11 @@ export default function AdminPage() {
                                   ? "Wallet หมดอายุ"
                                   : isWalletInsufficient
                                     ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
-                                    : `Pay ฿${dialogTotal.toFixed(2)}`}
+                                    : isSplitAmountInvalid
+                                      ? "ยอดแบ่งจ่ายไม่ครบ"
+                                      : paymentChannel === "Split Payment" && splitPayments.length >= 2
+                                        ? `Pay ฿${dialogTotal.toFixed(2)} (${splitPayments.length} ช่องทาง)`
+                                        : `Pay ฿${dialogTotal.toFixed(2)}`}
                             </Button>
                           </div>
 
@@ -6523,23 +6734,13 @@ export default function AdminPage() {
                                     <CreditCard size={12} className="text-slate-500" />
                                     BILL NO.
                                   </span>
-                                  {!(user?.role === 'admin' || isCSO) && (
-                                    <span className="flex items-center gap-0.5 text-[9px] text-amber-400 font-medium">
-                                      <LockIcon size={10} /> View Only
-                                    </span>
-                                  )}
                                 </Label>
                                 <Input
                                   id="bill-no"
                                   value={billNo}
-                                  readOnly={!(user?.role === 'admin' || isCSO)}
-                                  onChange={(e) => {
-                                    if (user?.role === 'admin' || isCSO) {
-                                      setBillNo(e.target.value);
-                                    }
-                                  }}
+                                  onChange={(e) => setBillNo(e.target.value)}
                                   placeholder="Enter Bill No."
-                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || isCSO) ? 'cursor-not-allowed opacity-60' : ''}`}
+                                  className="h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-1.5 py-0 text-[11px] font-bold focus-visible:ring-indigo-500"
                                 />
                               </div>
                             </div>
@@ -6594,30 +6795,47 @@ export default function AdminPage() {
                           <span className="text-2xl font-black text-indigo-400">฿{(laundryPrice + (serviceSpeed === 'express_50' ? Math.ceil(laundryPrice * 0.5) : (serviceSpeed === 'express_100' ? laundryPrice : 0)) + fee).toFixed(0)}</span>
                         </div>
 
-                        {(isPickup || isDelivery) && (
-                          <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
-                            <div className="flex flex-col">
-                              <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
-                              <span className="text-[10px] text-slate-500">Distance × {systemSettings?.riderCommissionPerKm || "2"}฿</span>
+                        {(isPickup || isDelivery) && (() => {
+                          const targetCustomer = selectedProfileCustomer || (activeJob ? findMatchingCustomer(customers, { customerId: activeJob.customerId, customerName: activeJob.customerName, customerPhone: activeJob.customerPhone }) : null);
+                          const comm = calculateRiderCommission({
+                            customer: targetCustomer,
+                            isPickup,
+                            pickupDist,
+                            isDelivery,
+                            deliveryDist,
+                            systemSettings,
+                            isVIP: Boolean(selectedVIPLabel),
+                            isFreeDelivery,
+                          });
+                          const pVal = (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
+                            ? (activeJob.pickupCommission ?? 0)
+                            : comm.pickupCommission;
+                          const dVal = (editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
+                            ? (activeJob.deliveryCommission ?? 0)
+                            : comm.deliveryCommission;
+                          const totalComm = comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || isFreeDelivery ? 0 : (pVal + dVal));
+
+                          return (
+                            <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
+                              <div className="flex flex-col">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
+                                  {comm.isCorporateRule && (
+                                    <span className="text-[8.5px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 py-0.2 rounded font-bold">
+                                      🏢 Corporate
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-slate-500">{comm.ruleLabel}</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="text-lg font-bold text-amber-400">
+                                  ฿{totalComm.toFixed(0)}
+                                </span>
+                              </div>
                             </div>
-                            <div className="text-right">
-                              <span className="text-lg font-bold text-amber-400">
-                                ฿{selectedVIPLabel || isFreeDelivery ? "0" : (
-                                  (isPickup ? (
-                                    (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed'))
-                                      ? (activeJob.pickupCommission ?? 0)
-                                      : Math.floor(pickupDist) * getCommissionRate(systemSettings)
-                                  ) : 0) +
-                                  (isDelivery ? (
-                                    (editingJobId && activeJob && activeJob.status === 'completed')
-                                      ? (activeJob.deliveryCommission ?? 0)
-                                      : Math.floor(deliveryDist) * getCommissionRate(systemSettings)
-                                  ) : 0)
-                                ).toFixed(0)}
-                              </span>
-                            </div>
-                          </div>
-                        )}
+                          );
+                        })()}
                       </div>
 
 
@@ -7094,7 +7312,17 @@ export default function AdminPage() {
               onViewJob={stableHandleEditFullJob}
             />
           )}
-        {activeTab === "calculator" && <FeeCalculatorPage />}
+          {activeTab === "calculator" && (
+            <AdminFeeCalculator 
+              onNavigateToPois={() => handleTabChange("pois")} 
+            />
+          )}
+          {activeTab === "pois" && (
+            <AdminPoiManager 
+              onBack={() => handleTabChange("calculator")} 
+              initialSubTab={((typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("subtab") : "duplicates") as any) || "duplicates"}
+            />
+          )}
           {activeTab === "settings" && hasAccess("settings") && <AdminSettings />}
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
@@ -7293,6 +7521,26 @@ export default function AdminPage() {
             }, 400);
           }
         }}
+      />
+
+      {/* Split Payment Dialog */}
+      <SplitPaymentDialog
+        open={showSplitPaymentDialog}
+        onOpenChange={(isOpen) => {
+          setShowSplitPaymentDialog(isOpen);
+          if (!isOpen && splitPayments.length < 2 && paymentChannel === "Split Payment") {
+            setPaymentChannel("");
+          }
+        }}
+        totalAmount={dialogTotal}
+        customer={selectedProfileCustomer}
+        activePaymentChannels={activePaymentChannels}
+        initialSplits={splitPayments}
+        onConfirm={(splits) => {
+          setSplitPayments(splits);
+          setPaymentChannel("Split Payment");
+        }}
+        currentLanguage={currentLanguage}
       />
 
       {/* Beam Online Payment Dialog */}

@@ -20,7 +20,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
 import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
-import { BranchFilterDropdown, getUserAssignedBranchIds, UNASSIGNED_BRANCH_ID } from "@/components/branch-filter-dropdown";
+import { BranchFilterDropdown, getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
@@ -234,7 +234,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         return;
       }
     }
-    setSelectedBranchIds([...shopLocations.map((s) => s.id), UNASSIGNED_BRANCH_ID]);
+    setSelectedBranchIds(shopLocations.map((s) => s.id));
     isInitialBranchSetRef.current = true;
   }, [user, shopLocations]);
 
@@ -274,11 +274,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       // Branch Filter (Excel-style Multi-Select)
       const isAllBranchesSelected = selectedBranchIds.length >= shopLocations.length;
       if (!isAllBranchesSelected && selectedBranchIds.length > 0) {
-        if (job.branchId) {
-          if (!selectedBranchIds.includes(job.branchId)) return false;
-        } else {
-          if (!selectedBranchIds.includes(UNASSIGNED_BRANCH_ID)) return false;
-        }
+        if (!job.branchId || !selectedBranchIds.includes(job.branchId)) return false;
       } else if (selectedBranchIds.length === 0) {
         return false;
       }
@@ -545,7 +541,6 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             branches={shopLocations}
             selectedIds={selectedBranchIds}
             onChange={setSelectedBranchIds}
-            includeUnassigned={true}
             placeholder="All Branches"
           />
 

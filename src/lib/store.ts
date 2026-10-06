@@ -172,6 +172,10 @@ export interface Customer {
   taxId?: string | null;
   companyName?: string | null;
   vatType?: "default" | "inclusive" | "exclusive" | "none" | null;
+  corporateCommissionType?: "default" | "fixed" | "custom_km" | "none" | null;
+  corporatePickupCommission?: number | null;
+  corporateDeliveryCommission?: number | null;
+  corporateCommissionRatePerKm?: number | null;
   passwordHash?: string | null;
   createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
@@ -843,6 +847,10 @@ export const poiStore = {
   },
   async deletePOI(id: string) {
     await api.deletePOI(id);
+    emitPoiChange();
+  },
+  async deletePOIs(ids: string[]) {
+    await api.deletePOIs(ids);
     emitPoiChange();
   }
 };

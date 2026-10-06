@@ -52,6 +52,57 @@ import { ReportsSalesByPaymentType } from "@/components/reports-sales-by-payment
 import { ReportsReceipts } from "@/components/reports-receipts";
 import { ReportsTaxes } from "@/components/reports-taxes";
 
+function normalizeReportChannelName(name?: string | null): string {
+  if (!name || !name.trim()) return "Unspecified";
+  const trimmed = name.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower === "cash" || lower === "cash / cod" || lower === "cash/cod") return "Cash / COD";
+  if (lower === "transfer" || lower === "promptpay" || lower === "โอน" || lower === "โอนเงิน") return "Transfer";
+  if (lower === "credit card" || lower === "card" || lower === "บัตรเครดิต") return "Credit Card";
+  if (lower === "deduct member" || lower === "wallet" || lower === "credit") return "Deduct Member";
+  if (lower === "hq/credit" || lower === "hq credit") return "HQ/Credit";
+  if (lower.includes("beam") || lower.includes("gateway")) return "Beam Gateway";
+  return trimmed;
+}
+
+function getChannelBadgeStyle(channelName: string) {
+  const lower = channelName.toLowerCase();
+  if (lower.includes("cash") || lower.includes("เงินสด")) {
+    return {
+      barColor: "bg-emerald-500",
+      textColor: "text-emerald-500 dark:text-emerald-400",
+    };
+  }
+  if (lower.includes("transfer") || lower.includes("promptpay") || lower.includes("โอน")) {
+    return {
+      barColor: "bg-indigo-500",
+      textColor: "text-indigo-500 dark:text-indigo-400",
+    };
+  }
+  if (lower.includes("card") || lower.includes("beam") || lower.includes("gateway") || lower.includes("บัตร")) {
+    return {
+      barColor: "bg-sky-500",
+      textColor: "text-sky-500 dark:text-sky-400",
+    };
+  }
+  if (lower.includes("member") || lower.includes("wallet") || lower.includes("กระเป๋า")) {
+    return {
+      barColor: "bg-purple-500",
+      textColor: "text-purple-500 dark:text-purple-400",
+    };
+  }
+  if (lower.includes("hq") || lower.includes("credit") || lower.includes("เครดิต")) {
+    return {
+      barColor: "bg-amber-500",
+      textColor: "text-amber-500 dark:text-amber-400",
+    };
+  }
+  return {
+    barColor: "bg-teal-500",
+    textColor: "text-teal-500 dark:text-teal-400",
+  };
+}
+
 interface AdminReportsProps {
   onViewJob?: (job: any) => void;
 }
@@ -269,6 +320,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     let cardSum = 0;
     let creditSum = 0;
 
+    const channelMap: Record<string, { channel: string; revenue: number; count: number }> = {};
     const productSales: Record<string, { count: number; revenue: number }> = {};
 
     overviewJobs.forEach(job => {
@@ -286,17 +338,61 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       if (job.isPaid) {
         totalRevenue += job.totalAmount || 0;
         
-        const channel = (job.paymentChannel || "").toLowerCase();
-        const method = (job.paymentMethod || "").toLowerCase();
+        let splitProcessed = false;
+        if (job.adminNotesJson) {
+          try {
+            const parsed = JSON.parse(job.adminNotesJson);
+            if (Array.isArray(parsed?.payments) && parsed.payments.length > 0) {
+              parsed.payments.forEach((p: any) => {
+                const amt = Number(p.amount) || 0;
+                if (amt <= 0) return;
+                const normName = normalizeReportChannelName(p.channel || p.method);
+                if (!channelMap[normName]) {
+                  channelMap[normName] = { channel: normName, revenue: 0, count: 0 };
+                }
+                channelMap[normName].revenue += amt;
+                channelMap[normName].count += 1;
 
-        if (channel.includes("cash") || method.includes("cash")) {
-          cashSum += job.totalAmount || 0;
-        } else if (channel.includes("transfer") || method.includes("transfer")) {
-          transferSum += job.totalAmount || 0;
-        } else if (channel.includes("card") || method.includes("card")) {
-          cardSum += job.totalAmount || 0;
-        } else {
-          creditSum += job.totalAmount || 0;
+                const ch = normName.toLowerCase();
+                const m = (p.method || "").toLowerCase();
+                if (ch.includes("cash") || m === "cash") {
+                  cashSum += amt;
+                } else if (ch.includes("transfer") || ch.includes("promptpay") || m === "transfer") {
+                  transferSum += amt;
+                } else if (ch.includes("card") || ch.includes("gateway") || ch.includes("beam") || m === "card") {
+                  cardSum += amt;
+                } else {
+                  creditSum += amt;
+                }
+              });
+              splitProcessed = true;
+            }
+          } catch {}
+        }
+
+        if (!splitProcessed) {
+          const amt = job.totalAmount || 0;
+          if (amt > 0) {
+            const normName = normalizeReportChannelName(job.paymentChannel || job.paymentMethod);
+            if (!channelMap[normName]) {
+              channelMap[normName] = { channel: normName, revenue: 0, count: 0 };
+            }
+            channelMap[normName].revenue += amt;
+            channelMap[normName].count += 1;
+
+            const channel = normName.toLowerCase();
+            const method = (job.paymentMethod || "").toLowerCase();
+
+            if (channel.includes("cash") || method.includes("cash")) {
+              cashSum += amt;
+            } else if (channel.includes("transfer") || method.includes("transfer")) {
+              transferSum += amt;
+            } else if (channel.includes("card") || method.includes("card")) {
+              cardSum += amt;
+            } else {
+              creditSum += amt;
+            }
+          }
         }
       }
 
@@ -324,6 +420,13 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
     const averageTicket = completedCount > 0 ? totalRevenue / completedCount : 0;
 
+    const channelBreakdown = Object.values(channelMap)
+      .map(item => ({
+        ...item,
+        revenue: Math.round(item.revenue * 100) / 100,
+      }))
+      .sort((a, b) => b.revenue - a.revenue);
+
     const topProducts = Object.entries(productSales)
       .map(([name, data]) => ({ name, ...data }))
       .sort((a, b) => b.revenue - a.revenue)
@@ -341,6 +444,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         card: cardSum,
         credit: creditSum
       },
+      channelBreakdown,
       topProducts
     };
   }, [overviewJobs]);
@@ -754,17 +858,43 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       if (job.isPaid) {
         posRevenue += job.totalAmount || 0;
         
-        const channel = (job.paymentChannel || "").toLowerCase();
-        const method = (job.paymentMethod || "").toLowerCase();
+        let splitProcessed = false;
+        if (job.adminNotesJson) {
+          try {
+            const parsed = JSON.parse(job.adminNotesJson);
+            if (Array.isArray(parsed?.payments) && parsed.payments.length > 0) {
+              parsed.payments.forEach((p: any) => {
+                const amt = Number(p.amount) || 0;
+                const ch = (p.channel || "").toLowerCase();
+                const m = (p.method || "").toLowerCase();
+                if (ch.includes("cash") || m === "cash") {
+                  cashPos += amt;
+                } else if (ch.includes("transfer") || ch.includes("promptpay") || m === "transfer") {
+                  transferPos += amt;
+                } else if (ch.includes("card") || ch.includes("gateway") || ch.includes("beam") || m === "card") {
+                  cardPos += amt;
+                } else {
+                  creditPos += amt;
+                }
+              });
+              splitProcessed = true;
+            }
+          } catch {}
+        }
 
-        if (channel.includes("cash") || method.includes("cash")) {
-          cashPos += job.totalAmount || 0;
-        } else if (channel.includes("transfer") || method.includes("transfer")) {
-          transferPos += job.totalAmount || 0;
-        } else if (channel.includes("card") || method.includes("card")) {
-          cardPos += job.totalAmount || 0;
-        } else {
-          creditPos += job.totalAmount || 0;
+        if (!splitProcessed) {
+          const channel = (job.paymentChannel || "").toLowerCase();
+          const method = (job.paymentMethod || "").toLowerCase();
+
+          if (channel.includes("cash") || method.includes("cash")) {
+            cashPos += job.totalAmount || 0;
+          } else if (channel.includes("transfer") || method.includes("transfer")) {
+            transferPos += job.totalAmount || 0;
+          } else if (channel.includes("card") || method.includes("card")) {
+            cardPos += job.totalAmount || 0;
+          } else {
+            creditPos += job.totalAmount || 0;
+          }
         }
       }
     });
@@ -801,11 +931,12 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       csvContent += `Cancelled Orders,${overviewStats.cancelledCount}\n`;
       csvContent += `Average Ticket,฿${overviewStats.averageTicket.toFixed(2)}\n\n`;
 
-      csvContent += "Payment Channels,Revenue\n";
-      csvContent += `Cash / COD,฿${overviewStats.paymentBreakdown.cash.toFixed(2)}\n`;
-      csvContent += `Transfer,฿${overviewStats.paymentBreakdown.transfer.toFixed(2)}\n`;
-      csvContent += `Credit Card,฿${overviewStats.paymentBreakdown.card.toFixed(2)}\n`;
-      csvContent += `Deduct Member / Other,฿${overviewStats.paymentBreakdown.credit.toFixed(2)}\n\n`;
+      csvContent += "Payment Channels,Orders,Revenue,Share (%)\n";
+      overviewStats.channelBreakdown.forEach((item) => {
+        const pct = overviewStats.totalRevenue > 0 ? ((item.revenue / overviewStats.totalRevenue) * 100).toFixed(1) : "0.0";
+        csvContent += `"${item.channel.replace(/"/g, '""')}",${item.count},฿${item.revenue.toFixed(2)},${pct}%\n`;
+      });
+      csvContent += "\n";
 
       csvContent += "Top Products,Qty Sold,Revenue\n";
       overviewStats.topProducts.forEach((prod: any) => {
@@ -1546,44 +1677,52 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
             </div>
 
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
-              <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">Payment Channels share</h3>
-              <div className="mt-6 space-y-4 text-xs font-bold">
-                <div>
-                  <div className="flex justify-between text-slate-500 mb-1.5">
-                    <span>Cash / เงินสด</span>
-                    <span className="text-slate-800 dark:text-slate-200">฿{overviewStats.paymentBreakdown.cash.toLocaleString()}</span>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+                  Payment Channels Share
+                </h3>
+                {overviewStats.channelBreakdown.length > 0 && (
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">
+                    {overviewStats.channelBreakdown.length} ช่องทาง
+                  </span>
+                )}
+              </div>
+              <div className="space-y-4 text-xs font-bold max-h-[380px] overflow-y-auto pr-1">
+                {overviewStats.channelBreakdown.length === 0 ? (
+                  <div className="py-8 text-center text-slate-400 font-medium">
+                    ไม่มีข้อมูลการชำระเงินในช่วงเวลาที่เลือก
                   </div>
-                  <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
-                    <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${overviewStats.totalRevenue > 0 ? (overviewStats.paymentBreakdown.cash / overviewStats.totalRevenue) * 100 : 0}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-slate-500 mb-1.5">
-                    <span>Transfer / โอนเงิน</span>
-                    <span className="text-slate-800 dark:text-slate-200">฿{overviewStats.paymentBreakdown.transfer.toLocaleString()}</span>
-                  </div>
-                  <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
-                    <div className="bg-indigo-500 h-full rounded-full" style={{ width: `${overviewStats.totalRevenue > 0 ? (overviewStats.paymentBreakdown.transfer / overviewStats.totalRevenue) * 100 : 0}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-slate-500 mb-1.5">
-                    <span>Credit Card / บัตรเครดิต</span>
-                    <span className="text-slate-800 dark:text-slate-200">฿{overviewStats.paymentBreakdown.card.toLocaleString()}</span>
-                  </div>
-                  <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
-                    <div className="bg-sky-500 h-full rounded-full" style={{ width: `${overviewStats.totalRevenue > 0 ? (overviewStats.paymentBreakdown.card / overviewStats.totalRevenue) * 100 : 0}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-slate-500 mb-1.5">
-                    <span>Wallet Credit / ตัดกระเป๋า</span>
-                    <span className="text-slate-800 dark:text-slate-200">฿{overviewStats.paymentBreakdown.credit.toLocaleString()}</span>
-                  </div>
-                  <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
-                    <div className="bg-purple-500 h-full rounded-full" style={{ width: `${overviewStats.totalRevenue > 0 ? (overviewStats.paymentBreakdown.credit / overviewStats.totalRevenue) * 100 : 0}%` }} />
-                  </div>
-                </div>
+                ) : (
+                  overviewStats.channelBreakdown.map((item) => {
+                    const pct = overviewStats.totalRevenue > 0 ? (item.revenue / overviewStats.totalRevenue) * 100 : 0;
+                    const style = getChannelBadgeStyle(item.channel);
+                    return (
+                      <div key={item.channel}>
+                        <div className="flex justify-between items-center text-slate-500 mb-1.5">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-slate-850 dark:text-slate-200 font-bold truncate">
+                              {item.channel}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-normal shrink-0">
+                              ({item.count} ครั้ง)
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                              ฿{item.revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-400 w-11 text-right font-mono">
+                              {pct.toFixed(1)}%
+                            </span>
+                          </div>
+                        </div>
+                        <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+                          <div className={`${style.barColor} h-full rounded-full transition-all duration-300`} style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>

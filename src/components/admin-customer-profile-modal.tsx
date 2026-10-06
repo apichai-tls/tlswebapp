@@ -6,7 +6,7 @@ import {
   Phone, MapPin, Star, FileText, Calendar, CreditCard, Wallet, Crown, Building, Mail, 
   Clock, AlertTriangle, Receipt, Eye, Coins, ImageIcon, ExternalLink, X, Edit, MessageCircle, 
   MessageSquare, ShieldCheck, CheckCircle2, Plus, Trash2, Tag, Check, Smartphone, Globe, 
-  AlertCircle, ChevronRight, UserCheck, Shield, Ticket, Gift, Sparkles, Copy, Ban, Truck, Loader2
+  AlertCircle, ChevronRight, UserCheck, Shield, Ticket, Gift, Sparkles, Copy, Ban, Truck, Loader2, Bike
 } from "lucide-react";
 
 import { format } from "date-fns";
@@ -530,6 +530,19 @@ export function AdminCustomerProfileModal({
                       <span className="bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-full flex items-center gap-1 shadow-2xs">
                         <Building size={10} />
                         Corporate B2B
+                      </span>
+                    )}
+
+                    {(customer.isCorporate || customer.tier === "corporate") && customer.corporateCommissionType && customer.corporateCommissionType !== "default" && (
+                      <span className="bg-orange-100 text-orange-800 border border-orange-300 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-full flex items-center gap-1 shadow-2xs">
+                        <Bike size={10} />
+                        Rider Comm: {
+                          customer.corporateCommissionType === "none"
+                            ? "฿0 (No Comm)"
+                            : customer.corporateCommissionType === "fixed"
+                            ? `Fixed (P:฿${customer.corporatePickupCommission || 0} / D:฿${customer.corporateDeliveryCommission || 0})`
+                            : `฿${customer.corporateCommissionRatePerKm || 0}/km`
+                        }
                       </span>
                     )}
 

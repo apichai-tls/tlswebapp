@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
-import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone } from '@/lib/utils';
+import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
 
@@ -19,6 +19,27 @@ export async function addCustomerAction(data: any) {
         throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
       }
       memberId = memberIdUpper;
+    }
+  }
+
+  // Check duplicate phone (both Thai and international)
+  if (data.phone || data.secondaryPhone) {
+    const existingCustomers = await prisma.customer.findMany({
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        secondaryPhone: true,
+        memberId: true,
+      },
+    });
+    const duplicate = findDuplicateCustomerByPhone({
+      phone: data.phone,
+      secondaryPhone: data.secondaryPhone,
+      customers: existingCustomers,
+    });
+    if (duplicate) {
+      throw new Error(`เบอร์โทรศัพท์ ${duplicate.matchedPhone} มีอยู่ในระบบแล้ว (ลูกค้า: ${duplicate.customer.name || "ไม่ระบุชื่อ"}${duplicate.customer.memberId ? ` - รหัส ${duplicate.customer.memberId}` : ""})`);
     }
   }
 
@@ -48,6 +69,10 @@ export async function addCustomerAction(data: any) {
       taxId: data.taxId,
       companyName: data.companyName,
       vatType: data.vatType || 'default',
+      corporateCommissionType: data.corporateCommissionType || 'default',
+      corporatePickupCommission: data.corporatePickupCommission != null ? Number(data.corporatePickupCommission) : 0,
+      corporateDeliveryCommission: data.corporateDeliveryCommission != null ? Number(data.corporateDeliveryCommission) : 0,
+      corporateCommissionRatePerKm: data.corporateCommissionRatePerKm != null ? Number(data.corporateCommissionRatePerKm) : 0,
       brand: data.brand || 'that_laundry_shop',
       nickName: data.nickName || null,
       gender: data.gender || 'Rather not say',
@@ -151,6 +176,10 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.taxId !== undefined) data.taxId = updates.taxId;
   if (updates.companyName !== undefined) data.companyName = updates.companyName;
   if (updates.vatType !== undefined) data.vatType = updates.vatType;
+  if (updates.corporateCommissionType !== undefined) data.corporateCommissionType = updates.corporateCommissionType;
+  if (updates.corporatePickupCommission !== undefined) data.corporatePickupCommission = updates.corporatePickupCommission != null ? Number(updates.corporatePickupCommission) : 0;
+  if (updates.corporateDeliveryCommission !== undefined) data.corporateDeliveryCommission = updates.corporateDeliveryCommission != null ? Number(updates.corporateDeliveryCommission) : 0;
+  if (updates.corporateCommissionRatePerKm !== undefined) data.corporateCommissionRatePerKm = updates.corporateCommissionRatePerKm != null ? Number(updates.corporateCommissionRatePerKm) : 0;
   if (updates.brand !== undefined) data.brand = updates.brand;
   if (updates.nickName !== undefined) data.nickName = updates.nickName;
   if (updates.gender !== undefined) data.gender = updates.gender;
@@ -1365,6 +1394,193 @@ export async function updatePOIAction(id: string, updates: any) {
 export async function deletePOIAction(id: string) {
   return prisma.pOI.delete({ where: { id } });
 }
+
+export interface DuplicatePoiGroup {
+  groupId: string;
+  groupTitle: string;
+  matchType: 'coords' | 'name' | 'coords_and_name' | 'url';
+  matchReason: string;
+  recommendedKeepId: string;
+  items: {
+    id: string;
+    name: string;
+    address: string;
+    lat: number;
+    lng: number;
+    placeId: string | null;
+    distanceKm: number | null;
+    closestShopId: string | null;
+  }[];
+}
+
+export async function getDuplicatePOIsAction(): Promise<{
+  groups: DuplicatePoiGroup[];
+  totalPoisCount: number;
+  totalDuplicateGroups: number;
+  totalRedundantCount: number;
+}> {
+  const pois = await prisma.pOI.findMany({
+    orderBy: { name: 'asc' }
+  });
+
+  const groupedIds = new Set<string>();
+  const duplicateGroups: DuplicatePoiGroup[] = [];
+
+  // Phase 1: Group by Coordinates (rounded to 4 decimals, approx 11m radius)
+  const coordMap = new Map<string, typeof pois>();
+  for (const p of pois) {
+    const key = `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`;
+    if (!coordMap.has(key)) coordMap.set(key, []);
+    coordMap.get(key)!.push(p);
+  }
+
+  for (const [key, items] of coordMap.entries()) {
+    if (items.length > 1) {
+      items.forEach(it => groupedIds.add(it.id));
+      
+      const distinctNames = new Set(items.map(it => it.name.trim().toLowerCase()));
+      const isBoth = distinctNames.size === 1;
+
+      // Determine recommended keeper: prefer item with placeId or longest address
+      const sortedByQuality = [...items].sort((a, b) => {
+        if (a.placeId && !b.placeId) return -1;
+        if (!a.placeId && b.placeId) return 1;
+        return (b.address?.length || 0) - (a.address?.length || 0);
+      });
+      const recommended = sortedByQuality[0]?.id || items[0].id;
+
+      duplicateGroups.push({
+        groupId: `coord-${key.replace(',', '_')}`,
+        groupTitle: items[0].name || `Coordinates ${key}`,
+        matchType: isBoth ? 'coords_and_name' : 'coords',
+        matchReason: isBoth 
+          ? `Same coordinates & name (${items.length} locations)` 
+          : `Same coordinates (${items.length} locations - e.g. TH/EN names or duplicate pins)`,
+        recommendedKeepId: recommended,
+        items: items.map(it => ({
+          id: it.id,
+          name: it.name,
+          address: it.address,
+          lat: it.lat,
+          lng: it.lng,
+          placeId: it.placeId || null,
+          distanceKm: it.distanceKm || null,
+          closestShopId: it.closestShopId || null,
+        })),
+      });
+    }
+  }
+
+  // Phase 2: Group by Exact Google Maps URL (for remaining items)
+  const urlMap = new Map<string, typeof pois>();
+  for (const p of pois) {
+    if (groupedIds.has(p.id)) continue;
+    const url = (p.address || '').trim().toLowerCase();
+    if (url.startsWith('http')) {
+      if (!urlMap.has(url)) urlMap.set(url, []);
+      urlMap.get(url)!.push(p);
+    }
+  }
+
+  for (const [, items] of urlMap.entries()) {
+    if (items.length > 1) {
+      items.forEach(it => groupedIds.add(it.id));
+      duplicateGroups.push({
+        groupId: `url-${items[0].id}`,
+        groupTitle: items[0].name,
+        matchType: 'url',
+        matchReason: `Same Google Maps URL (${items.length} locations)`,
+        recommendedKeepId: items[0].id,
+        items: items.map(it => ({
+          id: it.id,
+          name: it.name,
+          address: it.address,
+          lat: it.lat,
+          lng: it.lng,
+          placeId: it.placeId || null,
+          distanceKm: it.distanceKm || null,
+          closestShopId: it.closestShopId || null,
+        })),
+      });
+    }
+  }
+
+  // Phase 3: Group by Exact Name (for remaining items not grouped by coords)
+  const nameMap = new Map<string, typeof pois>();
+  for (const p of pois) {
+    if (groupedIds.has(p.id)) continue;
+    const normName = p.name.trim().toLowerCase();
+    if (normName.length >= 3) {
+      if (!nameMap.has(normName)) nameMap.set(normName, []);
+      nameMap.get(normName)!.push(p);
+    }
+  }
+
+  for (const [, items] of nameMap.entries()) {
+    if (items.length > 1) {
+      items.forEach(it => groupedIds.add(it.id));
+      duplicateGroups.push({
+        groupId: `name-${items[0].id}`,
+        groupTitle: items[0].name,
+        matchType: 'name',
+        matchReason: `Exact same location name (${items.length} locations)`,
+        recommendedKeepId: items[0].id,
+        items: items.map(it => ({
+          id: it.id,
+          name: it.name,
+          address: it.address,
+          lat: it.lat,
+          lng: it.lng,
+          placeId: it.placeId || null,
+          distanceKm: it.distanceKm || null,
+          closestShopId: it.closestShopId || null,
+        })),
+      });
+    }
+  }
+
+  // Sort groups: largest duplicate group first, then by matchType priority
+  duplicateGroups.sort((a, b) => {
+    if (b.items.length !== a.items.length) {
+      return b.items.length - a.items.length;
+    }
+    const priority = { coords_and_name: 1, coords: 2, url: 3, name: 4 };
+    return priority[a.matchType] - priority[b.matchType];
+  });
+
+  const totalRedundantCount = duplicateGroups.reduce((acc, g) => acc + (g.items.length - 1), 0);
+
+  return {
+    groups: duplicateGroups,
+    totalPoisCount: pois.length,
+    totalDuplicateGroups: duplicateGroups.length,
+    totalRedundantCount,
+  };
+}
+
+export async function deletePOIsAction(ids: string[], actorId?: string, actorName?: string) {
+  if (!ids || ids.length === 0) return { success: true, count: 0 };
+  const res = await prisma.pOI.deleteMany({
+    where: { id: { in: ids } }
+  });
+
+  try {
+    await prisma.activityLog.create({
+      data: {
+        entityId: ids.slice(0, 3).join(','),
+        entityType: 'poi',
+        action: 'bulk_delete',
+        details: JSON.stringify({ count: res.count, deletedIds: ids }),
+        userId: actorId || null,
+        userName: actorName || 'Admin User',
+      }
+    });
+  } catch (e: any) {
+    console.error("Failed to write activity log for POI delete:", e.message);
+  }
+
+  return { success: true, count: res.count };
+}
 // SETTINGS
 export async function updateSettingAction(key: string, value: string) {
   const result = await prisma.setting.upsert({
@@ -1381,16 +1597,22 @@ export async function updateSettingAction(key: string, value: string) {
           UPDATE "Job"
           SET "pickupCommission" = FLOOR("pickupDistance") * ${rate}
           WHERE "pickupDistance" > 0
-            AND ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
-            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true))
+            AND (
+              ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
+              OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
+            )
+            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true OR ("isCorporate" = true AND "corporateCommissionType" IS NOT NULL AND "corporateCommissionType" != 'default')))
             AND "status" NOT IN ('billing', 'completed', 'cancel')
         `;
         await prisma.$executeRaw`
           UPDATE "Job"
           SET "deliveryCommission" = FLOOR("deliveryDistance") * ${rate}
           WHERE "deliveryDistance" > 0
-            AND ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
-            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true))
+            AND (
+              ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
+              OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
+            )
+            AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true OR ("isCorporate" = true AND "corporateCommissionType" IS NOT NULL AND "corporateCommissionType" != 'default')))
             AND "status" NOT IN ('completed', 'cancel')
         `;
         console.log(`[Setting Update] Updated active job commissions to use new rate: ฿${rate}`);

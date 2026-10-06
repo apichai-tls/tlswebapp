@@ -354,6 +354,10 @@ export const api = {
           isVIP: savedCustomer.isVIP,
           isCorporate: savedCustomer.isCorporate,
           tier: (savedCustomer.tier as any) || updates.tier || c.tier,
+          corporateCommissionType: (savedCustomer as any).corporateCommissionType ?? updates.corporateCommissionType ?? c.corporateCommissionType,
+          corporatePickupCommission: (savedCustomer as any).corporatePickupCommission ?? updates.corporatePickupCommission ?? c.corporatePickupCommission,
+          corporateDeliveryCommission: (savedCustomer as any).corporateDeliveryCommission ?? updates.corporateDeliveryCommission ?? c.corporateDeliveryCommission,
+          corporateCommissionRatePerKm: (savedCustomer as any).corporateCommissionRatePerKm ?? updates.corporateCommissionRatePerKm ?? c.corporateCommissionRatePerKm,
           memberStartDate: savedCustomer.memberStartDate,
           memberExpiryDate: savedCustomer.memberExpiryDate,
           priceListId: savedCustomer.priceListId || c.priceListId,
@@ -929,6 +933,12 @@ export const api = {
     const db = initDb();
     db.pois = db.pois.filter(p => p.id !== id);
     await dbActions.deletePOIAction(id);
+  },
+  async deletePOIs(ids: string[]) {
+    const db = initDb();
+    const idSet = new Set(ids);
+    db.pois = db.pois.filter(p => !idSet.has(p.id));
+    await dbActions.deletePOIsAction(ids);
   },
   async getActiveCashierShift(userId: string) {
     return dbActions.getOpenShiftAction(userId);

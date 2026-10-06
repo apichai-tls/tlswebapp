@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { 
   Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, 
-  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag, Receipt 
+  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag, Receipt, Bike, AlertTriangle 
 } from "lucide-react";
 import { customerStore, priceListStore, poiStore, walletApprovalStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
@@ -18,7 +18,7 @@ import { TopUpDialog } from "@/components/top-up-dialog";
 import { addCustomerAddressAction } from "@/actions/db";
 import { CountryCodeInput } from "@/components/ui/country-code-input";
 import { parseFullPhone } from "@/lib/country-codes";
-import { formatBaht, isThaiPhoneNumber, normalizeThaiPhone } from "@/lib/utils";
+import { formatBaht, isThaiPhoneNumber, normalizeThaiPhone, findDuplicateCustomerByPhone } from "@/lib/utils";
 import { format } from "date-fns";
 
 const BANGKOK_DISTRICTS = [
@@ -122,7 +122,35 @@ export function AdminCustomerDialog({
   const [memberExpiryDate, setMemberExpiryDate] = useState("");
   const [priceListId, setPriceListId] = useState("regular");
   const [customerVatType, setCustomerVatType] = useState<"default" | "inclusive" | "exclusive" | "none">("default");
+  const [corporateCommissionType, setCorporateCommissionType] = useState<"default" | "fixed" | "custom_km" | "none">("default");
+  const [corporatePickupCommission, setCorporatePickupCommission] = useState<number>(0);
+  const [corporateDeliveryCommission, setCorporateDeliveryCommission] = useState<number>(0);
+  const [corporateCommissionRatePerKm, setCorporateCommissionRatePerKm] = useState<number>(0);
   const [isSaving, setIsSaving] = useState(false);
+
+  const allCustomers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
+
+  // Realtime duplicate phone check (supports both Thai and International formats)
+  // Only applies when creating a new customer (not on Edit)
+  const duplicatePhoneCheck = useMemo(() => {
+    if (customer) return null; // Only check on Create, not on Edit
+    let cleanP = phone.trim();
+    if (cleanP && isThaiPhoneNumber(cleanP)) {
+      cleanP = normalizeThaiPhone(cleanP);
+    }
+    let finalSecP = secondaryPhone.trim();
+    if (finalSecP && !finalSecP.startsWith("+") && intlCountryCode) {
+      const code = intlCountryCode.trim().startsWith("+") ? intlCountryCode.trim() : `+${intlCountryCode.trim()}`;
+      finalSecP = `${code} ${finalSecP}`;
+    }
+
+    return findDuplicateCustomerByPhone({
+      phone: cleanP,
+      secondaryPhone: finalSecP,
+      customers: allCustomers,
+      excludeCustomerId: null,
+    });
+  }, [phone, secondaryPhone, intlCountryCode, allCustomers, customer]);
 
   const localDataForSearch = useMemo(() => pois.map(p => ({ 
     name: p.name, 
@@ -217,6 +245,10 @@ export function AdminCustomerDialog({
         setMemberExpiryDate(customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split("T")[0] : "");
         setPriceListId(customer.priceListId || "regular");
         setCustomerVatType((customer.vatType as any) || "default");
+        setCorporateCommissionType((customer.corporateCommissionType as any) || "default");
+        setCorporatePickupCommission(customer.corporatePickupCommission || 0);
+        setCorporateDeliveryCommission(customer.corporateDeliveryCommission || 0);
+        setCorporateCommissionRatePerKm(customer.corporateCommissionRatePerKm || 0);
         setSelectedLocation(null);
       } else {
         // Reset all states cleanly - no mock defaults
@@ -257,6 +289,10 @@ export function AdminCustomerDialog({
         setMemberExpiryDate("");
         setPriceListId("regular");
         setCustomerVatType("default");
+        setCorporateCommissionType("default");
+        setCorporatePickupCommission(0);
+        setCorporateDeliveryCommission(0);
+        setCorporateCommissionRatePerKm(0);
         setSelectedLocation(null);
       }
     }
@@ -362,6 +398,20 @@ export function AdminCustomerDialog({
       return;
     }
 
+    // Duplicate phone check (only for new customers, not on edit)
+    if (!customer) {
+      const duplicate = findDuplicateCustomerByPhone({
+        phone: cleanPhone,
+        secondaryPhone: finalSecondaryPhone,
+        customers: allCustomers,
+        excludeCustomerId: null,
+      });
+      if (duplicate) {
+        toast.error(`ไม่สามารถบันทึกได้: เบอร์โทร ${duplicate.matchedPhone} มีอยู่ในระบบแล้ว (ลูกค้า: ${duplicate.customer.name || "ไม่ระบุชื่อ"}${duplicate.customer.memberId ? ` - รหัส ${duplicate.customer.memberId}` : ""})`, { duration: 6000 });
+        return;
+      }
+    }
+
     setIsSaving(true);
     try {
       const isCorporateBool = customerTier === "corporate" || isCorporate;
@@ -423,6 +473,10 @@ export function AdminCustomerDialog({
         companyName: requiresTaxInvoice ? companyName.trim() || null : null,
         isVIP: isVIPBool,
         isCorporate: isCorporateBool,
+        corporateCommissionType: isCorporateBool ? corporateCommissionType : "default",
+        corporatePickupCommission: isCorporateBool && corporateCommissionType === "fixed" ? Number(corporatePickupCommission) || 0 : 0,
+        corporateDeliveryCommission: isCorporateBool && corporateCommissionType === "fixed" ? Number(corporateDeliveryCommission) || 0 : 0,
+        corporateCommissionRatePerKm: isCorporateBool && corporateCommissionType === "custom_km" ? Number(corporateCommissionRatePerKm) || 0 : 0,
         tier: customerTier,
         isMember: isMemberBool,
         isWhatsapp,
@@ -748,6 +802,99 @@ export function AdminCustomerDialog({
                         <option value="none">🚫 ไม่คิด VAT / ยกเว้นภาษี (No VAT)</option>
                       </select>
                     </div>
+
+                    {/* Rider Commission Setting for Corporate */}
+                    <div className="pt-2 border-t border-amber-200/60 space-y-2 col-span-1 sm:col-span-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                          <Bike size={14} className="text-amber-700" /> ค่าคอมมิชชั่น Rider (Rider Commission Setting):
+                        </span>
+                        <span className="text-[10px] font-semibold text-amber-800">
+                          กำหนดอัตราสำหรับลูกค้านิติบุคคลนี้โดยเฉพาะ
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <div className="col-span-1">
+                          <Label className="text-[10px] font-bold text-amber-900 uppercase block mb-1">รูปแบบค่าคอมมิชชั่น</Label>
+                          <select
+                            value={corporateCommissionType}
+                            onChange={e => setCorporateCommissionType(e.target.value as any)}
+                            className="h-8.5 text-xs font-semibold bg-white border border-amber-300 rounded-xl px-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-2xs cursor-pointer w-full"
+                          >
+                            <option value="default">🌐 ตามระบบปกติ (Default Distance)</option>
+                            <option value="fixed">📍 ฟิกซ์ยอดคงที่ต่อเที่ยว (Fixed Amount)</option>
+                            <option value="custom_km">📏 กำหนดเรทต่อ กม. (Custom ฿/km)</option>
+                            <option value="none">🚫 ไม่คิดค่าคอม (No Commission ฿0)</option>
+                          </select>
+                        </div>
+
+                        {corporateCommissionType === "fixed" && (
+                          <>
+                            <div className="col-span-1">
+                              <Label className="text-[10px] font-bold text-amber-900 uppercase block mb-1">ค่าคอมรอบรับ (Pickup ฿)</Label>
+                              <div className="relative">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={corporatePickupCommission === 0 ? "" : corporatePickupCommission}
+                                  onChange={e => setCorporatePickupCommission(Math.max(0, parseFloat(e.target.value) || 0))}
+                                  placeholder="0.00"
+                                  className="h-8.5 text-xs font-mono font-bold bg-white border-amber-300 rounded-xl pl-2.5 pr-6"
+                                />
+                                <span className="absolute right-2.5 top-2 text-[10px] text-amber-700 font-bold select-none">฿</span>
+                              </div>
+                            </div>
+                            <div className="col-span-1">
+                              <Label className="text-[10px] font-bold text-amber-900 uppercase block mb-1">ค่าคอมรอบส่ง (Delivery ฿)</Label>
+                              <div className="relative">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={corporateDeliveryCommission === 0 ? "" : corporateDeliveryCommission}
+                                  onChange={e => setCorporateDeliveryCommission(Math.max(0, parseFloat(e.target.value) || 0))}
+                                  placeholder="0.00"
+                                  className="h-8.5 text-xs font-mono font-bold bg-white border-amber-300 rounded-xl pl-2.5 pr-6"
+                                />
+                                <span className="absolute right-2.5 top-2 text-[10px] text-amber-700 font-bold select-none">฿</span>
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        {corporateCommissionType === "custom_km" && (
+                          <div className="col-span-1 sm:col-span-2">
+                            <Label className="text-[10px] font-bold text-amber-900 uppercase block mb-1">เรทค่าคอมมิชชั่นต่อกิโลเมตร (฿/km)</Label>
+                            <div className="relative">
+                              <Input
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={corporateCommissionRatePerKm === 0 ? "" : corporateCommissionRatePerKm}
+                                onChange={e => setCorporateCommissionRatePerKm(Math.max(0, parseFloat(e.target.value) || 0))}
+                                placeholder="0.00"
+                                className="h-8.5 text-xs font-mono font-bold bg-white border-amber-300 rounded-xl pl-2.5 pr-14"
+                              />
+                              <span className="absolute right-2.5 top-2 text-[10px] text-amber-700 font-bold select-none">฿ / km</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {corporateCommissionType === "none" && (
+                          <div className="col-span-1 sm:col-span-2 flex items-center bg-amber-100/60 border border-amber-200 rounded-xl px-3 py-1.5 text-[11px] font-medium text-amber-900">
+                            <span>🚫 ไม่จ่ายค่าคอมมิชชั่นให้ Rider สำหรับลูกค้านี้ (เช่น ใช้รถยนต์ของบริษัทหรือพนักงานประจำ)</span>
+                          </div>
+                        )}
+
+                        {corporateCommissionType === "default" && (
+                          <div className="col-span-1 sm:col-span-2 flex items-center bg-amber-100/60 border border-amber-200 rounded-xl px-3 py-1.5 text-[11px] font-medium text-amber-900">
+                            <span>🌐 คำนวณตามระยะทางจริง x เรทมาตรฐานของระบบ (เช่น ฿2/กม.)</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -832,7 +979,9 @@ export function AdminCustomerDialog({
                       placeholder="08x-xxx-xxxx" 
                       value={phone} 
                       onChange={e => setPhone(e.target.value)} 
-                      className="h-9 text-xs border-slate-300 rounded-xl bg-white font-mono font-bold" 
+                      className={`h-9 text-xs rounded-xl bg-white font-mono font-bold ${
+                        duplicatePhoneCheck?.matchedOn === "primary" ? "border-rose-500 ring-1 ring-rose-500 bg-rose-50/20" : "border-slate-300"
+                      }`} 
                     />
                   </div>
 
@@ -869,7 +1018,9 @@ export function AdminCustomerDialog({
                       placeholder="Phone number" 
                       value={secondaryPhone} 
                       onChange={e => setSecondaryPhone(e.target.value)} 
-                      className="h-9 text-xs border-slate-300 rounded-xl bg-white font-mono flex-1" 
+                      className={`h-9 text-xs rounded-xl bg-white font-mono flex-1 ${
+                        duplicatePhoneCheck?.matchedOn === "secondary" ? "border-rose-500 ring-1 ring-rose-500 bg-rose-50/20" : "border-slate-300"
+                      }`} 
                     />
                   </div>
 
@@ -885,6 +1036,26 @@ export function AdminCustomerDialog({
                     </span>
                   </label>
                 </div>
+
+                {/* Real-time duplicate phone alert */}
+                {duplicatePhoneCheck && (
+                  <div className="col-span-1 sm:col-span-2 bg-rose-50 border border-rose-300 rounded-xl p-3 flex items-start gap-2.5 text-rose-800 animate-in fade-in">
+                    <AlertTriangle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                    <div className="text-xs space-y-0.5">
+                      <p className="font-bold text-rose-900">
+                        ⚠️ เบอร์โทรศัพท์นี้ ({duplicatePhoneCheck.matchedPhone}) มีอยู่ในระบบแล้ว!
+                      </p>
+                      <p className="text-[11px] text-rose-700">
+                        ตรงกับลูกค้า: <strong>{duplicatePhoneCheck.customer.name}</strong> {duplicatePhoneCheck.customer.memberId ? `(รหัสสมาชิก #${duplicatePhoneCheck.customer.memberId})` : ""}
+                        {duplicatePhoneCheck.customer.phone ? ` • เบอร์หลัก: ${duplicatePhoneCheck.customer.phone}` : ""}
+                        {duplicatePhoneCheck.customer.secondaryPhone ? ` • เบอร์สำรอง: ${duplicatePhoneCheck.customer.secondaryPhone}` : ""}
+                      </p>
+                      <p className="text-[10px] text-rose-600 font-semibold pt-0.5">
+                        ระบบไม่อนุญาตให้สร้างลูกค้าใหม่ด้วยเบอร์โทรซ้ำซ้อน
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Sub-row 3 inputs: LINE ID, Email, Initial 6-Digit PIN */}
@@ -1131,11 +1302,16 @@ export function AdminCustomerDialog({
             </Button>
             <Button 
               type="button" 
-              disabled={isSaving}
+              disabled={isSaving || Boolean(duplicatePhoneCheck)}
               onClick={handleSave} 
-              className="h-10 px-6 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-full shadow-sm cursor-pointer transition-all"
+              className={`h-10 px-6 font-bold text-xs rounded-full shadow-sm cursor-pointer transition-all ${
+                duplicatePhoneCheck 
+                  ? "bg-rose-600 hover:bg-rose-700 text-white opacity-70 cursor-not-allowed" 
+                  : "bg-sky-600 hover:bg-sky-700 text-white"
+              }`}
+              title={duplicatePhoneCheck ? `เบอร์โทรนี้ซ้ำกับลูกค้า: ${duplicatePhoneCheck.customer.name}` : undefined}
             >
-              {isSaving ? "Saving..." : "Save Customer to CRM"}
+              {isSaving ? "Saving..." : duplicatePhoneCheck ? "เบอร์โทรซ้ำในระบบ (Duplicate Phone)" : "Save Customer to CRM"}
             </Button>
           </div>
 

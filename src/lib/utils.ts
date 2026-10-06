@@ -807,3 +807,215 @@ export function matchCustomerSearch(
 
   return false;
 }
+
+/**
+ * Gets base system rider commission rate per km (default 2 THB/km)
+ */
+export function getCommissionRate(settings?: Record<string, string> | null): number {
+  return parseFloat(settings?.riderCommissionPerKm || "2") || 2;
+}
+
+/**
+ * Calculates Rider Commission for Pickup and Delivery based on customer profile rules
+ * (supports Corporate B2B contract rules: None, Fixed per trip, Custom Rate/km, or Standard)
+ */
+export function calculateRiderCommission({
+  customer,
+  isPickup,
+  pickupDist,
+  isDelivery,
+  deliveryDist,
+  systemSettings,
+  isVIP = false,
+  isFreeDelivery = false,
+}: {
+  customer?: any | null;
+  isPickup: boolean;
+  pickupDist: number;
+  isDelivery: boolean;
+  deliveryDist: number;
+  systemSettings?: Record<string, string> | null;
+  isVIP?: boolean;
+  isFreeDelivery?: boolean;
+}): {
+  pickupCommission: number;
+  deliveryCommission: number;
+  isCorporateRule: boolean;
+  ruleLabel: string;
+} {
+  const isCorp = Boolean(customer?.isCorporate || customer?.tier === "corporate");
+  const commType = isCorp ? (customer?.corporateCommissionType || "default") : "default";
+
+  // Corporate rules take precedence over Free Delivery and VIP
+  if (isCorp) {
+    // 1. None: No commission
+    if (commType === "none") {
+      return {
+        pickupCommission: 0,
+        deliveryCommission: 0,
+        isCorporateRule: true,
+        ruleLabel: "Corporate: No Comm (฿0)",
+      };
+    }
+
+    // 2. Fixed: Flat rate per trip (preserved even if Free Delivery is active)
+    if (commType === "fixed") {
+      const pComm = isPickup ? (Number(customer?.corporatePickupCommission) || 0) : 0;
+      const dComm = isDelivery ? (Number(customer?.corporateDeliveryCommission) || 0) : 0;
+      return {
+        pickupCommission: pComm,
+        deliveryCommission: dComm,
+        isCorporateRule: true,
+        ruleLabel: `Corporate: Fixed (P:฿${pComm} / D:฿${dComm})`,
+      };
+    }
+
+    // 3. Custom Rate per KM (preserved even if Free Delivery is active)
+    if (commType === "custom_km") {
+      const customRate = Number(customer?.corporateCommissionRatePerKm) || getCommissionRate(systemSettings);
+      const pComm = isPickup ? Math.floor(pickupDist) * customRate : 0;
+      const dComm = isDelivery ? Math.floor(deliveryDist) * customRate : 0;
+      return {
+        pickupCommission: pComm,
+        deliveryCommission: dComm,
+        isCorporateRule: true,
+        ruleLabel: `Corporate: ฿${customRate}/km`,
+      };
+    }
+
+    // 4. Default for Corporate: Standard system rate (preserved even if Free Delivery is active)
+    const defaultRate = getCommissionRate(systemSettings);
+    const pComm = isPickup ? Math.floor(pickupDist) * defaultRate : 0;
+    const dComm = isDelivery ? Math.floor(deliveryDist) * defaultRate : 0;
+    return {
+      pickupCommission: pComm,
+      deliveryCommission: dComm,
+      isCorporateRule: true,
+      ruleLabel: `Corporate: Standard (฿${defaultRate}/km)`,
+    };
+  }
+
+  // Non-corporate customers: VIP or Free Delivery zeros out commission
+  if (isVIP || isFreeDelivery) {
+    return {
+      pickupCommission: 0,
+      deliveryCommission: 0,
+      isCorporateRule: false,
+      ruleLabel: isVIP ? "VIP (฿0)" : "Free Delivery (฿0)",
+    };
+  }
+
+  // Standard non-corporate rate
+  const defaultRate = getCommissionRate(systemSettings);
+  const pComm = isPickup ? Math.floor(pickupDist) * defaultRate : 0;
+  const dComm = isDelivery ? Math.floor(deliveryDist) * defaultRate : 0;
+  return {
+    pickupCommission: pComm,
+    deliveryCommission: dComm,
+    isCorporateRule: false,
+    ruleLabel: `Standard (฿${defaultRate}/km)`,
+  };
+}
+
+/**
+ * Compares two phone strings to determine if they represent the same phone number.
+ * Supports:
+ * - Direct match (trimmed)
+ * - Thai mobile & landline formats (08x, +66 8x, 668x, +66 08x, hyphens/spaces)
+ * - International formats (+1, +44, +65, etc. with or without spaces/symbols)
+ * - Domestic zero vs country code (e.g. +44 79... vs 079...)
+ */
+export function isSamePhoneNumber(phoneA: string | null | undefined, phoneB: string | null | undefined): boolean {
+  if (!phoneA || !phoneB) return false;
+  const pA = phoneA.trim();
+  const pB = phoneB.trim();
+  if (!pA || !pB) return false;
+
+  // Direct exact match
+  if (pA.toLowerCase() === pB.toLowerCase()) return true;
+
+  // Both Thai
+  const isThaiA = isThaiPhoneNumber(pA);
+  const isThaiB = isThaiPhoneNumber(pB);
+  if (isThaiA && isThaiB) {
+    return normalizeThaiPhone(pA) === normalizeThaiPhone(pB);
+  }
+
+  // Normalized digits comparison (handles Thai +66 vs 0, and clean international digits)
+  const normA = normalizePhone(pA);
+  const normB = normalizePhone(pB);
+  if (normA && normB && normA === normB) return true;
+
+  const digitsA = pA.replace(/\D/g, "");
+  const digitsB = pB.replace(/\D/g, "");
+  if (!digitsA || !digitsB) return false;
+  if (digitsA === digitsB) return true;
+
+  // International country code handling (e.g. +44 7911123456 vs 07911123456 or 7911123456)
+  const checkIntlPair = (intlDigits: string, nationalDigits: string) => {
+    if (intlDigits.length < 9 || nationalDigits.length < 7) return false;
+    for (const ccLen of [1, 2, 3, 4]) {
+      if (intlDigits.length > ccLen + 6) {
+        const localPart = intlDigits.slice(ccLen);
+        if (localPart === nationalDigits) return true;
+        if ("0" + localPart === nationalDigits) return true;
+        if (nationalDigits.startsWith("0") && nationalDigits.slice(1) === localPart) return true;
+      }
+    }
+    return false;
+  };
+
+  if (checkIntlPair(digitsA, digitsB)) return true;
+  if (checkIntlPair(digitsB, digitsA)) return true;
+
+  return false;
+}
+
+/**
+ * Searches a list of customers to see if any customer already uses the given phone number(s).
+ * Checks against both primary phone and secondary phone.
+ */
+export function findDuplicateCustomerByPhone({
+  phone,
+  secondaryPhone,
+  customers,
+  excludeCustomerId,
+}: {
+  phone?: string | null;
+  secondaryPhone?: string | null;
+  customers: { id: string; name?: string | null; phone?: string | null; secondaryPhone?: string | null; memberId?: string | null }[];
+  excludeCustomerId?: string | null;
+}): {
+  customer: { id: string; name?: string | null; phone?: string | null; secondaryPhone?: string | null; memberId?: string | null };
+  matchedOn: "primary" | "secondary";
+  matchedPhone: string;
+} | null {
+  if (!customers || customers.length === 0) return null;
+
+  const candidatePhones: { value: string; type: "primary" | "secondary" }[] = [];
+  if (isValidPhoneNumber(phone)) {
+    candidatePhones.push({ value: phone.trim(), type: "primary" });
+  }
+  if (isValidPhoneNumber(secondaryPhone)) {
+    candidatePhones.push({ value: secondaryPhone.trim(), type: "secondary" });
+  }
+
+  if (candidatePhones.length === 0) return null;
+
+  for (const c of customers) {
+    if (excludeCustomerId && c.id === excludeCustomerId) continue;
+
+    for (const cand of candidatePhones) {
+      if (c.phone && isSamePhoneNumber(cand.value, c.phone)) {
+        return { customer: c, matchedOn: cand.type, matchedPhone: c.phone };
+      }
+      if (c.secondaryPhone && isSamePhoneNumber(cand.value, c.secondaryPhone)) {
+        return { customer: c, matchedOn: cand.type, matchedPhone: c.secondaryPhone };
+      }
+    }
+  }
+
+  return null;
+}
+
+
