@@ -2955,9 +2955,48 @@ export async function processRefundAndCorrectAction(data: {
       createdAt: new Date().toISOString(),
     });
 
+    // Parse existing payments to determine refund breakdown per channel
+    let existingPayments: any[] = [];
+    if (job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (Array.isArray(parsed?.payments)) {
+          existingPayments = parsed.payments;
+        }
+      } catch {}
+    }
+
+    if (existingPayments.length === 0 && (job.isPaid || job.isShopPaid) && originalAmount > 0) {
+      existingPayments = [{
+        amount: originalAmount,
+        channel: job.paymentChannel || "Cash / COD",
+        method: (job.paymentChannel || "").toLowerCase().includes("deduct") || (job.paymentChannel || "").toLowerCase().includes("wallet") ? "credit" : ((job.paymentChannel || "").toLowerCase().includes("transfer") ? "transfer" : "cash"),
+        shiftId: job.shiftId || undefined,
+      }];
+    }
+
+    const isWalletPay = (p: any) => {
+      const m = (p.method || "").toLowerCase();
+      const ch = (p.channel || "").toLowerCase();
+      return m === "credit" || m.includes("wallet") || m.includes("deduct") || ch.includes("deduct") || ch.includes("wallet") || ch.includes("member");
+    };
+
+    let walletRefundPortion = 0;
+    let cashRefundPortion = 0;
+
+    if (data.refundChannel === "wallet") {
+      walletRefundPortion = refundAmount;
+    } else if (data.refundChannel === "cash") {
+      cashRefundPortion = refundAmount;
+    } else {
+      // "original" channel: refund according to original channels
+      walletRefundPortion = existingPayments.filter(isWalletPay).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      cashRefundPortion = existingPayments.filter(p => !isWalletPay(p) && ((p.channel || "").toLowerCase().includes("cash") || (p.method || "").toLowerCase() === "cash")).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    }
+
     // Find active shift that actually pays out this cash refund
     let activeShiftForRefund = null;
-    const isCashRefund = data.refundChannel === "cash" || (!data.refundChannel && job.paymentChannel === "Cash / COD");
+    const isCashRefund = cashRefundPortion > 0;
     if (isCashRefund) {
       if (data.actorId) {
         activeShiftForRefund = await tx.cashierShift.findFirst({
@@ -2989,7 +3028,7 @@ export async function processRefundAndCorrectAction(data: {
         slipImageUrl: data.slipImageUrl || null,
         creditNoteNumber,
         creditNoteData,
-        walletAffected: data.refundChannel === "wallet" && !!job.customerId,
+        walletAffected: walletRefundPortion > 0 && !!job.customerId,
         shiftAffected: isShiftAffected,
         shiftId: effectiveShiftId,
         createdById: data.actorId || null,
@@ -3161,12 +3200,12 @@ export async function processRefundAndCorrectAction(data: {
       data: { correctedJobId: duplicatedJob.id }
     });
 
-    // 6. Handle Wallet refund if refundChannel is 'wallet'
-    if (data.refundChannel === "wallet" && job.customerId) {
+    // 6. Handle Wallet refund if walletRefundPortion > 0
+    if (walletRefundPortion > 0 && job.customerId) {
       const currentCust = await tx.customer.findUnique({ where: { id: job.customerId } });
       if (currentCust) {
         const balBefore = currentCust.creditBalance || 0;
-        const balAfter = Math.round((balBefore + refundAmount) * 100) / 100;
+        const balAfter = Math.round((balBefore + walletRefundPortion) * 100) / 100;
 
         await tx.customer.update({
           where: { id: job.customerId },
@@ -3179,7 +3218,7 @@ export async function processRefundAndCorrectAction(data: {
             customerId: job.customerId,
             customerName: currentCust.name,
             type: "REFUND",
-            amount: refundAmount,
+            amount: walletRefundPortion,
             direction: "CREDIT",
             balanceBefore: balBefore,
             balanceAfter: balAfter,
@@ -3189,7 +3228,7 @@ export async function processRefundAndCorrectAction(data: {
             createdById: data.actorId || null,
             createdByName: data.actorName || "Staff",
             branchId: data.branchId || job.branchId || null,
-            approvalStatus: "PENDING",
+            approvalStatus: "APPROVED",
           }
         });
 
@@ -3200,15 +3239,15 @@ export async function processRefundAndCorrectAction(data: {
       }
     }
 
-    // 7. Handle CashierShift if refundChannel is 'cash' and active open shift exists
-    if (effectiveShiftId && isShiftAffected) {
+    // 7. Handle CashierShift if cashRefundPortion > 0 and active open shift exists
+    if (effectiveShiftId && isShiftAffected && cashRefundPortion > 0) {
       const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
       if (shift && shift.status === "open") {
         await tx.cashierShift.update({
           where: { id: effectiveShiftId },
           data: {
-            cashSales: Math.max(0, (shift.cashSales || 0) - refundAmount),
-            expectedCash: Math.max(0, (shift.expectedCash || 0) - refundAmount),
+            cashSales: Math.max(0, (shift.cashSales || 0) - cashRefundPortion),
+            expectedCash: Math.max(0, (shift.expectedCash || 0) - cashRefundPortion),
           }
         });
       }
@@ -3367,8 +3406,14 @@ export async function unlockPaidJobAction(data: {
       }
 
       // ──── 3. Wallet Refund (สำหรับยอดที่ชำระด้วย Member Wallet / Credit) ────
+      const isWalletPay = (p: any) => {
+        const m = (p.method || "").toLowerCase();
+        const ch = (p.channel || "").toLowerCase();
+        return m === "credit" || m.includes("wallet") || m.includes("deduct") || ch.includes("deduct") || ch.includes("wallet") || ch.includes("member");
+      };
+
       const walletRefundAmount = existingPayments
-        .filter(p => (p.method || "").toLowerCase() === "credit")
+        .filter(isWalletPay)
         .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
 
       if (walletRefundAmount > 0 && job.customerId) {
@@ -3409,18 +3454,19 @@ export async function unlockPaidJobAction(data: {
 
         const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
         if (shift && shift.status === "open") {
-          const method = (pay.method || "").toLowerCase();
+          const m = (pay.method || "").toLowerCase();
+          const ch = (pay.channel || "").toLowerCase();
           const amount = Number(pay.amount) || 0;
           const shiftUpdates: any = {};
 
-          if (method === "cash") {
+          if (m === "cash" || ch.includes("cash") || ch.includes("cod")) {
             shiftUpdates.cashSales = Math.max(0, (shift.cashSales || 0) - amount);
             shiftUpdates.expectedCash = Math.max(0, (shift.expectedCash || 0) - amount);
-          } else if (method === "transfer") {
+          } else if (m === "transfer" || ch.includes("transfer") || ch.includes("qr") || ch.includes("promptpay")) {
             shiftUpdates.transferSales = Math.max(0, (shift.transferSales || 0) - amount);
-          } else if (method === "card") {
+          } else if (m === "card" || ch.includes("card") || ch.includes("debit")) {
             shiftUpdates.cardSales = Math.max(0, (shift.cardSales || 0) - amount);
-          } else if (method === "credit") {
+          } else if (isWalletPay(pay)) {
             shiftUpdates.creditSales = Math.max(0, (shift.creditSales || 0) - amount);
           }
 
@@ -3490,6 +3536,412 @@ export async function unlockPaidJobAction(data: {
     return {
       success: false,
       error: err?.message || "Failed to unlock paid job",
+    };
+  }
+}
+
+// ==========================================
+// MULTI-PAYMENT / SPLIT PAYMENT ACTIONS
+// ==========================================
+
+export async function recordJobPaymentAction(data: {
+  jobId: string;
+  amount: number;
+  channel: string;
+  method?: string;
+  actorId?: string;
+  actorName?: string;
+  actorRole?: string;
+  shiftId?: string | null;
+  slipUrl?: string | null;
+  note?: string | null;
+}): Promise<{
+  success: boolean;
+  error?: string;
+  updatedJob?: any;
+  paymentEntry?: any;
+  newBalance?: number;
+}> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const job = await tx.job.findUnique({ where: { id: data.jobId } });
+      if (!job) throw new Error("Job not found");
+
+      const amount = Math.round(Number(data.amount) * 100) / 100;
+      if (isNaN(amount) || amount <= 0) throw new Error("จำนวนเงินต้องมากกว่า 0");
+
+      const totalAmount = Number(job.totalAmount) || 0;
+
+      // Parse existing payments
+      let existingNotes: any = {};
+      let existingPayments: any[] = [];
+      if (job.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(job.adminNotesJson);
+          existingNotes = parsed || {};
+          existingPayments = Array.isArray(parsed.payments) ? parsed.payments : [];
+        } catch {}
+      }
+
+      const currentPaid = existingPayments.reduce((s: number, p: any) => s + (Number(p.amount) || 0), 0);
+      const remaining = Math.max(0, Math.round((totalAmount - currentPaid) * 100) / 100);
+
+      // Check if amount exceeds remaining (allow 0.01 margin for float rounding)
+      if (totalAmount > 0 && amount > remaining + 0.01) {
+        throw new Error(`ยอดเงินที่ระบุ (฿${amount}) เกินยอดคงเหลือที่ค้างชำระ (฿${remaining})`);
+      }
+
+      const rawChannelLower = (data.channel || "").toLowerCase();
+      const method = data.method || (
+        rawChannelLower.includes("member") || rawChannelLower.includes("wallet") ? "credit" :
+        rawChannelLower.includes("transfer") ? "transfer" :
+        rawChannelLower.includes("card") ? "card" : "cash"
+      );
+
+      let newBalance: number | undefined = undefined;
+
+      // If method is credit / Deduct Member
+      if (method === "credit") {
+        if (!job.customerId) throw new Error("ไม่พบข้อมูลลูกค้าสำหรับหักกระเป๋าเงินสมาชิก");
+        const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
+        if (!customer) throw new Error("ไม่พบข้อมูลลูกค้าในระบบ");
+        if (!customer.isMember) throw new Error("ลูกค้ารายนี้ไม่ได้เป็นสมาชิก (Member)");
+
+        // Check expiry
+        if (customer.memberExpiryDate && new Date(customer.memberExpiryDate).getTime() < Date.now()) {
+          throw new Error("กระเป๋าเงินสมาชิกหมดอายุแล้ว กรุณาเติมเงินต่ออายุก่อนใช้งาน");
+        }
+
+        const currentBal = customer.creditBalance || 0;
+        if (currentBal < amount) {
+          throw new Error(`ยอดเงินในกระเป๋า Wallet ไม่เพียงพอ (มี ฿${currentBal.toLocaleString()}, ต้องการหัก ฿${amount.toLocaleString()})`);
+        }
+
+        const balBefore = currentBal;
+        const balAfter = Math.round((balBefore - amount) * 100) / 100;
+
+        await tx.customer.update({
+          where: { id: job.customerId },
+          data: { creditBalance: balAfter }
+        });
+
+        await tx.walletTransaction.create({
+          data: {
+            customerId: job.customerId,
+            customerName: customer.name,
+            type: "DEDUCT",
+            amount: amount,
+            direction: "DEBIT",
+            balanceBefore: balBefore,
+            balanceAfter: balAfter,
+            reason: `ชำระค่างาน #${job.id}${data.note ? ` (${data.note})` : ""}`,
+            referenceId: job.id,
+            referenceType: "job",
+            paymentChannel: data.channel,
+            createdById: data.actorId || null,
+            createdByName: data.actorName || "Staff",
+            approvalStatus: "APPROVED",
+          }
+        });
+
+        newBalance = balAfter;
+      }
+
+      // Handle CashierShift if cash & shiftId provided
+      const effectiveShiftId = data.shiftId || job.shiftId;
+      if (effectiveShiftId && method === "cash") {
+        const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
+        if (shift && shift.status === "open") {
+          await tx.cashierShift.update({
+            where: { id: effectiveShiftId },
+            data: {
+              cashSales: (shift.cashSales || 0) + amount,
+              expectedCash: (shift.expectedCash || 0) + amount,
+            }
+          });
+        }
+      }
+
+      // Construct payment entry
+      const paymentEntry = {
+        id: crypto.randomUUID(),
+        amount,
+        channel: data.channel,
+        method,
+        timestamp: new Date().toISOString(),
+        shiftId: effectiveShiftId || null,
+        paidBy: data.actorName || "Staff",
+        slipUrl: data.slipUrl || null,
+        note: data.note || null,
+      };
+
+      const updatedPayments = [...existingPayments, paymentEntry];
+      const newTotalPaid = updatedPayments.reduce((s: number, p: any) => s + (Number(p.amount) || 0), 0);
+      const isFullyPaid = (totalAmount > 0 && newTotalPaid >= totalAmount - 0.01);
+
+      // Determine paymentChannel string
+      const distinctChannels = Array.from(new Set(updatedPayments.map(p => p.channel).filter(Boolean)));
+      let finalChannel = job.paymentChannel;
+      if (distinctChannels.length === 1) {
+        finalChannel = distinctChannels[0];
+      } else if (distinctChannels.length > 1) {
+        finalChannel = "Split Payment";
+      }
+
+      // Log note
+      const existingLogs = Array.isArray(existingNotes.notes) ? existingNotes.notes : [];
+      const paymentLog = {
+        id: crypto.randomUUID(),
+        text: `💰 RECORD PAYMENT: ฿${amount.toLocaleString()} via ${data.channel}${isFullyPaid ? " (ชำระครบถ้วนแล้ว)" : ` (ค้างอีก ฿${Math.max(0, totalAmount - newTotalPaid).toLocaleString()})`}`,
+        timestamp: new Date().toISOString(),
+        userId: data.actorId || "system",
+        userName: data.actorName || "Staff",
+      };
+
+      const updatedAdminNotesJson = JSON.stringify({
+        ...existingNotes,
+        payments: updatedPayments,
+        notes: [...existingLogs, paymentLog],
+      });
+
+      const updatedJob = await tx.job.update({
+        where: { id: data.jobId },
+        data: {
+          isPaid: isFullyPaid ? true : job.isPaid,
+          isShopPaid: isFullyPaid ? true : job.isShopPaid,
+          csoPaidAt: isFullyPaid ? (job.csoPaidAt || new Date()) : job.csoPaidAt,
+          shopPaidAt: isFullyPaid ? (job.shopPaidAt || new Date()) : job.shopPaidAt,
+          paymentChannel: finalChannel,
+          walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+          adminNotesJson: updatedAdminNotesJson,
+        }
+      });
+
+      // ActivityLog
+      await tx.activityLog.create({
+        data: {
+          entityId: data.jobId,
+          entityType: "job",
+          action: "RECORD_PAYMENT",
+          details: JSON.stringify({
+            paymentEntry,
+            newTotalPaid,
+            remaining: Math.max(0, totalAmount - newTotalPaid),
+            isFullyPaid,
+          }),
+          userId: data.actorId || null,
+          userName: data.actorName || null,
+        }
+      });
+
+      return {
+        success: true,
+        updatedJob,
+        paymentEntry,
+        newBalance,
+      };
+    });
+  } catch (err: any) {
+    console.error("[recordJobPaymentAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message || "Failed to record payment",
+    };
+  }
+}
+
+export async function voidJobPaymentAction(data: {
+  jobId: string;
+  paymentId: string;
+  reason: string;
+  actorId?: string;
+  actorName?: string;
+  actorRole?: string;
+}): Promise<{
+  success: boolean;
+  error?: string;
+  updatedJob?: any;
+  refundedAmount?: number;
+  newBalance?: number;
+}> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const job = await tx.job.findUnique({ where: { id: data.jobId } });
+      if (!job) throw new Error("Job not found");
+
+      if (!data.reason || !data.reason.trim()) {
+        throw new Error("กรุณาระบุเหตุผลในการยกเลิกรายการชำระเงิน");
+      }
+
+      // Permission check: admin, superadmin, accounting, or CSO
+      let actorRole = (data.actorRole || "").toLowerCase();
+      let hasFullAccess = actorRole === "admin" || actorRole === "superadmin" || actorRole === "accounting";
+      if (!hasFullAccess && data.actorId) {
+        const userRec = await tx.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true, permissions: true } });
+        if (userRec) {
+          const role = (userRec.role || "").toLowerCase();
+          const perms = userRec.permissions || "";
+          if (role === "admin" || role === "superadmin" || role === "accounting" || perms.includes("accounting")) {
+            hasFullAccess = true;
+          }
+        }
+      }
+
+      // Parse existing payments
+      let existingNotes: any = {};
+      let existingPayments: any[] = [];
+      if (job.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(job.adminNotesJson);
+          existingNotes = parsed || {};
+          existingPayments = Array.isArray(parsed.payments) ? parsed.payments : [];
+        } catch {}
+      }
+
+      const targetPaymentIndex = existingPayments.findIndex((p: any) => p.id === data.paymentId);
+      if (targetPaymentIndex === -1) {
+        throw new Error("ไม่พบรายการชำระเงินที่ต้องการยกเลิก");
+      }
+
+      const targetPayment = existingPayments[targetPaymentIndex];
+      const targetAmount = Number(targetPayment.amount) || 0;
+      const targetMethod = (targetPayment.method || "").toLowerCase();
+      const targetChannel = targetPayment.channel || targetMethod;
+
+      // CSO time limit check: only today or yesterday
+      if (!hasFullAccess) {
+        const payDate = targetPayment.timestamp ? new Date(targetPayment.timestamp) : null;
+        if (!isPaidTodayOrYesterday(payDate)) {
+          throw new Error("CSO สามารถยกเลิกรายการชำระเงินได้เฉพาะรายการของวันนี้และเมื่อวานเท่านั้น");
+        }
+      }
+
+      let refundedAmount = 0;
+      let newBalance: number | undefined = undefined;
+
+      // 1. If method was credit (Member Wallet), refund back to wallet
+      if (targetMethod === "credit" && job.customerId) {
+        const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
+        if (customer) {
+          const balBefore = customer.creditBalance || 0;
+          const balAfter = Math.round((balBefore + targetAmount) * 100) / 100;
+
+          await tx.customer.update({
+            where: { id: job.customerId },
+            data: { creditBalance: balAfter },
+          });
+
+          await tx.walletTransaction.create({
+            data: {
+              customerId: job.customerId,
+              customerName: customer.name,
+              type: "REFUND",
+              amount: targetAmount,
+              direction: "CREDIT",
+              balanceBefore: balBefore,
+              balanceAfter: balAfter,
+              reason: `ยกเลิกการชำระเงิน: ${data.reason.trim()}`,
+              referenceId: job.id,
+              referenceType: "job",
+              createdById: data.actorId || null,
+              createdByName: data.actorName || "CSO",
+              approvalStatus: "APPROVED",
+            }
+          });
+
+          refundedAmount = targetAmount;
+          newBalance = balAfter;
+        }
+      }
+
+      // 2. If cash and open shift, adjust shift
+      const effectiveShiftId = targetPayment.shiftId || job.shiftId;
+      if (effectiveShiftId && targetMethod === "cash") {
+        const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
+        if (shift && shift.status === "open") {
+          await tx.cashierShift.update({
+            where: { id: effectiveShiftId },
+            data: {
+              cashSales: Math.max(0, (shift.cashSales || 0) - targetAmount),
+              expectedCash: Math.max(0, (shift.expectedCash || 0) - targetAmount),
+            }
+          });
+        }
+      }
+
+      // 3. Remove payment from array
+      const updatedPayments = existingPayments.filter((_: any, idx: number) => idx !== targetPaymentIndex);
+      const newTotalPaid = updatedPayments.reduce((s: number, p: any) => s + (Number(p.amount) || 0), 0);
+      const totalAmount = Number(job.totalAmount) || 0;
+      const isStillFullyPaid = (totalAmount > 0 && newTotalPaid >= totalAmount - 0.01);
+
+      // Recompute channel
+      const distinctChannels = Array.from(new Set(updatedPayments.map(p => p.channel).filter(Boolean)));
+      let finalChannel: string | null = null;
+      if (distinctChannels.length === 1) {
+        finalChannel = distinctChannels[0];
+      } else if (distinctChannels.length > 1) {
+        finalChannel = "Split Payment";
+      }
+
+      // Append log
+      const existingLogs = Array.isArray(existingNotes.notes) ? existingNotes.notes : [];
+      const voidLog = {
+        id: crypto.randomUUID(),
+        text: `❌ VOID PAYMENT: ฿${targetAmount.toLocaleString()} (${targetChannel}) — Reason: ${data.reason.trim()}${refundedAmount > 0 ? ` | คืนเข้า Wallet: ฿${refundedAmount.toLocaleString()}` : ""}`,
+        timestamp: new Date().toISOString(),
+        userId: data.actorId || "system",
+        userName: data.actorName || "Staff",
+      };
+
+      const updatedAdminNotesJson = JSON.stringify({
+        ...existingNotes,
+        payments: updatedPayments,
+        notes: [...existingLogs, voidLog],
+      });
+
+      const updatedJob = await tx.job.update({
+        where: { id: data.jobId },
+        data: {
+          isPaid: isStillFullyPaid,
+          isShopPaid: isStillFullyPaid,
+          csoPaidAt: isStillFullyPaid ? job.csoPaidAt : null,
+          shopPaidAt: isStillFullyPaid ? job.shopPaidAt : null,
+          paymentChannel: finalChannel,
+          walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+          adminNotesJson: updatedAdminNotesJson,
+        }
+      });
+
+      // ActivityLog
+      await tx.activityLog.create({
+        data: {
+          entityId: data.jobId,
+          entityType: "job",
+          action: "VOID_PAYMENT",
+          details: JSON.stringify({
+            voidedPayment: targetPayment,
+            reason: data.reason.trim(),
+            refundedAmount,
+            newTotalPaid,
+          }),
+          userId: data.actorId || null,
+          userName: data.actorName || null,
+        }
+      });
+
+      return {
+        success: true,
+        updatedJob,
+        refundedAmount,
+        newBalance,
+      };
+    });
+  } catch (err: any) {
+    console.error("[voidJobPaymentAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message || "Failed to void payment",
     };
   }
 }

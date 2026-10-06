@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
-import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId } from "@/lib/utils";
+import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds, UNASSIGNED_BRANCH_ID } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
@@ -298,15 +298,19 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
       // Payment Channel Filter
       if (paymentChannelFilter !== "ALL") {
-        const pc = job.paymentChannel?.toUpperCase() || "";
+        const breakdown = getJobPaymentBreakdown(job);
+        const allChannels = [job.paymentChannel, ...breakdown.channels].filter(Boolean).map(c => c!.toUpperCase());
+        
         if (paymentChannelFilter === "Cash / COD") {
-          if (pc !== "CASH / COD" && pc !== "CASH") return false;
+          if (!allChannels.some(c => c === "CASH / COD" || c === "CASH")) return false;
         } else if (paymentChannelFilter === "Transfer") {
-          if (pc !== "TRANSFER" && pc !== "BANK TRANSFER") return false;
+          if (!allChannels.some(c => c === "TRANSFER" || c === "BANK TRANSFER")) return false;
         } else if (paymentChannelFilter === "Credit Card") {
-          if (pc !== "CREDIT CARD" && pc !== "CREDIT") return false;
+          if (!allChannels.some(c => c === "CREDIT CARD" || c === "CREDIT")) return false;
+        } else if (paymentChannelFilter === "Split / Mixed" || paymentChannelFilter === "Split Payment") {
+          if (!breakdown.isSplit && job.paymentChannel !== "Split Payment") return false;
         } else {
-          if (job.paymentChannel !== paymentChannelFilter) return false;
+          if (!allChannels.includes(paymentChannelFilter.toUpperCase())) return false;
         }
       }
 
@@ -883,28 +887,72 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-[11px] font-bold text-slate-700">
-                            {job.paymentChannel || "Unspecified"}
-                          </span>
-                          {(job.remark?.includes("ขอใบกำกับภาษี") || (job.remark && (job.remark.includes("Tax Invoice") || job.remark.includes("Req Tax Inv")))) && (
-                            <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[8.5px] px-1 py-0 h-4 font-black tracking-wider shadow-none">
-                              TAX REQ
-                            </Badge>
-                          )}
-                        </div>
+                        {(() => {
+                          const breakdown = getJobPaymentBreakdown(job);
+                          return (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {breakdown.isSplit ? (
+                                <div className="relative group inline-block">
+                                  <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200 text-[9.5px] px-1.5 py-0.5 font-bold cursor-default flex items-center gap-1 shadow-none">
+                                    <CreditCard size={10} className="text-indigo-500" />
+                                    SPLIT ({breakdown.payments.length})
+                                  </Badge>
+                                  {/* Tooltip on hover */}
+                                  <div className="absolute left-0 top-full mt-1 hidden group-hover:block z-30 bg-slate-900 text-white text-[9.5px] rounded-lg p-2 shadow-xl border border-slate-700 w-44 pointer-events-none">
+                                    <div className="font-bold border-b border-slate-700 pb-1 mb-1 text-slate-300">
+                                      Payment Breakdown:
+                                    </div>
+                                    {breakdown.payments.map((p, idx) => (
+                                      <div key={idx} className="flex justify-between py-0.5">
+                                        <span className="text-slate-300 truncate max-w-[90px]">{p.channel || p.method}:</span>
+                                        <span className="font-mono font-bold text-emerald-400">฿{p.amount.toLocaleString()}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-[11px] font-bold text-slate-700">
+                                  {job.paymentChannel || "Unspecified"}
+                                </span>
+                              )}
+                              {(job.remark?.includes("ขอใบกำกับภาษี") || (job.remark && (job.remark.includes("Tax Invoice") || job.remark.includes("Req Tax Inv")))) && (
+                                <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[8.5px] px-1 py-0 h-4 font-black tracking-wider shadow-none">
+                                  TAX REQ
+                                </Badge>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </TableCell>
                       
                       <TableCell className="align-middle py-2 text-center">
-                        {job.source === 'pos' || (job.type as string) === 'in_store' ? (
-                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            SHOP {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${job.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {job.isPaid ? 'PAID' : 'UNPAID'}
-                          </Badge>
-                        )}
+                        {(() => {
+                          const breakdown = getJobPaymentBreakdown(job);
+                          const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+                          if (breakdown.isFullyPaid) {
+                            return (
+                              <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto bg-emerald-100 text-emerald-700">
+                                {isPos ? 'SHOP PAID' : 'PAID'}
+                              </Badge>
+                            );
+                          }
+                          if (breakdown.isPartial) {
+                            return (
+                              <Badge 
+                                variant="outline" 
+                                className="text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto bg-amber-100 text-amber-800"
+                                title={`ชำระแล้ว ฿${breakdown.totalPaid.toLocaleString()} / คงเหลือ ฿${breakdown.remaining.toLocaleString()}`}
+                              >
+                                PARTIAL ฿{Math.round(breakdown.totalPaid).toLocaleString()}
+                              </Badge>
+                            );
+                          }
+                          return (
+                            <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto bg-orange-100 text-orange-700">
+                              {isPos ? 'SHOP UNPAID' : 'UNPAID'}
+                            </Badge>
+                          );
+                        })()}
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
@@ -918,9 +966,28 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-center">
-                        <Badge variant="outline" className={`text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                          {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
-                        </Badge>
+                        {(() => {
+                          const breakdown = getJobPaymentBreakdown(job);
+                          if (breakdown.isFullyPaid) {
+                            return (
+                              <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto bg-emerald-100 text-emerald-700">
+                                PAID
+                              </Badge>
+                            );
+                          }
+                          if (breakdown.isPartial) {
+                            return (
+                              <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto bg-amber-100 text-amber-800" title={`ชำระแล้ว ฿${breakdown.totalPaid.toLocaleString()} / คงเหลือ ฿${breakdown.remaining.toLocaleString()}`}>
+                                PARTIAL
+                              </Badge>
+                            );
+                          }
+                          return (
+                            <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto bg-orange-100 text-orange-700">
+                              UNPAID
+                            </Badge>
+                          );
+                        })()}
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
@@ -1332,22 +1399,26 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
                                 <Banknote size={12} className="text-slate-400" />
                                 <span className="font-bold">฿{job.totalAmount || 0}</span>
-                                {job.source === 'pos' || (job.type as string) === 'in_store' ? (
-                                  <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                                    SHOP {isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
-                                  </span>
-                                ) : (
-                                  <div className="inline-flex items-center gap-1 flex-wrap">
-                                    <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${isJobFullyPaid(job) ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                                      {job.paymentChannel ? `${job.paymentChannel} - ` : ''}{isJobFullyPaid(job) ? 'PAID' : 'UNPAID'}
-                                    </span>
-                                    {job.isPaid && !isJobFullyPaid(job) && (
-                                      <span className="px-1 py-0.5 rounded uppercase font-bold tracking-wider bg-blue-50 text-blue-700 border border-blue-200 text-[8.5px]" title="CSO Confirmed Payment - Waiting for Shop to Pay">
-                                        CSO PAID
+                                {(() => {
+                                  const breakdown = getJobPaymentBreakdown(job);
+                                  const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+                                  const statusLabel = breakdown.isFullyPaid ? 'PAID' : breakdown.isPartial ? `PARTIAL (฿${Math.round(breakdown.totalPaid).toLocaleString()})` : 'UNPAID';
+                                  const colorClass = breakdown.isFullyPaid ? 'bg-emerald-100 text-emerald-700' : breakdown.isPartial ? 'bg-amber-100 text-amber-800' : 'bg-orange-100 text-orange-700';
+                                  const channelLabel = breakdown.isSplit ? `SPLIT (${breakdown.payments.length})` : (job.paymentChannel || '');
+
+                                  return (
+                                    <div className="inline-flex items-center gap-1 flex-wrap">
+                                      <span className={`px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${colorClass}`}>
+                                        {channelLabel ? `${channelLabel} - ` : ''}{isPos ? `SHOP ${statusLabel}` : statusLabel}
                                       </span>
-                                    )}
-                                  </div>
-                                )}
+                                      {job.isPaid && !breakdown.isFullyPaid && (
+                                        <span className="px-1 py-0.5 rounded uppercase font-bold tracking-wider bg-blue-50 text-blue-700 border border-blue-200 text-[8.5px]" title="CSO Confirmed Payment - Waiting for Shop to Pay">
+                                          CSO PAID
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             </div>
 

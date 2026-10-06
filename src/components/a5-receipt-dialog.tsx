@@ -522,10 +522,10 @@ export function A5ReceiptContent({
   const effectiveMemberId =
     receiptData.memberId || targetCustomer?.memberId || (isMember && targetCustomer?.id && !targetCustomer.id.includes("-") ? targetCustomer.id : null);
   const walletBalance =
-    receiptData.walletBalance !== undefined && receiptData.walletBalance !== null
-      ? receiptData.walletBalance
-      : ((receiptData as any).walletBalanceAfter !== undefined && (receiptData as any).walletBalanceAfter !== null
-        ? (receiptData as any).walletBalanceAfter
+    (receiptData as any).walletBalanceAfter !== undefined && (receiptData as any).walletBalanceAfter !== null
+      ? (receiptData as any).walletBalanceAfter
+      : (receiptData.walletBalance !== undefined && receiptData.walletBalance !== null
+        ? receiptData.walletBalance
         : (targetCustomer?.creditBalance || 0));
   const isWalletSufficient = isMember && walletBalance >= (receiptData.total || 0);
 

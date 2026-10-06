@@ -119,6 +119,7 @@ export interface ReceiptData {
   isMember?: boolean;
   memberId?: string | null;
   walletBalance?: number;
+  walletBalanceAfter?: number | null;
   proformaId?: string;
   jobId?: string;
   proformaRevision?: number;
@@ -345,6 +346,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     isMember,
     memberId,
     walletBalance,
+    walletBalanceAfter: (job as any).walletBalanceAfter !== undefined ? (job as any).walletBalanceAfter : (walletBalance ?? null),
     proformaId: cleanBaseProforma || rawProformaId,  // base number only — display layers append -R{n}
     proformaRevision: proformaRevision,
     jobId: job.id,
@@ -973,10 +975,10 @@ export function ThermalReceiptDialog({
             }
           })()}
           {/* Member Wallet Balance on Receipt */}
-          {!receiptData.isDraft && receiptData.isMember && receiptData.walletBalance !== undefined && (
+          {!receiptData.isDraft && receiptData.isMember && (receiptData.walletBalanceAfter != null || receiptData.walletBalance !== undefined) && (
             <div className={`w-full flex justify-between font-bold text-neutral-900 border-t border-b border-dashed border-neutral-400/50 py-1 my-1 ${isA5 ? "text-sm" : (isSmall ? "text-[8px]" : "text-[9px]")}`}>
               <span>{currentLanguage === "en" ? "MEMBER BALANCE:" : "ยอดคงเหลือสมาชิก:"}</span>
-              <span className={`font-mono ${receiptData.walletBalance < 0 ? "text-rose-600 font-black" : ""}`}>{formatBaht(receiptData.walletBalance)}</span>
+              <span className={`font-mono ${(receiptData.walletBalanceAfter ?? receiptData.walletBalance ?? 0) < 0 ? "text-rose-600 font-black" : ""}`}>{formatBaht(receiptData.walletBalanceAfter ?? receiptData.walletBalance ?? 0)}</span>
             </div>
           )}
           {cleanRemarkForDisplay(receiptData.remark) && (

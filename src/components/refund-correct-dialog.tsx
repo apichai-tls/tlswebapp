@@ -25,7 +25,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, customerStore, type Job, type Customer } from "@/lib/store";
 import { api } from "@/lib/api";
-import { formatBaht } from "@/lib/utils";
+import { formatBaht, getJobPaymentBreakdown } from "@/lib/utils";
 
 interface RefundCorrectDialogProps {
   open: boolean;
@@ -71,6 +71,30 @@ export function RefundCorrectDialog({ open, onClose, job, onSuccess }: RefundCor
   const originalAmount = useMemo(() => {
     return Number(job?.totalAmount) || 0;
   }, [job]);
+
+  const paymentBreakdown = useMemo(() => {
+    return job ? getJobPaymentBreakdown(job) : null;
+  }, [job]);
+
+  const hasWalletPayment = useMemo(() => {
+    if (!paymentBreakdown) return false;
+    return paymentBreakdown.payments.some(p => {
+      const m = (p.method || "").toLowerCase();
+      const ch = (p.channel || "").toLowerCase();
+      return m === "credit" || m.includes("wallet") || m.includes("deduct") || ch.includes("deduct") || ch.includes("wallet") || ch.includes("member");
+    });
+  }, [paymentBreakdown]);
+
+  const walletAmountInJob = useMemo(() => {
+    if (!paymentBreakdown) return 0;
+    return paymentBreakdown.payments
+      .filter(p => {
+        const m = (p.method || "").toLowerCase();
+        const ch = (p.channel || "").toLowerCase();
+        return m === "credit" || m.includes("wallet") || m.includes("deduct") || ch.includes("deduct") || ch.includes("wallet") || ch.includes("member");
+      })
+      .reduce((s, p) => s + (p.amount || 0), 0);
+  }, [paymentBreakdown]);
 
   const targetDuplicateId = useMemo(() => {
     if (!job) return "";
@@ -244,7 +268,9 @@ export function RefundCorrectDialog({ open, onClose, job, onSuccess }: RefundCor
               >
                 <div className="text-xs font-bold">ช่องทางเดิม</div>
                 <div className="text-[10px] text-slate-500 mt-0.5 truncate w-full">
-                  {job.paymentChannel || "Original"}
+                  {paymentBreakdown?.isSplit 
+                    ? `Split (${paymentBreakdown.channels.join(", ")})` 
+                    : (job.paymentChannel || "Original")}
                 </div>
               </button>
 
@@ -294,9 +320,21 @@ export function RefundCorrectDialog({ open, onClose, job, onSuccess }: RefundCor
               </p>
             )}
 
-            {refundChannel !== "wallet" && (
+            {refundChannel === "original" && hasWalletPayment && customer && (
+              <p className="text-[11px] text-emerald-800 bg-emerald-50 p-2 rounded border border-emerald-200">
+                💳 ยอดที่ชำระด้วย Member Wallet (<strong className="text-emerald-950 font-bold">฿{formatCurrency(walletAmountInJob)}</strong>) จะถูกคืนกลับเข้ากระเป๋าของ <strong>{customer.name}</strong> ให้อัตโนมัติ ส่วนที่เหลือให้จัดการตามช่องทางเดิม
+              </p>
+            )}
+
+            {refundChannel === "cash" && (
               <p className="text-[11px] text-amber-800 bg-amber-50 p-2 rounded border border-amber-200">
                 ⚠️ พนักงาน/แคชเชียร์ต้องดำเนินการคืนเงินสดหรือโอนเงินคืนลูกค้า <strong className="text-amber-950 font-bold">฿{formatCurrency(originalAmount)}</strong> ด้วยตนเอง
+              </p>
+            )}
+
+            {refundChannel === "original" && !hasWalletPayment && (
+              <p className="text-[11px] text-amber-800 bg-amber-50 p-2 rounded border border-amber-200">
+                ⚠️ พนักงาน/แคชเชียร์ต้องดำเนินการคืนเงินสดหรือโอนเงินคืนลูกค้า <strong className="text-amber-950 font-bold">฿{formatCurrency(originalAmount)}</strong> ตามช่องทางเดิมด้วยตนเอง
               </p>
             )}
           </div>

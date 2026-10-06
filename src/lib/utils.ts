@@ -263,6 +263,94 @@ export function getWalletStatus(customer?: { memberExpiryDate?: Date | string | 
 /**
  * Check if a job is fully paid based on isShopPaid, or adminNotesJson.payments >= totalAmount.
  */
+export interface JobPaymentEntry {
+  id?: string;
+  amount: number;
+  channel?: string;
+  method?: string;
+  timestamp: string;
+  shiftId?: string | null;
+  paidBy?: string;
+  slipUrl?: string | null;
+  note?: string | null;
+}
+
+export interface JobPaymentBreakdown {
+  total: number;
+  totalPaid: number;
+  remaining: number;
+  isFullyPaid: boolean;
+  isPartial: boolean;
+  isSplit: boolean;
+  payments: JobPaymentEntry[];
+  channels: string[];
+}
+
+export function getJobPaymentBreakdown(job?: {
+  totalAmount?: number | null;
+  isPaid?: boolean | null;
+  isShopPaid?: boolean | null;
+  paymentChannel?: string | null;
+  paymentMethod?: string | null;
+  adminNotesJson?: string | null;
+} | null): JobPaymentBreakdown {
+  const total = Math.max(0, Number(job?.totalAmount) || 0);
+  let payments: JobPaymentEntry[] = [];
+  
+  if (job?.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments)) {
+        payments = parsed.payments
+          .filter((p: any) => p && typeof p === "object" && Number(p.amount) > 0)
+          .map((p: any) => ({
+            id: p.id || undefined,
+            amount: Number(p.amount) || 0,
+            channel: p.channel || undefined,
+            method: p.method || undefined,
+            timestamp: p.timestamp || new Date().toISOString(),
+            shiftId: p.shiftId || null,
+            paidBy: p.paidBy || undefined,
+            slipUrl: p.slipUrl || null,
+            note: p.note || null,
+          }));
+      }
+    } catch {}
+  }
+  
+  let totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+  
+  // Fallback for legacy jobs marked paid without payments array
+  if (payments.length === 0 && (job?.isShopPaid || job?.isPaid) && total > 0) {
+    totalPaid = total;
+    payments = [{
+      amount: total,
+      channel: job?.paymentChannel || "Unspecified",
+      method: job?.paymentMethod || "cash",
+      timestamp: new Date().toISOString(),
+      paidBy: "Legacy Record",
+    }];
+  }
+
+  const remaining = Math.max(0, Math.round((total - totalPaid) * 100) / 100);
+  const isFullyPaid = (job?.isShopPaid === true) || (total > 0 && totalPaid >= total - 0.01);
+  const isPartial = !isFullyPaid && totalPaid > 0 && remaining > 0;
+  
+  const channels = Array.from(new Set(payments.map(p => p.channel || p.method || "Unspecified").filter(Boolean)));
+  const isSplit = channels.length > 1;
+
+  return {
+    total,
+    totalPaid,
+    remaining,
+    isFullyPaid,
+    isPartial,
+    isSplit,
+    payments,
+    channels,
+  };
+}
+
 export function isJobFullyPaid(job?: {
   isPaid?: boolean | null;
   isShopPaid?: boolean | null;

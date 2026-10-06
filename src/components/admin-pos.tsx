@@ -2799,6 +2799,18 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
       const resolvedDeliveryFee = isDelivery ? (parseFloat(localDeliveryPrice) || 0) : 0;
 
+      // Calculate initial member wallet balance after this transaction
+      let initialWalletBalanceAfter: number | null = null;
+      if (selectedCustomer) {
+        if (finalCreditAlloc > 0) {
+          initialWalletBalanceAfter = Math.round(((selectedCustomer.creditBalance || 0) - finalCreditAlloc) * 100) / 100;
+        } else if (topUpTotal > 0) {
+          initialWalletBalanceAfter = Math.round(((selectedCustomer.creditBalance || 0) + topUpTotal) * 100) / 100;
+        } else {
+          initialWalletBalanceAfter = selectedCustomer.creditBalance ?? null;
+        }
+      }
+
       let finalJob = null;
       if (loadedJobId) {
         const loadedJob = jobs.find(j => j.id === loadedJobId);
@@ -2852,6 +2864,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           proformaNumber: targetProformaNum || undefined,
           proformaRevision: targetProformaNum ? (effectiveRevision ?? undefined) : undefined,
           proformaCartHash: targetProformaNum ? (currentCartHash || undefined) : undefined,
+          walletBalanceAfter: initialWalletBalanceAfter,
         } as any);
 
         const allJobs = jobStore.getSnapshot();
@@ -2893,6 +2906,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           paymentMethod: isPaidFlag ? finalMethod : undefined,
           paymentChannel: isPaidFlag ? finalChannel : (finalChannel || undefined),
           remark: finalRemark,
+          walletBalanceAfter: initialWalletBalanceAfter,
           adminNotesJson: paymentsJsonStr,
           createdBy: user?.name || user?.email || "POS Counter",
           pickupScheduledAt: isPickupAndDelivery ? new Date() : undefined,

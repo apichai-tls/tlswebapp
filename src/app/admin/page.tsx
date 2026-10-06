@@ -55,6 +55,7 @@ import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
 import { RefundCorrectDialog } from "@/components/refund-correct-dialog";
+import { JobPaymentPanel } from "@/components/job-payment-panel";
 import FeeCalculatorPage from "./fee-calculator/page";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
@@ -1105,7 +1106,17 @@ export default function AdminPage() {
   }, [systemSettings, selectedProfileCustomer?.isMember]);
 
   const isCustomerWalletExpired = isWalletExpired(selectedProfileCustomer);
-  const isWalletInsufficient = paymentChannel === "Deduct Member" && !isPaidJob && ((selectedProfileCustomer?.creditBalance || 0) < dialogTotal);
+  const editingJobPaymentsTotal = editingJobId ? (() => {
+    const j = jobs.find(job => job.id === editingJobId) || activeJob;
+    if (!j?.adminNotesJson) return 0;
+    try {
+      const p = JSON.parse(j.adminNotesJson);
+      if (Array.isArray(p?.payments)) return p.payments.reduce((s: number, pay: any) => s + (Number(pay.amount) || 0), 0);
+    } catch {}
+    return 0;
+  })() : 0;
+  const effectiveRemainingTotal = Math.max(0, dialogTotal - editingJobPaymentsTotal);
+  const isWalletInsufficient = paymentChannel === "Deduct Member" && !isPaidJob && ((selectedProfileCustomer?.creditBalance || 0) < effectiveRemainingTotal);
   const isWalletBlocked = paymentChannel === "Deduct Member" && !isPaidJob && (isWalletInsufficient || isCustomerWalletExpired);
 
   useEffect(() => {
@@ -2116,7 +2127,24 @@ export default function AdminPage() {
       }
     }
 
-    const isAlreadyPaidJob = isPaidJob || Boolean(existingJob?.isShopPaid);
+    let existingPayments: any[] = [];
+    let existingParsedNotes: any = {};
+    if (existingJob && existingJob.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(existingJob.adminNotesJson);
+        if (parsed && typeof parsed === "object") {
+          existingParsedNotes = parsed;
+          if (Array.isArray(parsed.payments)) {
+            existingPayments = parsed.payments;
+          }
+        }
+      } catch (e) {}
+    }
+
+    const alreadyPaidTotal = existingPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+    const remainingToPay = Math.max(0, calculatedTotal - alreadyPaidTotal);
+
+    const isAlreadyPaidJob = isPaidJob || Boolean(existingJob?.isShopPaid) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0);
     const isNewDeduction = paymentChannel === "Deduct Member" && isPayment && !isAlreadyPaidJob;
 
     if (!isAlreadyPaidJob && paymentChannel === "Deduct Member" && !selectedProfileCustomer?.isMember) {
@@ -2130,8 +2158,8 @@ export default function AdminPage() {
         return;
       }
       const currentBalance = selectedProfileCustomer?.creditBalance || 0;
-      if (currentBalance < calculatedTotal) {
-        abortSubmit(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(calculatedTotal)})`);
+      if (currentBalance < remainingToPay) {
+        abortSubmit(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(remainingToPay)})`);
         return;
       }
     }
@@ -2233,7 +2261,7 @@ export default function AdminPage() {
       setProformaRevision(effectiveProformaRevision);
       setLastProformaCartHash(effectiveProformaCartHash);
     }
-    const cannotDeduct = !isAlreadyPaidJob && isPayment && paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < calculatedTotal) || isWalletExpired(selectedProfileCustomer));
+    const cannotDeduct = !isAlreadyPaidJob && isPayment && paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < remainingToPay) || isWalletExpired(selectedProfileCustomer));
 
 
     const newJobData: any = {
@@ -2282,8 +2310,8 @@ export default function AdminPage() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: cannotDeduct ? false : (isPaidJob || isPayment || (isWalkIn ? false : paymentMethod === 'paid')),
-      isShopPaid: cannotDeduct ? false : (isPaidJob || isPayment || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
+      isPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (isWalkIn ? false : paymentMethod === 'paid')),
+      isShopPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
 
       fee,
       totalAmount: calculatedTotal,
@@ -2322,42 +2350,24 @@ export default function AdminPage() {
         ) : "",
       ].filter(Boolean).join(" | ") || null,
       adminNotesJson: (() => {
-        let existingPayments: any[] = [];
-        let existingParsed: any = {};
-        if (existingJob && existingJob.adminNotesJson) {
-          try {
-            const parsed = JSON.parse(existingJob.adminNotesJson);
-            if (parsed && typeof parsed === "object") {
-              existingParsed = parsed;
-              if (Array.isArray(parsed.payments)) {
-                existingPayments = parsed.payments;
-              }
-            }
-          } catch (e) {}
-        }
-
-        const isPaidNow = isPayment;
-        const alreadyPaidTotal = existingPayments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
-
-        const remainingToPay = calculatedTotal - alreadyPaidTotal;
-
         const finalPayments = [...existingPayments];
 
-        if (isPaidNow && remainingToPay > 0) {
+        if (isPayment && remainingToPay > 0) {
           const pMethod = mapChannelNameToMethod(paymentChannel, getPaymentChannels(systemSettings));
           finalPayments.push({
+            id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             amount: remainingToPay,
             method: pMethod,
+            channel: paymentChannel || "Cash / COD",
             timestamp: new Date().toISOString(),
             shiftId: targetShiftId,
             paidBy: user?.name || user?.email || "Admin"
           });
         }
 
-
         const cleanLogs = finalAdminLogs.map(({ isNew, ...rest }) => rest);
         const notesObj: any = {
-          ...existingParsed,
+          ...existingParsedNotes,
           notes: cleanLogs,
           isTaxInvoiceRequested,
         };
@@ -2368,7 +2378,21 @@ export default function AdminPage() {
       })(),
 
       branchId: shop.id,
-      paymentChannel: paymentChannel || null,
+      paymentChannel: (() => {
+        const tempPayments = [...existingPayments];
+        if (isPayment && remainingToPay > 0) {
+          tempPayments.push({
+            channel: paymentChannel || "Cash / COD"
+          });
+        }
+        if (tempPayments.length > 0) {
+          const distinctChannels = Array.from(new Set(
+            tempPayments.map((p: any) => p.channel || p.method).filter(Boolean) as string[]
+          ));
+          return distinctChannels.length > 1 ? "Split Payment" : (distinctChannels[0] || paymentChannel || null);
+        }
+        return paymentChannel || null;
+      })(),
       proformaReceiptNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaRevision: targetProformaNum ? (effectiveProformaRevision !== null ? effectiveProformaRevision : 0) : null,
@@ -2405,8 +2429,8 @@ export default function AdminPage() {
             'remark', 'adminNotesJson', 'branchId', 'createdBy', 'cashPlaced',
             'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
             'laundryTypes', 'items', 'paymentChannel', 'isShopPaid', 'billNo',
-            'proformaNumber', 'proformaRevision', 'proformaCartHash'
-
+            'proformaNumber', 'proformaRevision', 'proformaCartHash',
+            'walletBalanceAfter'
           ];
           
           fieldsToCompare.forEach(f => {
@@ -2441,6 +2465,50 @@ export default function AdminPage() {
           }
         } else {
           Object.assign(payload, newJobData);
+        }
+
+        // Handle wallet adjustments for job updates (BEFORE saving job, so walletBalanceAfter is saved atomically with isShopPaid!)
+        // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Save
+        const isShopPaidNow_update = isPayment;
+        const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
+        if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
+          if (paymentChannel === "Deduct Member") {
+            const currentBalance = selectedProfileCustomer.creditBalance || 0;
+            if (currentBalance < remainingToPay) {
+              toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(remainingToPay)})`);
+              setIsSubmitting(false);
+              return;
+            }
+          }
+          let balAdj = 0;
+          if (paymentChannel === "Deduct Member") balAdj -= remainingToPay;
+          const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
+          if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+          if (balAdj !== 0) {
+            const isDeduct = balAdj < 0;
+            const refDisplay = (existingJob as any)?.billNo || targetEditingJobId;
+            const upd: Partial<Customer> & Record<string, any> = { 
+              creditBalanceDelta: balAdj,
+              walletTxType: isDeduct ? 'DEDUCT' : 'ADJUST_ADD',
+              walletRefId: targetEditingJobId,
+              walletRefType: 'job',
+              actorId: user?.id || null,
+              actorName: user?.name || user?.email || 'Staff',
+              branchId: (existingJob as any)?.branchId || activeShop?.id || null,
+              reason: isDeduct ? `Order Payment #${refDisplay}` : `Package Top-Up #${refDisplay}`,
+            };
+            if (balAdj > 0 && !selectedProfileCustomer.isMember) {
+              upd.isMember = true;
+              const pls = priceListStore.getSnapshot();
+              const ml = pls.find(p => p.name.toLowerCase().includes("member"));
+              if (ml) upd.priceListId = ml.id;
+            }
+            const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
+            const confirmedBal = updatedCust?.creditBalance ?? ((selectedProfileCustomer.creditBalance || 0) + balAdj);
+            payload.walletBalanceAfter = confirmedBal;
+            setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+            toast.success(`Customer wallet updated. New balance: ${formatBaht(confirmedBal)}`);
+          }
         }
 
         // 1. Optimistic memory update first — Kanban reflects change in 0ms!
@@ -2503,7 +2571,7 @@ export default function AdminPage() {
           payload.proofImageUrl = (safeDeliveryUrls.length > 0 ? JSON.stringify(safeDeliveryUrls) : null) as any;
         }
 
-        // 3. Persist to DB and await confirmation
+        // 3. Persist to DB and await confirmation (includes walletBalanceAfter if deducted!)
         if (Object.keys(payload).length > 0) {
           (payload as any).actorId = user?.id;
           (payload as any).actorName = user?.name || user?.email;
@@ -2512,50 +2580,6 @@ export default function AdminPage() {
             (payload as any).updatedAt = (originalJobRef.current as any).updatedAt;
           }
           await api.updateJob(targetEditingJobId, payload);
-        }
-
-        // Handle wallet adjustments for job updates (separate flow — job already exists)
-        // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Save
-        const isShopPaidNow_update = isPayment;
-        const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
-        if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
-          if (paymentChannel === "Deduct Member") {
-            const currentBalance = selectedProfileCustomer.creditBalance || 0;
-            if (currentBalance < calculatedTotal) {
-              toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(calculatedTotal)})`);
-              setIsSubmitting(false);
-              return;
-            }
-          }
-          let balAdj = 0;
-          if (paymentChannel === "Deduct Member") balAdj -= calculatedTotal;
-          const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
-          if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-          if (balAdj !== 0) {
-            const isDeduct = balAdj < 0;
-            const refDisplay = (existingJob as any)?.billNo || targetEditingJobId;
-            const upd: Partial<Customer> & Record<string, any> = { 
-              creditBalanceDelta: balAdj,
-              walletTxType: isDeduct ? 'DEDUCT' : 'ADJUST_ADD',
-              walletRefId: targetEditingJobId,
-              walletRefType: 'job',
-              actorId: user?.id || null,
-              actorName: user?.name || user?.email || 'Staff',
-              branchId: (existingJob as any)?.branchId || activeShop?.id || null,
-              reason: isDeduct ? `Order Payment #${refDisplay}` : `Package Top-Up #${refDisplay}`,
-            };
-            if (balAdj > 0 && !selectedProfileCustomer.isMember) {
-              upd.isMember = true;
-              const pls = priceListStore.getSnapshot();
-              const ml = pls.find(p => p.name.toLowerCase().includes("member"));
-              if (ml) upd.priceListId = ml.id;
-            }
-            const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
-            const confirmedBal = updatedCust?.creditBalance ?? ((selectedProfileCustomer.creditBalance || 0) + balAdj);
-            await api.updateJob(targetEditingJobId, { walletBalanceAfter: confirmedBal });
-            setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
-            toast.success(`Customer wallet updated. New balance: ${formatBaht(confirmedBal)}`);
-          }
         }
 
         // [AUTO-PROFORMA] Capture proforma ONLY IF payment occurred or proforma preview was explicitly requested
@@ -3174,6 +3198,74 @@ export default function AdminPage() {
       toast.error(err?.message || "เกิดข้อผิดพลาดในการปลดล็อค");
     } finally {
       setIsUnlockingPaid(false);
+    }
+  };
+
+  const handlePaymentPanelSuccess = (updatedJob: Job, newBalance?: number) => {
+    // 1. Optimistic update in Job Store
+    api.optimisticUpdate(updatedJob.id, updatedJob);
+    // 2. Update originalJobRef so OCC doesn't conflict
+    if (originalJobRef.current) {
+      originalJobRef.current.isPaid = updatedJob.isPaid;
+      originalJobRef.current.isShopPaid = updatedJob.isShopPaid;
+      originalJobRef.current.paymentChannel = updatedJob.paymentChannel;
+      originalJobRef.current.adminNotesJson = updatedJob.adminNotesJson;
+      originalJobRef.current.walletBalanceAfter = updatedJob.walletBalanceAfter;
+      if (updatedJob.updatedAt) {
+        originalJobRef.current.updatedAt = updatedJob.updatedAt;
+      }
+    }
+    // 3. Update local state
+    setPaymentChannel(updatedJob.paymentChannel || "");
+    setPaymentMethod(updatedJob.isPaid ? 'paid' : 'unpaid');
+    setShopPaymentMethod(updatedJob.isShopPaid ? 'paid' : 'unpaid');
+    if (updatedJob.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(updatedJob.adminNotesJson);
+        if (Array.isArray(parsed?.notes)) {
+          setAdminLogs(parsed.notes);
+        }
+      } catch {}
+    }
+    // 4. Update customer balance in state and store if Wallet was deducted
+    if (newBalance !== undefined && selectedProfileCustomer) {
+      setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBalance } : null);
+      api.optimisticUpdateCustomer(selectedProfileCustomer.id, { creditBalance: newBalance });
+      customerStore.notify();
+    }
+  };
+
+  const handlePaymentPanelVoided = (updatedJob: Job, refundedAmount?: number, newBalance?: number) => {
+    // 1. Optimistic update in Job Store
+    api.optimisticUpdate(updatedJob.id, updatedJob);
+    // 2. Update originalJobRef so OCC doesn't conflict
+    if (originalJobRef.current) {
+      originalJobRef.current.isPaid = updatedJob.isPaid;
+      originalJobRef.current.isShopPaid = updatedJob.isShopPaid;
+      originalJobRef.current.paymentChannel = updatedJob.paymentChannel;
+      originalJobRef.current.adminNotesJson = updatedJob.adminNotesJson;
+      originalJobRef.current.walletBalanceAfter = updatedJob.walletBalanceAfter;
+      if (updatedJob.updatedAt) {
+        originalJobRef.current.updatedAt = updatedJob.updatedAt;
+      }
+    }
+    // 3. Update local state
+    setPaymentChannel(updatedJob.paymentChannel || "");
+    setPaymentMethod(updatedJob.isPaid ? 'paid' : 'unpaid');
+    setShopPaymentMethod(updatedJob.isShopPaid ? 'paid' : 'unpaid');
+    if (updatedJob.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(updatedJob.adminNotesJson);
+        if (Array.isArray(parsed?.notes)) {
+          setAdminLogs(parsed.notes);
+        }
+      } catch {}
+    }
+    // 4. Update customer balance in state and store if Wallet was refunded
+    if (newBalance !== undefined && selectedProfileCustomer) {
+      setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: newBalance } : null);
+      api.optimisticUpdateCustomer(selectedProfileCustomer.id, { creditBalance: newBalance });
+      customerStore.notify();
     }
   };
 
@@ -5801,68 +5893,13 @@ export default function AdminPage() {
                             <span className="text-xl font-black text-indigo-400">฿{dialogTotal.toFixed(0)}</span>
                           </div>
 
-                          {/* Payment Section: Row 1 (Channel & Bill No), Row 2 (CSO & SHOP Statuses) */}
-                          <div className="space-y-1.5 pt-1.5 border-t border-slate-800 pb-1">
-                            {/* Row 1: Payment Channel + Bill No. */}
-                            <div className="grid grid-cols-2 gap-2">
-                              {/* Col 1: Payment Channel */}
-                              <div className="space-y-0.5">
-                                <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <CreditCard size={11} className="text-slate-500" />
-                                  Payment Channel
-                                </Label>
-                                <select
-                                  id="payment-channel"
-                                  disabled={forceMemberPaymentDialog || isPaidJob}
-                                  className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
-                                  value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
-                                  onChange={(e) => setPaymentChannel(e.target.value)}
-                                >
-                                  <option value="">Select Channel</option>
-                                  {paymentChannel && !activePaymentChannels.some(c => c.name === paymentChannel) && (
-                                    <option value={paymentChannel}>{paymentChannel}</option>
-                                  )}
-                                  {activePaymentChannels.map((c) => (
-                                    <option key={c.id} value={c.name}>
-                                      {c.name}
-                                    </option>
-                                  ))}
-
-                                </select>
-                                {editingJobId && !isPaidJob && dialogTotal > 0 && (paymentChannel?.toLowerCase().includes("gateway") || paymentChannel?.toLowerCase().includes("beam")) && (
-                                  <button
-                                    type="button"
-                                    disabled={isStartingBeamPayment}
-                                    onClick={handleOpenBeamPaymentFromDialog}
-                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors disabled:opacity-50"
-                                    title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
-                                  >
-                                    <Zap size={11} className="fill-white" />
-                                    <span>Beam Payment (฿{dialogTotal.toLocaleString()})</span>
-                                  </button>
-                                )}
-                                {selectedProfileCustomer?.isMember && (
-                                  <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
-                                    <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
-                                    <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400 font-extrabold" : (selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
-                                      {formatBaht(selectedProfileCustomer.creditBalance || 0)}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Col 2: Bill No. */}
-                              <div className="space-y-0.5">
-                                <Label htmlFor="pos-bill-no" className="flex items-center justify-between text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                  <span className="flex items-center gap-1">
-                                    <Receipt size={11} className="text-amber-400" />
-                                    Bill No.
-                                  </span>
-                                  {!(user?.role === 'admin' || isCSO) && (
-                                    <span className="flex items-center gap-0.5 text-[8px] text-amber-400 font-medium">
-                                      <LockIcon size={8} /> View
-                                    </span>
-                                  )}
+                          {/* Payment Section: If editing existing job, show JobPaymentPanel with split payments. If creating new job, show simple channel select. */}
+                          {editingJobId ? (
+                            <div className="space-y-2 pt-1 border-t border-slate-800">
+                              <div className="flex items-center justify-between px-1">
+                                <Label htmlFor="pos-bill-no" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                  <Receipt size={11} className="text-amber-400" />
+                                  Bill No.
                                 </Label>
                                 <Input
                                   id="pos-bill-no"
@@ -5874,140 +5911,118 @@ export default function AdminPage() {
                                     }
                                   }}
                                   placeholder="e.g. B-1024"
-                                  className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || isCSO) ? 'cursor-not-allowed opacity-60' : ''}`}
+                                  className={`h-6 w-32 rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || isCSO) ? 'cursor-not-allowed opacity-60' : ''}`}
                                 />
                               </div>
-                            </div>
 
-                            {/* Row 2: CSO Status & SHOP Status */}
-                            <div className="grid grid-cols-2 gap-2 pt-0.5">
-                              {/* Col 1: CSO Status (isPaid) */}
-                              {!isWalkIn ? (
-                                <div className="space-y-0.5 flex flex-col">
-                                  <div className="flex items-center justify-between">
-                                    <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                      <CreditCard size={11} className="text-slate-500" />
-                                      CSO
-                                    </Label>
-                                    {isPaidJob && (
-                                      <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
-                                        paymentMethod === 'paid' 
-                                          ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
-                                          : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
-                                      }`}>
-                                        {paymentMethod === 'paid' ? '✓ PAID' : 'UNPAID'}
+                              <JobPaymentPanel
+                                job={jobs.find(j => j.id === editingJobId) || activeJob || null}
+                                totalAmount={dialogTotal}
+                                customer={selectedProfileCustomer}
+                                activePaymentChannels={activePaymentChannels}
+                                user={user}
+                                activeShift={activeShift}
+                                onPaymentSuccess={handlePaymentPanelSuccess}
+                                onPaymentVoided={handlePaymentPanelVoided}
+                                onOpenBeamPayment={handleOpenBeamPaymentFromDialog}
+                                disabled={isSubmitting || isDetailLoading}
+                                currentLanguage={currentLanguage}
+                              />
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5 pt-1.5 border-t border-slate-800 pb-1">
+                              {/* Row 1: Payment Channel + Bill No. */}
+                              <div className="grid grid-cols-2 gap-2">
+                                {/* Col 1: Payment Channel */}
+                                <div className="space-y-0.5">
+                                  <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                    <CreditCard size={11} className="text-slate-500" />
+                                    Payment Channel
+                                  </Label>
+                                  <select
+                                    id="payment-channel"
+                                    disabled={forceMemberPaymentDialog || isPaidJob}
+                                    className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+                                    value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
+                                    onChange={(e) => setPaymentChannel(e.target.value)}
+                                  >
+                                    <option value="">Select Channel</option>
+                                    {paymentChannel && !activePaymentChannels.some(c => c.name === paymentChannel) && (
+                                      <option value={paymentChannel}>{paymentChannel}</option>
+                                    )}
+                                    {activePaymentChannels.map((c) => (
+                                      <option key={c.id} value={c.name}>
+                                        {c.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {selectedProfileCustomer?.isMember && (
+                                    <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
+                                      <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
+                                      <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400 font-extrabold" : (selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
+                                        {formatBaht(selectedProfileCustomer.creditBalance || 0)}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Col 2: Bill No. */}
+                                <div className="space-y-0.5">
+                                  <Label htmlFor="pos-bill-no" className="flex items-center justify-between text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                                    <span className="flex items-center gap-1">
+                                      <Receipt size={11} className="text-amber-400" />
+                                      Bill No.
+                                    </span>
+                                    {!(user?.role === 'admin' || isCSO) && (
+                                      <span className="flex items-center gap-0.5 text-[8px] text-amber-400 font-medium">
+                                        <LockIcon size={8} /> View
                                       </span>
                                     )}
-                                  </div>
-                                  <div className="flex items-center gap-1.5 h-6 flex-wrap">
-                                    <Label className={`flex items-center gap-1 text-[10px] ${
-                                      isPaidJob 
-                                        ? (paymentMethod === 'unpaid' ? 'text-amber-300 font-bold' : 'text-slate-500 opacity-40') 
-                                        : (isCsoOrAdmin ? 'cursor-pointer text-slate-200' : 'cursor-not-allowed text-slate-400')
-                                    }`}>
-                                      <input
-                                        type="radio"
-                                        name="payment-status"
-                                        disabled={isPaidJob}
-                                        checked={paymentMethod === 'unpaid'}
-                                        onChange={() => { if (isCsoOrAdmin) setPaymentMethod('unpaid'); }}
-                                        onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
-                                        className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(isCsoOrAdmin && !isPaidJob) ? 'cursor-not-allowed' : ''}`}
-                                      />
-                                      <span className={paymentMethod === 'unpaid' ? 'font-bold' : 'font-medium'}>Unpaid</span>
-                                    </Label>
-                                    <Label className={`flex items-center gap-1 text-[10px] ${
-                                      isPaidJob 
-                                        ? (paymentMethod === 'paid' ? 'text-emerald-400 font-black' : 'text-slate-500 opacity-40') 
-                                        : (isCsoOrAdmin && !isWalletBlocked ? 'cursor-pointer text-emerald-400 font-medium' : 'cursor-not-allowed opacity-50')
-                                    }`}>
-                                      <input
-                                        type="radio"
-                                        name="payment-status"
-                                        disabled={isPaidJob || isWalletBlocked}
-                                        checked={paymentMethod === 'paid'}
-                                        onChange={() => { if (isCsoOrAdmin && !isWalletBlocked) setPaymentMethod('paid'); }}
-                                        onClick={(e) => { if (!isCsoOrAdmin || isWalletBlocked) e.preventDefault(); }}
-                                        className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed ${isPaidJob ? 'disabled:opacity-90 accent-emerald-500' : 'disabled:opacity-50'} ${!(isCsoOrAdmin && !isPaidJob && !isWalletBlocked) ? 'cursor-not-allowed' : ''}`}
-                                      />
-                                      <span className={paymentMethod === 'paid' ? 'font-black text-emerald-400' : 'font-medium text-slate-400'}>
-                                        {isPaidJob && paymentMethod === 'paid' ? '✓ Paid' : 'Paid'}
-                                      </span>
-                                    </Label>
-                                  </div>
-                                </div>
-                              ) : <div />}
-
-                              {/* Col 2: Shop Status (isShopPaid) */}
-                              <div className="space-y-0.5 flex flex-col">
-                                <div className="flex items-center justify-between">
-                                  <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                    <Store size={11} className="text-slate-500" />
-                                    SHOP
                                   </Label>
-                                  <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
-                                    isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
-                                      ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
-                                      : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
-                                  }`}>
-                                    {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false) ? '✓ PAID' : 'UNPAID'}
-                                  </span>
-                                </div>
-                                <div className="flex items-center h-6">
-                                  <span className={`text-[10px] ${
-                                    isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
-                                      ? 'font-black text-emerald-400' 
-                                      : 'font-medium text-slate-400'
-                                  }`}>
-                                    {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
-                                      ? '✓ Paid via POS / Receipt' 
-                                      : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงินและออกใบเสร็จ")}
-                                  </span>
+                                  <Input
+                                    id="pos-bill-no"
+                                    value={billNo}
+                                    readOnly={!(user?.role === 'admin' || isCSO)}
+                                    onChange={(e) => {
+                                      if (user?.role === 'admin' || isCSO) {
+                                        setBillNo(e.target.value);
+                                      }
+                                    }}
+                                    placeholder="e.g. B-1024"
+                                    className={`h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500 ${!(user?.role === 'admin' || user?.role === 'superadmin' || isCSO) ? 'cursor-not-allowed opacity-60' : ''}`}
+                                  />
                                 </div>
                               </div>
-                            </div>
-</div>
 
-
-                          {/* Wallet Expired Warning Banner */}
-                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isPaidJob && isCustomerWalletExpired && (
-                            <div className="mt-1 p-2 rounded-lg bg-rose-950/90 border border-rose-700 text-[10px] flex items-center justify-between gap-2 text-rose-200 font-bold shadow-md">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <AlertTriangle size={13} className="text-rose-400 shrink-0" />
-                                <div className="min-w-0">
-                                  <p className="truncate text-rose-300">
-                                    ⚠️ Wallet หมดอายุแล้ว {selectedProfileCustomer.memberExpiryDate ? `(${format(new Date(selectedProfileCustomer.memberExpiryDate), "dd/MM/yyyy")})` : ""}
-                                  </p>
-                                  <p className="text-[9px] text-rose-400 font-normal truncate">
-                                    ยอดคงเหลือ {formatBaht(selectedProfileCustomer.creditBalance || 0)} ถูกระงับชั่วคราว
-                                  </p>
+                              {/* Wallet Expired Warning Banner */}
+                              {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && isCustomerWalletExpired && (
+                                <div className="mt-1 p-2 rounded-lg bg-rose-950/90 border border-rose-700 text-[10px] flex items-center justify-between gap-2 text-rose-200 font-bold shadow-md">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <AlertTriangle size={13} className="text-rose-400 shrink-0" />
+                                    <div className="min-w-0">
+                                      <p className="truncate text-rose-300">
+                                        ⚠️ Wallet หมดอายุแล้ว {selectedProfileCustomer.memberExpiryDate ? `(${format(new Date(selectedProfileCustomer.memberExpiryDate), "dd/MM/yyyy")})` : ""}
+                                      </p>
+                                      <p className="text-[9px] text-rose-400 font-normal truncate">
+                                        ยอดคงเหลือ {formatBaht(selectedProfileCustomer.creditBalance || 0)} ถูกระงับชั่วคราว
+                                      </p>
+                                    </div>
+                                  </div>
                                 </div>
-                              </div>
-                              <Button
-                                type="button"
-                                size="sm"
-                                onClick={() => {
-                                  setTopUpCustomer(selectedProfileCustomer);
-                                  setShowTopUpDialog(true);
-                                }}
-                                className="h-6 px-2 text-[9px] bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold shrink-0 gap-1 shadow cursor-pointer"
-                              >
-                                <Wallet size={10} />
-                                Top Up ต่ออายุ
-                              </Button>
-                            </div>
-                          )}
+                              )}
 
-                          {/* Wallet Insufficient Warning Banner (Only when not expired and not already paid) */}
-                          {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isPaidJob && !isCustomerWalletExpired && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
-                            <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold animate-pulse">
-                              <span className="flex items-center gap-1">
-                                <Wallet size={11} className="text-rose-400" />
-                                <span>ยอดเงินใน Wallet ไม่พอ</span>
-                              </span>
-                              <span className="font-mono text-rose-200">
-                                ขาดอีก ฿{(dialogTotal - (selectedProfileCustomer.creditBalance || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </span>
+                              {/* Wallet Insufficient Warning Banner */}
+                              {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isCustomerWalletExpired && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
+                                <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold animate-pulse">
+                                  <span className="flex items-center gap-1">
+                                    <Wallet size={11} className="text-rose-400" />
+                                    <span>ยอดเงินใน Wallet ไม่พอ</span>
+                                  </span>
+                                  <span className="font-mono text-rose-200">
+                                    ขาดอีก ฿{(dialogTotal - (selectedProfileCustomer.creditBalance || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -6132,8 +6147,10 @@ export default function AdminPage() {
                                 : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
                                   ? "Wallet หมดอายุ"
                                   : isWalletInsufficient
-                                    ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
-                                    : `Pay ฿${dialogTotal.toFixed(2)}`}
+                                    ? `Wallet ไม่พอ (฿${effectiveRemainingTotal.toFixed(0)})`
+                                    : (editingJobPaymentsTotal > 0
+                                        ? `Pay Remaining ฿${effectiveRemainingTotal.toFixed(2)}`
+                                        : `Pay ฿${dialogTotal.toFixed(2)}`)}
                             </Button>
                           </div>
 

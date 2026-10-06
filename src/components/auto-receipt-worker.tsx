@@ -79,6 +79,23 @@ export function AutoReceiptWorker() {
           return false;
         }
 
+        // Guard against premature capture for Member Wallet payments:
+        // When staff marks a job as paid via Member Wallet / Deduct Member, give up to 15 seconds
+        // for the wallet deduction to complete and walletBalanceAfter to be recorded on the job.
+        // This prevents capturing a receipt image with a stale pre-deduction balance.
+        const isMemberPayment = 
+          (job.paymentChannel || "").toLowerCase().includes("member") ||
+          (job.paymentChannel || "").toLowerCase().includes("credit") ||
+          (job.paymentChannel || "").toLowerCase().includes("deduct") ||
+          Boolean(job.adminNotesJson && job.adminNotesJson.includes('"method":"credit"'));
+
+        if (isMemberPayment && (job as any).walletBalanceAfter == null) {
+          const age = now - jobPaidTime;
+          if (age < 15000) {
+            return false;
+          }
+        }
+
         return true;
       });
 
