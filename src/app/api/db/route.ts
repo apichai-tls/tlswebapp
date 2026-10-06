@@ -1,10 +1,31 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+// In-Memory cache to shield DB from concurrent polling spikes across multiple users/tabs
+let cachedPayload: any = null;
+let lastCacheTime = 0;
+const CACHE_TTL_MS = 2500; // 2.5s TTL
+
+export function invalidateDbCache() {
+  cachedPayload = null;
+  lastCacheTime = 0;
+}
+
+export async function GET(request?: NextRequest) {
   try {
+    const forceFresh = request ? new URL(request.url).searchParams.get('fresh') === 'true' : false;
+    const now = Date.now();
+
+    if (!forceFresh && cachedPayload && (now - lastCacheTime < CACHE_TTL_MS)) {
+      return NextResponse.json(cachedPayload, {
+        headers: {
+          'X-Cache': 'HIT',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+        },
+      });
+    }
 
 
     const [
@@ -213,7 +234,7 @@ export async function GET() {
       };
     });
 
-    return NextResponse.json({
+    const payload = {
       customers: formattedCustomers,
       jobs,
       riders: formattedRiders,
@@ -223,6 +244,16 @@ export async function GET() {
       pois: [], // POIs are now lazy-loaded via /api/pois
       settings,
       openShifts  // ✅ included so shift check reads from memory, not separate DB call
+    };
+
+    cachedPayload = payload;
+    lastCacheTime = Date.now();
+
+    return NextResponse.json(payload, {
+      headers: {
+        'X-Cache': 'MISS',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      },
     });
   } catch (error) {
     console.error('Failed to read from Prisma:', error);

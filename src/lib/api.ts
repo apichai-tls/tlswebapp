@@ -842,6 +842,11 @@ export const api = {
     getShopLocations: () => initDb().shopLocations,
     getPOIs: () => initDb().pois,
     getSettings: () => initDb().settings,
+    updateRiderLocal: (id: string, updates: Partial<Rider>) => {
+      const db = initDb();
+      db.riders = db.riders.map(r => r.id === id ? { ...r, ...updates } : r);
+      api.notify();
+    },
   },
 
   // --- SHOP LOCATIONS ---

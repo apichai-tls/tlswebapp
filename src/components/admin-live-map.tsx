@@ -113,7 +113,7 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
             if (r.currentLat && r.currentLng) {
               updates.currentLocation = { lat: r.currentLat, lng: r.currentLng };
             }
-            riderStore.updateRider(r.id, updates);
+            riderStore.updateRiderLocal(r.id, updates);
           }
         }
       } catch {

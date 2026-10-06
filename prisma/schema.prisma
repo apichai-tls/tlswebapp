@@ -172,6 +172,10 @@ model Job {
   @@index([shiftId])
   @@index([brand])
   @@index([customerId])
+  @@index([status])
+  @@index([updatedAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@index([completedAt(sort: Desc)])
 }
 
 model ServiceItem {
@@ -215,6 +219,8 @@ model RiderTransaction {
   detail    String?
   createdAt DateTime @default(now())
   rider     Rider    @relation(fields: [riderId], references: [id])
+
+  @@index([riderId, type, createdAt])
 }
 
 model PriceList {

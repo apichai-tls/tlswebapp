@@ -451,6 +451,10 @@ export const riderStore = {
     await api.updateRider(id, updates);
     emitRiderChange();
   },
+  updateRiderLocal(id: string, updates: Partial<Rider>) {
+    api.sync.updateRiderLocal(id, updates);
+    emitRiderChange();
+  },
   async addRider(rider: Omit<Rider, 'id'> & { id?: string }) {
     const newRider = await api.addRider(rider);
     emitRiderChange();
