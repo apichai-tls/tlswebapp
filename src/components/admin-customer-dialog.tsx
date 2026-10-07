@@ -970,18 +970,20 @@ export function AdminCustomerDialog({
                           <Lock size={12} className="text-indigo-600" />
                           <span>Member ID</span>
                         </Label>
-                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
-                          {customer?.memberId ? "ASSIGNED" : "AUTO ON SAVE"}
-                        </span>
+                        {customer?.memberId && (
+                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
+                            ASSIGNED
+                          </span>
+                        )}
                       </div>
                       <div className="relative">
                         <Input
                           readOnly
-                          value={customer?.memberId || memberId || "Auto (OF2400+)"}
-                          className={`h-9 text-xs border rounded-xl font-mono cursor-not-allowed select-all shadow-2xs ${
+                          value={customer?.memberId || memberId || "AUTO RUNNING NO. ON SAVE"}
+                          className={`h-9 border rounded-xl cursor-not-allowed select-all shadow-2xs ${
                             customer?.memberId || memberId
-                              ? "border-indigo-200 bg-slate-50 text-indigo-950 font-black"
-                              : "border-indigo-200/70 bg-indigo-50/50 text-indigo-700 font-bold"
+                              ? "border-indigo-200 bg-slate-50 text-indigo-950 font-mono font-black text-xs"
+                              : "border-indigo-200/70 bg-indigo-50/50 text-indigo-700 font-bold text-[11px] tracking-tight"
                           }`}
                         />
                       </div>
