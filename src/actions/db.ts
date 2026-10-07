@@ -45,7 +45,9 @@ export async function addCustomerAction(data: any) {
       }
       memberId = memberIdUpper;
     } else {
-      memberId = await getNextMemberIdAction();
+      // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
+      // memberId = await getNextMemberIdAction();
+      memberId = null;
     }
   }
 
@@ -80,7 +82,8 @@ export async function addCustomerAction(data: any) {
     attempts++;
     let currentMemberId = memberId;
     if (data.isMember && !currentMemberId) {
-      currentMemberId = await getNextMemberIdAction();
+      // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
+      // currentMemberId = await getNextMemberIdAction();
     }
 
     const resolvedStartDate = data.memberStartDate ? new Date(data.memberStartDate) : (data.isMember ? new Date() : null);
@@ -202,12 +205,15 @@ export async function updateCustomerAction(id: string, updates: any) {
           }
           data.memberId = memberIdUpper;
         } else if (!currentCustomer.memberId) {
-          data.memberId = await getNextMemberIdAction();
+          // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
+          // data.memberId = await getNextMemberIdAction();
+          data.memberId = null;
         } else {
           data.memberId = currentCustomer.memberId;
         }
       } else if (!currentCustomer.memberId) {
-        data.memberId = await getNextMemberIdAction();
+        // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
+        // data.memberId = await getNextMemberIdAction();
       }
     }
   } else if (updates.memberId !== undefined) {

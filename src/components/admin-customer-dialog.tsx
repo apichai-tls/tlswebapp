@@ -976,11 +976,11 @@ export function AdminCustomerDialog({
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {/* Member ID - Auto-Allocated on Save (Mode 2) */}
+                    {/* Member ID - Manual input (Auto Running is disabled temporarily per user request) */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <Label className="text-xs font-bold text-slate-800 flex items-center gap-1">
-                          <Lock size={12} className="text-indigo-600" />
+                          <Tag size={12} className="text-indigo-600" />
                           <span>Member ID</span>
                         </Label>
                         {customer?.memberId && (
@@ -991,20 +991,14 @@ export function AdminCustomerDialog({
                       </div>
                       <div className="relative">
                         <Input
-                          readOnly
-                          value={customer?.memberId || memberId || "AUTO RUNNING NO. ON SAVE"}
-                          className={`h-9 border rounded-xl cursor-not-allowed select-all shadow-2xs ${
-                            customer?.memberId || memberId
-                              ? "border-indigo-200 bg-slate-50 text-indigo-950 font-mono font-black text-xs"
-                              : "border-indigo-200/70 bg-indigo-50/50 text-indigo-700 font-bold text-[11px] tracking-tight"
-                          }`}
+                          value={memberId}
+                          onChange={e => setMemberId(e.target.value.toUpperCase())}
+                          placeholder="เช่น OF2400 หรือระบุรหัสสมาชิก"
+                          className="h-9 border border-indigo-200 bg-white dark:bg-slate-800 text-indigo-950 dark:text-indigo-100 font-mono font-black text-xs rounded-xl shadow-2xs focus:ring-1 focus:ring-indigo-500 uppercase"
                         />
                       </div>
                       <p className="text-[10px] text-slate-500 mt-1">
-                        {customer?.memberId || memberId
-                          ? "* รหัสสมาชิกเดิมที่กำหนดไว้แล้ว"
-                          : "* ออกเลขอัตโนมัติเมื่อกดบันทึก (เริ่ม OF2400)"
-                        }
+                        * ระบุรหัสสมาชิกด้วยตนเอง {/* (ปิดระบบ Auto Running ไว้ชั่วคราว: เริ่มต้น OF2400) */}
                       </p>
                     </div>
 
