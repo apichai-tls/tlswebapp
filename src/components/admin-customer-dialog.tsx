@@ -425,12 +425,10 @@ export function AdminCustomerDialog({
       const isMemberBool = customerTier === "member" || customerTier === "vip" || Boolean(memberId.trim());
       const isVIPBool = customerTier === "vip";
 
-      if (isMemberBool) {
-        if (!branchId || !branchId.trim()) {
-          toast.error("กรุณาเลือกสาขาสำหรับลูกค้าสมาชิก (บังคับระบุ)");
-          setIsSaving(false);
-          return;
-        }
+      if (!branchId || !branchId.trim()) {
+        toast.error("กรุณาเลือกสาขา (บังคับระบุ)");
+        setIsSaving(false);
+        return;
       }
 
       let finalPriceListId = priceListId;
@@ -494,7 +492,7 @@ export function AdminCustomerDialog({
         corporateCommissionRatePerKm: isCorporateBool && corporateCommissionType === "custom_km" ? Number(corporateCommissionRatePerKm) || 0 : 0,
         tier: customerTier,
         isMember: isMemberBool,
-        branchId: isMemberBool ? (branchId.trim() || null) : (branchId.trim() || null),
+        branchId: branchId.trim() || null,
         isWhatsapp,
         passwordHash: initialPin.trim() || undefined,
         memberId: isMemberBool ? memberId.trim() || null : null,
@@ -707,8 +705,8 @@ export function AdminCustomerDialog({
                 </div>
               </div>
 
-              {/* Row 2: Gender, DOB, Customer Tier */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+              {/* Row 2: Gender, DOB */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
                   <Label className="text-xs font-bold text-slate-800 block mb-1">Gender</Label>
                   <select
@@ -733,7 +731,10 @@ export function AdminCustomerDialog({
                     />
                   </div>
                 </div>
+              </div>
 
+              {/* Row 3: Customer Tier & สาขา (Branch) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
                   <Label className="text-xs font-bold text-slate-800 block mb-1">Customer Tier</Label>
                   <select
@@ -770,11 +771,38 @@ export function AdminCustomerDialog({
                     }}
                     className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer font-semibold"
                   >
-                    <option value="standard">Standard</option>
+                    <option value="standard">Standard (ลูกค้าทั่วไป)</option>
                     <option value="member">Member</option>
                     <option value="vip">VIP Gold</option>
                     <option value="corporate">Corporate B2B (ลูกค้าองค์กร / บริษัท)</option>
                   </select>
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold text-slate-800 flex items-center justify-between mb-1">
+                    <span>สาขา (Branch) <span className="text-rose-500 font-bold">*</span></span>
+                    <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
+                  </Label>
+                  <select
+                    value={branchId}
+                    onChange={e => setBranchId(e.target.value)}
+                    className={`w-full h-9 text-xs rounded-xl bg-white px-3 font-semibold transition-all border ${
+                      !branchId
+                        ? "border-rose-400 focus:border-rose-500 text-rose-950 focus:ring-1 focus:ring-rose-400"
+                        : "border-slate-300 text-slate-800 focus:border-sky-500"
+                    }`}
+                  >
+                    <option value="">-- กรุณาเลือกสาขา (Select Branch) --</option>
+                    <option value="ONLINE">🌐 Online (ออนไลน์)</option>
+                    {shopLocations.map(s => (
+                      <option key={s.id} value={s.id}>
+                        🏪 {getCleanBranchName(s.name)}
+                      </option>
+                    ))}
+                  </select>
+                  {!branchId && (
+                    <p className="text-[10px] text-rose-500 mt-1 font-medium">* กรุณาระบุสาขาสำหรับลูกค้า</p>
+                  )}
                 </div>
               </div>
 
@@ -937,41 +965,13 @@ export function AdminCustomerDialog({
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                    {/* Branch (สาขา) - Required for Member */}
-                    <div>
-                      <Label className="text-xs font-bold text-slate-800 flex items-center justify-between mb-1">
-                        <span>สาขา (Branch) <span className="text-rose-500 font-bold">*</span></span>
-                        <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
-                      </Label>
-                      <select
-                        value={branchId}
-                        onChange={e => setBranchId(e.target.value)}
-                        className={`w-full h-9 text-xs rounded-xl bg-white px-3 font-semibold transition-all border ${
-                          !branchId
-                            ? "border-rose-400 focus:border-rose-500 text-rose-950 focus:ring-1 focus:ring-rose-400"
-                            : "border-indigo-200 text-slate-800 focus:border-indigo-500"
-                        }`}
-                      >
-                        <option value="">-- กรุณาเลือกสาขา (Select Branch) --</option>
-                        <option value="ONLINE">🌐 Online (ออนไลน์)</option>
-                        {shopLocations.map(s => (
-                          <option key={s.id} value={s.id}>
-                            🏪 {getCleanBranchName(s.name)}
-                          </option>
-                        ))}
-                      </select>
-                      {!branchId && (
-                        <p className="text-[10px] text-rose-500 mt-1 font-medium">* กรุณาระบุสาขาสำหรับสมาชิก</p>
-                      )}
-                    </div>
-
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     {/* Member ID - Read-only Auto-run (Mode 2) */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <Label className="text-xs font-bold text-slate-800 flex items-center gap-1">
                           <Lock size={12} className="text-indigo-600" />
-                          <span>Member ID (เลข / รหัสสมาชิก)</span>
+                          <span>Member ID</span>
                         </Label>
                         <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
                           AUTO RUN (OF2400+)
@@ -1009,7 +1009,7 @@ export function AdminCustomerDialog({
                         )}
                       </div>
                       <p className="text-[10px] text-slate-500 mt-1">
-                        * ระบบออกเลขอัตโนมัติ (แบบล็อกห้ามแก้ไข ป้องกันเลขชนกัน)
+                        * รันเลขอัตโนมัติ (ล็อกห้ามแก้ไข)
                       </p>
                     </div>
 
