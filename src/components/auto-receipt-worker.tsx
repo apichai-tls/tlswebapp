@@ -39,11 +39,12 @@ export function AutoReceiptWorker() {
       const pendingPaidJob = jobs.find((job) => {
         if (!job.id || job.id === "DRAFT") return false;
         if (processingRef.current.has(job.id)) return false;
-        if (completedRef.current.has(`receipt_${job.id}`)) return false;
+        const receiptKey = `receipt_${job.id}_${job.updatedAt || ""}`;
+        if (completedRef.current.has(receiptKey)) return false;
 
-        // Skip historical or finished jobs immediately
-        if (['completed', 'cancel', 'return'].includes(job.status)) {
-          completedRef.current.add(`receipt_${job.id}`);
+        // Skip cancelled or returned jobs immediately
+        if (['cancel', 'return'].includes(job.status)) {
+          completedRef.current.add(receiptKey);
           return false;
         }
 
@@ -54,12 +55,26 @@ export function AutoReceiptWorker() {
           : jobUpdatedTime;
 
         if (now - jobPaidTime > MAX_JOB_AGE_MS && now - jobUpdatedTime > MAX_JOB_AGE_MS) {
-          completedRef.current.add(`receipt_${job.id}`);
+          completedRef.current.add(receiptKey);
           return false;
         }
 
         const isPaid = isJobFullyPaid(job);
         if (!isPaid) return false;
+
+        // Guard: Job must have actual laundry items to auto-generate receipt!
+        // Delivery booking fees alone without clothes must NOT generate a receipt!
+        let itemsArr: any[] = [];
+        try {
+          itemsArr = typeof job.items === 'string' ? JSON.parse(job.items) : (job.items || []);
+        } catch {}
+        if (itemsArr.length === 0) {
+          return false;
+        }
+
+        // Receipt requires shop payment confirmation (isShopPaid) or walk-in POS payment
+        const isShopPaidOrWalkIn = Boolean(job.isShopPaid || (job.source === 'pos' && isPaid));
+        if (!isShopPaidOrWalkIn) return false;
 
         let bills: string[] = [];
         try {
@@ -75,7 +90,7 @@ export function AutoReceiptWorker() {
         );
 
         if (hasReceipt) {
-          completedRef.current.add(`receipt_${job.id}`);
+          completedRef.current.add(receiptKey);
           return false;
         }
 
@@ -129,7 +144,8 @@ export function AutoReceiptWorker() {
                 }
               } catch {}
 
-              const mergedBills = Array.from(new Set([...existingBills, publicUrl]));
+              const cleanFiltered = existingBills.filter((u: string) => !u.includes(`receipt-${jobId}`) && !u.includes("/receipt-"));
+              const mergedBills = [publicUrl, ...cleanFiltered];
               await jobStore.updateJobDetails(jobId, {
                 billImageUrl: JSON.stringify(mergedBills),
               } as any);
@@ -138,7 +154,7 @@ export function AutoReceiptWorker() {
             }
           }
 
-          completedRef.current.add(`receipt_${jobId}`);
+          completedRef.current.add(`receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`);
         } catch (err) {
           console.warn(`[AutoReceiptWorker] Failed to auto-generate receipt for Job #${jobId}:`, err);
         } finally {
@@ -163,10 +179,20 @@ export function AutoReceiptWorker() {
 
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
         const targetProforma = (job as any).proformaNumber || (job as any).proformaReceiptNumber;
-        if (!targetProforma) return false;
+        if (!targetProforma || targetProforma === "DRAFT") return false;
         const cleanBaseProforma = cleanProformaNumber(targetProforma) || job.id;
         const rev = (job as any).proformaRevision || 0;
         const revKey = `proforma_${job.id}_rev${rev}`;
+
+        // Guard: If job has 0 items (e.g. initial booking with fee only), NEVER auto-generate proforma!
+        let proformaItemsArr: any[] = [];
+        try {
+          proformaItemsArr = typeof job.items === 'string' ? JSON.parse(job.items) : (job.items || []);
+        } catch {}
+        if (proformaItemsArr.length === 0) {
+          completedRef.current.add(revKey);
+          return false;
+        }
 
         if (now - jobUpdatedTime > MAX_JOB_AGE_MS) {
           completedRef.current.add(revKey);

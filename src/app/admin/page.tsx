@@ -2261,8 +2261,15 @@ export default function AdminPage() {
 
     const baseCartHashToCompare = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
     const isCartChangedFromLastProforma = Boolean(
-      baseCartHashToCompare && currentCartHash !== baseCartHashToCompare
+      baseCartHashToCompare
+        ? currentCartHash !== baseCartHashToCompare
+        : existingJob && (
+            (Number(existingJob.totalAmount) || 0) !== calculatedTotal ||
+            (existingJob.itemsJson && existingJob.itemsJson !== JSON.stringify(dialogCart))
+          )
     );
+
+    const hasActualItems = Boolean((itemsPayload && itemsPayload.length > 0) || (dialogCart && dialogCart.length > 0));
 
     let targetProformaNum: string | null = null;
     let effectiveProformaRevision: number | null = null;
@@ -2270,14 +2277,16 @@ export default function AdminPage() {
 
     if (isPayment) {
       // ── Payment flow (Pay button clicked) ───────────────────────────
-      // Rule: Paid job always has a paired Proforma
-      // If job already had a Proforma (or was previewed in this session):
-      //   - If cart changed and not previewed in this session -> Auto-bump revision!
-      //   - If cart didn't change -> keep current revision.
-      // If job NEVER had a Proforma before -> Create Proforma Rev 0 paired with it!
+      // Rule: Paid job always has a paired Proforma ONLY IF it has actual laundry items!
+      // If there are NO actual items (e.g. initial booking with delivery fee only), do NOT auto-generate proforma!
       const hasPriorProforma = Boolean(existingProformaNum || (proformaPressedSinceLastEdit && proformaReceiptNumber && proformaReceiptNumber !== "DRAFT"));
 
-      if (hasPriorProforma) {
+      if (!hasActualItems && !proformaPressedSinceLastEdit) {
+        // Guard: 0-item job (delivery fee only) must NEVER auto-generate Proforma!
+        targetProformaNum = existingProformaNum || null;
+        effectiveProformaRevision = proformaRevision;
+        effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || null;
+      } else if (hasPriorProforma) {
         targetProformaNum = existingProformaNum || (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT" ? cleanProformaNumber(proformaReceiptNumber) : null);
         if (!targetProformaNum && targetEditingJobId) {
           targetProformaNum = generateProformaBaseNumber(targetEditingJobId);
@@ -2292,7 +2301,7 @@ export default function AdminPage() {
           effectiveProformaCartHash = baseCartHashToCompare || currentCartHash;
         }
       } else {
-        // Job NEVER had a Proforma before, but user clicked Pay:
+        // Job NEVER had a Proforma before, but user clicked Pay with actual items:
         // Rule: Create Proforma Rev 0 paired with it!
         targetProformaNum = targetEditingJobId ? generateProformaBaseNumber(targetEditingJobId) : null;
         effectiveProformaRevision = isRfJob ? 1 : 0;
@@ -2631,9 +2640,10 @@ export default function AdminPage() {
           }
         }
 
-        let safeBillUrls = billUrls;
+        let safeBillUrls = billUrls.filter(u => typeof u === "string" && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
         if (!isAdmin && origBillImageUrls.length > 0) {
-          const missingBills = origBillImageUrls.filter(url => !safeBillUrls.includes(url));
+          const cleanOrigBills = origBillImageUrls.filter(url => typeof url === "string" && !url.includes("proforma-DRAFT") && !url.includes("/DRAFT/"));
+          const missingBills = cleanOrigBills.filter(url => !safeBillUrls.includes(url));
           if (missingBills.length > 0) {
             safeBillUrls = [...missingBills, ...safeBillUrls];
           }
@@ -2680,8 +2690,22 @@ export default function AdminPage() {
           await api.updateJob(targetEditingJobId, payload);
         }
 
-        // [AUTO-PROFORMA] Capture proforma ONLY IF payment occurred or proforma preview was explicitly requested
-        const shouldCaptureProforma = Boolean(targetProformaNum && (isPayment || proformaPressedSinceLastEdit));
+        // [AUTO-PROFORMA] Capture proforma ONLY IF:
+        // 1. Proforma preview was explicitly requested in this session, OR
+        // 2. Shop payment occurred (isShopPaid) AND job actually has laundry items!
+        const isShopPaidNow = Boolean(
+          cannotDeduct ? false : (
+            isPaidJob || 
+            (isPayment && remainingToPay <= 0) || 
+            (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || 
+            (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || 
+            (editingJobId ? Boolean(existingJob?.isShopPaid) : false)
+          )
+        );
+        const shouldCaptureProforma = Boolean(
+          targetProformaNum && 
+          (proformaPressedSinceLastEdit || (isShopPaidNow && hasActualItems))
+        );
         if (shouldCaptureProforma) {
           let finalProformaNum = targetProformaNum!;
           if (targetEditingJobId.startsWith("RF-")) {
@@ -2720,7 +2744,7 @@ export default function AdminPage() {
           })();
           const alreadyHasThisRev = existingBillUrls.some(u => u.includes(proformaFilename));
 
-          if (!alreadyHasThisRev) {
+          if (!alreadyHasThisRev || (isPayment && isCartChangedFromLastProforma)) {
             const proformaCapData = {
               ...formatJobToReceiptData({
                 ...existingJob,
@@ -2836,7 +2860,8 @@ export default function AdminPage() {
           deliveryUploadPromise
         ]);
         newJobData.bagImageUrl = bagUrls.length > 0 ? JSON.stringify(bagUrls) : null;
-        newJobData.billImageUrl = billUrls.length > 0 ? JSON.stringify(billUrls) : null;
+        const safeNewBillUrls = billUrls.filter(u => typeof u === "string" && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+        newJobData.billImageUrl = safeNewBillUrls.length > 0 ? JSON.stringify(safeNewBillUrls) : null;
         newJobData.pickupProofImageUrl = pickupUrls.length > 0 ? JSON.stringify(pickupUrls) : null;
         newJobData.deliveryProofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
         newJobData.proofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
@@ -2892,8 +2917,9 @@ export default function AdminPage() {
           preDeductedBalance = updatedCust?.creditBalance ?? preDeductedBalance;
         }
 
-        // [AUTO-PROFORMA for NEW JOB] If previewed or paying → auto-assign + capture in background
-        if (savedJobId && (isNewJobProformaRequested || isPayment)) {
+        // [AUTO-PROFORMA for NEW JOB] If previewed or shop paid WITH actual laundry items → auto-assign + capture in background
+        const isNewJobShopPaid = isPayment && !cannotDeduct;
+        if (savedJobId && (isNewJobProformaRequested || (isNewJobShopPaid && hasActualItems))) {
           const autoProformaNum = generateProformaBaseNumber(savedJobId);
           const proformaRemark = `Proforma: ${autoProformaNum}`;
           const existingRemark = newJobData.remark || "";
@@ -3261,13 +3287,22 @@ export default function AdminPage() {
       setPaymentMethod("unpaid");
       setShopPaymentMethod("unpaid");
 
-      // 2. Update originalJobRef.current so OCC (field-level diffing) doesn't re-save stale isPaid: true
+      // Clear old receipt proofs from local edit state so saving doesn't restore old receipts
+      const cleanReceiptUrls = (urls: string[]) => 
+        urls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes(`receipt-${editingJobId}`));
+      setBillImageUrls(prev => cleanReceiptUrls(prev));
+      setOrigBillImageUrls(prev => cleanReceiptUrls(prev));
+
+      // 2. Update originalJobRef.current so OCC (field-level diffing) doesn't re-save stale isPaid: true or stale receipts
       if (originalJobRef.current) {
         originalJobRef.current.isPaid = false;
         originalJobRef.current.isShopPaid = false;
         originalJobRef.current.shopPaidAt = null;
         originalJobRef.current.csoPaidAt = null;
         originalJobRef.current.adminNotesJson = result.updatedJob?.adminNotesJson;
+        if (result.updatedJob?.billImageUrl !== undefined) {
+          originalJobRef.current.billImageUrl = result.updatedJob.billImageUrl;
+        }
       }
 
       // 3. Update in-memory job store (Kanban & Edit Dialog unlock immediately)
@@ -3277,6 +3312,7 @@ export default function AdminPage() {
         shopPaidAt: null,
         csoPaidAt: null,
         adminNotesJson: result.updatedJob?.adminNotesJson,
+        billImageUrl: result.updatedJob?.billImageUrl ?? null,
       } as any);
 
       // 4. Update in-memory customer wallet & dialog customer badge if refund occurred
@@ -7439,6 +7475,7 @@ export default function AdminPage() {
               }
             }}
             onBillImageUploaded={(newUrl) => {
+              if (typeof newUrl === "string" && (newUrl.includes("proforma-DRAFT") || newUrl.includes("/DRAFT/"))) return;
               setBillImageUrls(prev => {
                 if (!prev.includes(newUrl)) {
                   return [...prev, newUrl];
@@ -7467,6 +7504,7 @@ export default function AdminPage() {
               }
             }}
             onBillImageUploaded={(newUrl) => {
+              if (typeof newUrl === "string" && (newUrl.includes("proforma-DRAFT") || newUrl.includes("/DRAFT/"))) return;
               setBillImageUrls(prev => {
                 if (!prev.includes(newUrl)) {
                   return [...prev, newUrl];

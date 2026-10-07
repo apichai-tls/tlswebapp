@@ -7,17 +7,38 @@ export const dynamic = "force-dynamic";
 export default async function ReceiptPreviewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ jobId?: string; auto?: string }>;
+  searchParams: Promise<{ jobId?: string; auto?: string; data?: string; isDraft?: string }>;
 }) {
-  const { jobId = "2026005033", auto = "false" } = await searchParams;
+  const { jobId = "2026005033", auto = "false", data, isDraft } = await searchParams;
 
-  const job = await prisma.job.findUnique({
-    where: { id: jobId },
-    include: {
-      customer: true,
-      branch: true,
-    },
-  });
+  let job: any = null;
+  let customer: any = null;
+  let branch: any = null;
+
+  if (data) {
+    try {
+      const parsed = JSON.parse(Buffer.from(data, "base64").toString("utf-8"));
+      job = parsed.job || parsed;
+      customer = parsed.customer || job?.customer;
+      branch = parsed.branch || job?.branch;
+    } catch (e) {
+      console.error("Failed to parse base64 data in ReceiptPreviewPage:", e);
+    }
+  }
+
+  if (!job) {
+    job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: {
+        customer: true,
+        branch: true,
+      },
+    });
+    if (job) {
+      customer = job.customer;
+      branch = job.branch;
+    }
+  }
 
   if (!job) {
     return (
@@ -29,8 +50,8 @@ export default async function ReceiptPreviewPage({
 
   // Serialize to plain JSON so it cleanly crosses the Server-to-Client boundary
   const serializedJob = JSON.parse(JSON.stringify(job));
-  const serializedCustomer = job.customer ? JSON.parse(JSON.stringify(job.customer)) : null;
-  const serializedBranch = job.branch ? JSON.parse(JSON.stringify(job.branch)) : null;
+  const serializedCustomer = customer ? JSON.parse(JSON.stringify(customer)) : null;
+  const serializedBranch = branch ? JSON.parse(JSON.stringify(branch)) : null;
 
   return (
     <ReceiptPreviewClient
@@ -38,6 +59,7 @@ export default async function ReceiptPreviewPage({
       initialCustomer={serializedCustomer}
       initialBranch={serializedBranch}
       autoRun={auto === "true"}
+      isDraft={isDraft === "true"}
     />
   );
 }

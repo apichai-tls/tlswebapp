@@ -2919,7 +2919,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         });
 
         // For new POS jobs: generate proforma from real job ID now that we have it
-        if (finalJob && !targetProformaNum) {
+        // Guard: Only auto-assign proforma if cart has actual laundry items!
+        if (finalJob && !targetProformaNum && cart.length > 0) {
           targetProformaNum = generateProformaBaseNumber(finalJob.id);
           effectiveRevision = 0;
           setProformaReceiptNumber(targetProformaNum);

@@ -11,6 +11,7 @@ interface ReceiptPreviewClientProps {
   initialCustomer: any;
   initialBranch: any;
   autoRun?: boolean;
+  isDraft?: boolean;
 }
 
 export default function ReceiptPreviewClient({
@@ -18,6 +19,7 @@ export default function ReceiptPreviewClient({
   initialCustomer,
   initialBranch,
   autoRun = false,
+  isDraft = false,
 }: ReceiptPreviewClientProps) {
   const [status, setStatus] = useState<"idle" | "running" | "success" | "error">("idle");
   const [message, setMessage] = useState<string>("");
@@ -61,9 +63,13 @@ export default function ReceiptPreviewClient({
     customerPhone: initialJob.customerPhone || initialCustomer?.phone,
   } as any);
 
-  // Force finalized paid receipt values
-  receiptData.isDraft = false;
-  receiptData.isPaid = true;
+  // Set paid receipt or proforma draft values
+  receiptData.isDraft = isDraft;
+  receiptData.isPaid = !isDraft;
+  if (isDraft) {
+    receiptData.proformaId = initialJob.proformaNumber || `PR-${initialJob.id}`;
+    receiptData.proformaRevision = initialJob.proformaRevision || 2;
+  }
   // Crucial: Member identity and true post-deduction Wallet Balance After
   receiptData.isMember = Boolean(initialCustomer?.isMember || initialCustomer?.memberId);
   receiptData.memberId = initialCustomer?.memberId || initialJob.memberId || "";

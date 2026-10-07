@@ -83,12 +83,28 @@ export function A5ReceiptDialog({
       (snapshotData.id && snapshotData.id !== "DRAFT" ? snapshotData.id : null) ||
       "DRAFT";
 
-    const captureKey =
-      targetJobId === "DRAFT"
-        ? `DRAFT_draft_rev${snapshotData.proformaRevision || 0}_${Date.now()}`
-        : `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${
-            snapshotData.proformaRevision || 0
-          }`;
+    const isDraftTarget =
+      targetJobId === "DRAFT" ||
+      rawJobId === "DRAFT" ||
+      snapshotData.proformaId === "DRAFT" ||
+      !targetJobId;
+
+    if (isDraftTarget) {
+      // PREVIEW ONLY: Do not auto-upload draft proformas to GCS!
+      // This prevents overwriting a shared static proforma-DRAFT-rev0.png file on Cloud Storage
+      // and attaching another customer's draft to jobs.
+      return;
+    }
+
+    const hasItems = Array.isArray(snapshotData.items) && snapshotData.items.length > 0;
+    if (!hasItems) {
+      // PREVIEW/EMPTY ONLY: Do not auto-upload receipts or proformas when there are 0 laundry items!
+      return;
+    }
+
+    const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${
+      snapshotData.proformaRevision || 0
+    }`;
 
     const filename = snapshotData.isDraft
       ? `proforma-${
@@ -172,10 +188,11 @@ export function A5ReceiptDialog({
             let newBills: string[];
             if (isProforma) {
               const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
-              const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-`));
+              const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-`) && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
               newBills = [uploadResult.publicUrl, ...filtered];
             } else {
-              newBills = [...existingBills, uploadResult.publicUrl];
+              const filtered = existingBills.filter((u: string) => !u.includes(`receipt-${targetJob.id}`) && !u.includes("/receipt-") && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+              newBills = [uploadResult.publicUrl, ...filtered];
             }
             await jobStore.updateJobDetails(targetJob.id, {
               billImageUrl: JSON.stringify(newBills),
