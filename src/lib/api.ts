@@ -21,6 +21,7 @@ interface Database {
 // In-memory cache for fast sync reads, initialized lazily on client
 let memoryDb: Database | null = null;
 let isDbLoaded = false;
+let lastEtag: string | null = null;
 
 // Initialize the database from server
 export const ensureDbLoaded = async () => {
@@ -46,8 +47,16 @@ export const ensureDbLoaded = async () => {
   }
 
   try {
-    const res = await fetch('/api/db?t=' + Date.now());
+    const headers: Record<string, string> = {};
+    if (lastEtag) headers['If-None-Match'] = lastEtag;
+    const res = await fetch('/api/db', { headers });
+    if (res.status === 304) {
+      isDbLoaded = true;
+      return;
+    }
     if (res.ok) {
+      const etag = res.headers.get('ETag');
+      if (etag) lastEtag = etag;
       const data = await res.json();
       
       // Save to Cache Storage for next refresh
@@ -98,8 +107,16 @@ export const refreshDb = async () => {
   if (isRefreshing) return; // Skip if already fetching — prevents race conditions
   isRefreshing = true;
   try {
-    const res = await fetch('/api/db?t=' + Date.now());
+    const headers: Record<string, string> = {};
+    if (lastEtag) headers['If-None-Match'] = lastEtag;
+    const res = await fetch('/api/db', { headers });
+    if (res.status === 304) {
+      // 304 Not Modified: Data is unchanged on server, exit immediately without parsing or re-rendering
+      return;
+    }
     if (res.ok) {
+      const etag = res.headers.get('ETag');
+      if (etag) lastEtag = etag;
       const data = await res.json();
       const parsed = JSON.parse(JSON.stringify(data), dateReviver);
       if (memoryDb && memoryDb.pois.length > 0) {
@@ -240,9 +257,10 @@ const dateReviver = (key: string, value: unknown) => {
   return value;
 };
 
-// Parse initial db and convert date strings to Date objects
+// Parse initial db and ensure required database array fields without redundant stringify
 const parseMockDb = (data: unknown): Database => {
-  const db = JSON.parse(JSON.stringify(data), dateReviver) as Database;
+  if (!data) return emptyDb;
+  const db = (typeof data === 'object' ? data : JSON.parse(String(data), dateReviver)) as Database;
   if (!db.priceLists) db.priceLists = [];
   if (!db.shopLocations) db.shopLocations = [];
   if (!db.customers) db.customers = [];

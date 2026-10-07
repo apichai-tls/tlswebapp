@@ -331,7 +331,7 @@ export default function AdminPage() {
     window.addEventListener("scroll", handleUserActivity, { passive: true });
     window.addEventListener("touchstart", handleUserActivity, { passive: true });
 
-    let intervalTime: number | null = 5000; // Smart Polling active rate: 5 seconds
+    let intervalTime: number | null = 8000; // Smart Polling active rate: 8 seconds (optimized for responsive UI & reduced server load)
 
     if (activeTab === "map") {
       intervalTime = 15000; // Live Map: 15 seconds (GPS-heavy, keep slower)
@@ -355,18 +355,20 @@ export default function AdminPage() {
 
         tickCount++;
 
-        // Periodic check against server build version to detect new deploys
-        fetch('/api/version', { cache: 'no-store' })
-          .then(res => res.ok ? res.json() : null)
-          .then(data => {
-            if (data?.buildTime && clientBuildTime && data.buildTime !== clientBuildTime) {
-              setIsVersionOutdated(true);
-              if (!dialogOpenRef.current && !isSubmittingRef.current) {
-                window.location.reload();
+        // Periodic check against server build version to detect new deploys (throttled to ~64s)
+        if (tickCount % 8 === 0) {
+          fetch('/api/version', { cache: 'no-store' })
+            .then(res => res.ok ? res.json() : null)
+            .then(data => {
+              if (data?.buildTime && clientBuildTime && data.buildTime !== clientBuildTime) {
+                setIsVersionOutdated(true);
+                if (!dialogOpenRef.current && !isSubmittingRef.current) {
+                  window.location.reload();
+                }
               }
-            }
-          })
-          .catch(() => {});
+            })
+            .catch(() => {});
+        }
 
         if (timeSinceLastActive > IDLE_TIMEOUT_MS) {
           // Monitor Mode (Idle): Slow down polling to every 4th tick (e.g. 12s for 3s interval, 60s for 15s interval)

@@ -1,53 +1,121 @@
 import { NextResponse, NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { dbCache, invalidateDbCache } from '@/lib/db-cache';
 
+export { invalidateDbCache };
 export const dynamic = 'force-dynamic';
 
-// In-Memory cache to shield DB from concurrent polling spikes across multiple users/tabs
-let cachedPayload: any = null;
-let lastCacheTime = 0;
-const CACHE_TTL_MS = 2500; // 2.5s TTL
-
-export function invalidateDbCache() {
-  cachedPayload = null;
-  lastCacheTime = 0;
-}
+const CACHE_TTL_MS = 6000;            // 6s overall payload cache
+const CUSTOMERS_TTL_MS = 30000;        // 30s customer master data cache
+const MASTER_DATA_TTL_MS = 60000;      // 60s services, price lists, shop locations, settings cache
+const RIDER_EARNINGS_TTL_MS = 60000;   // 60s rider earnings aggregations cache
 
 export async function GET(request?: NextRequest) {
   try {
     const forceFresh = request ? new URL(request.url).searchParams.get('fresh') === 'true' : false;
+    const ifNoneMatch = request?.headers.get('if-none-match');
     const now = Date.now();
 
-    if (!forceFresh && cachedPayload && (now - lastCacheTime < CACHE_TTL_MS)) {
-      return NextResponse.json(cachedPayload, {
+    // 1. HTTP 304 Not Modified: If client sends current ETag and cache is warm, return 0 bytes in 0ms!
+    if (!forceFresh && ifNoneMatch && dbCache.etag && ifNoneMatch === dbCache.etag && (now - dbCache.lastTime < CACHE_TTL_MS)) {
+      return new Response(null, {
+        status: 304,
         headers: {
-          'X-Cache': 'HIT',
-          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          'ETag': dbCache.etag,
+          'Cache-Control': 'no-cache, must-revalidate',
         },
       });
     }
 
+    // 2. Warm In-Memory Payload Cache: Shield DB from rapid polling spikes
+    if (!forceFresh && dbCache.payload && (now - dbCache.lastTime < CACHE_TTL_MS)) {
+      return NextResponse.json(dbCache.payload, {
+        headers: {
+          'ETag': dbCache.etag || `W/"v${dbCache.version}-${dbCache.lastTime}"`,
+          'X-Cache': 'HIT',
+          'Cache-Control': 'no-cache, must-revalidate',
+        },
+      });
+    }
+
+    // 3. Layered Data Fetching:
+    // Execute dynamic queries (Jobs, Shifts, Riders) in parallel with conditional cached loaders
+    const fetchCustomersPromise = (!forceFresh && dbCache.customers && (now - dbCache.lastCustomersTime < CUSTOMERS_TTL_MS))
+      ? Promise.resolve(dbCache.customers)
+      : prisma.customer.findMany({
+          include: {
+            addresses: {
+              orderBy: { isPrimary: 'desc' }
+            }
+          }
+        }).then(res => {
+          dbCache.customers = res;
+          dbCache.lastCustomersTime = now;
+          return res;
+        });
+
+    const fetchMasterDataPromise = (!forceFresh && dbCache.masterData && (now - dbCache.lastMasterDataTime < MASTER_DATA_TTL_MS))
+      ? Promise.resolve(dbCache.masterData)
+      : Promise.all([
+          prisma.serviceItem.findMany(),
+          prisma.priceList.findMany(),
+          prisma.shopLocation.findMany(),
+          prisma.setting.findMany(),
+        ]).then(([services, priceListsRaw, shopLocations, settingsRaw]) => {
+          const res = { services, priceListsRaw, shopLocations, settingsRaw };
+          dbCache.masterData = res;
+          dbCache.lastMasterDataTime = now;
+          return res;
+        });
+
+    const fetchRiderEarningsPromise = (!forceFresh && dbCache.riderEarnings && (now - dbCache.lastRiderEarningsTime < RIDER_EARNINGS_TTL_MS))
+      ? Promise.resolve(dbCache.riderEarnings)
+      : Promise.all([
+          prisma.riderTransaction.groupBy({
+            by: ['riderId'],
+            where: {
+              type: { in: ['commission_pickup', 'commission_delivery'] }
+            },
+            _sum: {
+              amount: true
+            }
+          }),
+          prisma.riderTransaction.groupBy({
+            by: ['riderId'],
+            where: {
+              type: { in: ['commission_pickup', 'commission_delivery'] },
+              createdAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
+            },
+            _sum: {
+              amount: true
+            }
+          }),
+          prisma.riderTransaction.groupBy({
+            by: ['riderId'],
+            where: {
+              type: { in: ['commission_pickup', 'commission_delivery'] }
+            },
+            _count: {
+              id: true
+            }
+          })
+        ]).then(([lifetimeEarnings, monthEarnings, completedJobsCounts]) => {
+          const res = { lifetimeEarnings, monthEarnings, completedJobsCounts };
+          dbCache.riderEarnings = res;
+          dbCache.lastRiderEarningsTime = now;
+          return res;
+        });
 
     const [
       customers,
+      masterData,
       jobsRaw,
       riders,
-      services,
-      priceListsRaw,
-      shopLocations,
-      settingsRaw,
-      lifetimeEarnings,
-      monthEarnings,
-      completedJobsCounts,
+      riderEarnings,
       openShifts
     ] = await Promise.all([
-      prisma.customer.findMany({
-        include: {
-          addresses: {
-            orderBy: { isPrimary: 'desc' }
-          }
-        }
-      }),
+      fetchCustomersPromise,
+      fetchMasterDataPromise,
       prisma.job.findMany({
         where: {
           OR: [
@@ -112,8 +180,8 @@ export async function GET(request?: NextRequest) {
           proofImageUrl: true,
           bagImageUrl: true,
           billImageUrl: true,
-          paymentChannel: true,  // ✅ was missing — caused payment channel to not persist on reload
-          isPaid: true,          // ✅ was missing — caused payment status to not persist on reload
+          paymentChannel: true,
+          isPaid: true,
           createdBy: true,
           cashPlaced: true,
           isStuck: true,
@@ -128,44 +196,16 @@ export async function GET(request?: NextRequest) {
         }
       }),
       prisma.rider.findMany(),
-      prisma.serviceItem.findMany(),
-      prisma.priceList.findMany(),
-      prisma.shopLocation.findMany(),
-      prisma.setting.findMany(),
-      prisma.riderTransaction.groupBy({
-        by: ['riderId'],
-        where: {
-          type: { in: ['commission_pickup', 'commission_delivery'] }
-        },
-        _sum: {
-          amount: true
-        }
-      }),
-      prisma.riderTransaction.groupBy({
-        by: ['riderId'],
-        where: {
-          type: { in: ['commission_pickup', 'commission_delivery'] },
-          createdAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
-        },
-        _sum: {
-          amount: true
-        }
-      }),
-      prisma.riderTransaction.groupBy({
-        by: ['riderId'],
-        where: {
-          type: { in: ['commission_pickup', 'commission_delivery'] }
-        },
-        _count: {
-          id: true
-        }
-      }),
-      // All currently open cashier shifts — cheap single query, avoids separate shift check calls
+      fetchRiderEarningsPromise,
+      // All currently open cashier shifts — cheap single query
       prisma.cashierShift.findMany({
         where: { status: 'open' },
         select: { id: true, userId: true, branchId: true, userName: true, openedAt: true, startingCash: true, status: true }
       })
     ]);
+
+    const { services, priceListsRaw, shopLocations, settingsRaw } = masterData;
+    const { lifetimeEarnings, monthEarnings, completedJobsCounts } = riderEarnings;
 
     // Map Raw DB data back to the format expected by the frontend
     const jobs = jobsRaw.map(j => ({
@@ -177,7 +217,7 @@ export async function GET(request?: NextRequest) {
       dropoffCoords: { lat: j.dropoffLat, lng: j.dropoffLng },
     }));
 
-    const priceLists = priceListsRaw.map(pl => {
+    const priceLists = priceListsRaw.map((pl: any) => {
       let parsedJson: any = {};
       try {
         parsedJson = JSON.parse(pl.servicePrices || '{}');
@@ -203,7 +243,7 @@ export async function GET(request?: NextRequest) {
     });
 
     const settings: Record<string, string> = {};
-    settingsRaw.forEach(s => {
+    settingsRaw.forEach((s: any) => {
       settings[s.key] = s.value;
     });
 
@@ -218,8 +258,6 @@ export async function GET(request?: NextRequest) {
       coords: { lat: s.lat, lng: s.lng }
     }));
 
-
-    
     const formattedRiders = riders.map(r => {
       const lifeSum = lifetimeEarnings.find(e => e.riderId === r.id)?._sum?.amount || 0;
       const monSum = monthEarnings.find(e => e.riderId === r.id)?._sum?.amount || 0;
@@ -234,6 +272,10 @@ export async function GET(request?: NextRequest) {
       };
     });
 
+    // Derive revision hash for cache invalidation & conditional 304
+    const maxJobUpdated = jobs.length > 0 ? (jobs[0].updatedAt ? new Date(jobs[0].updatedAt).getTime() : 0) : 0;
+    const newEtag = `W/"v${dbCache.version}-${jobs.length}-${maxJobUpdated}"`;
+
     const payload = {
       customers: formattedCustomers,
       jobs,
@@ -241,18 +283,31 @@ export async function GET(request?: NextRequest) {
       services,
       priceLists,
       shopLocations: formattedShopLocations,
-      pois: [], // POIs are now lazy-loaded via /api/pois
+      pois: [], // POIs are lazy-loaded via /api/pois
       settings,
-      openShifts  // ✅ included so shift check reads from memory, not separate DB call
+      openShifts
     };
 
-    cachedPayload = payload;
-    lastCacheTime = Date.now();
+    dbCache.payload = payload;
+    dbCache.lastTime = now;
+    dbCache.etag = newEtag;
+
+    // Check if client sent this exact ETag even when cache refreshed
+    if (ifNoneMatch && ifNoneMatch === newEtag) {
+      return new Response(null, {
+        status: 304,
+        headers: {
+          'ETag': newEtag,
+          'Cache-Control': 'no-cache, must-revalidate',
+        },
+      });
+    }
 
     return NextResponse.json(payload, {
       headers: {
+        'ETag': newEtag,
         'X-Cache': 'MISS',
-        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Cache-Control': 'no-cache, must-revalidate',
       },
     });
   } catch (error) {

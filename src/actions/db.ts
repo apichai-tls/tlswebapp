@@ -5,6 +5,7 @@ import { listFilesForJob } from '@/lib/gcs';
 import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
+import { invalidateDbCache } from '@/lib/db-cache';
 
 // CUSTOMERS
 export async function getNextMemberIdAction(): Promise<string> {
@@ -147,6 +148,7 @@ export async function addCustomerAction(data: any) {
   if (!c) {
     throw new Error("ไม่สามารถสร้างลูกค้าใหม่ได้ กรุณาลองใหม่อีกครั้ง");
   }
+  invalidateDbCache();
   return c;
 }
 
@@ -412,6 +414,7 @@ export async function updateCustomerAction(id: string, updates: any) {
     }
   }
 
+  invalidateDbCache();
   return updatedCustomer;
 }
 
@@ -420,7 +423,9 @@ export async function deleteCustomerAction(id: string) {
   if (jobsCount > 0) {
     throw new Error(`Cannot delete customer: they have ${jobsCount} historical job(s).`);
   }
-  return prisma.customer.delete({ where: { id } });
+  const deleted = await prisma.customer.delete({ where: { id } });
+  invalidateDbCache();
+  return deleted;
 }
 
 export async function mergeCustomerAction(data: {
@@ -933,6 +938,7 @@ export async function addJobAction(data: any) {
     console.error("Failed to write ActivityLog on create:", err.message);
   }
 
+  invalidateDbCache();
   return createdJob;
 }
 
@@ -1276,6 +1282,7 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
 
+  invalidateDbCache();
   return updatedJob;
 }
 
