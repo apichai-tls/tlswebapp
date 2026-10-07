@@ -20,7 +20,7 @@ import { addCustomerAddressAction, getNextMemberIdAction } from "@/actions/db";
 import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { CountryCodeInput } from "@/components/ui/country-code-input";
 import { parseFullPhone } from "@/lib/country-codes";
-import { formatBaht, isThaiPhoneNumber, normalizeThaiPhone, findDuplicateCustomerByPhone } from "@/lib/utils";
+import { formatBaht, isThaiPhoneNumber, normalizeThaiPhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from "@/lib/utils";
 import { format } from "date-fns";
 
 const BANGKOK_DISTRICTS = [
@@ -758,11 +758,11 @@ export function AdminCustomerDialog({
                       }
                       if (newTier === "member" || newTier === "vip") {
                         if (!memberStartDate) {
-                          const now = new Date();
-                          setMemberStartDate(now.toISOString().split("T")[0]);
-                          const nextYear = new Date(now);
-                          nextYear.setFullYear(now.getFullYear() + 1);
-                          setMemberExpiryDate(nextYear.toISOString().split("T")[0]);
+                          const today = new Date().toISOString().split("T")[0];
+                          setMemberStartDate(today);
+                          setMemberExpiryDate(computeMembershipExpiryDate(today));
+                        } else if (!memberExpiryDate) {
+                          setMemberExpiryDate(computeMembershipExpiryDate(memberStartDate));
                         }
                       }
                     }}
@@ -1003,7 +1003,13 @@ export function AdminCustomerDialog({
                       <Input
                         type="date"
                         value={memberStartDate}
-                        onChange={e => setMemberStartDate(e.target.value)}
+                        onChange={e => {
+                          const newStart = e.target.value;
+                          setMemberStartDate(newStart);
+                          if (newStart) {
+                            setMemberExpiryDate(computeMembershipExpiryDate(newStart));
+                          }
+                        }}
                         className="h-9 text-xs border-indigo-200 rounded-xl bg-white focus-visible:ring-indigo-500 shadow-2xs font-medium text-slate-800"
                       />
                     </div>

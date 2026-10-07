@@ -208,6 +208,37 @@ export function safeCeil(val: number): number {
 }
 
 /**
+ * Compute membership expiry date (6 months minus 1 day from start date).
+ * E.g., Start: 2026-10-07 -> Expiry: 2027-04-06
+ */
+export function computeMembershipExpiryDate(startDateInput: Date | string = new Date()): string {
+  let date: Date;
+  if (typeof startDateInput === 'string') {
+    const parts = startDateInput.split('-').map(Number);
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+      date = new Date(parts[0], parts[1] - 1, parts[2]);
+    } else {
+      date = new Date(startDateInput);
+    }
+  } else {
+    date = new Date(startDateInput);
+  }
+  if (isNaN(date.getTime())) return '';
+  const targetMonth = date.getMonth() + 6;
+  const targetYear = date.getFullYear() + Math.floor(targetMonth / 12);
+  const normalizedMonth = targetMonth % 12;
+  const originalDay = date.getDate();
+  const daysInTargetMonth = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+  const clampedDay = Math.min(originalDay, daysInTargetMonth);
+  const targetDate = new Date(targetYear, normalizedMonth, clampedDay);
+  targetDate.setDate(targetDate.getDate() - 1);
+  const yyyy = targetDate.getFullYear();
+  const mm = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const dd = String(targetDate.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
  * Calculate Wallet Expiration Date (6 months from given date, set to 23:59:59.999).
  */
 export function calculateWalletExpiryDate(fromDate: Date = new Date()): Date {

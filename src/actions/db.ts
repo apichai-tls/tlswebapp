@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
-import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone } from '@/lib/utils';
+import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
 
@@ -82,6 +82,15 @@ export async function addCustomerAction(data: any) {
       currentMemberId = await getNextMemberIdAction();
     }
 
+    const resolvedStartDate = data.memberStartDate ? new Date(data.memberStartDate) : (data.isMember ? new Date() : null);
+    let resolvedExpiryDate = data.memberExpiryDate ? new Date(data.memberExpiryDate) : null;
+    if (data.isMember && !resolvedExpiryDate && resolvedStartDate) {
+      const expStr = computeMembershipExpiryDate(resolvedStartDate);
+      if (expStr) {
+        resolvedExpiryDate = new Date(`${expStr}T23:59:59.999Z`);
+      }
+    }
+
     try {
       c = await prisma.customer.create({
         data: {
@@ -121,8 +130,8 @@ export async function addCustomerAction(data: any) {
           sourceSystem: data.sourceSystem || 'web_booking',
           roomNo: data.roomNo || null,
           branchId: data.branchId || null,
-          memberStartDate: data.memberStartDate ? new Date(data.memberStartDate) : null,
-          memberExpiryDate: data.memberExpiryDate ? new Date(data.memberExpiryDate) : null,
+          memberStartDate: resolvedStartDate,
+          memberExpiryDate: resolvedExpiryDate,
         }
       });
       break;
