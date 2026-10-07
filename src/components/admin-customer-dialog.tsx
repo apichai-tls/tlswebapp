@@ -99,7 +99,7 @@ export function AdminCustomerDialog({
   const [initialPin, setInitialPin] = useState("");
 
   // Delivery Location
-  const [addressLabel, setAddressLabel] = useState("Home Condo");
+  const [addressLabel, setAddressLabel] = useState("Hotel");
   const [customAddressLabel, setCustomAddressLabel] = useState("");
   const [address, setAddress] = useState("");
   const [roomNo, setRoomNo] = useState("");
@@ -231,7 +231,8 @@ export function AdminCustomerDialog({
         setAddress(customer.defaultAddress && customer.defaultAddress !== "--" ? customer.defaultAddress : "");
         setRoomNo(customer.roomNo || "");
         setCoords(customer.defaultCoords || { lat: 13.736717, lng: 100.523186 });
-        setAddressLabel("Home Condo");
+        setAddressLabel("Hotel");
+        setCustomAddressLabel("");
         setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
         setLeaveWithJuristic(true);
 
@@ -274,7 +275,7 @@ export function AdminCustomerDialog({
         setEmail("");
         setInitialPin("");
 
-        setAddressLabel("Home Condo");
+        setAddressLabel("Hotel");
         setCustomAddressLabel("");
         setAddress("");
         setRoomNo("");
@@ -513,7 +514,7 @@ export function AdminCustomerDialog({
         if (newCustomer?.id && address.trim()) {
           try {
             await addCustomerAddressAction(newCustomer.id, {
-              label: addressLabel.trim() || "Home Condo",
+              label: addressLabel.trim() || "Hotel",
               placeName: address.trim(),
               address: address.trim(),
               roomNumber: roomNo.trim() || undefined,
@@ -1216,7 +1217,13 @@ export function AdminCustomerDialog({
                 <div>
                   <Label className="text-xs font-bold text-slate-700 block mb-1">Address Label</Label>
                   <select
-                    value={["Home Condo", "House", "Office", "Hotel"].includes(addressLabel) ? addressLabel : "Other"}
+                    value={
+                      addressLabel === "Home Condo"
+                        ? "Condo"
+                        : ["Hotel", "Condo", "Home", "Office"].includes(addressLabel)
+                        ? addressLabel
+                        : "Other"
+                    }
                     onChange={e => {
                       const val = e.target.value;
                       if (val === "Other") {
@@ -1227,13 +1234,13 @@ export function AdminCustomerDialog({
                     }}
                     className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer"
                   >
-                    <option value="Home Condo">Home Condo (คอนโด / ที่พัก)</option>
-                    <option value="House">House (บ้านเดี่ยว / ทาวน์โฮม)</option>
-                    <option value="Office">Office (ที่ทำงาน / ออฟฟิศ)</option>
                     <option value="Hotel">Hotel (โรงแรม / เซอร์วิสอพาร์ทเมนท์)</option>
+                    <option value="Condo">Condo (คอนโดมิเนียม)</option>
+                    <option value="Home">Home (บ้านเดี่ยว / ทาวน์โฮม)</option>
+                    <option value="Office">Office (ที่ทำงาน / ออฟฟิศ)</option>
                     <option value="Other">Other / อื่นๆ (ระบุเอง)</option>
                   </select>
-                  {(!["Home Condo", "House", "Office", "Hotel"].includes(addressLabel) || addressLabel === "Other") && (
+                  {(!["Hotel", "Condo", "Home", "Home Condo", "Office"].includes(addressLabel) || addressLabel === "Other") && (
                     <Input 
                       placeholder="ระบุชื่อสถานที่ (e.g. Villa 5, โฮมโปร)" 
                       value={customAddressLabel || (addressLabel !== "Other" ? addressLabel : "")} 
