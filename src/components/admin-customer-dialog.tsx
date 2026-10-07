@@ -977,18 +977,18 @@ export function AdminCustomerDialog({
                       <div className="relative">
                         <Input
                           readOnly
-                          value={customer?.memberId || memberId || "🔒 ออกรหัสอัตโนมัติเมื่อกดบันทึก (OF2400+)"}
+                          value={customer?.memberId || memberId || "Auto (OF2400+)"}
                           className={`h-9 text-xs border rounded-xl font-mono cursor-not-allowed select-all shadow-2xs ${
                             customer?.memberId || memberId
                               ? "border-indigo-200 bg-slate-50 text-indigo-950 font-black"
-                              : "border-indigo-200/70 bg-indigo-50/50 text-indigo-700 font-semibold"
+                              : "border-indigo-200/70 bg-indigo-50/50 text-indigo-700 font-bold"
                           }`}
                         />
                       </div>
                       <p className="text-[10px] text-slate-500 mt-1">
                         {customer?.memberId || memberId
                           ? "* รหัสสมาชิกเดิมที่กำหนดไว้แล้ว"
-                          : "* ระบบจะออกเลขสมาชิกลำดับถัดไปให้อัตโนมัติทันทีที่กดบันทึก (เริ่มต้น OF2400)"
+                          : "* ออกเลขอัตโนมัติเมื่อกดบันทึก (เริ่ม OF2400)"
                         }
                       </p>
                     </div>
