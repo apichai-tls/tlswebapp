@@ -100,6 +100,7 @@ export function AdminCustomerDialog({
 
   // Delivery Location
   const [addressLabel, setAddressLabel] = useState("Home Condo");
+  const [customAddressLabel, setCustomAddressLabel] = useState("");
   const [address, setAddress] = useState("");
   const [roomNo, setRoomNo] = useState("");
   const [district, setDistrict] = useState("Watthana (Thonglor, Ekkamai, Phrom Phong)");
@@ -274,6 +275,7 @@ export function AdminCustomerDialog({
         setInitialPin("");
 
         setAddressLabel("Home Condo");
+        setCustomAddressLabel("");
         setAddress("");
         setRoomNo("");
         setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
@@ -1213,12 +1215,35 @@ export function AdminCustomerDialog({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
                   <Label className="text-xs font-bold text-slate-700 block mb-1">Address Label</Label>
-                  <Input 
-                    placeholder="Home Condo" 
-                    value={addressLabel} 
-                    onChange={e => setAddressLabel(e.target.value)} 
-                    className="h-9 text-xs border-slate-300 rounded-xl" 
-                  />
+                  <select
+                    value={["Home Condo", "House", "Office", "Hotel"].includes(addressLabel) ? addressLabel : "Other"}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val === "Other") {
+                        setAddressLabel(customAddressLabel.trim() || "Other");
+                      } else {
+                        setAddressLabel(val);
+                      }
+                    }}
+                    className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer"
+                  >
+                    <option value="Home Condo">Home Condo (คอนโด / ที่พัก)</option>
+                    <option value="House">House (บ้านเดี่ยว / ทาวน์โฮม)</option>
+                    <option value="Office">Office (ที่ทำงาน / ออฟฟิศ)</option>
+                    <option value="Hotel">Hotel (โรงแรม / เซอร์วิสอพาร์ทเมนท์)</option>
+                    <option value="Other">Other / อื่นๆ (ระบุเอง)</option>
+                  </select>
+                  {(!["Home Condo", "House", "Office", "Hotel"].includes(addressLabel) || addressLabel === "Other") && (
+                    <Input 
+                      placeholder="ระบุชื่อสถานที่ (e.g. Villa 5, โฮมโปร)" 
+                      value={customAddressLabel || (addressLabel !== "Other" ? addressLabel : "")} 
+                      onChange={e => {
+                        setCustomAddressLabel(e.target.value);
+                        setAddressLabel(e.target.value.trim() || "Other");
+                      }} 
+                      className="h-8 text-xs border-slate-300 rounded-xl mt-1.5 bg-slate-50/70" 
+                    />
+                  )}
                 </div>
 
                 <div>
