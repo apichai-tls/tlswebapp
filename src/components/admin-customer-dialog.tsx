@@ -523,7 +523,11 @@ export function AdminCustomerDialog({
             console.error("Failed to add initial address to CustomerAddress table:", addrErr);
           }
         }
-        toast.success(`บันทึกลูกค้าใหม่ ${name} เรียบร้อยแล้ว`);
+        if (newCustomer?.isMember && newCustomer?.memberId) {
+          toast.success(`บันทึกลูกค้าใหม่ "${name}" สำเร็จ — ได้รับรหัสสมาชิก: ${newCustomer.memberId}`, { duration: 6000 });
+        } else {
+          toast.success(`บันทึกลูกค้าใหม่ "${name}" เรียบร้อยแล้ว`);
+        }
         if (onSaved && newCustomer) onSaved(newCustomer);
       }
       onOpenChange(false);
@@ -760,13 +764,6 @@ export function AdminCustomerDialog({
                           nextYear.setFullYear(now.getFullYear() + 1);
                           setMemberExpiryDate(nextYear.toISOString().split("T")[0]);
                         }
-                        if (!customer?.memberId && !memberId) {
-                          setIsGeneratingMemberId(true);
-                          getNextMemberIdAction()
-                            .then(nextId => setMemberId(nextId))
-                            .catch(err => console.error("Failed to generate member id:", err))
-                            .finally(() => setIsGeneratingMemberId(false));
-                        }
                       }
                     }}
                     className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer font-semibold"
@@ -966,7 +963,7 @@ export function AdminCustomerDialog({
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {/* Member ID - Read-only Auto-run (Mode 2) */}
+                    {/* Member ID - Auto-Allocated on Save (Mode 2) */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <Label className="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -974,42 +971,25 @@ export function AdminCustomerDialog({
                           <span>Member ID</span>
                         </Label>
                         <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
-                          AUTO RUN (OF2400+)
+                          {customer?.memberId ? "ASSIGNED" : "AUTO ON SAVE"}
                         </span>
                       </div>
                       <div className="relative">
                         <Input
                           readOnly
-                          placeholder={isGeneratingMemberId ? "กำลังคำนวณรหัสถัดไป..." : "e.g. OF2400"}
-                          value={isGeneratingMemberId ? "กำลังคำนวณรหัสถัดไป..." : memberId}
-                          className="h-9 text-xs border-indigo-200 rounded-xl bg-slate-50 font-mono font-black text-indigo-950 pr-8 cursor-not-allowed select-all shadow-2xs"
+                          value={customer?.memberId || memberId || "🔒 ออกรหัสอัตโนมัติเมื่อกดบันทึก (OF2400+)"}
+                          className={`h-9 text-xs border rounded-xl font-mono cursor-not-allowed select-all shadow-2xs ${
+                            customer?.memberId || memberId
+                              ? "border-indigo-200 bg-slate-50 text-indigo-950 font-black"
+                              : "border-indigo-200/70 bg-indigo-50/50 text-indigo-700 font-semibold"
+                          }`}
                         />
-                        {isGeneratingMemberId ? (
-                          <Loader2 size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-indigo-500" />
-                        ) : (
-                          <button
-                            type="button"
-                            title="ดึงรหัสสมาชิกล่าสุดใหม่"
-                            onClick={async () => {
-                              setIsGeneratingMemberId(true);
-                              try {
-                                const nextId = await getNextMemberIdAction();
-                                setMemberId(nextId);
-                                toast.info(`รหัสสมาชิกใหม่: ${nextId}`);
-                              } catch (err: any) {
-                                toast.error("ไม่สามารถสร้างรหัสสมาชิกล่าสุดได้");
-                              } finally {
-                                setIsGeneratingMemberId(false);
-                              }
-                            }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 rounded transition-colors"
-                          >
-                            <RefreshCw size={13} />
-                          </button>
-                        )}
                       </div>
                       <p className="text-[10px] text-slate-500 mt-1">
-                        * รันเลขอัตโนมัติ (ล็อกห้ามแก้ไข)
+                        {customer?.memberId || memberId
+                          ? "* รหัสสมาชิกเดิมที่กำหนดไว้แล้ว"
+                          : "* ระบบจะออกเลขสมาชิกลำดับถัดไปให้อัตโนมัติทันทีที่กดบันทึก (เริ่มต้น OF2400)"
+                        }
                       </p>
                     </div>
 

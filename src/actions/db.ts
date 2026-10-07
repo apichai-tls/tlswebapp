@@ -71,48 +71,73 @@ export async function addCustomerAction(data: any) {
 
   const nameUpper = data.name ? data.name.toUpperCase() : data.name;
 
-  const c = await prisma.customer.create({
-    data: {
-      name: nameUpper,
-      phone: data.phone,
-      defaultAddress: data.defaultAddress,
-      defaultLat: data.defaultCoords?.lat || 0,
-      defaultLng: data.defaultCoords?.lng || 0,
-      priceListId: data.priceListId,
-      creditBalance: data.creditBalance || 0,
-      tier: data.tier,
-      isMember: data.isMember || false,
-      memberId,
-      isVIP: data.isVIP || false,
-      isCorporate: data.isCorporate || false,
-      isWhatsapp: data.isWhatsapp || false,
-      email: data.email,
-      lineId: data.lineId,
-      language: data.language,
-      remark: data.remark,
-      secondaryAddress: data.secondaryAddress,
-      dob: data.dob,
-      taxId: data.taxId,
-      companyName: data.companyName,
-      vatType: data.vatType || 'default',
-      corporateCommissionType: data.corporateCommissionType || 'default',
-      corporatePickupCommission: data.corporatePickupCommission != null ? Number(data.corporatePickupCommission) : 0,
-      corporateDeliveryCommission: data.corporateDeliveryCommission != null ? Number(data.corporateDeliveryCommission) : 0,
-      corporateCommissionRatePerKm: data.corporateCommissionRatePerKm != null ? Number(data.corporateCommissionRatePerKm) : 0,
-      brand: data.brand || 'that_laundry_shop',
-      nickName: data.nickName || null,
-      gender: data.gender || 'Rather not say',
-      secondaryPhone: data.secondaryPhone || null,
-      isSecondaryWhatsapp: Boolean(data.isSecondaryWhatsapp),
-      isVerified: Boolean(data.isVerified),
-      verifiedVia: data.verifiedVia || null,
-      sourceSystem: data.sourceSystem || 'web_booking',
-      roomNo: data.roomNo || null,
-      branchId: data.branchId || null,
-      memberStartDate: data.memberStartDate ? new Date(data.memberStartDate) : null,
-      memberExpiryDate: data.memberExpiryDate ? new Date(data.memberExpiryDate) : null,
+  let c;
+  let attempts = 0;
+  const maxAttempts = 5;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    let currentMemberId = memberId;
+    if (data.isMember && !currentMemberId) {
+      currentMemberId = await getNextMemberIdAction();
     }
-  });
+
+    try {
+      c = await prisma.customer.create({
+        data: {
+          name: nameUpper,
+          phone: data.phone,
+          defaultAddress: data.defaultAddress,
+          defaultLat: data.defaultCoords?.lat || 0,
+          defaultLng: data.defaultCoords?.lng || 0,
+          priceListId: data.priceListId,
+          creditBalance: data.creditBalance || 0,
+          tier: data.tier,
+          isMember: data.isMember || false,
+          memberId: currentMemberId,
+          isVIP: data.isVIP || false,
+          isCorporate: data.isCorporate || false,
+          isWhatsapp: data.isWhatsapp || false,
+          email: data.email,
+          lineId: data.lineId,
+          language: data.language,
+          remark: data.remark,
+          secondaryAddress: data.secondaryAddress,
+          dob: data.dob,
+          taxId: data.taxId,
+          companyName: data.companyName,
+          vatType: data.vatType || 'default',
+          corporateCommissionType: data.corporateCommissionType || 'default',
+          corporatePickupCommission: data.corporatePickupCommission != null ? Number(data.corporatePickupCommission) : 0,
+          corporateDeliveryCommission: data.corporateDeliveryCommission != null ? Number(data.corporateDeliveryCommission) : 0,
+          corporateCommissionRatePerKm: data.corporateCommissionRatePerKm != null ? Number(data.corporateCommissionRatePerKm) : 0,
+          brand: data.brand || 'that_laundry_shop',
+          nickName: data.nickName || null,
+          gender: data.gender || 'Rather not say',
+          secondaryPhone: data.secondaryPhone || null,
+          isSecondaryWhatsapp: Boolean(data.isSecondaryWhatsapp),
+          isVerified: Boolean(data.isVerified),
+          verifiedVia: data.verifiedVia || null,
+          sourceSystem: data.sourceSystem || 'web_booking',
+          roomNo: data.roomNo || null,
+          branchId: data.branchId || null,
+          memberStartDate: data.memberStartDate ? new Date(data.memberStartDate) : null,
+          memberExpiryDate: data.memberExpiryDate ? new Date(data.memberExpiryDate) : null,
+        }
+      });
+      break;
+    } catch (err: any) {
+      // If unique constraint violation on memberId and user didn't specify manual ID, retry with next number
+      if (err.code === 'P2002' && (!data.memberId || !data.memberId.trim())) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  if (!c) {
+    throw new Error("ไม่สามารถสร้างลูกค้าใหม่ได้ กรุณาลองใหม่อีกครั้ง");
+  }
   return c;
 }
 
