@@ -208,6 +208,24 @@ export function safeCeil(val: number): number {
 }
 
 /**
+ * Calculate Wallet Expiration Date (6 months minus 1 day from given date, set to 23:59:59.999).
+ * E.g., Topup: 2026-10-01 -> Expiry: 2027-03-31 23:59:59.999
+ */
+export function calculateWalletExpiryDate(fromDate: Date = new Date()): Date {
+  const date = new Date(fromDate);
+  const targetMonth = date.getMonth() + 6;
+  const targetYear = date.getFullYear() + Math.floor(targetMonth / 12);
+  const normalizedMonth = targetMonth % 12;
+  const originalDay = date.getDate();
+  const daysInTargetMonth = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+  const clampedDay = Math.min(originalDay, daysInTargetMonth);
+  const expiry = new Date(targetYear, normalizedMonth, clampedDay);
+  expiry.setDate(expiry.getDate() - 1);
+  expiry.setHours(23, 59, 59, 999);
+  return expiry;
+}
+
+/**
  * Compute membership expiry date (6 months minus 1 day from start date).
  * E.g., Start: 2026-10-07 -> Expiry: 2027-04-06
  */
@@ -224,28 +242,11 @@ export function computeMembershipExpiryDate(startDateInput: Date | string = new 
     date = new Date(startDateInput);
   }
   if (isNaN(date.getTime())) return '';
-  const targetMonth = date.getMonth() + 6;
-  const targetYear = date.getFullYear() + Math.floor(targetMonth / 12);
-  const normalizedMonth = targetMonth % 12;
-  const originalDay = date.getDate();
-  const daysInTargetMonth = new Date(targetYear, normalizedMonth + 1, 0).getDate();
-  const clampedDay = Math.min(originalDay, daysInTargetMonth);
-  const targetDate = new Date(targetYear, normalizedMonth, clampedDay);
-  targetDate.setDate(targetDate.getDate() - 1);
-  const yyyy = targetDate.getFullYear();
-  const mm = String(targetDate.getMonth() + 1).padStart(2, '0');
-  const dd = String(targetDate.getDate()).padStart(2, '0');
+  const expiry = calculateWalletExpiryDate(date);
+  const yyyy = expiry.getFullYear();
+  const mm = String(expiry.getMonth() + 1).padStart(2, '0');
+  const dd = String(expiry.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
-}
-
-/**
- * Calculate Wallet Expiration Date (6 months from given date, set to 23:59:59.999).
- */
-export function calculateWalletExpiryDate(fromDate: Date = new Date()): Date {
-  const expiry = new Date(fromDate);
-  expiry.setMonth(expiry.getMonth() + 6);
-  expiry.setHours(23, 59, 59, 999);
-  return expiry;
 }
 
 /**
