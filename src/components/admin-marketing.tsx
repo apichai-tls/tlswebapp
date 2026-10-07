@@ -26,12 +26,23 @@ import {
   Lock,
   Megaphone,
   CalendarDays,
-  QrCode
+  QrCode,
+  CreditCard,
+  Wallet,
+  Sparkles,
+  CheckCircle2,
+  Clock,
+  RefreshCw,
+  ExternalLink,
+  ChevronRight,
+  TrendingUp,
+  Award
 } from "lucide-react";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { AdminMarketingCalendar } from "@/components/admin-marketing-calendar";
 import { AdminMarketingLinks } from "@/components/admin-marketing-links";
+import { getWalletTransactionsAction } from "@/actions/db";
 
 interface AdminMarketingProps {
   onViewJob?: (job: any) => void;
@@ -60,6 +71,37 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
   // Job view details modal
   const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
+
+  // Active Campaign Selector State
+  const [selectedCampaign, setSelectedCampaign] = useState<"topup_4000_1000" | "order_9_9">("topup_4000_1000");
+
+  // Wallet Transactions State for Top-Up Campaign
+  const [walletTransactions, setWalletTransactions] = useState<any[]>([]);
+  const [isLoadingWalletTxs, setIsLoadingWalletTxs] = useState(false);
+
+  // Top-Up Campaign specific filters
+  const [topupPaymentFilter, setTopupPaymentFilter] = useState<string>("all");
+  const [topupApprovalFilter, setTopupApprovalFilter] = useState<string>("all");
+  const [topupSearchQuery, setTopupSearchQuery] = useState<string>("");
+  const [selectedSlipUrl, setSelectedSlipUrl] = useState<string | null>(null);
+
+  const fetchWalletTransactions = async () => {
+    setIsLoadingWalletTxs(true);
+    try {
+      const txs = await getWalletTransactionsAction({ type: "TOPUP" });
+      setWalletTransactions(txs || []);
+    } catch (err) {
+      console.error("Failed to load wallet transactions for marketing:", err);
+    } finally {
+      setIsLoadingWalletTxs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (subTab === "promo") {
+      fetchWalletTransactions();
+    }
+  }, [subTab]);
 
   // Fetch historical jobs when date range expands beyond 30 days
   useEffect(() => {
@@ -468,29 +510,182 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
     };
   }, [filteredJobs, customers, riders, promoStatusFilter, promoTypeFilter, promoCodeFilter, promoSearchQuery]);
 
+  // Topup 4000+1000 Campaign Data Calculations
+  const topupReportData = useMemo(() => {
+    // 1. Filter transactions
+    const rawTxs = walletTransactions.filter(tx => {
+      if (tx.type !== "TOPUP") return false;
+
+      // Filter for 4000+1000 campaign:
+      if (selectedCampaign === "topup_4000_1000") {
+        const pkg = (tx.packageName || "").toLowerCase();
+        const matchesPkg = pkg.includes("4000") || (Number(tx.amount) === 5000 && Number(tx.bonusAmount) === 1000);
+        if (!matchesPkg) return false;
+      }
+
+      // Branch filter
+      if (selectedBranch !== "all") {
+        const cust = customers.find(c => c.id === tx.customerId);
+        const branch = tx.branchId || cust?.branchId;
+        if (branch !== selectedBranch) return false;
+      }
+
+      // Date filter
+      if (!tx.createdAt) return false;
+      const txDate = new Date(tx.createdAt);
+      const today = new Date();
+
+      if (dateRange === "today") {
+        if (txDate < startOfDay(today) || txDate > endOfDay(today)) return false;
+      } else if (dateRange === "7days") {
+        if (txDate < startOfDay(subDays(today, 7))) return false;
+      } else if (dateRange === "30days") {
+        if (txDate < startOfDay(subDays(today, 30))) return false;
+      } else if (dateRange === "month") {
+        if (txDate.getMonth() !== today.getMonth() || txDate.getFullYear() !== today.getFullYear()) return false;
+      } else if (dateRange === "custom") {
+        if (customStartDate) {
+          const startMs = new Date(customStartDate).setHours(0, 0, 0, 0);
+          if (txDate.getTime() < startMs) return false;
+        }
+        if (customEndDate) {
+          const endMs = new Date(customEndDate).setHours(23, 59, 59, 999);
+          if (txDate.getTime() > endMs) return false;
+        }
+      }
+
+      return true;
+    });
+
+    // 2. Filter by search, channel, approval
+    const filteredTxs = rawTxs.filter(tx => {
+      if (topupApprovalFilter !== "all" && tx.approvalStatus !== topupApprovalFilter) return false;
+      if (topupPaymentFilter !== "all" && tx.paymentChannel !== topupPaymentFilter) return false;
+
+      if (topupSearchQuery.trim()) {
+        const q = topupSearchQuery.toLowerCase().trim();
+        const matchName = (tx.customerName || "").toLowerCase().includes(q);
+        const matchMemberId = (tx.customerMemberId || "").toLowerCase().includes(q);
+        const matchPhone = (tx.customerPhone || "").includes(q);
+        const matchRef = (tx.referenceId || "").toLowerCase().includes(q);
+        const matchStaff = (tx.createdByName || "").toLowerCase().includes(q);
+        if (!matchName && !matchMemberId && !matchPhone && !matchRef && !matchStaff) return false;
+      }
+
+      return true;
+    });
+
+    // 3. Compute Executive KPIs
+    let totalCredit = 0;
+    let totalBonus = 0;
+    let totalCashPaid = 0;
+    const uniqueCustomerIds = new Set<string>();
+    const channelMap = new Map<string, { count: number; cash: number; bonus: number; credit: number }>();
+    const staffMap = new Map<string, { count: number; cash: number; credit: number }>();
+
+    filteredTxs.forEach(tx => {
+      const credit = Number(tx.amount) || 0;
+      const bonus = Number(tx.bonusAmount) || 0;
+      const cash = credit - bonus; // e.g. 5000 - 1000 = 4000
+
+      totalCredit += credit;
+      totalBonus += bonus;
+      totalCashPaid += cash;
+
+      if (tx.customerId) uniqueCustomerIds.add(tx.customerId);
+
+      // Channel breakdown
+      const channel = tx.paymentChannel || "Unspecified";
+      const chData = channelMap.get(channel) || { count: 0, cash: 0, bonus: 0, credit: 0 };
+      chData.count += 1;
+      chData.cash += cash;
+      chData.bonus += bonus;
+      chData.credit += credit;
+      channelMap.set(channel, chData);
+
+      // Staff breakdown
+      const staff = tx.createdByName || "Staff";
+      const stData = staffMap.get(staff) || { count: 0, cash: 0, credit: 0 };
+      stData.count += 1;
+      stData.cash += cash;
+      stData.credit += credit;
+      staffMap.set(staff, stData);
+    });
+
+    const txCount = filteredTxs.length;
+    const avgCashTicket = txCount > 0 ? totalCashPaid / txCount : 0;
+    const uniqueCustomersCount = uniqueCustomerIds.size;
+
+    return {
+      txs: filteredTxs,
+      kpis: {
+        totalCashPaid,
+        totalBonus,
+        totalCredit,
+        txCount,
+        uniqueCustomersCount,
+        avgCashTicket,
+      },
+      channelBreakdown: Array.from(channelMap.entries()).map(([channel, data]) => ({ channel, ...data })),
+      staffBreakdown: Array.from(staffMap.entries()).map(([staff, data]) => ({ staff, ...data })),
+    };
+  }, [walletTransactions, selectedCampaign, selectedBranch, dateRange, customStartDate, customEndDate, topupApprovalFilter, topupPaymentFilter, topupSearchQuery, customers]);
+
   const handleExportExcel = () => {
     let csvContent = "\uFEFF"; // UTF-8 BOM for Thai character compatibility in Excel
-    let filename = `marketing_promo_${format(new Date(), "yyyyMMdd")}.csv`;
+    let filename = selectedCampaign === "topup_4000_1000"
+      ? `marketing_topup_campaign_4000_1000_${format(new Date(), "yyyyMMdd")}.csv`
+      : `marketing_promo_${format(new Date(), "yyyyMMdd")}.csv`;
 
-    csvContent += "Promo Code Performance Report\n";
-    csvContent += `Branch,${selectedBranch === "all" ? "All Branches" : (shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}\n`;
-    csvContent += `Date Range,${dateRange}\n`;
-    csvContent += `Generated At,${format(new Date(), "yyyy-MM-dd HH:mm:ss")}\n\n`;
+    if (selectedCampaign === "topup_4000_1000") {
+      csvContent += "Top-up Campaign Performance Report (แคมเปญเติมเงิน 4,000 แถม 1,000)\n";
+      csvContent += `Branch,${selectedBranch === "all" ? "All Branches" : (shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}\n`;
+      csvContent += `Date Range,${dateRange}\n`;
+      csvContent += `Campaign Period,05/10/2026 - 09/10/2026\n`;
+      csvContent += `Generated At,${format(new Date(), "yyyy-MM-dd HH:mm:ss")}\n\n`;
 
-    csvContent += "=== 1. PROMOTION MATRIX SUMMARY ===\n";
-    csvContent += "Promo Code,Campaign Type,Orders,Total Distance (km),Original Fee,Discount Given,Net Fee Collected,Laundry Sales,Rider Commission,Net Margin,New Customers,First Used,Last Used\n";
-    
-    promoReportData.codeSummaries.forEach(s => {
-      csvContent += `"${s.code}","${s.campaignType}",${s.orderCount},${s.totalDistance.toFixed(1)},${s.originalFee.toFixed(2)},${s.discountGiven.toFixed(2)},${s.netFeeCollected.toFixed(2)},${s.laundrySales.toFixed(2)},${s.riderCommission.toFixed(2)},${s.netMargin.toFixed(2)},${s.newCustomerCount},"${s.firstUsedStr}","${s.lastUsedStr}"\n`;
-    });
+      csvContent += "=== 1. EXECUTIVE KPI SUMMARY ===\n";
+      csvContent += `Total Cash Inflow (เงินสดรับจริง),${topupReportData.kpis.totalCashPaid.toFixed(2)}\n`;
+      csvContent += `Total Bonus Granted (โบนัสแถมรวม),${topupReportData.kpis.totalBonus.toFixed(2)}\n`;
+      csvContent += `Total Credit Issued (เครดิตเข้าระบบรวม),${topupReportData.kpis.totalCredit.toFixed(2)}\n`;
+      csvContent += `Total Top-ups (จำนวนครั้งที่เติม),${topupReportData.kpis.txCount}\n`;
+      csvContent += `Unique Customers (ลูกค้าที่เข้าร่วม),${topupReportData.kpis.uniqueCustomersCount}\n`;
+      csvContent += `Avg. Cash Ticket (เฉลี่ยต่อบิล),${topupReportData.kpis.avgCashTicket.toFixed(2)}\n\n`;
 
-    csvContent += "\n=== 2. DETAILED ORDER LOG ===\n";
-    csvContent += "Order ID,Date,Customer Name,Customer Phone,Customer Badges,Distance (km),Laundry Sales,Original Delivery Fee,Promo Code,Discount Given,Net Fee Collected,Bill Total,Pickup Rider,Pickup Comm,Delivery Rider,Delivery Comm,Total Rider Comm,Net Margin,Payment Channel,Paid Status\n";
+      csvContent += "=== 2. PAYMENT CHANNEL BREAKDOWN ===\n";
+      csvContent += "Payment Channel,Transactions,Cash Collected,Bonus Granted,Total Credit\n";
+      topupReportData.channelBreakdown.forEach(ch => {
+        csvContent += `"${ch.channel}",${ch.count},${ch.cash.toFixed(2)},${ch.bonus.toFixed(2)},${ch.credit.toFixed(2)}\n`;
+      });
 
-    promoReportData.orderList.forEach(o => {
-      const custBadges = o.customerBadges.join("/") || "Standard";
-      csvContent += `"${o.jobId}","${o.dateStr}","${(o.customerName || "").replace(/"/g, '""')}","${o.customerPhone || ""}","${custBadges}",${o.distance.toFixed(1)},${o.laundryAmount.toFixed(2)},${o.originalFee.toFixed(2)},"${o.promoCode}",${o.discountAmount.toFixed(2)},${o.netFee.toFixed(2)},${o.billTotal.toFixed(2)},"${(o.pickupRiderName || "").replace(/"/g, '""')}",${o.pickupCommission.toFixed(2)},"${(o.deliveryRiderName || "").replace(/"/g, '""')}",${o.deliveryCommission.toFixed(2)},${o.totalRiderComm.toFixed(2)},${o.netMargin.toFixed(2)},"${o.paymentChannel}","${o.isPaid ? 'Paid' : 'Unpaid'}"\n`;
-    });
+      csvContent += "\n=== 3. DETAILED TOP-UP CUSTOMER TRANSACTION LOG ===\n";
+      csvContent += "Receipt No,Date/Time,Customer Name,Member ID,Phone,Branch,Package,Cash Paid,Bonus Granted,Total Credit,Balance Before,Balance After,Payment Channel,Staff,Approval Status,Slip URL\n";
+      topupReportData.txs.forEach(t => {
+        const cash = (Number(t.amount) || 0) - (Number(t.bonusAmount) || 0);
+        const branchName = shops.find(s => s.id === t.branchId)?.name || "Headquarters / Online";
+        csvContent += `"${t.referenceId || t.id}","${t.createdAt ? format(new Date(t.createdAt), "dd/MM/yyyy HH:mm") : "-"}","${(t.customerName || "").replace(/"/g, '""')}","${t.customerMemberId || "-"}","${t.customerPhone || "-"}","${branchName}","${(t.packageName || "").replace(/"/g, '""')}",${cash.toFixed(2)},${(Number(t.bonusAmount) || 0).toFixed(2)},${(Number(t.amount) || 0).toFixed(2)},${(Number(t.balanceBefore) || 0).toFixed(2)},${(Number(t.balanceAfter) || 0).toFixed(2)},"${t.paymentChannel || "-"}","${(t.createdByName || "").replace(/"/g, '""')}","${t.approvalStatus || "-"}","${t.slipImageUrl || ""}"\n`;
+      });
+    } else {
+      csvContent += "Promo Code Performance Report\n";
+      csvContent += `Branch,${selectedBranch === "all" ? "All Branches" : (shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}\n`;
+      csvContent += `Date Range,${dateRange}\n`;
+      csvContent += `Generated At,${format(new Date(), "yyyy-MM-dd HH:mm:ss")}\n\n`;
+
+      csvContent += "=== 1. PROMOTION MATRIX SUMMARY ===\n";
+      csvContent += "Promo Code,Campaign Type,Orders,Total Distance (km),Original Fee,Discount Given,Net Fee Collected,Laundry Sales,Rider Commission,Net Margin,New Customers,First Used,Last Used\n";
+      
+      promoReportData.codeSummaries.forEach(s => {
+        csvContent += `"${s.code}","${s.campaignType}",${s.orderCount},${s.totalDistance.toFixed(1)},${s.originalFee.toFixed(2)},${s.discountGiven.toFixed(2)},${s.netFeeCollected.toFixed(2)},${s.laundrySales.toFixed(2)},${s.riderCommission.toFixed(2)},${s.netMargin.toFixed(2)},${s.newCustomerCount},"${s.firstUsedStr}","${s.lastUsedStr}"\n`;
+      });
+
+      csvContent += "\n=== 2. DETAILED ORDER LOG ===\n";
+      csvContent += "Order ID,Date,Customer Name,Customer Phone,Customer Badges,Distance (km),Laundry Sales,Original Delivery Fee,Promo Code,Discount Given,Net Fee Collected,Bill Total,Pickup Rider,Pickup Comm,Delivery Rider,Delivery Comm,Total Rider Comm,Net Margin,Payment Channel,Paid Status\n";
+
+      promoReportData.orderList.forEach(o => {
+        const custBadges = o.customerBadges.join("/") || "Standard";
+        csvContent += `"${o.jobId}","${o.dateStr}","${(o.customerName || "").replace(/"/g, '""')}","${o.customerPhone || ""}","${custBadges}",${o.distance.toFixed(1)},${o.laundryAmount.toFixed(2)},${o.originalFee.toFixed(2)},"${o.promoCode}",${o.discountAmount.toFixed(2)},${o.netFee.toFixed(2)},${o.billTotal.toFixed(2)},"${(o.pickupRiderName || "").replace(/"/g, '""')}",${o.pickupCommission.toFixed(2)},"${(o.deliveryRiderName || "").replace(/"/g, '""')}",${o.deliveryCommission.toFixed(2)},${o.totalRiderComm.toFixed(2)},${o.netMargin.toFixed(2)},"${o.paymentChannel}","${o.isPaid ? 'Paid' : 'Unpaid'}"\n`;
+      });
+    }
 
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -657,11 +852,553 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         </div>
       )}
 
-      {/* PROMO CODE PERFORMANCE REPORT CONTENT */}
+      {/* PROMO & CAMPAIGN PERFORMANCE REPORT CONTENT */}
       {subTab === "promo" && (
         <div className="space-y-6 animate-in fade-in duration-200">
-          {/* Executive KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
+
+          {/* 🌟 Campaign Selector Banner */}
+          <div className="bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white flex items-center justify-center shadow-sm shrink-0">
+                <Megaphone size={20} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Marketing Campaign (เลือกแคมเปญการตลาด)</span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    Active
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-2">
+                  <select
+                    value={selectedCampaign}
+                    onChange={(e) => setSelectedCampaign(e.target.value as any)}
+                    className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 bg-slate-100/80 dark:bg-slate-800 hover:bg-slate-200/60 dark:hover:bg-slate-750 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 outline-none cursor-pointer transition-colors shadow-xs"
+                  >
+                    <option value="topup_4000_1000">💳 Topup Promo: แคมเปญเติมเงิน 4,000 แถม 1,000 (05/10 - 09/10/2026)</option>
+                    <option value="order_9_9">🏷️ Order Promo: โค้ดส่วนลด 9.9 & คูปองออเดอร์ (Order Discounts)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Campaign Quick Actions & Period */}
+            <div className="flex flex-wrap items-center gap-2 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100 dark:border-slate-800">
+              {selectedCampaign === "topup_4000_1000" ? (
+                <>
+                  <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                    <CalendarDays size={13} className="text-indigo-500" />
+                    <span>ระยะเวลาแคมเปญ: <strong className="text-slate-800 dark:text-slate-200">05/10/2026 - 09/10/2026</strong></span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setDateRange("custom");
+                      setCustomStartDate("2026-10-05");
+                      setCustomEndDate("2026-10-09");
+                    }}
+                    className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 border border-indigo-200/80 dark:border-indigo-800 rounded-xl px-3 py-1.5 transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                    title="กรองเฉพาะช่วงวันที่ 05/10 - 09/10/2026"
+                  >
+                    <Sparkles size={12} />
+                    <span>ล็อคช่วงแคมเปญ (05-09 ต.ค.)</span>
+                  </button>
+                  <button
+                    onClick={fetchWalletTransactions}
+                    disabled={isLoadingWalletTxs}
+                    className="p-1.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-colors cursor-pointer"
+                    title="รีเฟรชข้อมูล (Refresh live data)"
+                  >
+                    <RefreshCw size={14} className={isLoadingWalletTxs ? "animate-spin text-indigo-600" : ""} />
+                  </button>
+                </>
+              ) : (
+                <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                  <Tag size={13} className="text-rose-500" />
+                  <span>แคมเปญคำสั่งซื้อ: <strong className="text-slate-800 dark:text-slate-200">Promo: 9.9, OLFREE</strong></span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ═══════════════════════════════════════════════════════════════════════════ */}
+          {/* CONDITIONAL CAMPAIGN DASHBOARD */}
+          {/* ═══════════════════════════════════════════════════════════════════════════ */}
+          {selectedCampaign === "topup_4000_1000" ? (
+            <div className="space-y-6">
+              {/* Executive KPI Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
+                {/* 1. Cash Inflow */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
+                    <DollarSign size={70} className="text-emerald-600" />
+                  </div>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Cash Inflow (เงินสดรับจริง)</span>
+                      <h3 className="text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
+                        ฿{topupReportData.kpis.totalCashPaid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </h3>
+                    </div>
+                    <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold">
+                      Revenue
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-semibold">
+                    ยอดเงินสดที่เก็บเข้าบัญชีจริง
+                  </p>
+                </div>
+
+                {/* 2. Total Bonus Granted */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
+                    <Gift size={70} className="text-rose-600" />
+                  </div>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Bonus (โบนัสแถมรวม)</span>
+                      <h3 className="text-xl font-black text-rose-600 dark:text-rose-400 mt-1">
+                        ฿{topupReportData.kpis.totalBonus.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </h3>
+                    </div>
+                    <span className="p-1.5 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 text-[10px] font-bold">
+                      Subsidy
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-semibold">
+                    โบนัสฟรีที่ร้านสมทบให้ลูกค้า
+                  </p>
+                </div>
+
+                {/* 3. Total Credit Issued */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
+                    <Wallet size={70} className="text-indigo-600" />
+                  </div>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Credit (เครดิตเข้าระบบรวม)</span>
+                      <h3 className="text-xl font-black text-indigo-650 dark:text-indigo-400 mt-1">
+                        ฿{topupReportData.kpis.totalCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </h3>
+                    </div>
+                    <span className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold">
+                      Wallet
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-semibold">
+                    เงินสด + โบนัส รวมในกระเป๋า
+                  </p>
+                </div>
+
+                {/* 4. Total Top-ups */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
+                    <Package size={70} className="text-blue-600" />
+                  </div>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Top-ups (จำนวนครั้งที่เติม)</span>
+                      <h3 className="text-xl font-black text-slate-800 dark:text-slate-100 mt-1">
+                        {topupReportData.kpis.txCount} <span className="text-xs font-normal text-slate-400">รายการ</span>
+                      </h3>
+                    </div>
+                    <span className="p-1.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] font-bold">
+                      Orders
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-semibold">
+                    ยอดทำรายการสำเร็จทั้งหมด
+                  </p>
+                </div>
+
+                {/* 5. Unique Customers */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
+                    <Users size={70} className="text-purple-600" />
+                  </div>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Customers (ลูกค้าที่เข้าร่วม)</span>
+                      <h3 className="text-xl font-black text-purple-600 dark:text-purple-400 mt-1">
+                        {topupReportData.kpis.uniqueCustomersCount} <span className="text-xs font-normal text-slate-400">ท่าน</span>
+                      </h3>
+                    </div>
+                    <span className="p-1.5 rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400 text-[10px] font-bold">
+                      Members
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-semibold">
+                    บัญชีสมาชิกที่ร่วมแคมเปญ
+                  </p>
+                </div>
+
+                {/* 6. Avg Cash Ticket */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
+                    <TrendingUp size={70} className="text-sky-600" />
+                  </div>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Avg. Ticket (ยอดเติมเฉลี่ย)</span>
+                      <h3 className="text-xl font-black text-slate-800 dark:text-slate-100 mt-1">
+                        ฿{topupReportData.kpis.avgCashTicket.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </h3>
+                    </div>
+                    <span className="p-1.5 rounded-lg bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[10px] font-bold">
+                      Average
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-semibold">
+                    เงินสดเฉลี่ยต่อรายการ
+                  </p>
+                </div>
+              </div>
+
+              {/* Topup Filters Toolbar */}
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-850 p-4 rounded-2xl border border-slate-200/60 dark:border-slate-800 shadow-sm">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {/* Search */}
+                  <div className="relative w-72">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="ค้นหาชื่อ, เบอร์, Member ID, Receipt No, Staff..."
+                      value={topupSearchQuery}
+                      onChange={(e) => setTopupSearchQuery(e.target.value)}
+                      className="w-full pl-8.5 pr-3 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Payment Channel Filter */}
+                  <select
+                    value={topupPaymentFilter}
+                    onChange={(e) => setTopupPaymentFilter(e.target.value)}
+                    className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer"
+                  >
+                    <option value="all">ทุกช่องทางชำระเงิน (All Channels)</option>
+                    <option value="QR Code">📱 QR Code</option>
+                    <option value="Transfer">🏦 Transfer (โอนเงิน)</option>
+                    <option value="Cash / COD">💵 Cash / COD (เงินสด)</option>
+                    <option value="Credit Card">💳 Credit Card</option>
+                  </select>
+
+                  {/* Approval Filter */}
+                  <select
+                    value={topupApprovalFilter}
+                    onChange={(e) => setTopupApprovalFilter(e.target.value)}
+                    className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer"
+                  >
+                    <option value="all">ทุกสถานะตรวจสอบ (All Approval Status)</option>
+                    <option value="APPROVED">✅ อนุมัติแล้ว (Approved Only)</option>
+                    <option value="PENDING">⏳ รอตรวจสอบ (Pending Only)</option>
+                  </select>
+                </div>
+
+                {(topupSearchQuery || topupPaymentFilter !== "all" || topupApprovalFilter !== "all") && (
+                  <button
+                    onClick={() => {
+                      setTopupSearchQuery("");
+                      setTopupPaymentFilter("all");
+                      setTopupApprovalFilter("all");
+                    }}
+                    className="text-[11px] text-rose-500 hover:text-rose-600 font-extrabold uppercase tracking-wider cursor-pointer transition-colors"
+                  >
+                    Reset Filters
+                  </button>
+                )}
+              </div>
+
+              {/* Section: Breakdown Matrices */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Payment Channel Breakdown */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-4.5 shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide flex items-center gap-1.5">
+                      <CreditCard size={15} className="text-indigo-600" />
+                      แยกตามช่องทางชำระเงิน (Payment Channels)
+                    </h4>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {topupReportData.channelBreakdown.length} ช่องทาง
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs font-semibold text-left">
+                      <thead>
+                        <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 uppercase text-[9px] font-black">
+                          <th className="py-2">ช่องทาง</th>
+                          <th className="py-2 text-center">รายการ</th>
+                          <th className="py-2 text-right">เงินสดรับจริง</th>
+                          <th className="py-2 text-right">โบนัสแถม</th>
+                          <th className="py-2 text-right">เครดิตรวม</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {topupReportData.channelBreakdown.map((ch) => (
+                          <tr key={ch.channel} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
+                            <td className="py-2.5 font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                              {ch.channel.includes("QR") ? "📱" : ch.channel.includes("Transfer") ? "🏦" : "💵"} {ch.channel}
+                            </td>
+                            <td className="py-2.5 text-center font-bold text-indigo-600 dark:text-indigo-400">
+                              {ch.count}
+                            </td>
+                            <td className="py-2.5 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
+                              ฿{ch.cash.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-2.5 text-right font-mono text-rose-500 dark:text-rose-400 font-bold">
+                              ฿{ch.bonus.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-2.5 text-right font-mono font-black text-indigo-650 dark:text-indigo-400">
+                              ฿{ch.credit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Staff Breakdown */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-4.5 shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide flex items-center gap-1.5">
+                      <Users size={15} className="text-purple-600" />
+                      พนักงานผู้ทำรายการ (Staff / Cashier Breakdown)
+                    </h4>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {topupReportData.staffBreakdown.length} ท่าน
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs font-semibold text-left">
+                      <thead>
+                        <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 uppercase text-[9px] font-black">
+                          <th className="py-2">พนักงาน</th>
+                          <th className="py-2 text-center">รายการ</th>
+                          <th className="py-2 text-right">เงินสดรับจริง</th>
+                          <th className="py-2 text-right">เครดิตรวม</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {topupReportData.staffBreakdown.map((st) => (
+                          <tr key={st.staff} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
+                            <td className="py-2.5 font-bold text-slate-800 dark:text-slate-200">
+                              👤 {st.staff}
+                            </td>
+                            <td className="py-2.5 text-center font-bold text-purple-600 dark:text-purple-400">
+                              {st.count}
+                            </td>
+                            <td className="py-2.5 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
+                              ฿{st.cash.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-2.5 text-right font-mono font-black text-indigo-650 dark:text-indigo-400">
+                              ฿{st.credit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section: Detailed Customer Top-Up Log */}
+              <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                  <div>
+                    <h3 className="text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide flex items-center gap-2">
+                      <ClipboardList size={16} className="text-indigo-600" />
+                      ประวัติรายการเติมเงินทั้งหมด (Detailed Customer Top-Up Log)
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      บันทึกประวัติการเติมเงินรายคน ยอดเงินสดรับ โบนัสแถม เครดิตเข้ากระเป๋า สลิปโอน และสถานะการตรวจสอบ
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold text-slate-400">
+                    แสดงผล {topupReportData.txs.length} รายการ ({topupReportData.txs.length} Top-ups)
+                  </span>
+                </div>
+
+                {topupReportData.txs.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs font-semibold text-left">
+                      <thead>
+                        <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-black bg-slate-50/50 dark:bg-slate-900/50">
+                          <th className="py-3 px-3">Receipt No.</th>
+                          <th className="py-3 px-3">วัน/เวลา (Date/Time)</th>
+                          <th className="py-3 px-3">ลูกค้า (Customer)</th>
+                          <th className="py-3 px-3">แพ็กเกจ (Package)</th>
+                          <th className="py-3 px-3 text-right">เงินสดรับ (Paid)</th>
+                          <th className="py-3 px-3 text-right">โบนัสแถม (Bonus)</th>
+                          <th className="py-3 px-3 text-right">เครดิตเข้า (Credit)</th>
+                          <th className="py-3 px-3 text-center">ยอดกระเป๋า (Wallet)</th>
+                          <th className="py-3 px-3 text-center">ช่องทาง (Channel)</th>
+                          <th className="py-3 px-3">ผู้ทำรายการ (Staff)</th>
+                          <th className="py-3 px-2 text-center">สลิป (Slip)</th>
+                          <th className="py-3 px-3 text-center">สถานะ (Status)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
+                        {topupReportData.txs.map((tx) => {
+                          const credit = Number(tx.amount) || 0;
+                          const bonus = Number(tx.bonusAmount) || 0;
+                          const cash = credit - bonus;
+                          const dateStr = tx.createdAt ? format(new Date(tx.createdAt), "dd/MM/yyyy HH:mm") : "-";
+
+                          return (
+                            <tr key={tx.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
+                              {/* Receipt No */}
+                              <td className="py-3 px-3 font-mono text-[11px] font-black text-indigo-650 dark:text-indigo-400">
+                                {tx.referenceId || tx.id.slice(0, 8)}
+                              </td>
+
+                              {/* Date */}
+                              <td className="py-3 px-3 text-slate-500 dark:text-slate-400 font-mono text-[10px]">
+                                {dateStr}
+                              </td>
+
+                              {/* Customer */}
+                              <td className="py-3 px-3">
+                                <div className="flex flex-col gap-0.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-slate-900 dark:text-slate-100">
+                                      {tx.customerName}
+                                    </span>
+                                    {tx.customerMemberId && (
+                                      <span className="font-mono text-[9px] font-black bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 px-1.5 py-0.2 rounded">
+                                        {tx.customerMemberId}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    {tx.customerPhone || "-"}
+                                  </span>
+                                </div>
+                              </td>
+
+                              {/* Package */}
+                              <td className="py-3 px-3">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200/60">
+                                  <Sparkles size={11} className="text-amber-500" />
+                                  {tx.packageName || "Top-up"}
+                                </span>
+                              </td>
+
+                              {/* Cash Paid */}
+                              <td className="py-3 px-3 text-right font-mono font-black text-slate-900 dark:text-slate-100">
+                                ฿{cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+
+                              {/* Bonus Granted */}
+                              <td className="py-3 px-3 text-right font-mono font-black">
+                                <span className="bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 px-2 py-0.5 rounded-md text-[11px]">
+                                  +฿{bonus.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                              </td>
+
+                              {/* Total Credit */}
+                              <td className="py-3 px-3 text-right font-mono font-black text-indigo-650 dark:text-indigo-400">
+                                ฿{credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+
+                              {/* Balance Before -> After */}
+                              <td className="py-3 px-3 text-center font-mono text-[10px] text-slate-400">
+                                <span>฿{Number(tx.balanceBefore || 0).toLocaleString()}</span>
+                                <span className="text-slate-300 mx-1">→</span>
+                                <span className="font-bold text-slate-700 dark:text-slate-200">฿{Number(tx.balanceAfter || 0).toLocaleString()}</span>
+                              </td>
+
+                              {/* Payment Channel */}
+                              <td className="py-3 px-3 text-center">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                                  {tx.paymentChannel?.includes("QR") ? "📱" : tx.paymentChannel?.includes("Transfer") ? "🏦" : "💵"}
+                                  {tx.paymentChannel || "-"}
+                                </span>
+                              </td>
+
+                              {/* Staff */}
+                              <td className="py-3 px-3 text-slate-600 dark:text-slate-300 font-medium">
+                                {tx.createdByName || "Staff"}
+                              </td>
+
+                              {/* Slip */}
+                              <td className="py-3 px-2 text-center">
+                                {tx.slipImageUrl ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedSlipUrl(tx.slipImageUrl)}
+                                    className="group relative inline-block rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 hover:border-indigo-500 transition-colors cursor-pointer"
+                                    title="คลิกเพื่อดูสลิปโอนเงิน (Click to view slip)"
+                                  >
+                                    <img
+                                      src={tx.slipImageUrl}
+                                      alt="Slip"
+                                      className="w-7 h-7 object-cover rounded-md group-hover:scale-105 transition-transform"
+                                    />
+                                  </button>
+                                ) : (
+                                  <span className="text-slate-300 text-xs">-</span>
+                                )}
+                              </td>
+
+                              {/* Approval Status */}
+                              <td className="py-3 px-3 text-center">
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${
+                                  tx.approvalStatus === "APPROVED"
+                                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                    : "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                                }`}>
+                                  {tx.approvalStatus === "APPROVED" ? (
+                                    <>
+                                      <CheckCircle2 size={10} className="text-emerald-600" />
+                                      APPROVED
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Clock size={10} className="text-amber-600" />
+                                      PENDING
+                                    </>
+                                  )}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+
+                      {/* Summary Totals Footer */}
+                      <tfoot>
+                        <tr className="border-t-2 border-slate-300 dark:border-slate-700 font-black text-slate-900 dark:text-slate-100 bg-slate-50/80 dark:bg-slate-900/80">
+                          <td className="py-3 px-3 uppercase text-[11px]" colSpan={4}>
+                            รวมทั้งหมด ({topupReportData.txs.length} รายการ) / Total
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono text-emerald-600 dark:text-emerald-400">
+                            ฿{topupReportData.kpis.totalCashPaid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono text-rose-600 dark:text-rose-400">
+                            +฿{topupReportData.kpis.totalBonus.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono text-indigo-650 dark:text-indigo-400">
+                            ฿{topupReportData.kpis.totalCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3 px-3 text-center text-slate-400 text-[10px]" colSpan={5}>-</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="text-center py-10 text-slate-400">
+                    <Wallet size={32} className="mx-auto text-slate-300 dark:text-slate-700 mb-2 opacity-60" />
+                    <p className="text-xs font-bold">ไม่พบรายการเติมเงินในแคมเปญตามเงื่อนไขที่เลือก (No Matching Top-up Found)</p>
+                    <p className="text-[10px] text-slate-400 mt-1">ลองปรับเปลี่ยนตัวกรองสาขา หรือช่วงวันที่ หรือคำค้นหา</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {/* Executive KPI Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
             {/* 1. Total Subsidy Given */}
             <div className="bg-white dark:bg-slate-850 border border-slate-200/60 dark:border-slate-800 shadow-sm rounded-2xl p-4.5 relative overflow-hidden">
               <div className="absolute top-0 right-0 p-3 opacity-5 pointer-events-none">
@@ -1235,6 +1972,8 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
           </div>
         </div>
       )}
+    </div>
+  )}
 
       {/* View-Only Job Detail Modal */}
       {selectedJobForView && (
@@ -1363,6 +2102,47 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                 className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black uppercase text-xs tracking-wider rounded-xl h-9 cursor-pointer border-none"
               >
                 Close View
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* View Slip Modal */}
+      {selectedSlipUrl && (
+        <Dialog open={!!selectedSlipUrl} onOpenChange={() => setSelectedSlipUrl(null)}>
+          <DialogContent className="max-w-md p-6 bg-white dark:bg-slate-900 z-[9999] rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800">
+            <DialogHeader className="mb-3 pb-2 border-b border-slate-100 dark:border-slate-800 flex flex-row items-center justify-between">
+              <DialogTitle className="text-base font-black text-slate-900 dark:text-slate-100 tracking-tight flex items-center gap-1.5">
+                <CreditCard size={18} className="text-indigo-600" />
+                หลักฐานการโอนเงิน (Transfer Slip)
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="flex flex-col items-center justify-center p-2 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200/60 dark:border-slate-800">
+              <img
+                src={selectedSlipUrl}
+                alt="Transfer Slip"
+                className="max-h-[60vh] object-contain rounded-lg shadow-sm"
+              />
+            </div>
+
+            <DialogFooter className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+              <Button
+                type="button"
+                onClick={() => printImageUrl(selectedSlipUrl)}
+                className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl h-9 px-4 cursor-pointer"
+              >
+                <Printer size={14} />
+                <span>พิมพ์สลิป (Print Slip)</span>
+              </Button>
+              <Button
+                type="button"
+                onClick={() => setSelectedSlipUrl(null)}
+                variant="outline"
+                className="font-bold text-xs rounded-xl h-9 px-4 cursor-pointer"
+              >
+                ปิด (Close)
               </Button>
             </DialogFooter>
           </DialogContent>
