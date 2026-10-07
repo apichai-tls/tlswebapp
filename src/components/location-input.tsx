@@ -13,10 +13,11 @@ interface LocationInputProps {
   onChange: (value: string) => void;
   onSelectLocation: (location: SearchResult & { isLocal?: boolean }) => void;
   className?: string;
+  inputClassName?: string;
   localData?: (SearchResult & { isLocal?: boolean })[];
 }
 
-export function LocationInput({ id, placeholder, value, onChange, onSelectLocation, className, localData }: LocationInputProps) {
+export function LocationInput({ id, placeholder, value, onChange, onSelectLocation, className, inputClassName, localData }: LocationInputProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [googleResults, setGoogleResults] = useState<SearchResult[]>([]);
   const [hasSearchedGoogle, setHasSearchedGoogle] = useState(false);
@@ -97,7 +98,7 @@ export function LocationInput({ id, placeholder, value, onChange, onSelectLocati
             else setIsOpen(false);
           }}
           autoComplete="off"
-          className="pr-10"
+          className={`pr-10 ${inputClassName || ""}`}
         />
         <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
           {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}

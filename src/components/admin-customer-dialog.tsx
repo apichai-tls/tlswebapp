@@ -685,16 +685,26 @@ export function AdminCustomerDialog({
               {/* Row 1: Full Name & Nickname */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
-                  <Label className="text-xs font-bold text-slate-800 block mb-1">
-                    Full Name (ชื่อ-นามสกุล) <span className="text-rose-500">*</span>
+                  <Label className="text-xs font-bold text-slate-800 flex items-center justify-between mb-1">
+                    <span>Full Name (ชื่อ-นามสกุล) <span className="text-rose-500 font-bold">*</span></span>
+                    {!name.trim() && (
+                      <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
+                    )}
                   </Label>
                   <Input 
                     placeholder="e.g. Alex Thorne / ศิริพร ธนาคา" 
                     value={name} 
                     onChange={e => setName(e.target.value.toUpperCase())} 
-                    className="h-9 text-xs border-slate-300 rounded-xl focus-visible:ring-sky-500" 
+                    className={`h-9 text-xs rounded-xl transition-all border ${
+                      !name.trim()
+                        ? "border-rose-400 focus:border-rose-500 text-rose-950 focus-visible:ring-1 focus-visible:ring-rose-400"
+                        : "border-slate-300 text-slate-800 focus-visible:ring-sky-500"
+                    }`} 
                     required
                   />
+                  {!name.trim() && (
+                    <p className="text-[10px] text-rose-500 mt-1 font-medium">* กรุณาระบุชื่อ-นามสกุลสำหรับลูกค้า</p>
+                  )}
                 </div>
                 <div>
                   <Label className="text-xs font-bold text-slate-800 block mb-1">
@@ -1045,13 +1055,21 @@ export function AdminCustomerDialog({
                 <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3 space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-bold text-slate-800 flex items-center gap-1">
-                      <span>🇹🇭</span> Default Thai Mobile
+                      <span>🇹🇭</span> Default Thai Mobile <span className="text-rose-500 font-bold">*</span>
                     </span>
-                    <span className="text-[10px] text-slate-400">Local +66</span>
+                    {!phone.trim() && !secondaryPhone.trim() ? (
+                      <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
+                    ) : (
+                      <span className="text-[10px] text-slate-400">Local +66</span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="h-9 px-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 flex items-center shrink-0">
+                    <span className={`h-9 px-2.5 rounded-xl text-xs font-bold flex items-center shrink-0 border transition-all ${
+                      !phone.trim() && !secondaryPhone.trim()
+                        ? "bg-rose-50 border-rose-300 text-rose-800"
+                        : "bg-white border-slate-300 text-slate-700"
+                    }`}>
                       TH +66
                     </span>
                     <Input 
@@ -1059,11 +1077,18 @@ export function AdminCustomerDialog({
                       placeholder="08x-xxx-xxxx" 
                       value={phone} 
                       onChange={e => setPhone(e.target.value)} 
-                      className={`h-9 text-xs rounded-xl bg-white font-mono font-bold ${
-                        duplicatePhoneCheck?.matchedOn === "primary" ? "border-rose-500 ring-1 ring-rose-500 bg-rose-50/20" : "border-slate-300"
+                      className={`h-9 text-xs rounded-xl font-mono font-bold transition-all border ${
+                        duplicatePhoneCheck?.matchedOn === "primary" 
+                          ? "border-rose-500 ring-1 ring-rose-500 bg-rose-50/20" 
+                          : !phone.trim() && !secondaryPhone.trim()
+                          ? "border-rose-400 focus:border-rose-500 text-rose-950 focus-visible:ring-1 focus-visible:ring-rose-400 bg-white"
+                          : "border-slate-300 bg-white text-slate-800 focus-visible:ring-sky-500"
                       }`} 
                     />
                   </div>
+                  {!phone.trim() && !secondaryPhone.trim() && (
+                    <p className="text-[10px] text-rose-500 mt-1 font-medium">* ระบุเบอร์โทรศัพท์อย่างน้อย 1 เบอร์ (ไทย หรือ ต่างประเทศ)</p>
+                  )}
 
                   <label className="flex items-center gap-2 pt-1 cursor-pointer">
                     <input 
@@ -1208,8 +1233,11 @@ export function AdminCustomerDialog({
               </div>
 
               <div>
-                <Label className="text-xs font-bold text-slate-800 block mb-1">
-                  Condo / Building / Street Address <span className="text-rose-500">*</span>
+                <Label className="text-xs font-bold text-slate-800 flex items-center justify-between mb-1">
+                  <span>Condo / Building / Street Address <span className="text-rose-500 font-bold">*</span></span>
+                  {!address.trim() && (
+                    <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
+                  )}
                 </Label>
                 <div className="flex items-center gap-2">
                   <LocationInput 
@@ -1222,7 +1250,12 @@ export function AdminCustomerDialog({
                       setCoords({ lat: loc.lat, lng: loc.lng }); 
                       setSelectedLocation(loc); 
                     }} 
-                    className="flex-1 h-9 text-xs rounded-xl" 
+                    className="flex-1"
+                    inputClassName={`h-9 text-xs rounded-xl transition-all border ${
+                      !address.trim()
+                        ? "border-rose-400 focus:border-rose-500 text-rose-950 focus-visible:ring-1 focus-visible:ring-rose-400"
+                        : "border-slate-300 text-slate-800 focus-visible:ring-sky-500"
+                    }`}
                   />
                   {selectedLocation && !selectedLocation.isLocal && (
                     <Button 
@@ -1245,6 +1278,9 @@ export function AdminCustomerDialog({
                     </Button>
                   )}
                 </div>
+                {!address.trim() && (
+                  <p className="text-[10px] text-rose-500 mt-1 font-medium">* กรุณาระบุที่อยู่สำหรับจัดส่ง</p>
+                )}
               </div>
 
               <label className="flex items-center gap-2 pt-1 cursor-pointer">
