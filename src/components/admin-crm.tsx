@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
@@ -29,6 +29,8 @@ import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { AdminCouponTemplateModal } from "@/components/admin-coupon-template-modal";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
+import { AdminLegacyMembers } from "@/components/admin-legacy-members";
+import rawLegacyMembers from "@/data/legacy-members.json";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone, matchCustomerSearch, formatBaht } from "@/lib/utils";
 
@@ -224,7 +226,7 @@ export function AdminCRM({
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "coupons">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "coupons" | "legacy_members">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -1468,11 +1470,28 @@ export function AdminCRM({
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("legacy_members")}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                activeTab === "legacy_members"
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Archive size={14} className={activeTab === "legacy_members" ? "text-white" : "text-slate-600"} />
+              <span>Legacy Members (สมาชิกเดิม)</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
+                activeTab === "legacy_members" ? "bg-white text-slate-900" : "bg-slate-100 text-slate-700 border border-slate-200"
+              }`}>
+                {rawLegacyMembers.length}
+              </span>
+            </button>
           </div>
           </div>
 
-          {/* Search bar inside the bar (shown when not on customer report, wallet approvals, or coupons) */}
-          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "coupons" && (
+          {/* Search bar inside the bar (shown when not on customer report, wallet approvals, coupons, or legacy members) */}
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "coupons" && activeTab !== "legacy_members" && (
             <div className="relative w-full lg:w-80">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <Input 
@@ -2719,6 +2738,8 @@ export function AdminCRM({
               </div>
             )}
           </div>
+        ) : activeTab === "legacy_members" ? (
+          <AdminLegacyMembers />
         ) : (
           <div className="overflow-x-auto">
             <Table>
@@ -3029,7 +3050,7 @@ export function AdminCRM({
         )}
 
         {/* Pagination Controls */}
-        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "coupons" && totalItems > 0 && (
+        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "coupons" && activeTab !== "legacy_members" && totalItems > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>
