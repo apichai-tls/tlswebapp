@@ -31,6 +31,7 @@ import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
 import { AdminLegacyMembers } from "@/components/admin-legacy-members";
 import rawLegacyMembers from "@/data/legacy-members.json";
+import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone, matchCustomerSearch, formatBaht } from "@/lib/utils";
 
@@ -1665,6 +1666,12 @@ export function AdminCRM({
                               CORP B2B
                             </Badge>
                           )}
+                          {selectedCustomerForReport.branchId && (
+                            <Badge className="bg-sky-50 text-sky-700 border-sky-200 text-[10px] font-bold flex items-center gap-1">
+                              <Store size={11} />
+                              {selectedCustomerForReport.branchId === "ONLINE" ? "Online" : (getCleanBranchName(shops.find(s => s.id === selectedCustomerForReport.branchId)?.name) || selectedCustomerForReport.branchId)}
+                            </Badge>
+                          )}
                         </h4>
                         <p className="text-xs font-bold text-slate-500 flex items-center gap-1 mt-0.5">
                           <Phone size={12} className="text-slate-400" />
@@ -2896,6 +2903,13 @@ export function AdminCRM({
                                 {customer.isMember && customer.memberId && (
                                   <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/50 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5">
                                     ID: {customer.memberId}
+                                  </Badge>
+                                )}
+
+                                {customer.branchId && (
+                                  <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
+                                    <Store size={8} />
+                                    {customer.branchId === "ONLINE" ? "Online" : (getCleanBranchName(shops.find(s => s.id === customer.branchId)?.name) || customer.branchId)}
                                   </Badge>
                                 )}
                                 

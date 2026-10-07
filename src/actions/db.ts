@@ -7,6 +7,30 @@ import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
 
 // CUSTOMERS
+export async function getNextMemberIdAction(): Promise<string> {
+  const members = await prisma.customer.findMany({
+    where: {
+      memberId: {
+        startsWith: 'OF',
+        mode: 'insensitive'
+      }
+    },
+    select: { memberId: true }
+  });
+
+  let maxNum = 2399; // Base starting point so the next is at least OF2400
+  for (const m of members) {
+    if (!m.memberId) continue;
+    const clean = m.memberId.replace(/^OF-?/i, '').trim();
+    const num = parseInt(clean, 10);
+    if (!isNaN(num) && num > maxNum) {
+      maxNum = num;
+    }
+  }
+
+  return `OF${maxNum + 1}`;
+}
+
 export async function addCustomerAction(data: any) {
   let memberId = null;
   if (data.isMember) {
@@ -19,6 +43,8 @@ export async function addCustomerAction(data: any) {
         throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
       }
       memberId = memberIdUpper;
+    } else {
+      memberId = await getNextMemberIdAction();
     }
   }
 
@@ -82,6 +108,7 @@ export async function addCustomerAction(data: any) {
       verifiedVia: data.verifiedVia || null,
       sourceSystem: data.sourceSystem || 'web_booking',
       roomNo: data.roomNo || null,
+      branchId: data.branchId || null,
       memberStartDate: data.memberStartDate ? new Date(data.memberStartDate) : null,
       memberExpiryDate: data.memberExpiryDate ? new Date(data.memberExpiryDate) : null,
     }
@@ -138,9 +165,13 @@ export async function updateCustomerAction(id: string, updates: any) {
             throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
           }
           data.memberId = memberIdUpper;
+        } else if (!currentCustomer.memberId) {
+          data.memberId = await getNextMemberIdAction();
         } else {
-          data.memberId = null;
+          data.memberId = currentCustomer.memberId;
         }
+      } else if (!currentCustomer.memberId) {
+        data.memberId = await getNextMemberIdAction();
       }
     }
   } else if (updates.memberId !== undefined) {
@@ -162,6 +193,7 @@ export async function updateCustomerAction(id: string, updates: any) {
       }
     }
   }
+  if (updates.branchId !== undefined) data.branchId = updates.branchId || null;
 
   if (updates.isVIP !== undefined) data.isVIP = updates.isVIP;
   if (updates.isCorporate !== undefined) data.isCorporate = updates.isCorporate;
@@ -1052,8 +1084,13 @@ export async function updateJobAction(id: string, updates: any) {
         const incomingUrls = JSON.parse(updates.billImageUrl);
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
+          // If incoming has a receipt, replace older receipt from existing
+          const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-")));
+          const baseExisting = incomingHasReceipt
+            ? existingUrls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes("receipt-"))
+            : existingUrls;
           // Merge unique URLs so concurrent background uploads (e.g. proforma and receipt) never clobber each other
-          const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
+          const merged = Array.from(new Set([...baseExisting, ...incomingUrls]));
           // Sort so highest revision proforma always comes first, followed by receipt, then other proofs
           merged.sort((a, b) => {
             const aIsPf = a.includes("proforma-");
@@ -3717,7 +3754,33 @@ export async function unlockPaidJobAction(data: {
         notes: [...existingLogs, unlockLog],
       });
 
-      // ──── 6. Update Job: Reset Paid Flags ────
+      // ──── 6. Clean billImageUrl: Remove old receipt proofs ────
+      let updatedBillImageUrl: string | null = null;
+      if (job.billImageUrl) {
+        try {
+          const parsed = JSON.parse(job.billImageUrl);
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((u: string) => 
+              typeof u === "string" && 
+              !u.includes(`/receipt-${job.id}`) && 
+              !u.includes(`receipt-${job.id}.png`) && 
+              !u.includes("/proofs/receipt-")
+            );
+            updatedBillImageUrl = filtered.length > 0 ? JSON.stringify(filtered) : null;
+          } else if (typeof parsed === "string") {
+            const isReceipt = parsed.includes(`/receipt-${job.id}`) || parsed.includes(`receipt-${job.id}.png`) || parsed.includes("/proofs/receipt-");
+            updatedBillImageUrl = isReceipt ? null : JSON.stringify([parsed]);
+          }
+        } catch {
+          if (typeof job.billImageUrl === "string" && (job.billImageUrl.includes(`/receipt-${job.id}`) || job.billImageUrl.includes("/proofs/receipt-"))) {
+            updatedBillImageUrl = null;
+          } else {
+            updatedBillImageUrl = job.billImageUrl;
+          }
+        }
+      }
+
+      // ──── 7. Update Job: Reset Paid Flags & billImageUrl ────
       const updatedJob = await tx.job.update({
         where: { id: data.jobId },
         data: {
@@ -3726,6 +3789,7 @@ export async function unlockPaidJobAction(data: {
           shopPaidAt: null,
           csoPaidAt: null,
           adminNotesJson: updatedNotesJson,
+          billImageUrl: updatedBillImageUrl,
         },
       });
 

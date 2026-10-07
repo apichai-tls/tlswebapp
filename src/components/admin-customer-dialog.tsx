@@ -7,15 +7,17 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { 
   Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, 
-  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag, Receipt, Bike, AlertTriangle 
+  Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag, Receipt, Bike, AlertTriangle,
+  Lock, RefreshCw, Loader2
 } from "lucide-react";
-import { customerStore, priceListStore, poiStore, walletApprovalStore, type Customer } from "@/lib/store";
+import { customerStore, priceListStore, poiStore, walletApprovalStore, shopStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { LocationInput } from "@/components/location-input";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
 import { TopUpDialog } from "@/components/top-up-dialog";
-import { addCustomerAddressAction } from "@/actions/db";
+import { addCustomerAddressAction, getNextMemberIdAction } from "@/actions/db";
+import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { CountryCodeInput } from "@/components/ui/country-code-input";
 import { parseFullPhone } from "@/lib/country-codes";
 import { formatBaht, isThaiPhoneNumber, normalizeThaiPhone, findDuplicateCustomerByPhone } from "@/lib/utils";
@@ -118,6 +120,9 @@ export function AdminCustomerDialog({
   const [sourceSystem, setSourceSystem] = useState<string>("web_booking");
   const [isCorporate, setIsCorporate] = useState(false);
   const [memberId, setMemberId] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [isGeneratingMemberId, setIsGeneratingMemberId] = useState(false);
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [memberStartDate, setMemberStartDate] = useState("");
   const [memberExpiryDate, setMemberExpiryDate] = useState("");
   const [priceListId, setPriceListId] = useState("regular");
@@ -241,6 +246,7 @@ export function AdminCustomerDialog({
         setSourceSystem(customer.sourceSystem || "web_booking");
         setIsCorporate(customer.isCorporate || false);
         setMemberId(customer.memberId || "");
+        setBranchId(customer.branchId || "");
         setMemberStartDate(customer.memberStartDate ? new Date(customer.memberStartDate).toISOString().split("T")[0] : "");
         setMemberExpiryDate(customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split("T")[0] : "");
         setPriceListId(customer.priceListId || "regular");
@@ -285,6 +291,7 @@ export function AdminCustomerDialog({
         setSourceSystem("web_booking");
         setIsCorporate(false);
         setMemberId("");
+        setBranchId("");
         setMemberStartDate("");
         setMemberExpiryDate("");
         setPriceListId("regular");
@@ -418,6 +425,14 @@ export function AdminCustomerDialog({
       const isMemberBool = customerTier === "member" || customerTier === "vip" || Boolean(memberId.trim());
       const isVIPBool = customerTier === "vip";
 
+      if (isMemberBool) {
+        if (!branchId || !branchId.trim()) {
+          toast.error("กรุณาเลือกสาขาสำหรับลูกค้าสมาชิก (บังคับระบุ)");
+          setIsSaving(false);
+          return;
+        }
+      }
+
       let finalPriceListId = priceListId;
       if (customerTier === "corporate") {
         if (priceListId === "regular" || !priceListId) {
@@ -479,6 +494,7 @@ export function AdminCustomerDialog({
         corporateCommissionRatePerKm: isCorporateBool && corporateCommissionType === "custom_km" ? Number(corporateCommissionRatePerKm) || 0 : 0,
         tier: customerTier,
         isMember: isMemberBool,
+        branchId: isMemberBool ? (branchId.trim() || null) : (branchId.trim() || null),
         isWhatsapp,
         passwordHash: initialPin.trim() || undefined,
         memberId: isMemberBool ? memberId.trim() || null : null,
@@ -735,12 +751,21 @@ export function AdminCustomerDialog({
                       } else {
                         setIsCorporate(false);
                       }
-                      if ((newTier === "member" || newTier === "vip") && !memberStartDate) {
-                        const now = new Date();
-                        setMemberStartDate(now.toISOString().split("T")[0]);
-                        const nextYear = new Date(now);
-                        nextYear.setFullYear(now.getFullYear() + 1);
-                        setMemberExpiryDate(nextYear.toISOString().split("T")[0]);
+                      if (newTier === "member" || newTier === "vip") {
+                        if (!memberStartDate) {
+                          const now = new Date();
+                          setMemberStartDate(now.toISOString().split("T")[0]);
+                          const nextYear = new Date(now);
+                          nextYear.setFullYear(now.getFullYear() + 1);
+                          setMemberExpiryDate(nextYear.toISOString().split("T")[0]);
+                        }
+                        if (!customer?.memberId && !memberId) {
+                          setIsGeneratingMemberId(true);
+                          getNextMemberIdAction()
+                            .then(nextId => setMemberId(nextId))
+                            .catch(err => console.error("Failed to generate member id:", err))
+                            .finally(() => setIsGeneratingMemberId(false));
+                        }
                       }
                     }}
                     className="w-full h-9 text-xs border border-slate-300 rounded-xl bg-white px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer font-semibold"
@@ -912,18 +937,83 @@ export function AdminCustomerDialog({
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    {/* Branch (สาขา) - Required for Member */}
                     <div>
-                      <Label className="text-xs font-bold text-slate-800 block mb-1">
-                        Member ID (เลข / รหัสสมาชิก) <span className="text-indigo-600 font-normal">*</span>
+                      <Label className="text-xs font-bold text-slate-800 flex items-center justify-between mb-1">
+                        <span>สาขา (Branch) <span className="text-rose-500 font-bold">*</span></span>
+                        <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
                       </Label>
-                      <Input
-                        placeholder="e.g. 1004, MB-00123"
-                        value={memberId}
-                        onChange={e => setMemberId(e.target.value)}
-                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white font-mono font-bold text-indigo-900 focus-visible:ring-indigo-500 shadow-2xs"
-                      />
+                      <select
+                        value={branchId}
+                        onChange={e => setBranchId(e.target.value)}
+                        className={`w-full h-9 text-xs rounded-xl bg-white px-3 font-semibold transition-all border ${
+                          !branchId
+                            ? "border-rose-400 focus:border-rose-500 text-rose-950 focus:ring-1 focus:ring-rose-400"
+                            : "border-indigo-200 text-slate-800 focus:border-indigo-500"
+                        }`}
+                      >
+                        <option value="">-- กรุณาเลือกสาขา (Select Branch) --</option>
+                        <option value="ONLINE">🌐 Online (ออนไลน์)</option>
+                        {shopLocations.map(s => (
+                          <option key={s.id} value={s.id}>
+                            🏪 {getCleanBranchName(s.name)}
+                          </option>
+                        ))}
+                      </select>
+                      {!branchId && (
+                        <p className="text-[10px] text-rose-500 mt-1 font-medium">* กรุณาระบุสาขาสำหรับสมาชิก</p>
+                      )}
                     </div>
+
+                    {/* Member ID - Read-only Auto-run (Mode 2) */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <Label className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                          <Lock size={12} className="text-indigo-600" />
+                          <span>Member ID (เลข / รหัสสมาชิก)</span>
+                        </Label>
+                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
+                          AUTO RUN (OF2400+)
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <Input
+                          readOnly
+                          placeholder={isGeneratingMemberId ? "กำลังคำนวณรหัสถัดไป..." : "e.g. OF2400"}
+                          value={isGeneratingMemberId ? "กำลังคำนวณรหัสถัดไป..." : memberId}
+                          className="h-9 text-xs border-indigo-200 rounded-xl bg-slate-50 font-mono font-black text-indigo-950 pr-8 cursor-not-allowed select-all shadow-2xs"
+                        />
+                        {isGeneratingMemberId ? (
+                          <Loader2 size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-indigo-500" />
+                        ) : (
+                          <button
+                            type="button"
+                            title="ดึงรหัสสมาชิกล่าสุดใหม่"
+                            onClick={async () => {
+                              setIsGeneratingMemberId(true);
+                              try {
+                                const nextId = await getNextMemberIdAction();
+                                setMemberId(nextId);
+                                toast.info(`รหัสสมาชิกใหม่: ${nextId}`);
+                              } catch (err: any) {
+                                toast.error("ไม่สามารถสร้างรหัสสมาชิกล่าสุดได้");
+                              } finally {
+                                setIsGeneratingMemberId(false);
+                              }
+                            }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 rounded transition-colors"
+                          >
+                            <RefreshCw size={13} />
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        * ระบบออกเลขอัตโนมัติ (แบบล็อกห้ามแก้ไข ป้องกันเลขชนกัน)
+                      </p>
+                    </div>
+
+                    {/* Start Date */}
                     <div>
                       <Label className="text-xs font-bold text-slate-800 block mb-1">
                         Start Date (วันเริ่มสมาชิก)
@@ -932,9 +1022,11 @@ export function AdminCustomerDialog({
                         type="date"
                         value={memberStartDate}
                         onChange={e => setMemberStartDate(e.target.value)}
-                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white focus-visible:ring-indigo-500 shadow-2xs"
+                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white focus-visible:ring-indigo-500 shadow-2xs font-medium text-slate-800"
                       />
                     </div>
+
+                    {/* Expiry Date */}
                     <div>
                       <Label className="text-xs font-bold text-slate-800 block mb-1">
                         Expiry Date (วันหมดอายุ)
@@ -943,7 +1035,7 @@ export function AdminCustomerDialog({
                         type="date"
                         value={memberExpiryDate}
                         onChange={e => setMemberExpiryDate(e.target.value)}
-                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white focus-visible:ring-indigo-500 shadow-2xs"
+                        className="h-9 text-xs border-indigo-200 rounded-xl bg-white focus-visible:ring-indigo-500 shadow-2xs font-medium text-slate-800"
                       />
                     </div>
                   </div>

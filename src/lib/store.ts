@@ -181,6 +181,7 @@ export interface Customer {
   updatedAt?: Date | string | null;
   memberStartDate?: Date | string | null;
   memberExpiryDate?: Date | string | null;
+  branchId?: string | null;
 }
 
 export interface Job {

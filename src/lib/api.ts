@@ -329,6 +329,7 @@ export const api = {
       memberId: savedCustomer.memberId,
       tier: (savedCustomer.tier as any) || customer.tier,
       isCorporate: savedCustomer.isCorporate ?? customer.isCorporate,
+      branchId: savedCustomer.branchId ?? customer.branchId,
     };
     db.customers = [newCustomer, ...db.customers];
     return newCustomer;
@@ -361,6 +362,7 @@ export const api = {
           memberStartDate: savedCustomer.memberStartDate,
           memberExpiryDate: savedCustomer.memberExpiryDate,
           priceListId: savedCustomer.priceListId || c.priceListId,
+          branchId: savedCustomer.branchId ?? updates.branchId ?? c.branchId,
           updatedAt: savedCustomer.updatedAt,
         };
         updatedCustomer = u;

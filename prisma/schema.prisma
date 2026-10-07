@@ -41,6 +41,7 @@ model Customer {
   updatedAt        DateTime  @default(now()) @updatedAt
   memberExpiryDate DateTime?
   memberStartDate  DateTime?
+  branchId         String?
   jobs             Job[]
 
   attachments        String[]
