@@ -1000,32 +1000,34 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
   try {
     if (!customerId) return [];
 
-    // 1. Fetch from WalletTransaction table
-    const wtList = await prisma.walletTransaction.findMany({
-      where: {
-        customerId,
-        OR: [
-          { type: { in: ['ADJUST_ADD', 'ADJUST_DEDUCT', 'ADJUST', 'REFUND', 'REVERSAL'] } },
-          { referenceType: 'manual' },
-          { type: { notIn: ['TOPUP', 'DEDUCT'] } }
-        ]
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    // 2. Fetch from ActivityLog table for historical adjustments
-    const actLogs = await prisma.activityLog.findMany({
-      where: {
-        entityId: customerId,
-        action: 'ADJUST'
-      },
-      orderBy: { createdAt: 'desc' }
-    });
+    // 1. Fetch from WalletTransaction, ActivityLog, Jobs, and Topups in parallel
+    const [wtList, actLogs, customerJobs, customerTopups] = await Promise.all([
+      prisma.walletTransaction.findMany({
+        where: { customerId },
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.activityLog.findMany({
+        where: {
+          entityId: customerId,
+          action: 'ADJUST'
+        },
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.job.findMany({
+        where: { customerId },
+        select: { id: true, billNo: true, totalAmount: true, createdAt: true, paymentChannel: true }
+      }),
+      prisma.transaction.findMany({
+        where: { memberId: customerId },
+        select: { id: true, amount: true, createdAt: true }
+      })
+    ]);
 
     const results: any[] = [];
 
-    // Map WalletTransactions
+    // Map true manual adjustments from WalletTransactions (excluding TOPUP and DEDUCT order payments)
     for (const wt of wtList) {
+      if (wt.type === 'TOPUP' || wt.type === 'DEDUCT' || wt.referenceType === 'job') continue;
       const isCredit = wt.direction === 'CREDIT' || wt.type === 'ADJUST_ADD';
       const adjMode = isCredit ? 'add' : 'deduct';
       results.push({
@@ -1036,7 +1038,7 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
         isTopup: false,
         isAdjust: true,
         adjustMode: adjMode,
-        type: wt.type || 'ADJUST',
+        type: wt.type || (isCredit ? 'ADJUST_ADD' : 'ADJUST_DEDUCT'),
         totalAmount: Number(wt.amount) || 0,
         amount: Number(wt.amount) || 0,
         paidAmount: Number(wt.amount) || 0,
@@ -1055,28 +1057,50 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
       });
     }
 
-    // Map ActivityLogs (deduplicating against WalletTransactions & filtering out order payments)
+    // Map ActivityLogs (deduplicating against WalletTransactions & filtering out order payments and topups)
     for (const al of actLogs) {
       try {
         const d = JSON.parse(al.details || '{}');
         const reason = (d.reason || '').trim();
+        const adjAmount = Number(d.adjustAmount || d.amount || 0);
+        const isAdd = (d.adjustMode || '').toLowerCase() === 'add' || (!d.adjustMode && Number(d.balanceAfter) >= Number(d.balanceBefore));
+        const alTime = al.createdAt.getTime();
 
-        // Skip order payment logs as they are already represented as actual Jobs in the report
-        if (/^Order Payment/i.test(reason) || /^DEDUCT PACKAGE/i.test(reason)) {
+        // 1. Skip if reason explicitly indicates an order payment
+        if (/^Order Payment/i.test(reason) || /^DEDUCT PACKAGE/i.test(reason) || /#PK\d+/i.test(reason) || /#RE\d+/i.test(reason)) {
           continue;
         }
 
-        const alTime = al.createdAt.getTime();
-        const adjAmount = Number(d.adjustAmount) || 0;
+        // 2. Skip if it coincides with a Top-up transaction (within 60s)
+        if (isAdd && customerTopups.some(t => Math.abs(t.createdAt.getTime() - alTime) < 60000)) {
+          continue;
+        }
 
-        // Check if already captured by WalletTransaction
+        // 3. Skip if it is a deduction matching an existing Job with Deduct Member (within 48 hours)
+        if (!isAdd && customerJobs.some(j => 
+          Math.abs(j.createdAt.getTime() - alTime) < 48 * 3600 * 1000 &&
+          Math.abs(Number(j.totalAmount) - adjAmount) < 0.01 &&
+          (j.paymentChannel || '').toLowerCase().includes('deduct')
+        )) {
+          continue;
+        }
+
+        // 4. Skip if it matches a WalletTransaction DEDUCT (POS Payment)
+        if (!isAdd && wtList.some(wt => 
+          (wt.type === 'DEDUCT' || wt.referenceType === 'job') &&
+          Math.abs(Number(wt.amount) - adjAmount) < 0.01 &&
+          Math.abs(wt.createdAt.getTime() - alTime) < 48 * 3600 * 1000
+        )) {
+          continue;
+        }
+
+        // 5. Check if already captured by WalletTransaction in results
         const isDuplicate = results.some(r => 
           Math.abs(new Date(r.createdAt).getTime() - alTime) < 15000 &&
           Math.abs(r.totalAmount - adjAmount) < 0.01
         );
 
         if (!isDuplicate) {
-          const isAdd = (d.adjustMode || '').toLowerCase() === 'add' || (!d.adjustMode && Number(d.balanceAfter) >= Number(d.balanceBefore));
           results.push({
             id: `ADJ-${al.id.slice(0, 8).toUpperCase()}`,
             createdAt: al.createdAt.toISOString(),
@@ -1093,12 +1117,12 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
             walletBalanceBefore: d.balanceBefore != null ? Number(d.balanceBefore) : null,
             walletBalanceAfter: d.balanceAfter != null ? Number(d.balanceAfter) : null,
             paymentChannel: `Adjust (${al.userName || 'Manual'})`,
-            reason: d.reason || 'ปรับปรุงยอดเงิน Wallet',
+            reason: d.reason || (isAdd ? 'เพิ่มยอดเงิน Wallet' : 'หักยอดเงิน Wallet'),
             actorName: al.userName || 'Admin',
             branchId: null,
             referenceId: null,
             approvalStatus: 'APPROVED',
-            items: [{ name: `ADJUST: ${d.reason || 'ปรับยอดเงิน Wallet'}`, quantity: 1 }],
+            items: [{ name: `ADJUST: ${d.reason || (isAdd ? 'เพิ่มยอดเงิน Wallet' : 'หักยอดเงิน Wallet')}`, quantity: 1 }],
             rawLog: al,
             source: 'activity_log'
           });
