@@ -50,6 +50,7 @@ import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 
 export function getCleanBranchName(rawName?: string | null): string {
   if (!rawName || rawName === "-") return "-";
+  if (rawName.toUpperCase() === "ONLINE") return "Online";
   // Matches "That Laundry Shop (15 Sukhumvit Residences)" or any "Prefix (Branch)"
   const parenMatch = rawName.match(/\(([^)]+)\)/);
   if (parenMatch && parenMatch[1]?.trim()) {
@@ -577,6 +578,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
               className="bg-transparent border-none outline-none font-bold cursor-pointer text-xs"
             >
               <option value="all">All Branches</option>
+              <option value="ONLINE">Online</option>
               {shops.map((s) => (
                 <option key={s.id} value={s.id}>
                   {getCleanBranchName(s.name)}

@@ -336,7 +336,7 @@ export const api = {
     return [];
   },
   
-  async addCustomer(customer: Omit<Customer, 'id'>): Promise<Customer> {
+  async addCustomer(customer: Omit<Customer, 'id'> & Record<string, any>): Promise<Customer> {
     const db = initDb();
     // Let PostgreSQL generate the UUID; do NOT pass a pre-generated id
     const savedCustomer = await dbActions.addCustomerAction(customer);
@@ -353,7 +353,7 @@ export const api = {
     return newCustomer;
   },
 
-  async updateCustomer(id: string, updates: Partial<Customer>): Promise<Customer> {
+  async updateCustomer(id: string, updates: Partial<Customer> & Record<string, any>): Promise<Customer> {
     const db = initDb();
     const currentCustomer = db.customers.find(c => c.id === id);
     if (!currentCustomer) throw new Error("Customer not found");
@@ -425,11 +425,10 @@ export const api = {
     return result;
   },
 
-  async deleteCustomer(id: string): Promise<void> {
-    
+  async deleteCustomer(id: string, actor?: { id?: string; name?: string }): Promise<void> {
     const db = initDb();
     db.customers = db.customers.filter(c => c.id !== id);
-    await dbActions.deleteCustomerAction(id);
+    await dbActions.deleteCustomerAction(id, actor?.id, actor?.name);
   },
 
   async mergeCustomer(

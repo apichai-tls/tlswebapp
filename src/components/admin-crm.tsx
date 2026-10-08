@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive } from "lucide-react";
+import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive, RefreshCw, RotateCcw } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
@@ -230,6 +230,7 @@ export function AdminCRM({
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "coupons" | "legacy_members">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
+  const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -262,6 +263,102 @@ export function AdminCRM({
   // Top-Up History State
   const [allTopUpTxs, setAllTopUpTxs] = useState<any[]>([]);
   const [isLoadingTopUps, setIsLoadingTopUps] = useState(false);
+  const [topupDatePreset, setTopupDatePreset] = useState<"all" | "today" | "yesterday" | "this_week" | "this_month" | "last_month" | "custom">("all");
+  const [topupStartDate, setTopupStartDate] = useState<string>("");
+  const [topupStartTime, setTopupStartTime] = useState<string>("00:00");
+  const [topupEndDate, setTopupEndDate] = useState<string>("");
+  const [topupEndTime, setTopupEndTime] = useState<string>("23:59");
+
+  const handleApplyTopupPreset = (preset: "all" | "today" | "yesterday" | "this_week" | "this_month" | "last_month" | "custom") => {
+    setTopupDatePreset(preset);
+    setCurrentPage(1);
+
+    const now = new Date();
+    if (preset === "all") {
+      setTopupStartDate("");
+      setTopupStartTime("00:00");
+      setTopupEndDate("");
+      setTopupEndTime("23:59");
+    } else if (preset === "today") {
+      const todayStr = format(now, "yyyy-MM-dd");
+      setTopupStartDate(todayStr);
+      setTopupStartTime("00:00");
+      setTopupEndDate(todayStr);
+      setTopupEndTime("23:59");
+    } else if (preset === "yesterday") {
+      const yest = new Date(now);
+      yest.setDate(yest.getDate() - 1);
+      const yestStr = format(yest, "yyyy-MM-dd");
+      setTopupStartDate(yestStr);
+      setTopupStartTime("00:00");
+      setTopupEndDate(yestStr);
+      setTopupEndTime("23:59");
+    } else if (preset === "this_week") {
+      const day = now.getDay();
+      const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Monday
+      const monday = new Date(now);
+      monday.setDate(diff);
+      setTopupStartDate(format(monday, "yyyy-MM-dd"));
+      setTopupStartTime("00:00");
+      setTopupEndDate(format(now, "yyyy-MM-dd"));
+      setTopupEndTime("23:59");
+    } else if (preset === "this_month") {
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      setTopupStartDate(format(firstDay, "yyyy-MM-dd"));
+      setTopupStartTime("00:00");
+      setTopupEndDate(format(now, "yyyy-MM-dd"));
+      setTopupEndTime("23:59");
+    } else if (preset === "last_month") {
+      const firstDayPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastDayPrevMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+      setTopupStartDate(format(firstDayPrevMonth, "yyyy-MM-dd"));
+      setTopupStartTime("00:00");
+      setTopupEndDate(format(lastDayPrevMonth, "yyyy-MM-dd"));
+      setTopupEndTime("23:59");
+    }
+  };
+
+  const handleResetTopupFilter = () => {
+    handleApplyTopupPreset("all");
+  };
+
+  const handleExportTopupHistoryCsv = () => {
+    if (filteredTopUpTxs.length === 0) {
+      toast.error("ไม่มีรายการเติมเงินให้ส่งออก");
+      return;
+    }
+
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+    csvContent += "Receipt No,Date & Time,Customer Name,Member ID,Phone,Package,Paid Amount (THB),Bonus Amount (THB),Total Credit (THB),Payment Channel,Created By\n";
+
+    filteredTopUpTxs.forEach((tx) => {
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      const dateStr = tx.createdAt ? format(new Date(tx.createdAt), "yyyy-MM-dd HH:mm:ss") : "";
+      const receiptNo = tx.id || "";
+      const custName = tx.Customer?.name || "";
+      const memberId = tx.Customer?.memberId || tx.Customer?.nickName || "";
+      const phone = tx.Customer?.phone || "";
+      const packageName = meta.packageName || "Member Top-Up";
+      const paid = tx.amount || 0;
+      const bonus = meta.bonusAmount || 0;
+      const totalCredit = meta.totalCredit || (Number(tx.amount || 0) + Number(bonus || 0));
+      const channel = meta.paymentChannel || "Transfer";
+      const createdBy = meta.createdBy || "";
+
+      csvContent += `"${receiptNo}","${dateStr}","${custName.replace(/"/g, '""')}","${memberId}","${phone}","${packageName.replace(/"/g, '""')}",${paid},${bonus},${totalCredit},"${channel}","${createdBy.replace(/"/g, '""')}"\n`;
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    const dateRangePart = topupStartDate ? `_${topupStartDate}` : "";
+    link.setAttribute("download", `topup_history${dateRangePart}_${format(new Date(), "yyyyMMdd_HHmm")}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast.success(`ส่งออกรายการเติมเงิน ${filteredTopUpTxs.length} รายการ เรียบร้อยแล้ว`);
+  };
 
   // Receipt Preview
   const [previewReceipt, setPreviewReceipt] = useState<ReceiptData | null>(null);
@@ -448,7 +545,7 @@ export function AdminCRM({
     if (activeTab === "topup_history" || activeTab === "customer_report") {
       fetchTopUps();
     }
-  }, [searchTerm, activeTab, selectedBrand]);
+  }, [searchTerm, activeTab, selectedBrand, selectedBranch]);
   // Fetch full customer jobs and wallet adjustments history on-demand from DB when selected in Customer Report
   useEffect(() => {
     if (!selectedCustomerForReport) {
@@ -689,7 +786,7 @@ export function AdminCRM({
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete customer "${name}"?`)) return;
     try {
-      await customerStore.deleteCustomer(id);
+      await customerStore.deleteCustomer(id, { id: user?.id, name: user?.name || user?.email || "Admin" });
       toast.success(`ลบลูกค้า "${name}" เรียบร้อยแล้ว`);
     } catch (err: any) {
       console.error("Delete customer error:", err);
@@ -754,32 +851,63 @@ export function AdminCRM({
     return analytics;
   }, [jobs, customers]);
 
-  // Network CRM Insights calculations
+  // Filtered customer subset based on active Brand & Branch filters (for summary cards & counts)
+  const filteredForMetrics = useMemo(() => {
+    return customers.filter(c => {
+      if (selectedBrand !== "all") {
+        const custBrand = c.brand || "that_laundry_shop";
+        if (custBrand !== selectedBrand) return false;
+      }
+      if (selectedBranch !== "all") {
+        if (selectedBranch === "unassigned") {
+          if (c.branchId && c.branchId.trim() !== "") return false;
+        } else {
+          if (c.branchId !== selectedBranch) return false;
+        }
+      }
+      return true;
+    });
+  }, [customers, selectedBrand, selectedBranch]);
+
+  // Network CRM Insights calculations (dynamically reflects selected Brand & Branch)
   const totalNetworkLTV = useMemo(() => {
-    return Object.values(customerAnalytics).reduce((sum, item) => sum + item.ltv, 0);
-  }, [customerAnalytics]);
+    return filteredForMetrics.reduce((sum, c) => {
+      const stats = customerAnalytics[c.id];
+      return sum + (stats ? stats.ltv : 0);
+    }, 0);
+  }, [filteredForMetrics, customerAnalytics]);
 
   const totalCreditBalance = useMemo(() => {
-    return customers.reduce((sum, c) => sum + (c.creditBalance || 0), 0);
-  }, [customers]);
+    return filteredForMetrics.reduce((sum, c) => sum + (c.creditBalance || 0), 0);
+  }, [filteredForMetrics]);
 
   const statsCount = useMemo(() => {
     return {
-      all: customers.length,
-      vip: customers.filter(c => c.isVIP || c.tier === "vip").length,
-      member: customers.filter(c => c.isMember || c.tier === "member").length,
-      corporate: customers.filter(c => c.isCorporate || c.tier === "corporate").length,
-      balance: customers.filter(c => (c.creditBalance || 0) > 0).length
+      all: filteredForMetrics.length,
+      vip: filteredForMetrics.filter(c => c.isVIP || c.tier === "vip").length,
+      member: filteredForMetrics.filter(c => c.isMember || c.tier === "member").length,
+      corporate: filteredForMetrics.filter(c => c.isCorporate || c.tier === "corporate").length,
+      balance: filteredForMetrics.filter(c => (c.creditBalance || 0) > 0).length
     };
-  }, [customers]);
+  }, [filteredForMetrics]);
 
   const brandStats = useMemo(() => {
+    const base = selectedBranch === "all"
+      ? customers
+      : customers.filter(c => {
+          if (selectedBranch === "unassigned") {
+            return !c.branchId || c.branchId.trim() === "";
+          }
+          return c.branchId === selectedBranch;
+        });
+
     return {
-      all: customers.length,
-      tls: customers.filter(c => (c.brand || "that_laundry_shop") === "that_laundry_shop").length,
-      noname: customers.filter(c => c.brand === "noname_laundry").length
+      all: base.length,
+      tls: base.filter(c => (c.brand || "that_laundry_shop") === "that_laundry_shop").length,
+      noname: base.filter(c => c.brand === "noname_laundry").length
     };
-  }, [customers]);
+  }, [customers, selectedBranch]);
+
 
   // Group duplicate customers by normalized phone number (Admin Only)
   const duplicateGroups = useMemo(() => {
@@ -952,6 +1080,15 @@ export function AdminCRM({
         if (custBrand !== selectedBrand) return false;
       }
 
+      // 0.1 Branch filter (สาขาที่ set ไว้ใน CRM)
+      if (selectedBranch !== "all") {
+        if (selectedBranch === "unassigned") {
+          if (c.branchId && c.branchId.trim() !== "") return false;
+        } else {
+          if (c.branchId !== selectedBranch) return false;
+        }
+      }
+
       // 1. Search filter
       if (searchTerm.trim() && !matchCustomerSearch(c, searchTerm)) {
         return false;
@@ -965,7 +1102,7 @@ export function AdminCRM({
       
       return true;
     });
-  }, [customers, searchTerm, activeTab, selectedBrand]);
+  }, [customers, searchTerm, activeTab, selectedBrand, selectedBranch]);
 
   // Sort by LTV descending (highest spent first)
   const sortedCustomers = useMemo(() => {
@@ -983,9 +1120,53 @@ export function AdminCRM({
 
   // Top-Up History Filter & Pagination
   const filteredTopUpTxs = useMemo(() => {
-    if (!searchTerm.trim()) return allTopUpTxs;
-    const q = searchTerm.toLowerCase();
+    // Calculate start & end timestamps if filters are present
+    let startTimestamp: number | null = null;
+    let endTimestamp: number | null = null;
+
+    if (topupStartDate) {
+      const parts = topupStartDate.split("-").map(Number);
+      if (parts.length === 3) {
+        const [year, month, day] = parts;
+        const timeParts = (topupStartTime || "00:00").split(":").map(Number);
+        const hour = timeParts.length > 0 && !isNaN(timeParts[0]) ? timeParts[0] : 0;
+        const min = timeParts.length > 1 && !isNaN(timeParts[1]) ? timeParts[1] : 0;
+        startTimestamp = new Date(year, month - 1, day, hour, min, 0, 0).getTime();
+      }
+    }
+
+    if (topupEndDate) {
+      const parts = topupEndDate.split("-").map(Number);
+      if (parts.length === 3) {
+        const [year, month, day] = parts;
+        const timeParts = (topupEndTime || "23:59").split(":").map(Number);
+        const hour = timeParts.length > 0 && !isNaN(timeParts[0]) ? timeParts[0] : 23;
+        const min = timeParts.length > 1 && !isNaN(timeParts[1]) ? timeParts[1] : 59;
+        endTimestamp = new Date(year, month - 1, day, hour, min, 59, 999).getTime();
+      }
+    }
+
     return allTopUpTxs.filter(tx => {
+      // Branch filter for Top-Up transactions
+      if (selectedBranch !== "all") {
+        const txBranch = tx.branchId || tx.Customer?.branchId;
+        if (selectedBranch === "unassigned") {
+          if (txBranch && txBranch.trim() !== "") return false;
+        } else {
+          if (txBranch !== selectedBranch) return false;
+        }
+      }
+
+      // Date & Time Range filter
+      if (startTimestamp !== null || endTimestamp !== null) {
+        const txTime = new Date(tx.createdAt).getTime();
+        if (isNaN(txTime)) return false;
+        if (startTimestamp !== null && txTime < startTimestamp) return false;
+        if (endTimestamp !== null && txTime > endTimestamp) return false;
+      }
+
+      if (!searchTerm.trim()) return true;
+      const q = searchTerm.toLowerCase();
       const custName = (tx.Customer?.name || "").toLowerCase();
       const custPhone = (tx.Customer?.phone || "").toLowerCase();
       const idMatch = (tx.id || "").toLowerCase().includes(q);
@@ -995,7 +1176,31 @@ export function AdminCRM({
       const chanMatch = (meta.paymentChannel || "").toLowerCase().includes(q);
       return custName.includes(q) || custPhone.includes(q) || idMatch || pkgMatch || chanMatch;
     });
-  }, [allTopUpTxs, searchTerm]);
+  }, [allTopUpTxs, searchTerm, selectedBranch, topupStartDate, topupStartTime, topupEndDate, topupEndTime]);
+
+  // Top-Up History Summary Metrics
+  const topUpSummary = useMemo(() => {
+    let totalPaid = 0;
+    let totalBonus = 0;
+    let totalCredit = 0;
+
+    for (const tx of filteredTopUpTxs) {
+      totalPaid += Number(tx.amount || 0);
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      const bonus = Number(meta.bonusAmount || 0);
+      const credit = Number(meta.totalCredit || (Number(tx.amount || 0) + bonus));
+      totalBonus += bonus;
+      totalCredit += credit;
+    }
+
+    return {
+      count: filteredTopUpTxs.length,
+      totalPaid,
+      totalBonus,
+      totalCredit,
+    };
+  }, [filteredTopUpTxs]);
 
   const paginatedTopUpTxs = useMemo(() => {
     const startIndex = (currentPage - 1) * pageSize;
@@ -1372,50 +1577,80 @@ export function AdminCRM({
       </motion.div>
 
       {/* Filter and Search Action Bar */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Brand Filter Selector */}
-            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
-              <span className="text-slate-400 px-2 py-1 text-[11px] uppercase tracking-wider font-bold">Brand:</span>
-              <button
-                type="button"
-                onClick={() => setSelectedBrand("all")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                  selectedBrand === "all"
-                    ? "bg-white text-indigo-700 shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                All ({brandStats.all})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedBrand("that_laundry_shop")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                  selectedBrand === "that_laundry_shop"
-                    ? "bg-white text-blue-700 shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                TLS ({brandStats.tls})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedBrand("noname_laundry")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                  selectedBrand === "noname_laundry"
-                    ? "bg-white text-amber-700 shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                Noname ({brandStats.noname})
-              </button>
-            </div>
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-3">
+        {/* Top Entity Filters: Brand & Branch */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Brand Filter Selector */}
+          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
+            <span className="text-slate-400 px-2 py-1 text-[11px] uppercase tracking-wider font-bold">Brand:</span>
+            <button
+              type="button"
+              onClick={() => { setSelectedBrand("all"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                selectedBrand === "all"
+                  ? "bg-white text-indigo-700 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All ({brandStats.all})
+            </button>
+            <button
+              type="button"
+              onClick={() => { setSelectedBrand("that_laundry_shop"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                selectedBrand === "that_laundry_shop"
+                  ? "bg-white text-blue-700 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              TLS ({brandStats.tls})
+            </button>
+            <button
+              type="button"
+              onClick={() => { setSelectedBrand("noname_laundry"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                selectedBrand === "noname_laundry"
+                  ? "bg-white text-amber-700 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Noname ({brandStats.noname})
+            </button>
+          </div>
 
-            {/* Quick Filters Tab Layout */}
-            <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
+          {/* Branch Filter Dropdown */}
+          <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+            <span className="text-slate-500 pl-2 text-[11px] uppercase tracking-wider font-bold flex items-center gap-1">
+              <Store size={13} className="text-indigo-600" />
+              Branch:
+            </span>
+            <select
+              value={selectedBranch}
+              onChange={(e) => {
+                setSelectedBranch(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="h-8.5 px-3 py-1 text-xs font-bold rounded-lg border border-slate-200 bg-white text-slate-800 shadow-2xs hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer transition-all"
+            >
+              <option value="all">All Branches</option>
+              <option value="ONLINE">🌐 Online</option>
+              {shops.map((s) => {
+                const cleanName = getCleanBranchName(s.name);
+                return (
+                  <option key={s.id} value={s.id}>
+                    📍 {cleanName}
+                  </option>
+                );
+              })}
+              <option value="unassigned">⚠️ ไม่ระบุสาขา</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Lower Row: Category Tabs & Search Box */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-1 border-t border-slate-100">
+          {/* Quick Filters Tab Layout */}
+          <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
             <button
               onClick={() => setActiveTab("all")}
               className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
@@ -1571,7 +1806,6 @@ export function AdminCRM({
               </span>
             </button>
           </div>
-          </div>
 
           {/* Search bar inside the bar (shown when not on customer report, wallet approvals, coupons, or legacy members) */}
           {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "coupons" && activeTab !== "legacy_members" && (
@@ -1654,6 +1888,7 @@ export function AdminCRM({
                   className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
                 >
                   <option value="all">All Branches</option>
+                  <option value="ONLINE">Online</option>
                   {shops.map(s => (
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
@@ -2026,8 +2261,208 @@ export function AdminCRM({
             )}
           </div>
         ) : activeTab === "topup_history" ? (
-          <div className="overflow-x-auto">
-            <Table>
+          <div className="flex flex-col">
+            {/* Top-up Date & Time Range Filter Toolbar */}
+            <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50/60 space-y-4">
+              {/* Row 1: Header + Presets + Action Buttons */}
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                    <Receipt size={17} />
+                  </div>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                      <span>ประวัติการเติมเงิน (Top-up History)</span>
+                      {selectedBranch !== "all" && (
+                        <Badge variant="outline" className="text-[10px] font-bold bg-white text-emerald-800 border-emerald-300">
+                          {selectedBranch === "ONLINE" ? "🌐 Online" : selectedBranch === "unassigned" ? "⚠️ ไม่ระบุสาขา" : `📍 ${getCleanBranchName(shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}`}
+                        </Badge>
+                      )}
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      ตรวจสอบรายการเติมเงิน กรองตามวันที่ ช่วงเวลา สาขา และยอดชำระ
+                    </p>
+                  </div>
+                </div>
+
+                {/* Right Actions: Refresh & Export CSV */}
+                <div className="flex items-center gap-2 self-start lg:self-center">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fetchTopUps()}
+                    disabled={isLoadingTopUps}
+                    className="h-8.5 px-3 text-xs font-bold border-slate-200 text-slate-700 hover:bg-white bg-slate-50 rounded-xl gap-1.5 shadow-2xs cursor-pointer"
+                    title="โหลดข้อมูลล่าสุดจากฐานข้อมูล"
+                  >
+                    <RefreshCw size={13} className={isLoadingTopUps ? "animate-spin text-emerald-600" : "text-slate-500"} />
+                    <span>รีเฟรช</span>
+                  </Button>
+
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleExportTopupHistoryCsv}
+                    disabled={filteredTopUpTxs.length === 0}
+                    className="h-8.5 px-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl gap-1.5 shadow-sm cursor-pointer"
+                    title="ส่งออกรายการที่กรองเป็นไฟล์ CSV"
+                  >
+                    <Download size={13} />
+                    <span>Export CSV ({filteredTopUpTxs.length})</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Row 2: Date & Time Range Filter Controls */}
+              <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-slate-200/80">
+                {/* Preset Dropdown */}
+                <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-2.5 py-1 shadow-2xs">
+                  <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1">
+                    <Calendar size={13} className="text-emerald-600" />
+                    ช่วงเวลา:
+                  </span>
+                  <select
+                    value={topupDatePreset}
+                    onChange={(e) => handleApplyTopupPreset(e.target.value as any)}
+                    className="text-xs font-bold text-slate-800 bg-transparent border-none focus:outline-none cursor-pointer py-1"
+                  >
+                    <option value="all">ทั้งหมด (All Time)</option>
+                    <option value="today">วันนี้ (Today)</option>
+                    <option value="yesterday">เมื่อวาน (Yesterday)</option>
+                    <option value="this_week">สัปดาห์นี้ (This Week)</option>
+                    <option value="this_month">เดือนนี้ (This Month)</option>
+                    <option value="last_month">เดือนที่แล้ว (Last Month)</option>
+                    <option value="custom">กำหนดเอง (Custom Range)</option>
+                  </select>
+                </div>
+
+                {/* Date & Time Inputs Group */}
+                <div className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded-xl p-1.5 shadow-2xs">
+                  {/* Start Date & Time */}
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] font-bold text-slate-400 pl-1 uppercase">จาก:</span>
+                    <input
+                      type="date"
+                      value={topupStartDate}
+                      onChange={(e) => {
+                        setTopupStartDate(e.target.value);
+                        setTopupDatePreset("custom");
+                        setCurrentPage(1);
+                      }}
+                      className="h-7.5 px-2 text-xs font-bold rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <div className="flex items-center gap-0.5 bg-slate-50 border border-slate-200 rounded-lg px-1.5 h-7.5">
+                      <Clock size={12} className="text-slate-400" />
+                      <input
+                        type="time"
+                        value={topupStartTime}
+                        onChange={(e) => {
+                          setTopupStartTime(e.target.value);
+                          setTopupDatePreset("custom");
+                          setCurrentPage(1);
+                        }}
+                        className="text-xs font-bold bg-transparent text-slate-800 focus:outline-none w-16"
+                      />
+                    </div>
+                  </div>
+
+                  <span className="text-slate-400 text-xs font-bold px-0.5">ถึง</span>
+
+                  {/* End Date & Time */}
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="date"
+                      value={topupEndDate}
+                      onChange={(e) => {
+                        setTopupEndDate(e.target.value);
+                        setTopupDatePreset("custom");
+                        setCurrentPage(1);
+                      }}
+                      className="h-7.5 px-2 text-xs font-bold rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <div className="flex items-center gap-0.5 bg-slate-50 border border-slate-200 rounded-lg px-1.5 h-7.5">
+                      <Clock size={12} className="text-slate-400" />
+                      <input
+                        type="time"
+                        value={topupEndTime}
+                        onChange={(e) => {
+                          setTopupEndTime(e.target.value);
+                          setTopupDatePreset("custom");
+                          setCurrentPage(1);
+                        }}
+                        className="text-xs font-bold bg-transparent text-slate-800 focus:outline-none w-16"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Reset Button (only if filtered) */}
+                {(topupStartDate || topupEndDate || topupDatePreset !== "all" || topupStartTime !== "00:00" || topupEndTime !== "23:59") && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleResetTopupFilter}
+                    className="h-8.5 px-2.5 text-xs font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl gap-1 cursor-pointer transition-colors"
+                  >
+                    <RotateCcw size={12} />
+                    <span>รีเซ็ตตัวกรองเวลา</span>
+                  </Button>
+                )}
+              </div>
+
+              {/* Row 3: Summary Metric Cards for Filtered Results */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+                <div className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-2xs flex flex-col justify-between">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                    <Receipt size={12} className="text-slate-500" /> รายการทั้งหมด
+                  </span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-base sm:text-lg font-black text-slate-800">
+                      {topUpSummary.count.toLocaleString()}
+                    </span>
+                    <span className="text-[11px] font-bold text-slate-400">รายการ</span>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-emerald-100 rounded-xl p-3 shadow-2xs flex flex-col justify-between">
+                  <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1">
+                    <Coins size={12} className="text-emerald-600" /> ยอดรับชำระจริง (Paid)
+                  </span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-base sm:text-lg font-black text-slate-900">
+                      ฿{topUpSummary.totalPaid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-amber-100 rounded-xl p-3 shadow-2xs flex flex-col justify-between">
+                  <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1">
+                    <Gift size={12} className="text-amber-600" /> โบนัสแถมฟรี (Bonus)
+                  </span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-base sm:text-lg font-black text-emerald-600">
+                      +฿{topUpSummary.totalBonus.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-indigo-100 rounded-xl p-3 shadow-2xs flex flex-col justify-between">
+                  <span className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider flex items-center gap-1">
+                    <Wallet size={12} className="text-indigo-600" /> เครดิตเติมรวม (Total Credit)
+                  </span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-base sm:text-lg font-black text-indigo-700">
+                      ฿{topUpSummary.totalCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <Table>
               <TableHeader>
                 <TableRow className="bg-emerald-50/70 hover:bg-emerald-50/70 border-b-slate-200">
                   <TableHead className="font-bold text-emerald-950 pl-6 py-4 text-xs uppercase tracking-wider">Date & Time</TableHead>
@@ -2218,6 +2653,7 @@ export function AdminCRM({
               </TableBody>
             </Table>
           </div>
+        </div>
         ) : activeTab === "wallet_approvals" ? (
           <div className="p-1">
             <ReportsWalletApprovals onViewJob={onViewJob} />

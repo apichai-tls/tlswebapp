@@ -3007,7 +3007,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
       if (isPaidFlag && selectedCustomer?.isNew && selectedCustomer?.id) {
-        await customerStore.updateCustomer(selectedCustomer.id, { isNew: false });
+        await customerStore.updateCustomer(selectedCustomer.id, { 
+          isNew: false,
+          actorId: user?.id || null,
+          actorName: user?.name || user?.email || 'POS Staff',
+        });
         setSelectedCustomer(prev => prev ? { ...prev, isNew: false } : null);
       }
 

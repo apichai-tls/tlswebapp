@@ -29,6 +29,7 @@ import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isValidPhoneNumber, formatBaht, resolveCustomerPhones, isThaiPhoneNumber } from "@/lib/utils";
 import { toast } from "sonner";
+import { useAuth } from "@/providers/auth-provider";
 
 // Helper to extract initials for avatar
 const getInitials = (name: string) => {
@@ -89,6 +90,7 @@ export function AdminCustomerProfileModal({
   customer: Customer | null;
   onEditCustomer?: (c: Customer) => void;
 }) {
+  const { user } = useAuth();
   const jobs = useJobs();
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const activeShop = shops[0];
@@ -430,7 +432,9 @@ export function AdminCustomerProfileModal({
     setIsUpdatingPin(true);
     try {
       await customerStore.updateCustomer(customer.id, {
-        passwordHash: pinValue.trim()
+        passwordHash: pinValue.trim(),
+        actorId: user?.id || null,
+        actorName: user?.name || user?.email || "Admin",
       });
       customer.passwordHash = pinValue.trim();
       setPinModalOpen(false);
@@ -449,7 +453,9 @@ export function AdminCustomerProfileModal({
       const channel = customer.isWhatsapp ? "WHATSAPP" : "SMS";
       await customerStore.updateCustomer(customer.id, {
         isVerified: true,
-        verifiedVia: channel
+        verifiedVia: channel,
+        actorId: user?.id || null,
+        actorName: user?.name || user?.email || "Admin",
       });
       customer.isVerified = true;
       customer.verifiedVia = channel;
@@ -555,7 +561,22 @@ export function AdminCustomerProfileModal({
 
                   {/* Metadata Subline */}
                   <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
-                    <span className="font-mono font-bold text-slate-700">{custCode}</span>
+                    <span className="font-mono font-bold text-slate-700 inline-flex items-center gap-1.5">
+                      {custCode}
+                      {customer.isMember && onEditCustomer && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onOpenChange(false);
+                            onEditCustomer(customer);
+                          }}
+                          className="text-slate-400 hover:text-indigo-600 transition-colors p-0.5 rounded hover:bg-indigo-50 cursor-pointer"
+                          title="แก้ไขรหัสสมาชิกในหน้า Edit Customer Profile"
+                        >
+                          <Edit size={11} />
+                        </button>
+                      )}
+                    </span>
                     <span className="text-slate-300">•</span>
                     <span>Gender: <strong className="text-slate-700 font-bold">{genderDisplay}</strong></span>
                     <span className="text-slate-300">•</span>
@@ -748,8 +769,21 @@ export function AdminCustomerProfileModal({
                       </div>
                       <div>
                         <div className="text-[11px] font-semibold text-slate-400 mb-0.5">Tier & Profile ID:</div>
-                        <div className="text-xs font-bold text-slate-800">
-                          {(customer.isCorporate || customer.tier === "corporate") ? "Corporate B2B" : customer.isVIP ? "VIP" : customer.isMember ? "MEMBER" : "Standard"} • {custCode}
+                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                          <span>{(customer.isCorporate || customer.tier === "corporate") ? "Corporate B2B" : customer.isVIP ? "VIP" : customer.isMember ? "MEMBER" : "Standard"} • {custCode}</span>
+                          {customer.isMember && onEditCustomer && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onOpenChange(false);
+                                onEditCustomer(customer);
+                              }}
+                              className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold hover:underline cursor-pointer inline-flex items-center gap-0.5 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200"
+                              title="แก้ไขรหัสสมาชิกในหน้า Edit Customer Profile"
+                            >
+                              <Edit size={10} /> แก้ไข Member ID
+                            </button>
+                          )}
                         </div>
                       </div>
                       <div>

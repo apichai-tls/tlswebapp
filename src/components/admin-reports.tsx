@@ -920,7 +920,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
     if (subTab === "overview") {
       csvContent += "Overview Statistics\n";
-      csvContent += `Branch,${selectedBranch === "all" ? "All Branches" : (shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}\n`;
+      csvContent += `Branch,${selectedBranch === "all" ? "All Branches" : selectedBranch === "ONLINE" ? "Online" : (shops.find(s => s.id === selectedBranch)?.name || selectedBranch)}\n`;
       csvContent += `Date Range,${dateRange}\n`;
       csvContent += `Customer Segment,${customerSegment === "corporate" ? "Corporate" : customerSegment === "retail" ? "Retail" : "All"}\n\n`;
       
@@ -989,6 +989,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
   const activeBranchName = useMemo(() => {
     if (selectedBranch === "all") return "All Branches";
+    if (selectedBranch === "ONLINE") return "Online";
     return shops.find(s => s.id === selectedBranch)?.name || "Selected Branch";
   }, [selectedBranch, shops]);
 
@@ -1014,6 +1015,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                 className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer border-none p-0 pr-6 select-none"
               >
                 <option value="all">All Branches</option>
+                <option value="ONLINE">Online</option>
                 {shops.map(s => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}

@@ -337,8 +337,8 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
       const tDate = new Date(t.createdAt);
       if (tDate < start || tDate > end) return false;
 
-      // Store filter (if topup has branchId specified)
-      if (selectedStore !== "all" && t.branchId && t.branchId !== selectedStore) {
+      // Store filter (topup must match selectedStore if not "all")
+      if (selectedStore !== "all" && t.branchId !== selectedStore) {
         return false;
       }
 
@@ -713,7 +713,7 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
 
     csv += "Sales Summary Report\n";
     csv += `Period,${format(startDate, "dd/MM/yyyy")} - ${format(endDate, "dd/MM/yyyy")}\n`;
-    csv += `Store,${selectedStore === "all" ? "All Stores" : (shops.find(s => s.id === selectedStore)?.name || selectedStore)}\n`;
+    csv += `Store,${selectedStore === "all" ? "All Stores" : selectedStore === "ONLINE" ? "Online" : (shops.find(s => s.id === selectedStore)?.name || selectedStore)}\n`;
     csv += `Employee,${selectedEmployee === "all" ? "All Employees" : selectedEmployee}\n`;
     csv += `Time,${selectedTimeRange === "all" ? "All Day" : selectedTimeRange}\n`;
     csv += `Generated At,${format(new Date(), "yyyy-MM-dd HH:mm:ss")}\n\n`;
@@ -880,6 +880,7 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
               className="bg-transparent text-xs font-bold text-slate-750 dark:text-slate-200 outline-none cursor-pointer border-none p-0 pr-4 select-none"
             >
               <option value="all">All stores</option>
+              <option value="ONLINE">Online</option>
               {shops.map(s => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}

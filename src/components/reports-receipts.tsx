@@ -352,6 +352,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   // Find store code or short name
   const getStoreName = (branchId?: string | null): string => {
     if (!branchId) return "TLSSR";
+    if (branchId === "ONLINE") return "Online";
     const shop = shops.find(s => s.id === branchId);
     if (shop?.name) {
       const match = shop.name.match(/\(([^)]+)\)/);
@@ -428,7 +429,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       if (tDate < startDate || tDate > endDate) return;
 
       // Store filter
-      if (selectedStore !== "all" && topup.branchId && topup.branchId !== selectedStore) {
+      if (selectedStore !== "all" && topup.branchId !== selectedStore) {
         return;
       }
 
@@ -471,7 +472,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       const rDate = new Date(ref.createdAt);
       if (rDate < startDate || rDate > endDate) return;
 
-      if (selectedStore !== "all" && ref.branchId && ref.branchId !== selectedStore) {
+      if (selectedStore !== "all" && ref.branchId !== selectedStore) {
         return;
       }
       if (!isInTimeRange(rDate, selectedTimeRange)) {
@@ -640,6 +641,8 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
           else if (shop.name.includes("OF") || shop.id.includes("OF")) posName = "TLSOFS1";
           else if (shop.name.includes("PTY") || shop.id.includes("PTY")) posName = "TLSPTY";
           else posName = shop.name;
+        } else if (job.branchId === "ONLINE") {
+          posName = "ONLINE";
         }
 
         status = job.status === "cancel" ? "Refund" : "Closed";
@@ -659,6 +662,8 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
           else if (shop.name.includes("OF") || shop.id.includes("OF")) posName = "TLSOFS1";
           else if (shop.name.includes("PTY") || shop.id.includes("PTY")) posName = "TLSPTY";
           else posName = shop.name;
+        } else if (topup.branchId === "ONLINE") {
+          posName = "ONLINE";
         }
 
         status = topup.status === "cancelled" ? "Refund" : "Closed";
@@ -848,6 +853,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
             className="bg-transparent border-none outline-none cursor-pointer pr-4 select-none"
           >
             <option value="all">All stores</option>
+            <option value="ONLINE">Online</option>
             {shops.map(s => (
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}

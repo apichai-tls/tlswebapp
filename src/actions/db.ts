@@ -8,33 +8,63 @@ import { type CouponTemplate } from '@/lib/store';
 import { invalidateDbCache } from '@/lib/db-cache';
 
 // CUSTOMERS
-export async function getNextMemberIdAction(): Promise<string> {
+function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
+  if (!branchId) {
+    return { prefix: 'OF', baseStartingNum: 2399 }; // Default Online (OF2400)
+  }
+  const b = branchId.toLowerCase().trim();
+  // 1. Online -> OF (Starts at OF2400)
+  if (b === 'online' || b.includes('online') || b.includes('of')) {
+    return { prefix: 'OF', baseStartingNum: 2399 };
+  }
+  // 2. Pattaya -> PTY (Starts at PTY2443)
+  if (b === 'shop-molcj2x8' || b.includes('pty') || b.includes('pattaya')) {
+    return { prefix: 'PTY', baseStartingNum: 2442 };
+  }
+  // 3. 15 Sukhumvit Residences -> SR (Starts at SR2177)
+  if (b === 'shop-head' || b.includes('sr') || b.includes('sukhumvit') || b.includes('15')) {
+    return { prefix: 'SR', baseStartingNum: 2176 };
+  }
+  // 4. Pattanakarn -> PK (Starts at PK2600)
+  if (b === 'shop-mogwz0x0' || b.includes('pk') || b.includes('phattanakarn') || b.includes('pattanakarn')) {
+    return { prefix: 'PK', baseStartingNum: 2599 };
+  }
+  return { prefix: 'OF', baseStartingNum: 2399 };
+}
+
+export async function getNextMemberIdAction(branchId?: string | null): Promise<string> {
+  const { prefix, baseStartingNum } = resolveBranchPrefixAndBase(branchId);
+  const regex = new RegExp(`^${prefix}-?(\\d+)$`, 'i');
+
   const members = await prisma.customer.findMany({
     where: {
       memberId: {
-        startsWith: 'OF',
+        startsWith: prefix,
         mode: 'insensitive'
       }
     },
     select: { memberId: true }
   });
 
-  let maxNum = 2399; // Base starting point so the next is at least OF2400
+  let maxNum = baseStartingNum;
   for (const m of members) {
     if (!m.memberId) continue;
-    const clean = m.memberId.replace(/^OF-?/i, '').trim();
-    const num = parseInt(clean, 10);
-    if (!isNaN(num) && num > maxNum) {
+    const match = m.memberId.match(regex);
+    if (!match) continue;
+    const num = parseInt(match[1], 10);
+    // Exclude anomalous entries (e.g. SR20080 which is >= 10000)
+    if (!isNaN(num) && num < 10000 && num > maxNum) {
       maxNum = num;
     }
   }
 
-  return `OF${maxNum + 1}`;
+  return `${prefix}${maxNum + 1}`;
 }
 
 export async function addCustomerAction(data: any) {
   let memberId = null;
-  if (data.isMember) {
+  const isMember = Boolean(data.isMember || data.tier === "member" || data.tier === "vip");
+  if (isMember) {
     if (data.memberId && data.memberId.trim()) {
       const memberIdUpper = data.memberId.trim().toUpperCase();
       const existing = await prisma.customer.findUnique({
@@ -45,9 +75,7 @@ export async function addCustomerAction(data: any) {
       }
       memberId = memberIdUpper;
     } else {
-      // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
-      // memberId = await getNextMemberIdAction();
-      memberId = null;
+      memberId = await getNextMemberIdAction(data.branchId);
     }
   }
 
@@ -81,9 +109,8 @@ export async function addCustomerAction(data: any) {
   while (attempts < maxAttempts) {
     attempts++;
     let currentMemberId = memberId;
-    if (data.isMember && !currentMemberId) {
-      // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
-      // currentMemberId = await getNextMemberIdAction();
+    if (isMember && !currentMemberId) {
+      currentMemberId = await getNextMemberIdAction(data.branchId);
     }
 
     const resolvedStartDate = data.memberStartDate ? new Date(data.memberStartDate) : (data.isMember ? new Date() : null);
@@ -151,6 +178,31 @@ export async function addCustomerAction(data: any) {
   if (!c) {
     throw new Error("ไม่สามารถสร้างลูกค้าใหม่ได้ กรุณาลองใหม่อีกครั้ง");
   }
+
+  try {
+    await prisma.activityLog.create({
+      data: {
+        entityId: c.id,
+        entityType: 'customer',
+        action: 'create',
+        details: JSON.stringify({
+          name: c.name,
+          phone: c.phone,
+          memberId: c.memberId,
+          tier: c.tier,
+          creditBalance: c.creditBalance,
+          brand: c.brand,
+          sourceSystem: c.sourceSystem,
+        }),
+        userId: data.actorId || null,
+        userName: data.actorName || null,
+      }
+    });
+    console.log(`[ActivityLog] Created customer ${c.id} (${c.name}) by ${data.actorName || 'Unknown'}`);
+  } catch (err: any) {
+    console.error("Failed to write ActivityLog on customer create:", err.message);
+  }
+
   invalidateDbCache();
   return c;
 }
@@ -205,16 +257,33 @@ export async function updateCustomerAction(id: string, updates: any) {
           }
           data.memberId = memberIdUpper;
         } else if (!currentCustomer.memberId) {
-          // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
-          // data.memberId = await getNextMemberIdAction();
-          data.memberId = null;
+          const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
+          data.memberId = await getNextMemberIdAction(effectiveBranchId);
         } else {
           data.memberId = currentCustomer.memberId;
         }
       } else if (!currentCustomer.memberId) {
-        // NOTE: ปิด Auto Running ไว้ชั่วคราวตามที่แจ้ง (อย่าลบทิ้ง):
-        // data.memberId = await getNextMemberIdAction();
+        const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
+        data.memberId = await getNextMemberIdAction(effectiveBranchId);
       }
+    }
+  } else if (updates.tier === "member" || updates.tier === "vip") {
+    data.isMember = true;
+    if (updates.memberId && updates.memberId.trim()) {
+      const memberIdUpper = updates.memberId.trim().toUpperCase();
+      const existing = await prisma.customer.findFirst({
+        where: {
+          memberId: memberIdUpper,
+          id: { not: id }
+        }
+      });
+      if (existing) {
+        throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+      }
+      data.memberId = memberIdUpper;
+    } else if (!currentCustomer.memberId) {
+      const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
+      data.memberId = await getNextMemberIdAction(effectiveBranchId);
     }
   } else if (updates.memberId !== undefined) {
     if (currentCustomer.isMember) {
@@ -266,9 +335,17 @@ export async function updateCustomerAction(id: string, updates: any) {
   if (updates.roomNo !== undefined) data.roomNo = updates.roomNo;
   if (updates.memberStartDate !== undefined) {
     data.memberStartDate = updates.memberStartDate ? new Date(updates.memberStartDate) : null;
+  } else if (data.isMember && !currentCustomer.memberStartDate && !currentCustomer.isMember) {
+    const now = new Date();
+    data.memberStartDate = now;
   }
   if (updates.memberExpiryDate !== undefined) {
     data.memberExpiryDate = updates.memberExpiryDate ? new Date(updates.memberExpiryDate) : null;
+  } else if (data.isMember && !currentCustomer.memberExpiryDate && data.memberStartDate) {
+    const expStr = computeMembershipExpiryDate(data.memberStartDate);
+    if (expStr) {
+      data.memberExpiryDate = new Date(`${expStr}T23:59:59.999Z`);
+    }
   }
 
   const updatedCustomer = await prisma.customer.update({
@@ -424,12 +501,31 @@ export async function updateCustomerAction(id: string, updates: any) {
   return updatedCustomer;
 }
 
-export async function deleteCustomerAction(id: string) {
+export async function deleteCustomerAction(id: string, actorId?: string, actorName?: string) {
   const jobsCount = await prisma.job.count({ where: { customerId: id } });
   if (jobsCount > 0) {
     throw new Error(`Cannot delete customer: they have ${jobsCount} historical job(s).`);
   }
   const deleted = await prisma.customer.delete({ where: { id } });
+  try {
+    await prisma.activityLog.create({
+      data: {
+        entityId: id,
+        entityType: 'customer',
+        action: 'delete',
+        details: JSON.stringify({
+          name: deleted.name,
+          phone: deleted.phone,
+          memberId: deleted.memberId,
+        }),
+        userId: actorId || null,
+        userName: actorName || null,
+      }
+    });
+    console.log(`[ActivityLog] Deleted customer ${id} (${deleted.name}) by ${actorName || 'Unknown'}`);
+  } catch (err: any) {
+    console.error("Failed to write ActivityLog on customer delete:", err.message);
+  }
   invalidateDbCache();
   return deleted;
 }
@@ -2548,9 +2644,19 @@ export async function processTopUpAction(data: {
   return await prisma.$transaction(async (tx) => {
     // 1. Fetch fresh customer directly from DB with transaction lock
     const currentCust = await tx.customer.findUnique({
-      where: { id: data.customerId }
+      where: { id: data.customerId },
+      include: {
+        jobs: {
+          take: 1,
+          orderBy: { createdAt: 'desc' },
+          select: { branchId: true }
+        }
+      }
     });
     if (!currentCust) throw new Error("Customer not found");
+
+    // Approach 3: Resolve branchId based on customer (customer.branchId -> customer latest job branch -> data.branchId -> null)
+    const effectiveBranchId = currentCust.branchId || data.branchId || currentCust.jobs?.[0]?.branchId || null;
 
     const balBefore = Number(currentCust.creditBalance || 0);
 
@@ -2652,7 +2758,7 @@ export async function processTopUpAction(data: {
       balanceBefore: balBefore,
       balanceAfter: balAfter,
       createdBy: data.actorName || "Staff",
-      branchId: data.branchId || null,
+      branchId: effectiveBranchId,
       receiptData: rdata,
     });
 
@@ -2687,7 +2793,7 @@ export async function processTopUpAction(data: {
           paymentChannel: data.paymentChannel,
           slipImageUrl: data.slipImageUrl || null,
           packageName: data.packageName,
-          branchId: data.branchId || null,
+          branchId: effectiveBranchId,
         }),
         userId: data.actorId || null,
         userName: data.actorName || null,
@@ -2713,7 +2819,7 @@ export async function processTopUpAction(data: {
         reason: data.paymentLinkId ? `Beam PaymentLink: ${data.paymentLinkId}` : null,
         createdById: data.actorId || null,
         createdByName: data.actorName || 'Staff',
-        branchId: data.branchId || null,
+        branchId: effectiveBranchId,
         approvalStatus: 'PENDING',
       }
     });
@@ -2838,17 +2944,26 @@ export async function getTopUpTransactionsAction(
             creditBalance: true,
             isMember: true,
             isVIP: true,
+            branchId: true,
+            jobs: {
+              take: 1,
+              orderBy: { createdAt: 'desc' },
+              select: { branchId: true }
+            }
           }
         }
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    return list.map(t => {
+    const mapped = list.map(t => {
       let meta: any = {};
       try {
         meta = JSON.parse(t.description || "{}");
       } catch {}
+
+      // Approach 3: Resolve branch from meta.branchId -> Customer.branchId -> Customer's latest Job.branchId -> null
+      const resolvedBranchId = meta.branchId || t.Customer?.branchId || t.Customer?.jobs?.[0]?.branchId || null;
 
       return {
         ...t,
@@ -2863,10 +2978,21 @@ export async function getTopUpTransactionsAction(
         balanceBefore: meta.balanceBefore != null ? Number(meta.balanceBefore) : null,
         balanceAfter: meta.balanceAfter != null ? Number(meta.balanceAfter) : null,
         createdBy: meta.createdBy || 'Staff',
-        branchId: meta.branchId || null,
+        branchId: resolvedBranchId,
         slipImageUrl: meta.slipImageUrl || null,
       };
     });
+
+    let targetBranchId: string | undefined;
+    if (typeof filterOrCustomerId === 'object' && filterOrCustomerId?.branchId) {
+      targetBranchId = filterOrCustomerId.branchId;
+    }
+
+    if (targetBranchId && targetBranchId !== 'all') {
+      return mapped.filter(t => t.branchId === targetBranchId);
+    }
+
+    return mapped;
   } catch (err: any) {
     console.error("Failed to load top-up transactions:", err?.message || err);
     return [];

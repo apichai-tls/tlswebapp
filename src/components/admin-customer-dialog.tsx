@@ -15,13 +15,13 @@ import { useSyncExternalStore } from "react";
 import { LocationInput } from "@/components/location-input";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
-import { TopUpDialog } from "@/components/top-up-dialog";
-import { addCustomerAddressAction, getNextMemberIdAction } from "@/actions/db";
+import { addCustomerAddressAction } from "@/actions/db";
 import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { CountryCodeInput } from "@/components/ui/country-code-input";
 import { parseFullPhone } from "@/lib/country-codes";
 import { formatBaht, isThaiPhoneNumber, normalizeThaiPhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from "@/lib/utils";
 import { format } from "date-fns";
+import { TopUpDialog } from "@/components/top-up-dialog";
 
 const BANGKOK_DISTRICTS = [
   "Watthana (Thonglor, Ekkamai, Phrom Phong)",
@@ -57,6 +57,9 @@ export function AdminCustomerDialog({
   const { user } = useAuth();
   const canAdjustBalance = Boolean(user?.permissions?.includes("adjust-wallet") || user?.role === "admin");
   const canTopUp = user?.role !== "rider";
+  const isAdmin = user?.role === "admin" || user?.role === "superadmin" || user?.role === "owner" || canAdjustBalance;
+  const isEditProfile = Boolean(customer);
+  const canEditMemberId = isEditProfile && isAdmin;
 
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
   const [localTopUpCustomer, setLocalTopUpCustomer] = useState<Customer | null>(null);
@@ -122,7 +125,6 @@ export function AdminCustomerDialog({
   const [isCorporate, setIsCorporate] = useState(false);
   const [memberId, setMemberId] = useState("");
   const [branchId, setBranchId] = useState("");
-  const [isGeneratingMemberId, setIsGeneratingMemberId] = useState(false);
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [memberStartDate, setMemberStartDate] = useState("");
   const [memberExpiryDate, setMemberExpiryDate] = useState("");
@@ -502,12 +504,19 @@ export function AdminCustomerDialog({
         memberStartDate: isMemberBool && memberStartDate ? memberStartDate : null,
         memberExpiryDate: isMemberBool && memberExpiryDate ? memberExpiryDate : null,
         updatedAt: customer ? customer.updatedAt : undefined,
+        actorId: user?.id || null,
+        actorName: user?.name || user?.email || "Staff",
+        actorRole: user?.role,
       };
 
       if (customer) {
-        await customerStore.updateCustomer(customer.id, customerData);
-        toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ`);
-        if (onSaved) onSaved({ ...customer, ...customerData } as Customer);
+        const updated = await customerStore.updateCustomer(customer.id, customerData);
+        if (updated?.memberId && !customer.memberId) {
+          toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ — ได้รับรหัสสมาชิก: ${updated.memberId}`, { duration: 6000 });
+        } else {
+          toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ`);
+        }
+        if (onSaved) onSaved({ ...customer, ...customerData, memberId: updated?.memberId || customerData.memberId } as Customer);
       } else {
         const newCustomer = await customerStore.addCustomer(customerData);
         // Create initial address record in CustomerAddress table
@@ -976,29 +985,68 @@ export function AdminCustomerDialog({
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {/* Member ID - Manual input (Auto Running is disabled temporarily per user request) */}
+                    {/* Member ID - Read Only on Register New Customer, Editable by Admin on Edit Customer Profile */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <Label className="text-xs font-bold text-slate-800 flex items-center gap-1">
                           <Tag size={12} className="text-indigo-600" />
                           <span>Member ID</span>
                         </Label>
-                        {customer?.memberId && (
-                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
-                            ASSIGNED
+                        {isEditProfile ? (
+                          canEditMemberId ? (
+                            <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1">
+                              <Edit size={9} /> ADMIN EDITABLE
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1">
+                              <Lock size={9} /> READ ONLY
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1">
+                            <Lock size={9} /> READ ONLY
                           </span>
                         )}
                       </div>
                       <div className="relative">
-                        <Input
-                          value={memberId}
-                          onChange={e => setMemberId(e.target.value.toUpperCase())}
-                          placeholder="เช่น OF2400 หรือระบุรหัสสมาชิก"
-                          className="h-9 border border-indigo-200 bg-white dark:bg-slate-800 text-indigo-950 dark:text-indigo-100 font-mono font-black text-xs rounded-xl shadow-2xs focus:ring-1 focus:ring-indigo-500 uppercase"
-                        />
+                        {isEditProfile ? (
+                          canEditMemberId ? (
+                            <Input
+                              value={memberId}
+                              onChange={e => setMemberId(e.target.value.toUpperCase())}
+                              placeholder={customer?.memberId || "เว้นว่างเพื่อรันเลขอัตโนมัติ หรือระบุรหัสสมาชิกใหม่"}
+                              className="h-9 border border-indigo-200 bg-white dark:bg-slate-800 text-indigo-950 dark:text-indigo-100 font-mono font-black text-xs rounded-xl shadow-2xs focus:ring-1 focus:ring-indigo-500 uppercase"
+                            />
+                          ) : (
+                            <Input
+                              value={memberId || "—"}
+                              readOnly
+                              disabled
+                              tabIndex={-1}
+                              className="h-9 border border-slate-200 bg-slate-100/90 text-slate-600 font-mono font-bold text-xs rounded-xl cursor-not-allowed select-none"
+                            />
+                          )
+                        ) : (
+                          <Input
+                            value=""
+                            readOnly
+                            disabled
+                            tabIndex={-1}
+                            placeholder="— ไม่แสดงรหัส (รันอัตโนมัติตามสาขาเมื่อกด Save) —"
+                            className="h-9 border border-slate-200 bg-slate-100/90 text-slate-400 font-mono text-xs rounded-xl cursor-not-allowed select-none"
+                          />
+                        )}
                       </div>
                       <p className="text-[10px] text-slate-500 mt-1">
-                        * ระบุรหัสสมาชิกด้วยตนเอง {/* (ปิดระบบ Auto Running ไว้ชั่วคราว: เริ่มต้น OF2400) */}
+                        {isEditProfile ? (
+                          canEditMemberId ? (
+                            "* แก้ไขรหัสสมาชิกในหน้า Edit Customer Profile ได้โดยตรง (ระบบจะตรวจสอบรหัสซ้ำให้อัตโนมัติ)"
+                          ) : (
+                            "* เฉพาะ Admin เท่านั้นที่สามารถแก้ไขรหัสสมาชิกได้"
+                          )
+                        ) : (
+                          "* ช่องนี้เป็น Read Only ไม่แสดงรหัส โดยระบบจะรันเลขอัตโนมัติตามสาขาให้เมื่อกด Save (หากต้องการแก้ไข ให้ไปแก้ไขที่หน้า Edit Customer Profile)"
+                        )}
                       </p>
                     </div>
 

@@ -2840,7 +2840,11 @@ export default function AdminPage() {
           setIsPaymentEvent(true);
           setShowReceipt(true);
           if (selectedProfileCustomer?.isNew && selectedProfileCustomer?.id) {
-            customerStore.updateCustomer(selectedProfileCustomer.id, { isNew: false });
+            customerStore.updateCustomer(selectedProfileCustomer.id, { 
+              isNew: false,
+              actorId: user?.id || null,
+              actorName: user?.name || user?.email || 'Staff',
+            });
             setSelectedProfileCustomer(prev => prev ? { ...prev, isNew: false } : null);
           }
           // Redeem promo code if applied (fire-and-forget)
@@ -3030,7 +3034,11 @@ export default function AdminPage() {
           setIsPaymentEvent(true);
           setShowReceipt(true);
           if (selectedProfileCustomer?.isNew && selectedProfileCustomer?.id) {
-            customerStore.updateCustomer(selectedProfileCustomer.id, { isNew: false });
+            customerStore.updateCustomer(selectedProfileCustomer.id, { 
+              isNew: false,
+              actorId: user?.id || null,
+              actorName: user?.name || user?.email || 'Staff',
+            });
             setSelectedProfileCustomer(prev => prev ? { ...prev, isNew: false } : null);
           }
           // Redeem promo code if applied (fire-and-forget)

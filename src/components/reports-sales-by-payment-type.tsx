@@ -370,7 +370,7 @@ export function ReportsSalesByPaymentType({ jobs, selectedBranch = "all", onView
       if (tDate < startDate || tDate > endDate) return false;
 
       // Store filter
-      if (selectedStore !== "all" && t.branchId && t.branchId !== selectedStore) {
+      if (selectedStore !== "all" && t.branchId !== selectedStore) {
         return false;
       }
 
@@ -696,6 +696,7 @@ export function ReportsSalesByPaymentType({ jobs, selectedBranch = "all", onView
             className="bg-transparent border-none outline-none cursor-pointer pr-4 select-none"
           >
             <option value="all">All stores</option>
+            <option value="ONLINE">Online</option>
             {shops.map(s => (
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}

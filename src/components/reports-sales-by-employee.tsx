@@ -321,7 +321,7 @@ export function ReportsSalesByEmployee({ jobs, selectedBranch = "all", onViewJob
       if (tDate < startDate || tDate > endDate) return false;
 
       // Store filter
-      if (selectedStore !== "all" && t.branchId && t.branchId !== selectedStore) {
+      if (selectedStore !== "all" && t.branchId !== selectedStore) {
         return false;
       }
 
@@ -641,6 +641,7 @@ export function ReportsSalesByEmployee({ jobs, selectedBranch = "all", onViewJob
               className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer border-none p-0 pr-4 select-none"
             >
               <option value="all">All stores</option>
+              <option value="ONLINE">Online</option>
               {shops.map(s => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}

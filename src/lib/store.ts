@@ -374,7 +374,7 @@ export const customerStore = {
   getSnapshot(): Customer[] {
     return api.sync.getCustomers();
   },
-  async addCustomer(customer: Omit<Customer, "id">) {
+  async addCustomer(customer: Omit<Customer, "id"> & Record<string, any>) {
     const newCustomer = await api.addCustomer(customer);
     emitCustomerChange();
     return newCustomer;
@@ -393,8 +393,8 @@ export const customerStore = {
     walletApprovalStore.refreshPendingMap().catch(() => {});
     return result;
   },
-  async deleteCustomer(id: string) {
-    await api.deleteCustomer(id);
+  async deleteCustomer(id: string, actor?: { id?: string; name?: string }) {
+    await api.deleteCustomer(id, actor);
     emitCustomerChange();
   },
   async mergeCustomer(primaryId: string, duplicateId: string, actor?: { id?: string; name?: string; role?: string }) {
