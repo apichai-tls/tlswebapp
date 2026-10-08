@@ -146,6 +146,8 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   const [isCreatingBeam, setIsCreatingBeam] = useState(false);
   const [isCheckingBeamStatus, setIsCheckingBeamStatus] = useState(false);
   const beamPollRef = useRef<NodeJS.Timeout | null>(null);
+  const isPaymentCompletedRef = useRef(false);
+  const isHandlingPayRef = useRef(false);
 
   // Receipt state
   const [showReceipt, setShowReceipt] = useState(false);
@@ -444,16 +446,21 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
   const handleCheckBeamStatus = async (showToast = true) => {
     if (!beamPaymentData?.paymentLinkId) return;
+    if (isPaymentCompletedRef.current || isHandlingPayRef.current) return;
     setIsCheckingBeamStatus(true);
     try {
       const res = await checkTopUpPaymentStatusAction(beamPaymentData.paymentLinkId);
       if (res.success && res.isPaid) {
+        if (isPaymentCompletedRef.current || isHandlingPayRef.current) return;
+        isPaymentCompletedRef.current = true;
         if (beamPollRef.current) {
           clearInterval(beamPollRef.current);
           beamPollRef.current = null;
         }
+        const paidLinkId = beamPaymentData.paymentLinkId;
+        setBeamPaymentData(null);
         toast.success(`🎉 ชำระเงินผ่าน Beam สำเร็จแล้ว (฿${formatCurrency(res.paidAmount || cartTotal)})`);
-        await handlePay();
+        await handlePay({ paymentLinkId: paidLinkId });
       } else if (showToast) {
         toast.info("ยังไม่พบยอดชำระเงิน หรือลูกค้ารอดำเนินการ");
       }
@@ -473,6 +480,8 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       setBeamPaymentData(null);
       setIsCreatingBeam(false);
       setIsCheckingBeamStatus(false);
+      isPaymentCompletedRef.current = false;
+      isHandlingPayRef.current = false;
     }
   }, [open]);
 
@@ -483,7 +492,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
   }, []);
 
   useEffect(() => {
-    if (beamPaymentData?.paymentLinkId && !isProcessing && step === "payment") {
+    if (beamPaymentData?.paymentLinkId && !isProcessing && !isPaymentCompletedRef.current && step === "payment") {
       if (beamPollRef.current) clearInterval(beamPollRef.current);
       beamPollRef.current = setInterval(() => {
         handleCheckBeamStatus(false);
@@ -495,17 +504,28 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       }
     }
     return () => {
-      if (beamPollRef.current) clearInterval(beamPollRef.current);
+      if (beamPollRef.current) {
+        clearInterval(beamPollRef.current);
+        beamPollRef.current = null;
+      }
     };
   }, [beamPaymentData?.paymentLinkId, isProcessing, step]);
 
   // ── Payment ────────────────────────────────────────────────────────────────
-  const handlePay = async () => {
+  const handlePay = async (opts?: { paymentLinkId?: string }) => {
+    if (isHandlingPayRef.current || isPaymentCompletedRef.current) return;
     if (!selectedCustomer) { toast.error("Please select a customer"); return; }
     if (cartIsEmpty) { toast.error("Please add at least one package"); return; }
     if (!paymentChannel) { toast.error("Please select a payment channel"); return; }
 
+    isHandlingPayRef.current = true;
     setIsProcessing(true);
+    if (beamPollRef.current) {
+      clearInterval(beamPollRef.current);
+      beamPollRef.current = null;
+    }
+    const currentPaymentLinkId = opts?.paymentLinkId || beamPaymentData?.paymentLinkId || undefined;
+    setBeamPaymentData(null);
     try {
       const itemsPayload = cart.map(item => ({
         name: item.service.name,
@@ -577,7 +597,15 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         actorName: user?.name || user?.email || "Staff",
         branchId: user?.branchId || null,
         priceListId: memberPriceListId,
+        paymentLinkId: currentPaymentLinkId,
       });
+
+      isPaymentCompletedRef.current = true;
+      setBeamPaymentData(null);
+      if (beamPollRef.current) {
+        clearInterval(beamPollRef.current);
+        beamPollRef.current = null;
+      }
 
       const finalBalance = topUpResult.balanceAfter;
       const finalExpiryDate = calculateWalletExpiryDate(now);
@@ -597,10 +625,12 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       setShowReceipt(true);
       onSuccess?.(topUpReceiptNo);
     } catch (err: any) {
+      isPaymentCompletedRef.current = false;
       console.error("[TopUpDialog] Pay failed:", err);
       toast.error("Top Up failed: " + (err?.message || "Unknown error"));
     } finally {
       setIsProcessing(false);
+      isHandlingPayRef.current = false;
     }
   };
 
@@ -1213,8 +1243,8 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                       ? "bg-amber-600 hover:bg-amber-700 opacity-90 cursor-not-allowed"
                       : "bg-emerald-500 hover:bg-emerald-600"
                   }`}
-                  disabled={isProcessing || isUploadingSlip || !paymentChannel || (Boolean(todayTopUpInfo) && !confirmDuplicateTopUp)}
-                  onClick={handlePay}
+                  disabled={isProcessing || isHandlingPayRef.current || isUploadingSlip || !paymentChannel || (Boolean(todayTopUpInfo) && !confirmDuplicateTopUp)}
+                  onClick={() => handlePay()}
                   title={todayTopUpInfo && !confirmDuplicateTopUp ? "กรุณาติ๊กยืนยันการเติมเงินซ้ำในวันนี้" : undefined}
                 >
                   {isProcessing

@@ -2543,6 +2543,7 @@ export async function processTopUpAction(data: {
   actorName?: string | null;
   branchId?: string | null;
   priceListId?: string | null;
+  paymentLinkId?: string | null;
 }) {
   return await prisma.$transaction(async (tx) => {
     // 1. Fetch fresh customer directly from DB with transaction lock
@@ -2552,6 +2553,63 @@ export async function processTopUpAction(data: {
     if (!currentCust) throw new Error("Customer not found");
 
     const balBefore = Number(currentCust.creditBalance || 0);
+
+    // Idempotency Check 1: Check if receiptNumber already exists
+    const existingTx = await tx.transaction.findUnique({
+      where: { id: data.receiptNumber }
+    });
+    if (existingTx) {
+      console.warn(`[TopUp] Duplicate top-up ignored for receipt: ${data.receiptNumber}`);
+      return {
+        success: true,
+        updatedCustomer: currentCust,
+        transaction: existingTx,
+        balanceBefore: balBefore,
+        balanceAfter: balBefore,
+      };
+    }
+
+    // Idempotency Check 2: Check if paymentLinkId has already been credited
+    if (data.paymentLinkId) {
+      const existingPaymentLink = await tx.walletTransaction.findFirst({
+        where: {
+          customerId: data.customerId,
+          reason: { contains: data.paymentLinkId }
+        }
+      });
+      if (existingPaymentLink) {
+        console.warn(`[TopUp] Duplicate top-up ignored for paymentLinkId: ${data.paymentLinkId}`);
+        return {
+          success: true,
+          updatedCustomer: currentCust,
+          transaction: null,
+          balanceBefore: balBefore,
+          balanceAfter: balBefore,
+        };
+      }
+    }
+
+    // Idempotency Check 3: Guard against rapid duplicate clicks (same customer, same totalCredit within 10 seconds)
+    const recentTx = await tx.walletTransaction.findFirst({
+      where: {
+        customerId: data.customerId,
+        type: 'TOPUP',
+        amount: data.totalCredit,
+        createdAt: { gte: new Date(Date.now() - 10000) }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    if (recentTx) {
+      console.warn(`[TopUp] Rapid duplicate top-up blocked for customer ${data.customerId} (${recentTx.id}) within 10s`);
+      return {
+        success: true,
+        updatedCustomer: currentCust,
+        transaction: null,
+        balanceBefore: balBefore,
+        balanceAfter: balBefore,
+      };
+    }
+
     const balAfter = Math.round((balBefore + data.totalCredit) * 100) / 100;
     const now = new Date();
     const expiry = calculateWalletExpiryDate(now);
@@ -2652,6 +2710,7 @@ export async function processTopUpAction(data: {
         bonusAmount: data.bonusAmount || 0,
         paymentChannel: data.paymentChannel,
         slipImageUrl: data.slipImageUrl || null,
+        reason: data.paymentLinkId ? `Beam PaymentLink: ${data.paymentLinkId}` : null,
         createdById: data.actorId || null,
         createdByName: data.actorName || 'Staff',
         branchId: data.branchId || null,
