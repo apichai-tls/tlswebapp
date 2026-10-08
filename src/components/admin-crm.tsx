@@ -1078,51 +1078,82 @@ export function AdminCRM({
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
-    // 5. Calculate running balance backwards
+    // 5. Determine earliest wallet inception date (first top-up, initial adjust add, or member start date)
+    const walletFundingEvents = [...customerTopups, ...customerAdjustments.filter(a => a.adjustMode === "add")].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+    const earliestFundingDate = walletFundingEvents.length > 0 
+      ? startOfDay(new Date(walletFundingEvents[0].createdAt)).getTime() 
+      : null;
+    const memberStartDateMs = selectedCustomerForReport.memberStartDate 
+      ? startOfDay(new Date(selectedCustomerForReport.memberStartDate)).getTime() 
+      : null;
+    const walletInceptionTime = earliestFundingDate != null && memberStartDateMs != null
+      ? Math.min(earliestFundingDate, memberStartDateMs)
+      : (earliestFundingDate ?? memberStartDateMs);
+
+    // 6. Calculate running balance backwards
     let runningBalance = selectedCustomerForReport.creditBalance || 0;
     
     const mapped = (sorted as any[]).map((item: any) => {
+      const itemTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      const isBeforeWalletInception = walletInceptionTime != null && itemTime < walletInceptionTime;
+
       const isTopup = item.isTopup || item.status === "topup";
       const isAdjust = item.isAdjust || item.status === "adjust";
       const isAdd = isAdjust && item.adjustMode === "add";
       const isDeductAdj = isAdjust && item.adjustMode === "deduct";
 
       const channelStr = (item.paymentChannel || item.paymentMethod || "").toLowerCase();
-      const isJobDeduct = !isTopup && !isAdjust && item.isPaid && (
-        channelStr.includes("deduct") ||
-        channelStr.includes("credit") ||
-        channelStr.includes("member")
-      );
+      const isChannelMember = channelStr.includes("deduct") || channelStr.includes("credit") || channelStr.includes("member");
+      
+      // A job only truly deducted from wallet if it was created on or after wallet inception
+      const isJobDeduct = !isTopup && !isAdjust && item.isPaid && !isBeforeWalletInception && isChannelMember;
 
       const hasSnapshot = item.walletBalanceAfter !== undefined && item.walletBalanceAfter !== null;
-      const displayBalance = hasSnapshot ? Number(item.walletBalanceAfter) : (isTopup || isJobDeduct || isAdjust ? runningBalance : null);
+      
+      let displayBalance: number | null = null;
+      if (isBeforeWalletInception) {
+        // If prior to wallet inception/funding, wallet balance is explicitly 0 (while keeping order service usage intact)
+        displayBalance = 0;
+      } else if (hasSnapshot) {
+        displayBalance = Number(item.walletBalanceAfter);
+      } else if (isTopup || isJobDeduct || isAdjust) {
+        displayBalance = runningBalance;
+      }
+
       const itemCost = Number(item.totalAmount) || Number(item.fee) || 0;
 
       // Adjust runningBalance backwards for the next (older) step
-      if (hasSnapshot) {
-        if (isTopup) {
-          runningBalance = item.walletBalanceBefore != null ? Number(item.walletBalanceBefore) : (Number(item.walletBalanceAfter) - itemCost);
-        } else if (isJobDeduct) {
-          runningBalance = Number(item.walletBalanceAfter) + itemCost;
-        } else if (isAdjust) {
-          runningBalance = item.walletBalanceBefore != null 
-            ? Number(item.walletBalanceBefore) 
-            : (isAdd ? Number(item.walletBalanceAfter) - itemCost : Number(item.walletBalanceAfter) + itemCost);
+      if (!isBeforeWalletInception) {
+        if (hasSnapshot) {
+          if (isTopup) {
+            runningBalance = item.walletBalanceBefore != null ? Number(item.walletBalanceBefore) : (Number(item.walletBalanceAfter) - itemCost);
+          } else if (isJobDeduct) {
+            runningBalance = Number(item.walletBalanceAfter) + itemCost;
+          } else if (isAdjust) {
+            runningBalance = item.walletBalanceBefore != null 
+              ? Number(item.walletBalanceBefore) 
+              : (isAdd ? Number(item.walletBalanceAfter) - itemCost : Number(item.walletBalanceAfter) + itemCost);
+          } else {
+            runningBalance = Number(item.walletBalanceAfter);
+          }
         } else {
-          runningBalance = Number(item.walletBalanceAfter);
+          if (isTopup || isAdd) {
+            runningBalance -= itemCost;
+          } else if (isJobDeduct || isDeductAdj) {
+            runningBalance += itemCost;
+          }
         }
+        if (runningBalance < 0) runningBalance = 0;
       } else {
-        if (isTopup || isAdd) {
-          runningBalance -= itemCost;
-        } else if (isJobDeduct || isDeductAdj) {
-          runningBalance += itemCost;
-        }
+        runningBalance = 0;
       }
 
       return {
         ...item,
         displayWalletBalance: displayBalance,
-        isWalletAffecting: isTopup || isJobDeduct || isAdjust
+        isWalletAffecting: isTopup || isJobDeduct || isAdjust || (isBeforeWalletInception && isChannelMember)
       };
     });
 
