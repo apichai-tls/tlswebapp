@@ -23,7 +23,8 @@ import {
   updateCustomerCouponStatusAction,
   deleteCustomerCouponAction,
   getCustomerJobsAction,
-  getCustomerJobCountsAction
+  getCustomerJobCountsAction,
+  getCustomerWalletAdjustmentsAction
 } from "@/actions/db";
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { AdminCouponTemplateModal } from "@/components/admin-coupon-template-modal";
@@ -253,7 +254,10 @@ export function AdminCRM({
   const [reportBranchFilter, setReportBranchFilter] = useState<string>("all");
   const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
   const [reportCustomerJobs, setReportCustomerJobs] = useState<any[]>([]);
+  const [reportCustomerAdjustments, setReportCustomerAdjustments] = useState<any[]>([]);
   const [isLoadingReportJobs, setIsLoadingReportJobs] = useState(false);
+  const [selectedAdjustForView, setSelectedAdjustForView] = useState<any | null>(null);
+  const [reportTypeFilter, setReportTypeFilter] = useState<"all" | "topup" | "adjust" | "order" | "wallet">("all");
 
   // Top-Up History State
   const [allTopUpTxs, setAllTopUpTxs] = useState<any[]>([]);
@@ -445,23 +449,31 @@ export function AdminCRM({
       fetchTopUps();
     }
   }, [searchTerm, activeTab, selectedBrand]);
-  // Fetch full customer jobs history on-demand from DB when selected in Customer Report
+  // Fetch full customer jobs and wallet adjustments history on-demand from DB when selected in Customer Report
   useEffect(() => {
     if (!selectedCustomerForReport) {
       setReportCustomerJobs([]);
+      setReportCustomerAdjustments([]);
       return;
     }
     let isCancelled = false;
     setIsLoadingReportJobs(true);
-    getCustomerJobsAction(selectedCustomerForReport.id, selectedCustomerForReport.phone)
-      .then((resJobs) => {
+    Promise.all([
+      getCustomerJobsAction(selectedCustomerForReport.id, selectedCustomerForReport.phone),
+      getCustomerWalletAdjustmentsAction(selectedCustomerForReport.id)
+    ])
+      .then(([resJobs, resAdjustments]) => {
         if (!isCancelled) {
           setReportCustomerJobs(resJobs || []);
+          setReportCustomerAdjustments(resAdjustments || []);
         }
       })
       .catch((err) => {
-        console.error("Failed to load customer jobs for report:", err);
-        if (!isCancelled) setReportCustomerJobs([]);
+        console.error("Failed to load customer report data:", err);
+        if (!isCancelled) {
+          setReportCustomerJobs([]);
+          setReportCustomerAdjustments([]);
+        }
       })
       .finally(() => {
         if (!isCancelled) setIsLoadingReportJobs(false);
@@ -470,7 +482,7 @@ export function AdminCRM({
     return () => {
       isCancelled = true;
     };
-  }, [selectedCustomerForReport?.id, selectedCustomerForReport?.phone]);
+  }, [selectedCustomerForReport?.id, selectedCustomerForReport?.phone, selectedCustomerForReport?.creditBalance, selectedCustomerForReport?.updatedAt]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -1035,6 +1047,7 @@ export function AdminCRM({
         status: "topup",
         isPaid: true,
         isTopup: true,
+        isAdjust: false,
         type: "topup",
         totalAmount: Number(tx.totalCredit) || Number(tx.amount) || 0,
         paidAmount: Number(tx.amount) || 0,
@@ -1051,40 +1064,57 @@ export function AdminCRM({
       };
     });
 
-    // 3. Sort from newest to oldest
-    const sorted = [...rawJobs, ...customerTopups].sort(
+    // 3. Customer Wallet Adjustments (from reportCustomerAdjustments state)
+    const customerAdjustments = reportCustomerAdjustments.map(adj => ({
+      ...adj,
+      isTopup: false,
+      isAdjust: true,
+      status: "adjust",
+      isPaid: true,
+    }));
+
+    // 4. Sort from newest to oldest
+    const sorted = [...rawJobs, ...customerTopups, ...customerAdjustments].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
-    // 4. Calculate running balance backwards
+    // 5. Calculate running balance backwards
     let runningBalance = selectedCustomerForReport.creditBalance || 0;
     
     const mapped = (sorted as any[]).map((item: any) => {
       const isTopup = item.isTopup || item.status === "topup";
+      const isAdjust = item.isAdjust || item.status === "adjust";
+      const isAdd = isAdjust && item.adjustMode === "add";
+      const isDeductAdj = isAdjust && item.adjustMode === "deduct";
+
       const channelStr = (item.paymentChannel || item.paymentMethod || "").toLowerCase();
-      const isDeduct = !isTopup && item.isPaid && (
+      const isJobDeduct = !isTopup && !isAdjust && item.isPaid && (
         channelStr.includes("deduct") ||
         channelStr.includes("credit") ||
         channelStr.includes("member")
       );
 
       const hasSnapshot = item.walletBalanceAfter !== undefined && item.walletBalanceAfter !== null;
-      const displayBalance = hasSnapshot ? Number(item.walletBalanceAfter) : (isTopup || isDeduct ? runningBalance : null);
+      const displayBalance = hasSnapshot ? Number(item.walletBalanceAfter) : (isTopup || isJobDeduct || isAdjust ? runningBalance : null);
       const itemCost = Number(item.totalAmount) || Number(item.fee) || 0;
 
       // Adjust runningBalance backwards for the next (older) step
       if (hasSnapshot) {
         if (isTopup) {
           runningBalance = item.walletBalanceBefore != null ? Number(item.walletBalanceBefore) : (Number(item.walletBalanceAfter) - itemCost);
-        } else if (isDeduct) {
+        } else if (isJobDeduct) {
           runningBalance = Number(item.walletBalanceAfter) + itemCost;
+        } else if (isAdjust) {
+          runningBalance = item.walletBalanceBefore != null 
+            ? Number(item.walletBalanceBefore) 
+            : (isAdd ? Number(item.walletBalanceAfter) - itemCost : Number(item.walletBalanceAfter) + itemCost);
         } else {
           runningBalance = Number(item.walletBalanceAfter);
         }
       } else {
-        if (isTopup) {
+        if (isTopup || isAdd) {
           runningBalance -= itemCost;
-        } else if (isDeduct) {
+        } else if (isJobDeduct || isDeductAdj) {
           runningBalance += itemCost;
         }
       }
@@ -1092,11 +1122,11 @@ export function AdminCRM({
       return {
         ...item,
         displayWalletBalance: displayBalance,
-        isWalletAffecting: isTopup || isDeduct
+        isWalletAffecting: isTopup || isJobDeduct || isAdjust
       };
     });
 
-    // 5. Finally, filter by the selected date range, branch, and showOnlyTopup filter
+    // 6. Finally, filter by date range, branch, and type filters
     const filteredMapped = mapped.filter(job => {
       if (reportBranchFilter !== "all" && job.branchId && job.branchId !== reportBranchFilter) return false;
       if (!job.createdAt) return false;
@@ -1128,26 +1158,47 @@ export function AdminCRM({
       if (!dateFilterPassed) return false;
 
       if (showOnlyTopup && job.status !== "topup") return false;
+      if (reportTypeFilter === "topup" && job.status !== "topup") return false;
+      if (reportTypeFilter === "adjust" && !job.isAdjust && job.status !== "adjust") return false;
+      if (reportTypeFilter === "order" && (job.status === "topup" || job.isAdjust || job.status === "adjust")) return false;
+      if (reportTypeFilter === "wallet" && job.status !== "topup" && !job.isAdjust && job.status !== "adjust") return false;
 
       return true;
     });
 
     return filteredMapped;
-  }, [selectedCustomerForReport, jobs, reportCustomerJobs, allTopUpTxs, reportBranchFilter, reportDateRange, reportCustomStartDate, reportCustomEndDate, showOnlyTopup]);
+  }, [selectedCustomerForReport, jobs, reportCustomerJobs, allTopUpTxs, reportCustomerAdjustments, reportBranchFilter, reportDateRange, reportCustomStartDate, reportCustomEndDate, showOnlyTopup, reportTypeFilter]);
 
   const handleExportCustomerStatement = () => {
     if (!selectedCustomerForReport) return;
+
     let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
     csvContent += `Customer Statement: ${selectedCustomerForReport.name}\n`;
     csvContent += `Phone: ${selectedCustomerForReport.phone}\n`;
     csvContent += `Current Credit Balance: ฿${selectedCustomerForReport.creditBalance || 0}\n\n`;
-    csvContent += "Date,Transaction ID,Type,Total Amount,Wallet Balance After,Status\n";
+    csvContent += "Date,Transaction ID,Type,Details / Items,Total Amount,Payment Channel,Wallet Balance After,Status\n";
 
     customerJobsForReport.forEach(job => {
       const dateStr = job.createdAt ? format(new Date(job.createdAt), "yyyy-MM-dd HH:mm:ss") : "";
       const isTopup = job.status === "topup";
-      const typeStr = isTopup ? "Wallet Topup" : "Laundry Service";
-      csvContent += `"${dateStr}","${job.id}","${typeStr}",${job.totalAmount || 0},${job.displayWalletBalance || 0},"${job.status}"\n`;
+      const isAdjust = job.isAdjust || job.status === "adjust";
+      const typeStr = isTopup 
+        ? "Wallet Topup" 
+        : isAdjust 
+          ? (job.adjustMode === "add" ? "Wallet Adjust (Credit +)" : "Wallet Adjust (Debit -)") 
+          : "Laundry Service";
+      const channelStr = isAdjust 
+        ? (job.paymentChannel || `Adjust (${job.actorName || "Manual"})`) 
+        : isTopup 
+          ? (job.paymentChannel || "Transfer") 
+          : (job.paymentChannel || job.paymentMethod || "-");
+      const detailsStr = isAdjust 
+        ? (job.reason || "Manual adjustment") 
+        : isTopup 
+          ? (job.packageName || "Member Package") 
+          : (job.items || []).map((it: any) => `${it.name} (x${it.quantity})`).join("; ");
+
+      csvContent += `"${dateStr}","${job.id}","${typeStr}","${detailsStr.replace(/"/g, '""')}",${job.totalAmount || 0},"${channelStr}",${job.displayWalletBalance || 0},"${job.status}"\n`;
     });
 
     const encodedUri = encodeURI(csvContent);
@@ -1609,19 +1660,18 @@ export function AdminCRM({
                   </div>
                 )}
 
-                {/* Filter Top-up Only Toggle */}
-                <button
-                  type="button"
-                  onClick={() => setShowOnlyTopup(prev => !prev)}
-                  className={`flex items-center gap-1.5 h-9 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                    showOnlyTopup
-                      ? "bg-indigo-50 text-indigo-700 border-indigo-200 shadow-sm"
-                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-                  }`}
+                {/* Transaction Type Filter */}
+                <select
+                  value={reportTypeFilter}
+                  onChange={(e) => setReportTypeFilter(e.target.value as any)}
+                  className="h-9 px-3 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm cursor-pointer"
                 >
-                  <Percent size={13} />
-                  <span>Topup Member Only</span>
-                </button>
+                  <option value="all">All Types (ทุกประเภทรายการ)</option>
+                  <option value="wallet">Wallet Only (เติมเงิน + ปรับยอด)</option>
+                  <option value="topup">Top-up Only (เติมเงิน)</option>
+                  <option value="adjust">Adjust Only (ปรับยอดเงิน)</option>
+                  <option value="order">Orders Only (ออร์เดอร์ซักรีด)</option>
+                </select>
 
                 {/* Export Statement Button */}
                 <Button
@@ -1719,7 +1769,7 @@ export function AdminCRM({
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide flex items-center gap-2">
                       <ClipboardList size={16} className="text-indigo-600" />
-                      <span>Job & Top-up History ({customerJobsForReport.length} transactions)</span>
+                      <span>Job, Top-up & Wallet Adjustment History ({customerJobsForReport.length} transactions)</span>
                       {isLoadingReportJobs && (
                         <Loader2 size={14} className="animate-spin text-indigo-500 ml-1" />
                       )}
@@ -1744,13 +1794,34 @@ export function AdminCRM({
                         <tbody className="divide-y divide-slate-100 text-slate-700 font-semibold">
                           {customerJobsForReport.map((job: any) => (
                             <tr key={job.id} className="hover:bg-slate-50/70 transition-colors">
-                              <td className="py-3 pl-2 font-mono text-[11px] text-slate-500 font-bold">{job.id}</td>
+                              <td className="py-3 pl-2 font-mono text-[11px] text-slate-500 font-bold">
+                                {job.isAdjust ? (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200/60 font-mono text-[10px] font-black">
+                                    <SlidersHorizontal size={10} />
+                                    {job.id.length > 15 ? `ADJ-${job.id.slice(0, 8).toUpperCase()}` : job.id}
+                                  </span>
+                                ) : (
+                                  job.id
+                                )}
+                              </td>
                               <td className="py-3 text-[11px] font-medium text-slate-600">
                                 {format(new Date(job.createdAt), "dd MMM yyyy HH:mm")}
                               </td>
                               <td className="py-3">
                                 <span className="font-bold text-slate-800">
-                                  {job.status === "topup" ? (
+                                  {job.isAdjust ? (
+                                    <div className="flex flex-col gap-0.5">
+                                      <span className={`font-bold flex items-center gap-1.5 ${job.adjustMode === "add" ? "text-emerald-700" : "text-rose-700"}`}>
+                                        <SlidersHorizontal size={13} className={job.adjustMode === "add" ? "text-emerald-600" : "text-rose-600"} />
+                                        <span>{job.adjustMode === "add" ? "ปรับเพิ่มยอดเงิน (Wallet Adjust +)" : "ปรับลดยอดเงิน (Wallet Adjust -)"}</span>
+                                      </span>
+                                      {job.reason && (
+                                        <span className="text-[10px] text-slate-500 font-medium">
+                                          เหตุผล: {job.reason}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : job.status === "topup" ? (
                                     <span className="text-emerald-700 font-extrabold uppercase flex items-center gap-1.5">
                                       <Crown size={13} className="text-amber-500 fill-amber-400 shrink-0" />
                                       <span>Topup ({job.packageName || "Member Package"})</span>
@@ -1761,7 +1832,11 @@ export function AdminCRM({
                                 </span>
                               </td>
                               <td className="py-3 text-right">
-                                {job.status === "topup" ? (
+                                {job.isAdjust ? (
+                                  <span className={`font-black ${job.adjustMode === "add" ? "text-emerald-600" : "text-rose-600"}`}>
+                                    {job.adjustMode === "add" ? "+" : "-"}฿{(job.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                                  </span>
+                                ) : job.status === "topup" ? (
                                   <div>
                                     <span className="font-black text-emerald-600">
                                       +฿{(job.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
@@ -1780,6 +1855,13 @@ export function AdminCRM({
                               </td>
                               <td className="py-3 text-center font-bold text-slate-500 text-[10px] uppercase">
                                 {(() => {
+                                  if (job.isAdjust) {
+                                    return (
+                                      <span className="text-[10px] font-bold text-violet-700 bg-violet-50 px-2 py-0.5 rounded-full border border-violet-200">
+                                        {job.paymentChannel || `Adjust (${job.actorName || "Manual"})`}
+                                      </span>
+                                    );
+                                  }
                                   if (job.status === "topup") {
                                     return job.paymentChannel || "Transfer";
                                   }
@@ -1793,7 +1875,7 @@ export function AdminCRM({
                               </td>
                               <td className="py-3 text-right font-black">
                                 {job.isWalletAffecting ? (
-                                  <span className={(job.displayWalletBalance || 0) < 0 ? "text-rose-600 font-black" : job.status === "topup" ? "text-emerald-600 font-black" : "text-slate-900 font-black"}>
+                                  <span className={(job.displayWalletBalance || 0) < 0 ? "text-rose-600 font-black" : job.status === "topup" || (job.isAdjust && job.adjustMode === "add") ? "text-emerald-600 font-black" : "text-slate-900 font-black"}>
                                     {formatBaht(job.displayWalletBalance || 0)}
                                   </span>
                                 ) : (
@@ -1801,17 +1883,27 @@ export function AdminCRM({
                                 )}
                               </td>
                               <td className="py-3 text-center">
-                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
-                                  job.status === "topup" ? "bg-emerald-100 text-emerald-800" : (job.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-indigo-50 text-indigo-600")
-                                }`}>
-                                  {job.status === "topup" ? "TOPUP" : job.status}
-                                </span>
+                                {job.isAdjust ? (
+                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                    job.adjustMode === "add" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
+                                  }`}>
+                                    {job.adjustMode === "add" ? "ADJUST (+)" : "ADJUST (-)"}
+                                  </span>
+                                ) : (
+                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                    job.status === "topup" ? "bg-emerald-100 text-emerald-800" : (job.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-indigo-50 text-indigo-600")
+                                  }`}>
+                                    {job.status === "topup" ? "TOPUP" : job.status}
+                                  </span>
+                                )}
                               </td>
                               <td className="py-3 text-right pr-2">
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (job.status === "topup") {
+                                    if (job.isAdjust) {
+                                      setSelectedAdjustForView(job);
+                                    } else if (job.status === "topup") {
                                       if (job.slipImageUrl) {
                                         setPreviewSlipUrl(job.slipImageUrl);
                                         setPreviewSlipTitle(`${selectedCustomerForReport.name} — ${job.id}`);
@@ -3407,6 +3499,94 @@ export function AdminCRM({
               <div className="py-12 text-slate-500 text-xs">ไม่มีรูปภาพสลิป</div>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Wallet Adjustment Details Modal */}
+      <Dialog open={Boolean(selectedAdjustForView)} onOpenChange={(open) => { if (!open) setSelectedAdjustForView(null); }}>
+        <DialogContent className="max-w-md p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl z-[80]">
+          <DialogHeader className={`p-4 text-white flex flex-row items-center justify-between ${
+            selectedAdjustForView?.adjustMode === "add" ? "bg-emerald-600" : "bg-rose-600"
+          }`}>
+            <div className="flex items-center gap-2">
+              <SlidersHorizontal size={18} className="text-white" />
+              <DialogTitle className="text-sm font-bold text-white">
+                {selectedAdjustForView?.adjustMode === "add" 
+                  ? "รายละเอียดการปรับเพิ่มเงิน Wallet (Adjust Credit)" 
+                  : "รายละเอียดการปรับลดเงิน Wallet (Adjust Debit)"}
+              </DialogTitle>
+            </div>
+          </DialogHeader>
+
+          {selectedAdjustForView && (
+            <div className="p-5 space-y-4 text-xs">
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Customer</span>
+                  <span className="font-extrabold text-slate-800 text-sm">{selectedCustomerForReport?.name}</span>
+                  {selectedCustomerForReport?.memberId && (
+                    <span className="text-[10px] text-indigo-600 font-bold ml-1.5">
+                      #{selectedCustomerForReport.memberId}
+                    </span>
+                  )}
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Amount</span>
+                  <span className={`text-xl font-black ${selectedAdjustForView.adjustMode === "add" ? "text-emerald-600" : "text-rose-600"}`}>
+                    {selectedAdjustForView.adjustMode === "add" ? "+" : "-"}฿{Number(selectedAdjustForView.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-slate-600">
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                  <span className="text-[10px] text-slate-400 font-bold block uppercase">Balance Before</span>
+                  <span className="text-xs font-bold text-slate-700 font-mono">
+                    {selectedAdjustForView.walletBalanceBefore != null ? formatBaht(selectedAdjustForView.walletBalanceBefore) : "-"}
+                  </span>
+                </div>
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                  <span className="text-[10px] text-slate-400 font-bold block uppercase">Balance After</span>
+                  <span className="text-xs font-bold text-slate-900 font-mono">
+                    {selectedAdjustForView.walletBalanceAfter != null ? formatBaht(selectedAdjustForView.walletBalanceAfter) : "-"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Reason (เหตุผลในการปรับยอด)</span>
+                <div className="p-3 bg-amber-50/60 border border-amber-200/70 rounded-xl text-amber-950 font-medium">
+                  {selectedAdjustForView.reason || "ไม่ได้ระบุเหตุผล"}
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+                <div className="flex justify-between items-center">
+                  <span>ผู้ทำรายการ (Adjusted By):</span>
+                  <span className="font-bold text-slate-800">{selectedAdjustForView.actorName || "Admin"}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>วัน-เวลาทำรายการ (Timestamp):</span>
+                  <span className="font-medium text-slate-700">
+                    {selectedAdjustForView.createdAt ? format(new Date(selectedAdjustForView.createdAt), "dd MMM yyyy HH:mm:ss") : "-"}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center font-mono text-[10px] text-slate-400">
+                  <span>Ref ID:</span>
+                  <span>{selectedAdjustForView.id}</span>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <Button 
+                  onClick={() => setSelectedAdjustForView(null)}
+                  className="w-full h-9 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs cursor-pointer"
+                >
+                  ปิด (Close)
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

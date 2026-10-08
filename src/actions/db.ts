@@ -996,6 +996,125 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
   }
 }
 
+export async function getCustomerWalletAdjustmentsAction(customerId: string) {
+  try {
+    if (!customerId) return [];
+
+    // 1. Fetch from WalletTransaction table
+    const wtList = await prisma.walletTransaction.findMany({
+      where: {
+        customerId,
+        OR: [
+          { type: { in: ['ADJUST_ADD', 'ADJUST_DEDUCT', 'ADJUST', 'REFUND', 'REVERSAL'] } },
+          { referenceType: 'manual' },
+          { type: { notIn: ['TOPUP', 'DEDUCT'] } }
+        ]
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // 2. Fetch from ActivityLog table for historical adjustments
+    const actLogs = await prisma.activityLog.findMany({
+      where: {
+        entityId: customerId,
+        action: 'ADJUST'
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const results: any[] = [];
+
+    // Map WalletTransactions
+    for (const wt of wtList) {
+      const isCredit = wt.direction === 'CREDIT' || wt.type === 'ADJUST_ADD';
+      const adjMode = isCredit ? 'add' : 'deduct';
+      results.push({
+        id: wt.id,
+        createdAt: wt.createdAt.toISOString(),
+        status: 'adjust',
+        isPaid: true,
+        isTopup: false,
+        isAdjust: true,
+        adjustMode: adjMode,
+        type: wt.type || 'ADJUST',
+        totalAmount: Number(wt.amount) || 0,
+        amount: Number(wt.amount) || 0,
+        paidAmount: Number(wt.amount) || 0,
+        direction: wt.direction || (isCredit ? 'CREDIT' : 'DEBIT'),
+        walletBalanceBefore: wt.balanceBefore != null ? Number(wt.balanceBefore) : null,
+        walletBalanceAfter: wt.balanceAfter != null ? Number(wt.balanceAfter) : null,
+        paymentChannel: wt.paymentChannel || `Adjust (${wt.createdByName || 'Manual'})`,
+        reason: wt.reason || 'Manual Adjustment',
+        actorName: wt.createdByName || 'Admin',
+        branchId: wt.branchId || null,
+        referenceId: wt.referenceId || null,
+        approvalStatus: wt.approvalStatus || 'APPROVED',
+        items: [{ name: `ADJUST: ${wt.reason || 'ปรับยอดเงิน Wallet'}`, quantity: 1 }],
+        rawTx: wt,
+        source: 'wallet_tx'
+      });
+    }
+
+    // Map ActivityLogs (deduplicating against WalletTransactions & filtering out order payments)
+    for (const al of actLogs) {
+      try {
+        const d = JSON.parse(al.details || '{}');
+        const reason = (d.reason || '').trim();
+
+        // Skip order payment logs as they are already represented as actual Jobs in the report
+        if (/^Order Payment/i.test(reason) || /^DEDUCT PACKAGE/i.test(reason)) {
+          continue;
+        }
+
+        const alTime = al.createdAt.getTime();
+        const adjAmount = Number(d.adjustAmount) || 0;
+
+        // Check if already captured by WalletTransaction
+        const isDuplicate = results.some(r => 
+          Math.abs(new Date(r.createdAt).getTime() - alTime) < 15000 &&
+          Math.abs(r.totalAmount - adjAmount) < 0.01
+        );
+
+        if (!isDuplicate) {
+          const isAdd = (d.adjustMode || '').toLowerCase() === 'add' || (!d.adjustMode && Number(d.balanceAfter) >= Number(d.balanceBefore));
+          results.push({
+            id: `ADJ-${al.id.slice(0, 8).toUpperCase()}`,
+            createdAt: al.createdAt.toISOString(),
+            status: 'adjust',
+            isPaid: true,
+            isTopup: false,
+            isAdjust: true,
+            adjustMode: isAdd ? 'add' : 'deduct',
+            type: isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT',
+            totalAmount: adjAmount,
+            amount: adjAmount,
+            paidAmount: adjAmount,
+            direction: isAdd ? 'CREDIT' : 'DEBIT',
+            walletBalanceBefore: d.balanceBefore != null ? Number(d.balanceBefore) : null,
+            walletBalanceAfter: d.balanceAfter != null ? Number(d.balanceAfter) : null,
+            paymentChannel: `Adjust (${al.userName || 'Manual'})`,
+            reason: d.reason || 'ปรับปรุงยอดเงิน Wallet',
+            actorName: al.userName || 'Admin',
+            branchId: null,
+            referenceId: null,
+            approvalStatus: 'APPROVED',
+            items: [{ name: `ADJUST: ${d.reason || 'ปรับยอดเงิน Wallet'}`, quantity: 1 }],
+            rawLog: al,
+            source: 'activity_log'
+          });
+        }
+      } catch (e) {
+        console.error("Error parsing ActivityLog details in getCustomerWalletAdjustmentsAction:", e);
+      }
+    }
+
+    return results;
+  } catch (error: any) {
+    console.error("[getCustomerWalletAdjustmentsAction] Error:", error);
+    return [];
+  }
+}
+
 export async function getCustomerJobCountsAction(customerIds: string[]) {
   try {
     const validIds = customerIds.filter(Boolean);
