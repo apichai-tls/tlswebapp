@@ -75,7 +75,10 @@ export async function addCustomerAction(data: any) {
       }
       memberId = memberIdUpper;
     } else {
-      memberId = await getNextMemberIdAction(data.branchId);
+      // [AUTO_MEMBER_ID_DISABLED]: ระบบ Auto Member ID ถูกปิดชั่วคราวตามคำขอ (Hidden ไว้ ไม่ลบทิ้ง)
+      // เพื่อให้ User สามารถใส่เลขสมาชิกเองได้ หากไม่ได้ระบุจะบันทึกเป็น null
+      // memberId = await getNextMemberIdAction(data.branchId);
+      memberId = null;
     }
   }
 
@@ -109,9 +112,11 @@ export async function addCustomerAction(data: any) {
   while (attempts < maxAttempts) {
     attempts++;
     let currentMemberId = memberId;
+    /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
     if (isMember && !currentMemberId) {
       currentMemberId = await getNextMemberIdAction(data.branchId);
     }
+    */
 
     const resolvedStartDate = data.memberStartDate ? new Date(data.memberStartDate) : (data.isMember ? new Date() : null);
     let resolvedExpiryDate = data.memberExpiryDate ? new Date(data.memberExpiryDate) : null;
@@ -256,15 +261,22 @@ export async function updateCustomerAction(id: string, updates: any) {
             throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
           }
           data.memberId = memberIdUpper;
-        } else if (!currentCustomer.memberId) {
+        } else {
+          // If empty string passed, clear or keep as is
+          data.memberId = updates.memberId === "" ? null : currentCustomer.memberId;
+          /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
           const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
           data.memberId = await getNextMemberIdAction(effectiveBranchId);
-        } else {
-          data.memberId = currentCustomer.memberId;
+          */
         }
-      } else if (!currentCustomer.memberId) {
-        const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
-        data.memberId = await getNextMemberIdAction(effectiveBranchId);
+      } else {
+        data.memberId = currentCustomer.memberId;
+        /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
+        if (!currentCustomer.memberId) {
+          const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
+          data.memberId = await getNextMemberIdAction(effectiveBranchId);
+        }
+        */
       }
     }
   } else if (updates.tier === "member" || updates.tier === "vip") {
@@ -281,9 +293,16 @@ export async function updateCustomerAction(id: string, updates: any) {
         throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
       }
       data.memberId = memberIdUpper;
-    } else if (!currentCustomer.memberId) {
-      const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
-      data.memberId = await getNextMemberIdAction(effectiveBranchId);
+    } else if (updates.memberId === "") {
+      data.memberId = null;
+    } else {
+      data.memberId = currentCustomer.memberId;
+      /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
+      if (!currentCustomer.memberId) {
+        const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
+        data.memberId = await getNextMemberIdAction(effectiveBranchId);
+      }
+      */
     }
   } else if (updates.memberId !== undefined) {
     if (currentCustomer.isMember) {
@@ -357,6 +376,57 @@ export async function updateCustomerAction(id: string, updates: any) {
       }
     }
   });
+
+  // If room number was added or changed, sync it to active in-flight jobs for this customer
+  const cleanNewRoom = (data.roomNo || (data.secondaryAddress ? data.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
+  if (cleanNewRoom && (updates.roomNo !== undefined || updates.secondaryAddress !== undefined)) {
+    try {
+      const activeJobs = await prisma.job.findMany({
+        where: {
+          customerId: id,
+          status: { in: ['tba', 'pending', 'pickup', 'billing', 'delivery'] },
+        },
+        select: {
+          id: true,
+          pickupLocation: true,
+          dropoffLocation: true,
+        }
+      });
+
+      if (activeJobs.length > 0) {
+        const shops = await prisma.shopLocation.findMany({
+          select: { name: true, address: true }
+        });
+
+        for (const aj of activeJobs) {
+          let jobNeedsUpdate = false;
+          const jobDataUpdate: { pickupLocation?: string; dropoffLocation?: string } = {};
+
+          const isShopDropoff = shops.some(s => s.address === aj.dropoffLocation || s.name === aj.dropoffLocation) || (aj.dropoffLocation && aj.dropoffLocation.includes("POS Counter"));
+          if (!isShopDropoff && aj.dropoffLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.dropoffLocation) && !/\(Room\s*.*?\)/i.test(aj.dropoffLocation)) {
+            jobDataUpdate.dropoffLocation = `${aj.dropoffLocation} (Room ${cleanNewRoom})`;
+            jobNeedsUpdate = true;
+          }
+
+          const isShopPickup = shops.some(s => s.address === aj.pickupLocation || s.name === aj.pickupLocation) || (aj.pickupLocation && aj.pickupLocation.includes("POS Counter"));
+          if (!isShopPickup && aj.pickupLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.pickupLocation) && !/\(Room\s*.*?\)/i.test(aj.pickupLocation)) {
+            jobDataUpdate.pickupLocation = `${aj.pickupLocation} (Room ${cleanNewRoom})`;
+            jobNeedsUpdate = true;
+          }
+
+          if (jobNeedsUpdate) {
+            await prisma.job.update({
+              where: { id: aj.id },
+              data: jobDataUpdate,
+            });
+            console.log(`[Customer Room Update] Synced Room ${cleanNewRoom} to active Job ${aj.id}:`, jobDataUpdate);
+          }
+        }
+      }
+    } catch (jobSyncErr) {
+      console.error("[Customer Room Update] Failed to sync room to active jobs:", jobSyncErr);
+    }
+  }
 
   const changes: Record<string, { from: any, to: any } | any> = {};
   for (const key of Object.keys(data)) {
@@ -4365,6 +4435,19 @@ export async function recordJobPaymentAction(data: {
         notes: [...existingLogs, paymentLog],
       });
 
+      // Invalidate stale receipt images so auto-receipt-worker captures a fresh receipt with latest payment and wallet balance
+      let updatedBillImageUrl = job.billImageUrl;
+      if (job.billImageUrl) {
+        try {
+          const parsedBills = JSON.parse(job.billImageUrl);
+          const billsArr: string[] = Array.isArray(parsedBills) ? parsedBills : [parsedBills];
+          const filteredBills = billsArr.filter(
+            (url) => typeof url === "string" && !url.includes(`receipt-${job.id}`) && !url.includes("/receipt-")
+          );
+          updatedBillImageUrl = filteredBills.length > 0 ? JSON.stringify(filteredBills) : null;
+        } catch {}
+      }
+
       const updatedJob = await tx.job.update({
         where: { id: data.jobId },
         data: {
@@ -4374,6 +4457,7 @@ export async function recordJobPaymentAction(data: {
           shopPaidAt: isFullyPaid ? (job.shopPaidAt || new Date()) : job.shopPaidAt,
           paymentChannel: finalChannel,
           walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+          billImageUrl: updatedBillImageUrl,
           adminNotesJson: updatedAdminNotesJson,
         }
       });
@@ -4561,6 +4645,19 @@ export async function voidJobPaymentAction(data: {
         notes: [...existingLogs, voidLog],
       });
 
+      // Invalidate stale receipt images so auto-receipt-worker removes or captures a fresh receipt
+      let updatedBillImageUrl = job.billImageUrl;
+      if (job.billImageUrl) {
+        try {
+          const parsedBills = JSON.parse(job.billImageUrl);
+          const billsArr: string[] = Array.isArray(parsedBills) ? parsedBills : [parsedBills];
+          const filteredBills = billsArr.filter(
+            (url) => typeof url === "string" && !url.includes(`receipt-${job.id}`) && !url.includes("/receipt-")
+          );
+          updatedBillImageUrl = filteredBills.length > 0 ? JSON.stringify(filteredBills) : null;
+        } catch {}
+      }
+
       const updatedJob = await tx.job.update({
         where: { id: data.jobId },
         data: {
@@ -4570,6 +4667,7 @@ export async function voidJobPaymentAction(data: {
           shopPaidAt: isStillFullyPaid ? job.shopPaidAt : null,
           paymentChannel: finalChannel,
           walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+          billImageUrl: updatedBillImageUrl,
           adminNotesJson: updatedAdminNotesJson,
         }
       });

@@ -282,14 +282,19 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ? Boolean((job as any).isMember) 
     : Boolean(cust?.isMember || cust?.memberId || cust?.tier === "member" || cust?.tier === "vip");
   const memberId = (job as any).memberId || (job as any).customerMemberId || cust?.memberId || null;
-  const walletBalance = (job as any).walletBalanceAfter !== undefined && (job as any).walletBalanceAfter !== null
+  const preDeductWalletBalance = (job as any).walletBalance !== undefined && (job as any).walletBalance !== null
+    ? (job as any).walletBalance
+    : ((job as any).creditBalance !== undefined 
+      ? (job as any).creditBalance 
+      : (cust?.creditBalance || 0));
+
+  const postDeductWalletBalance = (job as any).walletBalanceAfter !== undefined && (job as any).walletBalanceAfter !== null
     ? (job as any).walletBalanceAfter
-    : ((job as any).walletBalance !== undefined 
-      ? (job as any).walletBalance 
-      : ((job as any).creditBalance !== undefined 
-        ? (job as any).creditBalance 
-        : (cust?.creditBalance || 0)));
+    : preDeductWalletBalance;
+
   const isJobPaid = Boolean((job as any).isShopPaid || rawJob.isShopPaid || job.isPaid || (totalPayments >= jobTotal && jobTotal > 0));
+  const isDraftJob = (job as any).isDraft !== undefined ? Boolean((job as any).isDraft) : !isJobPaid;
+  const walletBalance = isDraftJob ? preDeductWalletBalance : postDeductWalletBalance;
   const receiptDate = (isJobPaid && paymentTime && !isNaN(paymentTime.getTime()))
     ? paymentTime
     : (job.createdAt ? new Date(job.createdAt) : new Date());
@@ -333,7 +338,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     isPaid: isJobPaid,
     paymentChannel: job.paymentChannel,
     remark: job.remark,
-    isDraft: !isJobPaid,
+    isDraft: isDraftJob,
     vatType: jobVatType,
     vatRate: jobVatRate,
     vatAmount: jobVatAmount,
@@ -346,7 +351,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     isMember,
     memberId,
     walletBalance,
-    walletBalanceAfter: (job as any).walletBalanceAfter !== undefined ? (job as any).walletBalanceAfter : (walletBalance ?? null),
+    walletBalanceAfter: (job as any).walletBalanceAfter !== undefined ? (job as any).walletBalanceAfter : (isDraftJob ? null : (walletBalance ?? null)),
     proformaId: cleanBaseProforma || rawProformaId,  // base number only — display layers append -R{n}
     proformaRevision: proformaRevision,
     jobId: job.id,

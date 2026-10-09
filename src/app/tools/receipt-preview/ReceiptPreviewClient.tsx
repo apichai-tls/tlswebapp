@@ -71,13 +71,28 @@ export default function ReceiptPreviewClient({
     receiptData.proformaRevision = initialJob.proformaRevision || 2;
   }
   // Crucial: Member identity and true post-deduction Wallet Balance After
-  receiptData.isMember = Boolean(initialCustomer?.isMember || initialCustomer?.memberId);
+  receiptData.isMember = Boolean(initialCustomer?.isMember || initialCustomer?.memberId || initialJob.isMember || initialJob.memberId);
   receiptData.memberId = initialCustomer?.memberId || initialJob.memberId || "";
-  receiptData.walletBalanceAfter =
-    initialJob.walletBalanceAfter !== null && initialJob.walletBalanceAfter !== undefined
-      ? Number(initialJob.walletBalanceAfter)
-      : (receiptData.walletBalanceAfter ?? 0);
-  receiptData.walletBalance = receiptData.walletBalanceAfter;
+
+  const preDeductBalance =
+    initialJob.walletBalance !== undefined && initialJob.walletBalance !== null
+      ? Number(initialJob.walletBalance)
+      : (initialCustomer?.creditBalance !== undefined && initialCustomer?.creditBalance !== null
+        ? Number(initialCustomer.creditBalance)
+        : (receiptData.walletBalance ?? 0));
+
+  if (isDraft) {
+    // For proforma draft, walletBalance is current pre-deduction balance, walletBalanceAfter is undefined
+    receiptData.walletBalance = preDeductBalance;
+    receiptData.walletBalanceAfter = undefined;
+  } else {
+    // For paid receipt, walletBalanceAfter is the remaining balance
+    receiptData.walletBalanceAfter =
+      initialJob.walletBalanceAfter !== null && initialJob.walletBalanceAfter !== undefined
+        ? Number(initialJob.walletBalanceAfter)
+        : (receiptData.walletBalanceAfter ?? preDeductBalance);
+    receiptData.walletBalance = receiptData.walletBalanceAfter;
+  }
 
   const handleRegenerate = async () => {
     try {
@@ -159,9 +174,9 @@ export default function ReceiptPreviewClient({
             </h1>
             <p className="text-xs text-slate-400 mt-1">
               Customer: <span className="text-slate-200 font-semibold">{initialJob.customerName}</span> |
-              Wallet Balance After:{" "}
+              {isDraft ? " Wallet Balance: " : " Wallet Balance After: "}
               <span className="text-emerald-400 font-mono font-bold">
-                ฿{Number(receiptData.walletBalanceAfter).toLocaleString()}
+                ฿{Number(receiptData.walletBalanceAfter ?? receiptData.walletBalance ?? 0).toLocaleString()}
               </span>
             </p>
           </div>

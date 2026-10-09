@@ -150,6 +150,23 @@ export const refreshDb = async () => {
         parsed.jobs = parsed.jobs.map((serverJob: any) => {
           const memJob = memoryDb!.jobs.find(j => j.id === serverJob.id);
           if (memJob) {
+            // ✅ CRITICAL FIX: If server confirmed payment (e.g. from Beam Webhook), ALWAYS adopt paid state immediately!
+            if (serverJob.isPaid && !memJob.isPaid) {
+              lastUpdatedJobs.delete(serverJob.id);
+              memJob.isPaid = true;
+              memJob.isShopPaid = serverJob.isShopPaid ?? true;
+              memJob.paymentMethod = serverJob.paymentMethod ?? memJob.paymentMethod;
+              memJob.paymentChannel = serverJob.paymentChannel ?? memJob.paymentChannel;
+              memJob.csoPaidAt = serverJob.csoPaidAt;
+              memJob.shopPaidAt = serverJob.shopPaidAt;
+              memJob.totalAmount = serverJob.totalAmount ?? memJob.totalAmount;
+              memJob.adminNotesJson = serverJob.adminNotesJson ?? memJob.adminNotesJson;
+              if (memJob.status === 'billing' && serverJob.status && serverJob.status !== 'billing') {
+                memJob.status = serverJob.status;
+              }
+              return { ...memJob, ...serverJob, isPaid: true, isShopPaid: true };
+            }
+
             // Stale polling overwrite protection: Keep the local in-memory job if edited within 30s
             const lastUpdated = lastUpdatedJobs.get(serverJob.id);
             if (lastUpdated && (Date.now() - lastUpdated) < 30000) {

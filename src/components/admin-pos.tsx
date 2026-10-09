@@ -90,7 +90,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht, formatCustomerFullAddress } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -1856,8 +1856,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   useEffect(() => {
     if (preselectedCustomer) {
       setSelectedCustomer(preselectedCustomer);
-      if (preselectedCustomer.defaultAddress || preselectedCustomer.secondaryAddress) {
-        setDeliveryAddress(prev => prev || preselectedCustomer.defaultAddress || preselectedCustomer.secondaryAddress || "");
+      const fullAddr = formatCustomerFullAddress(preselectedCustomer);
+      if (fullAddr) {
+        setDeliveryAddress(prev => prev || fullAddr);
       }
     }
     if (preselectedCategory) {
@@ -2618,6 +2619,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               paymentChannel: isPaid ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
               remark: [remark, selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "", vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : ""].filter(Boolean).join(" | ") || undefined,
               isDraft: true,
+              isMember: Boolean(selectedCustomer?.isMember || selectedCustomer?.memberId),
+              memberId: selectedCustomer?.memberId || undefined,
+              walletBalance: selectedCustomer?.creditBalance || 0,
+              walletBalanceAfter: undefined,
               vatType,
               vatRate,
               vatAmount,
@@ -3047,13 +3052,19 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             ? finalJob.items
             : (finalJob.itemsJson ? JSON.parse(finalJob.itemsJson) : cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit, serviceId: item.id })));
 
+          // Calculate pre-deduction wallet balance for proforma invoice
+          const preDeductBalance = (finalJob.walletBalanceAfter != null
+            ? Number(finalJob.walletBalanceAfter)
+            : (selectedCustomer?.creditBalance || 0)) + (finalCreditAlloc > 0 ? finalCreditAlloc : 0);
+
           const proformaCapData: any = {
             ...formatJobToReceiptData({
               ...finalJob,
               items: resolvedItems,
               proformaNumber: targetProformaNum,
               proformaRevision: effectiveRev,
-              walletBalanceAfter: finalJob.walletBalanceAfter,
+              walletBalanceAfter: undefined,
+              isDraft: true,
             } as any),
             items: resolvedItems,
             isDraft: true,
@@ -3061,7 +3072,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             proformaId: cleanBaseProforma,
             jobId: targetJobId,
             autoCapture: false,
-            walletBalance: finalJob.walletBalanceAfter != null ? finalJob.walletBalanceAfter : undefined,
+            walletBalance: preDeductBalance,
+            walletBalanceAfter: undefined,
           };
 
           Promise.resolve().then(async () => {
@@ -4114,7 +4126,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                               className="w-full text-left px-4 py-2 hover:bg-muted text-xs font-semibold text-foreground flex items-center justify-between transition-colors cursor-pointer"
                               onClick={async () => {
                                 setSelectedCustomer(c);
-                                const targetAddr = c.defaultAddress || c.secondaryAddress || deliveryAddress || "";
+                                const targetAddr = formatCustomerFullAddress(c) || deliveryAddress || "";
                                 if (!deliveryAddress && targetAddr) {
                                   setDeliveryAddress(targetAddr);
                                 }
@@ -4570,7 +4582,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       checked={deliveryServiceType === "delivery_only"}
                       onChange={async (e) => {
                         if (e.target.checked) {
-                          const targetAddr = deliveryAddress || selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress || "";
+                          const targetAddr = deliveryAddress || formatCustomerFullAddress(selectedCustomer) || "";
                           if (!deliveryAddress && targetAddr) {
                             setDeliveryAddress(targetAddr);
                           }
@@ -4596,7 +4608,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       checked={deliveryServiceType === "both"}
                       onChange={async (e) => {
                         if (e.target.checked) {
-                          const targetAddr = deliveryAddress || selectedCustomer?.defaultAddress || selectedCustomer?.secondaryAddress || "";
+                          const targetAddr = deliveryAddress || formatCustomerFullAddress(selectedCustomer) || "";
                           if (!deliveryAddress && targetAddr) {
                             setDeliveryAddress(targetAddr);
                           }
@@ -5734,8 +5746,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         customer={null}
         onSaved={(newCustomer) => {
           setSelectedCustomer(newCustomer);
-          if (!deliveryAddress && (newCustomer.defaultAddress || newCustomer.secondaryAddress)) {
-            setDeliveryAddress(newCustomer.defaultAddress || newCustomer.secondaryAddress || "");
+          if (!deliveryAddress) {
+            const fullAddr = formatCustomerFullAddress(newCustomer);
+            if (fullAddr) setDeliveryAddress(fullAddr);
           }
           setIsAddCustomerOpen(false);
           toast.success(

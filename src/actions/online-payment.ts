@@ -1,6 +1,8 @@
 'use server';
 
 import { prisma } from '@/lib/prisma';
+import { invalidateDbCache } from '@/lib/db-cache';
+import { processTopUpAction } from '@/actions/db';
 import {
   createBeamPaymentLink,
   getBeamPaymentLink,
@@ -71,10 +73,17 @@ async function markJobAsPaidInDb(params: {
       totalAmount: paidAmount,
       csoPaidAt: now,
       shopPaidAt: now,
+      status: job.status === 'billing' ? 'pending' : job.status,
       subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus,
       adminNotesJson: JSON.stringify(adminNotesObj),
     },
   });
+
+  try {
+    invalidateDbCache();
+  } catch (err) {
+    console.warn('[Online Payment] Failed to invalidate DB cache:', err);
+  }
 
   return updated;
 }
@@ -324,25 +333,40 @@ export async function syncJobBeamPaymentStatusAction(jobId: string): Promise<{
   };
 }
 
-/**
- * Create a Beam Payment Link and QR Code for a Member Top-Up
- */
-export async function createTopUpOnlinePaymentAction(params: {
+export interface CreateTopUpOnlinePaymentParams {
   amount: number;
   customerId: string;
   customerName?: string;
-}): Promise<CreateOnlinePaymentResult> {
+  bonusAmount?: number;
+  totalCredit?: number;
+  packageName?: string;
+  branchId?: string | null;
+  actorId?: string | null;
+  actorName?: string | null;
+  priceListId?: string | null;
+}
+
+/**
+ * Create a Beam Payment Link and QR Code for a Member Top-Up
+ * Stores a persistent pending intent in prisma.transaction (type: 'BEAM_TOPUP_PENDING')
+ * so that webhook or background polling can fulfill the wallet credit automatically anytime.
+ */
+export async function createTopUpOnlinePaymentAction(
+  params: CreateTopUpOnlinePaymentParams
+): Promise<CreateOnlinePaymentResult> {
   try {
     const amount = Number(params.amount);
     if (!amount || amount <= 0) {
       return { success: false, error: 'ยอด Top-Up ต้องมากกว่า 0 บาท' };
     }
 
-    const referenceId = `TU-${Date.now().toString().slice(-6)}`;
+    const referenceId = `TU-${params.customerId.slice(-4)}-${Date.now().toString(36).toUpperCase()}`;
+    const description = `Top-Up (${params.packageName || 'Member Wallet'}) - ${params.customerName || params.customerId}`;
+
     const result = await createBeamPaymentLink({
       referenceId,
       amount,
-      description: `Member Wallet Top-Up (${params.customerName || params.customerId})`,
+      description,
     });
 
     if (!result.success || !result.data) {
@@ -352,12 +376,45 @@ export async function createTopUpOnlinePaymentAction(params: {
       };
     }
 
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(result.data.url)}`;
+    const paymentLinkId = result.data.id;
+    const paymentUrl = result.data.url;
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(paymentUrl)}`;
+
+    // Persist pending intent in DB so webhook can fulfill even if user closes the modal
+    const metaPayload = {
+      paymentLinkId,
+      paymentUrl,
+      paidAmount: amount,
+      bonusAmount: params.bonusAmount || 0,
+      totalCredit: params.totalCredit || amount,
+      packageName: params.packageName || 'TOPUP',
+      branchId: params.branchId || null,
+      actorId: params.actorId || null,
+      actorName: params.actorName || 'Staff',
+      priceListId: params.priceListId || null,
+    };
+
+    try {
+      await prisma.transaction.create({
+        data: {
+          id: referenceId,
+          memberId: params.customerId,
+          amount,
+          type: 'BEAM_TOPUP_PENDING',
+          description: JSON.stringify(metaPayload),
+          status: 'PENDING',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+    } catch (dbErr) {
+      console.error('[Beam TopUp] Failed to save pending transaction intent:', dbErr);
+    }
 
     return {
       success: true,
-      paymentLinkId: result.data.id,
-      paymentUrl: result.data.url,
+      paymentLinkId,
+      paymentUrl,
       qrCodeUrl,
       amount,
     };
@@ -372,19 +429,99 @@ export async function createTopUpOnlinePaymentAction(params: {
 
 /**
  * Check payment status of a Top-up Payment Link
+ * Checks DB status first (for instant fulfillment if webhook arrived),
+ * or queries Beam API and fulfills immediately if paid.
  */
-export async function checkTopUpPaymentStatusAction(paymentLinkId: string): Promise<CheckPaymentStatusResult> {
+export async function checkTopUpPaymentStatusAction(
+  paymentLinkId: string
+): Promise<CheckPaymentStatusResult> {
   try {
+    // 1. Check if already marked as COMPLETED in DB (fulfilled by Webhook)
+    const completedIntent = await prisma.transaction.findFirst({
+      where: {
+        type: 'BEAM_TOPUP_PENDING',
+        status: 'COMPLETED',
+        description: { contains: paymentLinkId },
+      },
+    });
+
+    if (completedIntent) {
+      return {
+        success: true,
+        isPaid: true,
+        paidAmount: completedIntent.amount,
+        paymentChannel: 'BEAM Gateway',
+      };
+    }
+
+    // 2. Query Beam API directly
     const linkCheck = await getBeamPaymentLink(paymentLinkId);
     if (!linkCheck.success || !linkCheck.data) {
       return { success: false, isPaid: false, error: linkCheck.error };
     }
 
     const isPaid = linkCheck.data.status === 'PAID';
+    if (!isPaid) {
+      return {
+        success: true,
+        isPaid: false,
+      };
+    }
+
+    const paidAmount = linkCheck.data.amount ? linkCheck.data.amount / 100 : undefined;
+
+    // 3. Fulfill pending top-up in DB if still pending
+    const pendingIntent = await prisma.transaction.findFirst({
+      where: {
+        type: 'BEAM_TOPUP_PENDING',
+        status: 'PENDING',
+        description: { contains: paymentLinkId },
+      },
+    });
+
+    if (pendingIntent) {
+      let meta: any = {};
+      try {
+        meta = JSON.parse(pendingIntent.description);
+      } catch {}
+
+      const receiptNumber = `TOP-${Date.now().toString().slice(-6)}`;
+      const finalPaidAmount = meta.paidAmount || paidAmount || pendingIntent.amount;
+      const finalBonus = meta.bonusAmount || 0;
+      const finalTotalCredit = meta.totalCredit || (finalPaidAmount + finalBonus);
+
+      await processTopUpAction({
+        receiptNumber,
+        customerId: pendingIntent.memberId,
+        paidAmount: finalPaidAmount,
+        bonusAmount: finalBonus,
+        totalCredit: finalTotalCredit,
+        paymentChannel: 'BEAM Gateway',
+        packageName: meta.packageName || 'TOPUP',
+        actorId: meta.actorId || null,
+        actorName: meta.actorName || 'Beam Poller',
+        branchId: meta.branchId || null,
+        priceListId: meta.priceListId || null,
+        paymentLinkId,
+      });
+
+      await prisma.transaction.update({
+        where: { id: pendingIntent.id },
+        data: {
+          status: 'COMPLETED',
+          updatedAt: new Date(),
+        },
+      });
+
+      try {
+        invalidateDbCache();
+      } catch {}
+    }
+
     return {
       success: true,
-      isPaid,
-      paidAmount: linkCheck.data.amount ? linkCheck.data.amount / 100 : undefined,
+      isPaid: true,
+      paidAmount,
       paymentChannel: 'BEAM Gateway',
     };
   } catch (err: any) {

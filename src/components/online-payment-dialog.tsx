@@ -65,6 +65,7 @@ export function OnlinePaymentDialog({
   const [isCopied, setIsCopied] = useState(false);
   const [isPaidSuccess, setIsPaidSuccess] = useState(false);
   const [paidDetails, setPaidDetails] = useState<{ amount: number; channel: string } | null>(null);
+  const [isManualChecking, setIsManualChecking] = useState(false);
   
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -77,6 +78,7 @@ export function OnlinePaymentDialog({
       setError(null);
       setIsPaidSuccess(false);
       setPaidDetails(null);
+      setIsManualChecking(false);
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       return;
     }
@@ -161,12 +163,43 @@ export function OnlinePaymentDialog({
       }
     };
 
-    pollTimerRef.current = setInterval(checkStatus, 3500);
+    pollTimerRef.current = setInterval(checkStatus, 3000);
 
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
   }, [isOpen, job?.id, isPaidSuccess, paymentData, amountToPay, onPaymentSuccess]);
+
+  const handleManualCheck = async () => {
+    if (!job || isPaidSuccess || isManualChecking) return;
+    setIsManualChecking(true);
+    try {
+      const res = await checkJobOnlinePaymentStatusAction(job.id);
+      if (res.success && res.isPaid) {
+        setIsPaidSuccess(true);
+        const details = {
+          amount: res.paidAmount || amountToPay,
+          channel: res.paymentChannel || "Beam Checkout",
+        };
+        setPaidDetails(details);
+        toast.success("🎉 ได้รับยอดชำระเงินออนไลน์เรียบร้อยแล้ว!");
+        if (onPaymentSuccess) {
+          onPaymentSuccess({
+            jobId: job.id,
+            amount: details.amount,
+            channel: details.channel,
+          });
+        }
+        if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      } else {
+        toast.info("ยังไม่พบยอดชำระเงินจาก Beam หรือลูกค้ากำลังดำเนินการ");
+      }
+    } catch (e: any) {
+      toast.error(e.message || "เกิดข้อผิดพลาดในการตรวจสอบสถานะ");
+    } finally {
+      setIsManualChecking(false);
+    }
+  };
 
   const handleCopyLink = () => {
     if (!paymentData?.paymentUrl) return;
@@ -351,10 +384,22 @@ export function OnlinePaymentDialog({
                 </div>
               </div>
 
-              {/* Status Polling Live Indicator */}
-              <div className="flex items-center justify-center gap-2 py-1.5 px-3 rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/50 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
-                <RefreshCw size={12} className="animate-spin text-indigo-600" />
-                <span>กำลังรอการชำระเงินจากลูกค้า (ตรวจจับอัตโนมัติ...)</span>
+              {/* Status Polling Live Indicator with Manual Check Button */}
+              <div className="flex items-center justify-between gap-2 py-1.5 px-3 rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/50">
+                <div className="flex items-center gap-2 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                  <RefreshCw size={12} className={isManualChecking ? "animate-spin text-indigo-600" : "animate-spin text-indigo-600"} />
+                  <span>กำลังรอชำระเงิน (ตรวจจับอัตโนมัติ)</span>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={isManualChecking}
+                  onClick={handleManualCheck}
+                  className="h-6 text-[10.5px] px-2 font-bold text-indigo-700 hover:text-indigo-900 hover:bg-indigo-100/60 dark:text-indigo-300 dark:hover:bg-indigo-900/50 rounded-md cursor-pointer"
+                >
+                  {isManualChecking ? "กำลังตรวจสอบ..." : "ตรวจสอบทันที"}
+                </Button>
               </div>
 
               {/* Action Buttons: Copy Link & Open in Browser */}

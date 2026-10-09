@@ -117,12 +117,21 @@ export function verifyBeamWebhookSignature(
   if (!signatureHeader || !secret) return false
 
   try {
-    // Strip prefixes like 'sha256=' or 'v1=' and trim whitespace
-    const cleanHeader = signatureHeader.replace(/^sha256=/i, '').replace(/^v1=/i, '').trim()
+    const cleanSecret = secret.trim().replace(/^["']|["']$/g, '')
+    let cleanHeader = signatureHeader.trim()
+
+    // Handle v1=... or sha256=... (including Stripe/Beam comma-separated t=...,v1=...)
+    if (cleanHeader.includes('v1=')) {
+      const match = cleanHeader.match(/v1=([^,;]+)/)
+      if (match) cleanHeader = match[1].trim()
+    } else if (cleanHeader.includes('sha256=')) {
+      const match = cleanHeader.match(/sha256=([^,;]+)/)
+      if (match) cleanHeader = match[1].trim()
+    }
 
     // 1. Primary: Official Beam method (base64-decoded key buffer -> base64 digest)
     try {
-      const keyBuffer = Buffer.from(secret, 'base64')
+      const keyBuffer = Buffer.from(cleanSecret, 'base64')
       const expectedBase64 = crypto
         .createHmac('sha256', keyBuffer)
         .update(rawBody)
@@ -134,7 +143,7 @@ export function verifyBeamWebhookSignature(
         return true
       }
 
-      // Fallback 1b: base64-decoded key buffer -> hex digest
+      // 1b: base64-decoded key buffer -> hex digest
       const expectedHex = crypto
         .createHmac('sha256', keyBuffer)
         .update(rawBody)
@@ -149,7 +158,7 @@ export function verifyBeamWebhookSignature(
     // 2. Secondary: Raw secret string -> base64 digest
     try {
       const rawSecretBase64 = crypto
-        .createHmac('sha256', secret)
+        .createHmac('sha256', cleanSecret)
         .update(rawBody)
         .digest('base64')
 
@@ -159,9 +168,9 @@ export function verifyBeamWebhookSignature(
         return true
       }
 
-      // Secondary 2b: Raw secret string -> hex digest
+      // 2b: Raw secret string -> hex digest
       const rawSecretHex = crypto
-        .createHmac('sha256', secret)
+        .createHmac('sha256', cleanSecret)
         .update(rawBody)
         .digest('hex')
 

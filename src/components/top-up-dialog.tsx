@@ -274,12 +274,12 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      toast.error("กรุณาเลือกไฟล์รูปภาพเท่านั้น");
+      toast.error("Please select an image file only.");
       return;
     }
 
     if (file.size > 10 * 1024 * 1024) {
-      toast.error("ขนาดไฟล์ต้องไม่เกิน 10MB");
+      toast.error("File size must not exceed 10MB.");
       return;
     }
 
@@ -341,10 +341,10 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       setSlipUploadProgress(100);
       setSlipImageUrl(finalUrl);
-      toast.success("แนบหลักฐานการชำระเงินเรียบร้อยแล้ว");
+      toast.success("Payment proof attached successfully.");
     } catch (err: any) {
       console.error("Slip upload error:", err);
-      toast.error(`อัปโหลดรูปไม่สำเร็จ: ${err?.message || "Unknown error"}`);
+      toast.error(`Failed to upload image: ${err?.message || "Unknown error"}`);
     } finally {
       setIsUploadingSlip(false);
       setSlipUploadProgress(0);
@@ -426,19 +426,33 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
     if (!selectedCustomer || cartTotal <= 0) return;
     setIsCreatingBeam(true);
     try {
+      let memberPriceListId: string | undefined = undefined;
+      if (!selectedCustomer.isMember) {
+        const memberList = priceLists.find(p => p.name.toLowerCase().includes("member"));
+        if (memberList) memberPriceListId = memberList.id;
+      }
+      const packageName = cart.map(i => `${i.service.name} x${i.quantity}`).join(", ") || "Member Top-Up";
+
       const res = await createTopUpOnlinePaymentAction({
         amount: cartTotal,
         customerId: selectedCustomer.id,
         customerName: selectedCustomer.name,
+        bonusAmount: bonusTotal,
+        totalCredit: totalCreditReceived,
+        packageName,
+        branchId: selectedCustomer.branchId || user?.branchId || null,
+        actorId: user?.id || null,
+        actorName: user?.name || user?.email || "Staff",
+        priceListId: memberPriceListId,
       });
       if (res.success && res.paymentLinkId) {
         setBeamPaymentData(res);
-        toast.success("สร้างลิงก์และ QR Code ชำระเงิน Beam สำเร็จ");
+        toast.success("Beam payment link & QR code created successfully.");
       } else {
-        toast.error(res.error || "สร้างลิงก์ Beam ไม่สำเร็จ");
+        toast.error(res.error || "Failed to create Beam payment link.");
       }
     } catch (err: any) {
-      toast.error(err.message || "เกิดข้อผิดพลาดในการเชื่อมต่อ Beam");
+      toast.error(err.message || "Error connecting to Beam Gateway.");
     } finally {
       setIsCreatingBeam(false);
     }
@@ -459,13 +473,13 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         }
         const paidLinkId = beamPaymentData.paymentLinkId;
         setBeamPaymentData(null);
-        toast.success(`🎉 ชำระเงินผ่าน Beam สำเร็จแล้ว (฿${formatCurrency(res.paidAmount || cartTotal)})`);
+        toast.success(`🎉 Beam payment received successfully! (฿${formatCurrency(res.paidAmount || cartTotal)})`);
         await handlePay({ paymentLinkId: paidLinkId });
       } else if (showToast) {
-        toast.info("ยังไม่พบยอดชำระเงิน หรือลูกค้ารอดำเนินการ");
+        toast.info("Payment not detected yet, or pending customer action.");
       }
     } catch (err: any) {
-      if (showToast) toast.error("ตรวจสอบสถานะไม่สำเร็จ: " + err.message);
+      if (showToast) toast.error("Failed to check status: " + err.message);
     } finally {
       setIsCheckingBeamStatus(false);
     }
@@ -616,8 +630,8 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
 
       toast.success(
         bonusTotal > 0
-          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ${formatBaht(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
-          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ${formatBaht(finalBalance)} (ใช้ได้ถึง ${format(finalExpiryDate, "dd/MM/yyyy")})`
+          ? `Top Up ฿${formatCurrency(cartTotal)} (+฿${formatCurrency(bonusTotal)} Bonus) — Wallet: ${formatBaht(finalBalance)} (Valid until ${format(finalExpiryDate, "dd/MM/yyyy")})`
+          : `Top Up ฿${formatCurrency(cartTotal)} — Wallet: ${formatBaht(finalBalance)} (Valid until ${format(finalExpiryDate, "dd/MM/yyyy")})`
       );
 
       setReceiptData(rdata);
@@ -770,13 +784,13 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                       <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-black text-amber-950 uppercase tracking-wide">
-                          ⚠️ แจ้งเตือน: ลูกค้ารายนี้เพิ่งเติมเงินไปแล้วในวันนี้!
+                          ⚠️ Warning: This customer has already topped up today!
                         </p>
                         <p className="text-xs text-amber-900 mt-1 font-medium leading-relaxed">
-                          ทำรายการเมื่อเวลา <strong className="font-bold text-amber-950">{format(new Date(todayTopUpInfo.createdAt), "HH:mm น.")}</strong> ยอดเงิน <strong className="font-bold text-amber-950">฿{Number(todayTopUpInfo.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> {todayTopUpInfo.bonusAmount > 0 ? `(+฿${Number(todayTopUpInfo.bonusAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} โบนัส)` : ""} (โดย {todayTopUpInfo.createdBy || "Staff"})
+                          Processed at <strong className="font-bold text-amber-950">{format(new Date(todayTopUpInfo.createdAt), "HH:mm")}</strong> for <strong className="font-bold text-amber-950">฿{Number(todayTopUpInfo.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> {todayTopUpInfo.bonusAmount > 0 ? `(+฿${Number(todayTopUpInfo.bonusAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} Bonus)` : ""} (by {todayTopUpInfo.createdBy || "Staff"})
                         </p>
                         <p className="text-[11px] text-amber-800/90 mt-0.5">
-                          กรุณาตรวจสอบสลิป/หลักฐาน เพื่อป้องกันการทำรายการซ้ำซ้อน
+                          Please verify payment slip/proof to prevent duplicate entries.
                         </p>
                       </div>
                     </div>
@@ -790,7 +804,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                           className="w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
                         />
                         <span className="text-xs font-bold text-amber-950">
-                          ยืนยันว่าลูกค้าต้องการเติมเงินเพิ่มอีกครั้งในวันนี้จริง
+                          Confirm customer genuinely requests another top-up today.
                         </span>
                       </label>
                     </div>
@@ -896,7 +910,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                           <span className="font-bold text-slate-800">฿{formatCurrency(cartTotal)}</span>
                           {vatAmount > 0 && (
                             <span className="block text-[10px] text-slate-400 font-medium">
-                              (รวม VAT {vatRate}%: ฿{formatCurrency(vatAmount)})
+                              (Incl. {vatRate}% VAT: ฿{formatCurrency(vatAmount)})
                             </span>
                           )}
                         </div>
@@ -927,13 +941,13 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                       <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-black text-amber-950 uppercase tracking-wide">
-                          ⚠️ แจ้งเตือน: ลูกค้ารายนี้เพิ่งเติมเงินไปแล้วในวันนี้!
+                          ⚠️ Warning: This customer has already topped up today!
                         </p>
                         <p className="text-xs text-amber-900 mt-1 font-medium leading-relaxed">
-                          ทำรายการเมื่อเวลา <strong className="font-bold text-amber-950">{format(new Date(todayTopUpInfo.createdAt), "HH:mm น.")}</strong> ยอดเงิน <strong className="font-bold text-amber-950">฿{Number(todayTopUpInfo.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> {todayTopUpInfo.bonusAmount > 0 ? `(+฿${Number(todayTopUpInfo.bonusAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} โบนัส)` : ""} (โดย {todayTopUpInfo.createdBy || "Staff"})
+                          Processed at <strong className="font-bold text-amber-950">{format(new Date(todayTopUpInfo.createdAt), "HH:mm")}</strong> for <strong className="font-bold text-amber-950">฿{Number(todayTopUpInfo.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> {todayTopUpInfo.bonusAmount > 0 ? `(+฿${Number(todayTopUpInfo.bonusAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} Bonus)` : ""} (by {todayTopUpInfo.createdBy || "Staff"})
                         </p>
                         <p className="text-[11px] text-amber-800/90 mt-0.5">
-                          กรุณาตรวจสอบสลิป/หลักฐาน เพื่อป้องกันการทำรายการซ้ำซ้อน
+                          Please verify payment slip/proof to prevent duplicate entries.
                         </p>
                       </div>
                     </div>
@@ -947,7 +961,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                           className="w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
                         />
                         <span className="text-xs font-bold text-amber-950">
-                          ยืนยันว่าลูกค้าต้องการเติมเงินเพิ่มอีกครั้งในวันนี้จริง
+                          Confirm customer genuinely requests another top-up today.
                         </span>
                       </label>
                     </div>
@@ -974,7 +988,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                         <span className="text-base font-bold text-slate-900">฿{formatCurrency(cartTotal)}</span>
                         {vatAmount > 0 && (
                           <p className="text-[10px] text-slate-500 font-medium">
-                            (รวม VAT {vatRate}%: ฿{formatCurrency(vatAmount)})
+                            (Incl. {vatRate}% VAT: ฿{formatCurrency(vatAmount)})
                           </p>
                         )}
                       </div>
@@ -1037,7 +1051,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                         </div>
                         <div>
                           <h4 className="text-xs font-bold text-indigo-950">Beam Checkout Gateway</h4>
-                          <p className="text-[10px] text-indigo-700/80">รองรับ PromptPay QR, บัตรเครดิต/เดบิต, และ Mobile Banking</p>
+                          <p className="text-[10px] text-indigo-700/80">Supports PromptPay QR, Credit/Debit Cards, and Mobile Banking</p>
                         </div>
                       </div>
                       <Badge className="bg-indigo-100 text-indigo-800 border-indigo-200 text-[10px] font-bold">
@@ -1055,12 +1069,12 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                         {isCreatingBeam ? (
                           <>
                             <Loader2 size={13} className="animate-spin" />
-                            <span>กำลังสร้างลิงก์ Beam...</span>
+                            <span>Generating Beam link...</span>
                           </>
                         ) : (
                           <>
                             <QrCode size={14} />
-                            <span>สร้าง QR Code / ลิงก์ชำระเงิน Beam (฿{formatCurrency(cartTotal)})</span>
+                            <span>Generate Beam QR Code / Payment Link (฿{formatCurrency(cartTotal)})</span>
                           </>
                         )}
                       </Button>
@@ -1090,11 +1104,11 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                                     size="sm"
                                     onClick={() => {
                                       navigator.clipboard.writeText(beamPaymentData.paymentUrl!);
-                                      toast.success("คัดลอกลิงก์ชำระเงินแล้ว");
+                                      toast.success("Payment link copied to clipboard");
                                     }}
                                     className="h-7 text-[11px] font-bold gap-1 rounded-lg border-indigo-200 text-indigo-700 hover:bg-indigo-50 cursor-pointer"
                                   >
-                                    <Copy size={11} /> คัดลอกลิงก์
+                                    <Copy size={11} /> Copy Link
                                   </Button>
                                   <a
                                     href={beamPaymentData.paymentUrl}
@@ -1102,7 +1116,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                                     rel="noreferrer"
                                     className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 text-[11px] font-semibold cursor-pointer"
                                   >
-                                    <ExternalLink size={11} /> เปิดหน้าชำระเงิน
+                                    <ExternalLink size={11} /> Open Payment Page
                                   </a>
                                 </>
                               )}
@@ -1117,10 +1131,14 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                                 className="h-6 text-[10px] text-indigo-600 hover:bg-indigo-50 p-1 px-2 font-bold cursor-pointer"
                               >
                                 <RefreshCw size={10} className={isCheckingBeamStatus ? "animate-spin mr-1" : "mr-1"} />
-                                ตรวจสอบสถานะการชำระเงิน
+                                Check Payment Status
                               </Button>
                             </div>
                           </div>
+                        </div>
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-indigo-100/70 border border-indigo-200/80 text-[11px] text-indigo-900 font-medium">
+                          <CheckCircle2 size={14} className="text-indigo-600 shrink-0" />
+                          <span>Link created successfully! You can send it to the customer and close this window. The wallet will auto-credit upon payment.</span>
                         </div>
                       </div>
                     )}
@@ -1132,7 +1150,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                   <div className="flex items-center justify-between">
                     <Label className="text-xs font-semibold text-slate-600 uppercase tracking-wide flex items-center gap-1.5">
                       <UploadCloud size={13} className="text-slate-400" />
-                      Payment Slip / หลักฐานการจ่ายเงิน
+                      Payment Slip / Proof of Payment
                     </Label>
                     {slipImageUrl && (
                       <span className="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
@@ -1148,7 +1166,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-bold text-slate-800 truncate">Payment Slip Attached</p>
-                        <p className="text-[10px] text-slate-500 truncate">แนบหลักฐานการชำระเงินเรียบร้อยแล้ว</p>
+                        <p className="text-[10px] text-slate-500 truncate">Payment proof attached successfully</p>
                       </div>
                       <Button
                         type="button"
@@ -1189,17 +1207,17 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                             ? "border-slate-300 bg-slate-50 text-slate-400 cursor-not-allowed"
                             : "border-slate-300 bg-slate-50/60 hover:bg-emerald-50/60 hover:border-emerald-400 text-slate-600 hover:text-emerald-700 shadow-2xs"
                         }`}
-                        title="คลิกเพื่อเลือกไฟล์ หรือกด Ctrl+V เพื่อวางรูปภาพจาก Clipboard"
+                        title="Click to select file or press Ctrl+V to paste image from clipboard"
                       >
                         {isUploadingSlip ? (
                           <div className="flex items-center gap-2">
                             <Loader2 size={14} className="animate-spin text-emerald-600" />
-                            <span>กำลังอัปโหลดสลิป ({slipUploadProgress}%)…</span>
+                            <span>Uploading slip ({slipUploadProgress}%)…</span>
                           </div>
                         ) : (
                           <div className="flex items-center gap-2 text-center flex-wrap justify-center">
                             <ImageIcon size={15} className="text-slate-400" />
-                            <span>คลิกเพื่อแนบสลิป หรือกด <kbd className="px-1.5 py-0.5 text-[10px] font-mono bg-white border border-slate-300 rounded shadow-2xs text-slate-700">Ctrl+V</kbd> เพื่อวางรูป</span>
+                            <span>Click to attach slip or press <kbd className="px-1.5 py-0.5 text-[10px] font-mono bg-white border border-slate-300 rounded shadow-2xs text-slate-700">Ctrl+V</kbd> to paste image</span>
                           </div>
                         )}
                       </label>
@@ -1237,24 +1255,56 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
             {step === "payment" && (
               <>
                 <Button variant="outline" className="h-9 text-sm px-4" onClick={() => setStep("package")}>Back</Button>
-                <Button
-                  className={`flex-1 h-9 text-sm text-white font-bold transition-all shadow-sm ${
-                    todayTopUpInfo && !confirmDuplicateTopUp
-                      ? "bg-amber-600 hover:bg-amber-700 opacity-90 cursor-not-allowed"
-                      : "bg-emerald-500 hover:bg-emerald-600"
-                  }`}
-                  disabled={isProcessing || isHandlingPayRef.current || isUploadingSlip || !paymentChannel || (Boolean(todayTopUpInfo) && !confirmDuplicateTopUp)}
-                  onClick={() => handlePay()}
-                  title={todayTopUpInfo && !confirmDuplicateTopUp ? "กรุณาติ๊กยืนยันการเติมเงินซ้ำในวันนี้" : undefined}
-                >
-                  {isProcessing
-                    ? "Processing…"
-                    : isUploadingSlip
-                      ? "Uploading Slip…"
-                      : todayTopUpInfo && !confirmDuplicateTopUp
-                        ? "กรุณาติ๊กยืนยันการเติมเงินซ้ำ"
-                        : `Confirm & Pay ฿${formatCurrency(cartTotal)}`}
-                </Button>
+                {(paymentChannel === "BEAM Gateway" || paymentChannel === "Gateway") ? (
+                  !beamPaymentData ? (
+                    <Button
+                      type="button"
+                      disabled={isCreatingBeam || cartTotal <= 0}
+                      onClick={handleCreateBeamPayment}
+                      className="flex-1 h-9 text-sm bg-indigo-600 hover:bg-indigo-700 text-white font-bold gap-1.5 cursor-pointer shadow-sm"
+                    >
+                      {isCreatingBeam ? (
+                        <>
+                          <Loader2 size={13} className="animate-spin" />
+                          <span>Generating Beam link...</span>
+                        </>
+                      ) : (
+                        <>
+                          <QrCode size={14} />
+                          <span>Generate Beam QR Code / Link (฿{formatCurrency(cartTotal)})</span>
+                        </>
+                      )}
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={onClose}
+                      className="flex-1 h-9 text-sm border-indigo-300 text-indigo-700 hover:bg-indigo-50 font-bold cursor-pointer"
+                    >
+                      Close Window (Wallet auto-credits upon payment)
+                    </Button>
+                  )
+                ) : (
+                  <Button
+                    className={`flex-1 h-9 text-sm text-white font-bold transition-all shadow-sm ${
+                      todayTopUpInfo && !confirmDuplicateTopUp
+                        ? "bg-amber-600 hover:bg-amber-700 opacity-90 cursor-not-allowed"
+                        : "bg-emerald-500 hover:bg-emerald-600"
+                    }`}
+                    disabled={isProcessing || isHandlingPayRef.current || isUploadingSlip || !paymentChannel || (Boolean(todayTopUpInfo) && !confirmDuplicateTopUp)}
+                    onClick={() => handlePay()}
+                    title={todayTopUpInfo && !confirmDuplicateTopUp ? "Please confirm duplicate top-up for today" : undefined}
+                  >
+                    {isProcessing
+                      ? "Processing…"
+                      : isUploadingSlip
+                        ? "Uploading Slip…"
+                        : todayTopUpInfo && !confirmDuplicateTopUp
+                          ? "Please Confirm Duplicate"
+                          : `Confirm & Pay ฿${formatCurrency(cartTotal)}`}
+                  </Button>
+                )}
               </>
             )}
           </div>

@@ -621,6 +621,65 @@ export function resolveCustomerPhones(params: {
 }
 
 /**
+ * Safely appends customer's room number to a location string if the location is not a shop
+ * and does not already contain room information.
+ */
+export function formatLocationWithRoom(
+  location: string | null | undefined,
+  customer?: { roomNo?: string | null; secondaryAddress?: string | null } | null,
+  shopLocations?: Array<{ address?: string | null; name?: string | null }>
+): string {
+  if (!location || !location.trim() || location === "-") return location || "-";
+  const loc = location.trim();
+
+  // If this is a shop / POS counter location, do not append customer room
+  if (
+    loc.includes("POS Counter") ||
+    shopLocations?.some(s => (s.address && s.address.trim() === loc) || (s.name && s.name.trim() === loc))
+  ) {
+    return loc;
+  }
+
+  // If location already contains room information (e.g. "(Room 101)", "Room 101", "ห้อง 101", "#101")
+  if (/\(Room\s*.*?\)/i.test(loc) || /\b(room|ห้อง|#)\s*\w+/i.test(loc)) {
+    return loc;
+  }
+
+  // Extract room from customer
+  const cleanRoom = customer?.roomNo?.trim() || 
+    (customer?.secondaryAddress ? customer.secondaryAddress.replace(/^Room\s*/i, '').trim() : "");
+
+  if (cleanRoom) {
+    return `${loc} (Room ${cleanRoom})`;
+  }
+
+  return loc;
+}
+
+/**
+ * Returns customer's default address formatted with room number if present.
+ */
+export function formatCustomerFullAddress(
+  customer?: { defaultAddress?: string | null; roomNo?: string | null; secondaryAddress?: string | null } | null
+): string {
+  if (!customer) return "";
+  const base = customer.defaultAddress?.trim() || "";
+  const room = customer.roomNo?.trim() || (customer.secondaryAddress ? customer.secondaryAddress.replace(/^Room\s*/i, '').trim() : "");
+
+  if (!base && !room) return "";
+  if (!base) return room.toLowerCase().startsWith("room") ? room : `Room ${room}`;
+  if (!room) return base;
+
+  // If base already contains room
+  if (/\(Room\s*.*?\)/i.test(base) || /\b(room|ห้อง|#)\s*\w+/i.test(base)) {
+    return base;
+  }
+
+  const cleanRoom = room.replace(/^Room\s*/i, '').trim();
+  return cleanRoom ? `${base} (Room ${cleanRoom})` : base;
+}
+
+/**
  * Checks whether a payment date falls on today or yesterday (in Thailand timezone UTC+7).
  */
 export function isPaidTodayOrYesterday(paidAt: Date | string | number | null | undefined): boolean {

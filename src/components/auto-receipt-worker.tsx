@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { jobStore, shopStore, settingsStore, type Job } from "@/lib/store";
+import { jobStore, shopStore, settingsStore, customerStore, type Job } from "@/lib/store";
 import { formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { generateThermalReceiptImage, uploadReceiptImage } from "@/lib/thermal-canvas-generator";
 import { generateA5ReceiptImage } from "@/lib/a5-canvas-generator";
 import { isJobFullyPaid, cleanProformaNumber } from "@/lib/utils";
+import { checkJobOnlinePaymentStatusAction } from "@/actions/online-payment";
 
 /**
  * Silent Background Worker:
@@ -18,6 +19,7 @@ import { isJobFullyPaid, cleanProformaNumber } from "@/lib/utils";
 export function AutoReceiptWorker() {
   const processingRef = useRef<Set<string>>(new Set());
   const completedRef = useRef<Set<string>>(new Set());
+  const lastBeamCheckMap = useRef<Map<string, number>>(new Map());
   const isWorkingRef = useRef(false);
 
   useEffect(() => {
@@ -34,6 +36,36 @@ export function AutoReceiptWorker() {
 
       const now = Date.now();
       const MAX_JOB_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours window: NEVER touch historical jobs!
+
+      // 0. Auto-check and synchronize unpaid Beam / Gateway jobs in the background (within 2h window)
+      const unpaidBeamJob = jobs.find((job) => {
+        if (!job.id || job.id === "DRAFT" || job.isPaid || job.isShopPaid) return false;
+        if (['cancel', 'return', 'completed'].includes(job.status)) return false;
+        const channel = (job.paymentChannel || "").toLowerCase();
+        if (!channel.includes("beam") && !channel.includes("gateway")) return false;
+        const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
+        if (now - jobUpdatedTime > MAX_JOB_AGE_MS) return false;
+        const lastCheck = lastBeamCheckMap.current.get(job.id) || 0;
+        return (now - lastCheck) > 12000; // at most once every 12s per job
+      });
+
+      if (unpaidBeamJob) {
+        lastBeamCheckMap.current.set(unpaidBeamJob.id, now);
+        checkJobOnlinePaymentStatusAction(unpaidBeamJob.id).then(async (res) => {
+          if (res.success && res.isPaid) {
+            console.log(`[AutoReceiptWorker] ✔ Detected online payment for Job #${unpaidBeamJob.id} via background poller`);
+            await jobStore.updateJobDetails(unpaidBeamJob.id, {
+              isPaid: true,
+              isShopPaid: true,
+              paymentChannel: res.paymentChannel || unpaidBeamJob.paymentChannel,
+            } as any);
+            const { refreshDb } = await import("@/lib/api");
+            await refreshDb();
+          }
+        }).catch((err) => {
+          console.warn(`[AutoReceiptWorker] Background check failed for Job #${unpaidBeamJob.id}:`, err);
+        });
+      }
 
       // 1. Find newly paid jobs (specifically from Beam or recent cashier checkout) missing receipt image
       const pendingPaidJob = jobs.find((job) => {
@@ -95,18 +127,20 @@ export function AutoReceiptWorker() {
         }
 
         // Guard against premature capture for Member Wallet payments:
-        // When staff marks a job as paid via Member Wallet / Deduct Member, give up to 15 seconds
-        // for the wallet deduction to complete and walletBalanceAfter to be recorded on the job.
-        // This prevents capturing a receipt image with a stale pre-deduction balance.
+        // When staff marks a job as paid via Member Wallet / Deduct Member, ensure we have
+        // the confirmed post-deduction wallet balance (either from job.walletBalanceAfter or customerStore).
+        // This prevents capturing a receipt image with a stale pre-deduction balance or ฿0.00.
         const isMemberPayment = 
           (job.paymentChannel || "").toLowerCase().includes("member") ||
           (job.paymentChannel || "").toLowerCase().includes("credit") ||
           (job.paymentChannel || "").toLowerCase().includes("deduct") ||
           Boolean(job.adminNotesJson && job.adminNotesJson.includes('"method":"credit"'));
 
-        if (isMemberPayment && (job as any).walletBalanceAfter == null) {
-          const age = now - jobPaidTime;
-          if (age < 15000) {
+        if (isMemberPayment) {
+          const cust = customerStore.getSnapshot().find((c) => c.id === job.customerId);
+          const hasConfirmedBalance = (job as any).walletBalanceAfter != null || cust?.creditBalance != null;
+          if (!hasConfirmedBalance) {
+            // Cannot confirm wallet balance yet; wait for wallet deduction/sync
             return false;
           }
         }
@@ -121,7 +155,25 @@ export function AutoReceiptWorker() {
 
         try {
           const activeShop = shopLocations.find((s) => s.id === pendingPaidJob.branchId) || shopLocations[0];
-          const receiptData = formatJobToReceiptData(pendingPaidJob);
+          
+          let jobToFormat = pendingPaidJob;
+          const isMemberPayment = 
+            (pendingPaidJob.paymentChannel || "").toLowerCase().includes("member") ||
+            (pendingPaidJob.paymentChannel || "").toLowerCase().includes("credit") ||
+            (pendingPaidJob.paymentChannel || "").toLowerCase().includes("deduct") ||
+            Boolean(pendingPaidJob.adminNotesJson && pendingPaidJob.adminNotesJson.includes('"method":"credit"'));
+
+          if (isMemberPayment && (pendingPaidJob as any).walletBalanceAfter == null) {
+            const cust = customerStore.getSnapshot().find((c) => c.id === pendingPaidJob.customerId);
+            if (cust?.creditBalance != null) {
+              jobToFormat = {
+                ...pendingPaidJob,
+                walletBalanceAfter: cust.creditBalance,
+              } as any;
+            }
+          }
+
+          const receiptData = formatJobToReceiptData(jobToFormat);
           receiptData.isDraft = false;
           receiptData.isPaid = true;
           receiptData.autoCapture = true;

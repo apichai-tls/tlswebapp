@@ -1792,14 +1792,16 @@ export default function AdminPage() {
       return { base: loc, room: "" };
     };
 
+    const custRoom = (foundCustomer?.roomNo || (foundCustomer?.secondaryAddress ? foundCustomer.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
+
     const p = isPickupService ? parseRoom(job.pickupLocation || "") : { base: "", room: "" };
     setPickupLoc(p.base);
-    setPickupRoom(p.room);
+    setPickupRoom(p.room || custRoom || "");
     setPickupCoords(isPickupService ? job.pickupCoords || null : null);
     
     const d = isDeliveryService ? parseRoom(job.dropoffLocation || "") : { base: "", room: "" };
     setDeliveryLoc(d.base);
-    setDeliveryRoom(d.room);
+    setDeliveryRoom(d.room || custRoom || "");
     if (isDeliveryService && job.dropoffCoords) setDeliveryCoords(job.dropoffCoords);
     else setDeliveryCoords(null);
     setPickupDist(job.pickupDistance || 0);
@@ -2382,8 +2384,14 @@ export default function AdminPage() {
 
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
-      pickupLocation: isPickup ? (pickupRoom ? `${pickupLoc} (Room ${pickupRoom})` : pickupLoc) : shop.address,
-      dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : shop.address,
+      pickupLocation: isPickup ? (() => {
+        const cleanRoom = (pickupRoom || "").replace(/^Room\s*/i, '').trim();
+        return cleanRoom ? `${pickupLoc} (Room ${cleanRoom})` : pickupLoc;
+      })() : shop.address,
+      dropoffLocation: isDelivery ? (() => {
+        const cleanRoom = (deliveryRoom || "").replace(/^Room\s*/i, '').trim();
+        return cleanRoom ? `${deliveryLoc} (Room ${cleanRoom})` : deliveryLoc;
+      })() : shop.address,
       pickupCoords: isPickup ? pickupCoords : shop.coords,
       dropoffCoords: isDelivery ? deliveryCoords : shop.coords,
       scheduledAt: (isPickup ? validPickupDate : (isDelivery ? validDeliveryDate : null)) || new Date(),
@@ -2670,7 +2678,11 @@ export default function AdminPage() {
         if (JSON.stringify(safeBagUrls) !== JSON.stringify(origBagImageUrls)) {
           payload.bagImageUrl = (safeBagUrls.length > 0 ? JSON.stringify(safeBagUrls) : null) as any;
         }
-        if (JSON.stringify(safeBillUrls) !== JSON.stringify(origBillImageUrls)) {
+        const isItemsOrAmountChanged = Boolean(payload.items || payload.totalAmount !== undefined);
+        if (isPayment || (isItemsOrAmountChanged && existingJob?.isPaid)) {
+          safeBillUrls = safeBillUrls.filter(u => typeof u === "string" && !u.includes(`receipt-${targetEditingJobId}`) && !u.includes("/receipt-"));
+          payload.billImageUrl = (safeBillUrls.length > 0 ? JSON.stringify(safeBillUrls) : null) as any;
+        } else if (JSON.stringify(safeBillUrls) !== JSON.stringify(origBillImageUrls)) {
           payload.billImageUrl = (safeBillUrls.length > 0 ? JSON.stringify(safeBillUrls) : null) as any;
         }
         if (JSON.stringify(safePickupUrls) !== JSON.stringify(origPickupProofImageUrls)) {
@@ -2757,6 +2769,8 @@ export default function AdminPage() {
                 proformaRevision: finalRevision,
                 remark: (newJobData.remark !== undefined ? newJobData.remark : existingJob?.remark),
                 totalAmount: calculatedTotal,
+                walletBalanceAfter: undefined,
+                isDraft: true,
               } as any),
               items: itemsPayload,
               isDraft: true,
@@ -2764,6 +2778,7 @@ export default function AdminPage() {
               proformaId: finalProformaNum,
               jobId: targetEditingJobId,
               autoCapture: false,
+              walletBalanceAfter: undefined,
             };
             // Offload to microtask so it doesn't block dialog close
             Promise.resolve().then(async () => {
@@ -2954,6 +2969,8 @@ export default function AdminPage() {
             proformaRevision: 0,
             remark: updatedRemark,
             totalAmount: calculatedTotal,
+            walletBalanceAfter: undefined,
+            isDraft: true,
           } as any);
           const proformaCapData = {
             ...newJobReceiptBase,
@@ -2963,6 +2980,7 @@ export default function AdminPage() {
             proformaId: autoProformaNum,
             jobId: savedJobId,
             autoCapture: false,
+            walletBalanceAfter: undefined,
           };
           const capturedSavedJobId = savedJobId;
           Promise.resolve().then(async () => {
@@ -3164,8 +3182,14 @@ export default function AdminPage() {
         isMember: selectedProfileCustomer?.isMember !== undefined ? selectedProfileCustomer.isMember : (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.isMember : undefined),
         memberId: selectedProfileCustomer?.memberId || (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.memberId : undefined) || null,
         walletBalance: selectedProfileCustomer?.creditBalance !== undefined ? selectedProfileCustomer.creditBalance : undefined,
-        deliveryAddress: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || null),
-        dropoffLocation: isDelivery ? (deliveryRoom ? `${deliveryLoc} (Room ${deliveryRoom})` : deliveryLoc) : (selectedProfileCustomer?.defaultAddress || activeShop?.address || ""),
+        deliveryAddress: isDelivery ? (() => {
+          const cleanRoom = (deliveryRoom || "").replace(/^Room\s*/i, '').trim();
+          return cleanRoom ? `${deliveryLoc} (Room ${cleanRoom})` : deliveryLoc;
+        })() : (selectedProfileCustomer?.defaultAddress || null),
+        dropoffLocation: isDelivery ? (() => {
+          const cleanRoom = (deliveryRoom || "").replace(/^Room\s*/i, '').trim();
+          return cleanRoom ? `${deliveryLoc} (Room ${cleanRoom})` : deliveryLoc;
+        })() : (selectedProfileCustomer?.defaultAddress || activeShop?.address || ""),
         items: dialogCart.map(item => ({
           name: item.name,
           nameEn: item.nameEn || item.name,
@@ -4277,11 +4301,11 @@ export default function AdminPage() {
                                   
                                    // Always sync address from CRM when customer is selected
                                    setPickupLoc(c.defaultAddress);
-                                  setPickupRoom(c.secondaryAddress || "");
+                                  setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
                                   setPickupCoords(c.defaultCoords);
                                   
                                   setDeliveryLoc(c.defaultAddress);
-                                  setDeliveryRoom(c.secondaryAddress || "");
+                                  setDeliveryRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
                                   setDeliveryCoords(c.defaultCoords);
                                   
                                   setIsDeliveryDirty(false);
@@ -7417,11 +7441,11 @@ export default function AdminPage() {
             
             // Always sync address from CRM when customer is selected
             setPickupLoc(c.defaultAddress);
-            setPickupRoom(c.secondaryAddress || "");
+            setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
             setPickupCoords(c.defaultCoords);
             
             setDeliveryLoc(c.defaultAddress);
-            setDeliveryRoom(c.secondaryAddress || "");
+            setDeliveryRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
             setDeliveryCoords(c.defaultCoords);
             
             setIsDeliveryDirty(false);

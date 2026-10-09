@@ -228,7 +228,7 @@ export function AdminCRM({
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "coupons" | "legacy_members">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "coupons" | "legacy_members">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -881,13 +881,29 @@ export function AdminCRM({
     return filteredForMetrics.reduce((sum, c) => sum + (c.creditBalance || 0), 0);
   }, [filteredForMetrics]);
 
+  const activeCreditBalance = useMemo(() => {
+    return filteredForMetrics
+      .filter(c => !isWalletExpired(c))
+      .reduce((sum, c) => sum + (c.creditBalance || 0), 0);
+  }, [filteredForMetrics]);
+
+  const expiredCreditBalance = useMemo(() => {
+    return filteredForMetrics
+      .filter(c => isWalletExpired(c))
+      .reduce((sum, c) => sum + (c.creditBalance || 0), 0);
+  }, [filteredForMetrics]);
+
   const statsCount = useMemo(() => {
     return {
       all: filteredForMetrics.length,
       vip: filteredForMetrics.filter(c => c.isVIP || c.tier === "vip").length,
       member: filteredForMetrics.filter(c => c.isMember || c.tier === "member").length,
       corporate: filteredForMetrics.filter(c => c.isCorporate || c.tier === "corporate").length,
-      balance: filteredForMetrics.filter(c => (c.creditBalance || 0) > 0).length
+      balance: filteredForMetrics.filter(c => (c.creditBalance || 0) > 0 && !isWalletExpired(c)).length,
+      activeBalance: filteredForMetrics.filter(c => (c.creditBalance || 0) > 0 && !isWalletExpired(c)).length,
+      expiredBalance: filteredForMetrics.filter(c => (c.creditBalance || 0) > 0 && isWalletExpired(c)).length,
+      expiredMembers: filteredForMetrics.filter(c => isWalletExpired(c)).length,
+      allWalletsCount: filteredForMetrics.filter(c => (c.creditBalance || 0) > 0).length,
     };
   }, [filteredForMetrics]);
 
@@ -1098,20 +1114,24 @@ export function AdminCRM({
       if (activeTab === "vip") return Boolean(c.isVIP || c.tier === "vip");
       if (activeTab === "member") return Boolean(c.isMember || c.tier === "member" || c.tier === "vip");
       if (activeTab === "corporate") return Boolean(c.isCorporate || c.tier === "corporate");
-      if (activeTab === "balance") return (c.creditBalance || 0) > 0;
+      if (activeTab === "balance") return (c.creditBalance || 0) > 0 && !isWalletExpired(c);
+      if (activeTab === "expired_wallets") return (c.creditBalance || 0) > 0 && isWalletExpired(c);
       
       return true;
     });
   }, [customers, searchTerm, activeTab, selectedBrand, selectedBranch]);
 
-  // Sort by LTV descending (highest spent first)
+  // Sort by LTV descending (highest spent first) or balance descending for wallet tabs
   const sortedCustomers = useMemo(() => {
     return [...filteredCustomers].sort((a, b) => {
+      if (activeTab === "expired_wallets" || activeTab === "balance") {
+        return (b.creditBalance || 0) - (a.creditBalance || 0);
+      }
       const statsA = customerAnalytics[a.id] || { ltv: 0 };
       const statsB = customerAnalytics[b.id] || { ltv: 0 };
       return statsB.ltv - statsA.ltv;
     });
-  }, [filteredCustomers, customerAnalytics]);
+  }, [filteredCustomers, customerAnalytics, activeTab]);
 
   const paginatedCustomers = useMemo(() => {
     const startIndex = (currentPage - 1) * pageSize;
@@ -1518,16 +1538,20 @@ export function AdminCRM({
         variants={containerVariants} 
         initial="hidden" 
         animate="visible"
-        className="grid grid-cols-1 md:grid-cols-3 gap-6"
+        className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-4"
       >
         {/* Card 1: Total Customers */}
-        <motion.div variants={itemVariants} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm relative overflow-hidden group">
-          <div className="absolute right-4 top-4 p-3 bg-indigo-50 text-indigo-600 rounded-xl group-hover:scale-110 transition-transform">
-            <Users size={24} />
+        <motion.div 
+          variants={itemVariants} 
+          onClick={() => { setActiveTab("all"); setCurrentPage(1); }}
+          className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all"
+        >
+          <div className="absolute right-4 top-4 p-2.5 bg-indigo-50 text-indigo-600 rounded-xl group-hover:scale-110 transition-transform">
+            <Users size={22} />
           </div>
-          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Total Customers</p>
+          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1.5">Total Customers</p>
           <div className="flex items-baseline gap-2">
-            <h3 className="text-3xl font-black text-slate-900">{statsCount.all}</h3>
+            <h3 className="text-xl lg:text-2xl xl:text-3xl font-black text-slate-900">{statsCount.all}</h3>
             <span className="text-xs text-slate-500">retail</span>
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -1543,30 +1567,86 @@ export function AdminCRM({
           </div>
         </motion.div>
         
-        {/* Card 2: Total Wallet Credit Balance */}
-        <motion.div variants={itemVariants} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm relative overflow-hidden group">
-          <div className="absolute right-4 top-4 p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform">
-            <Wallet size={24} />
+        {/* Card 2: Total Wallet Balance (ยอดกระเป๋าเงินรวมทั้งหมด) */}
+        <motion.div 
+          variants={itemVariants} 
+          onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
+          className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-sky-300 hover:shadow-md transition-all"
+        >
+          <div className="absolute right-4 top-4 p-2.5 bg-sky-50 text-sky-600 rounded-xl group-hover:scale-110 transition-transform">
+            <Coins size={22} />
           </div>
-          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Credit Wallet Balance</p>
+          <div className="flex items-center justify-between mb-1.5 pr-8">
+            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">Credit Wallet</p>
+            <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded">ยอดรวม</span>
+          </div>
           <div className="flex items-baseline gap-2">
-            <h3 className={`text-3xl font-black ${totalCreditBalance < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+            <h3 className={`text-xl lg:text-2xl xl:text-3xl font-black ${totalCreditBalance < 0 ? "text-rose-600" : "text-slate-800"}`}>
               {formatBaht(totalCreditBalance)}
             </h3>
           </div>
           <p className="text-xs text-slate-500 mt-3 font-medium">
-            There are <span className="font-bold text-emerald-600">{statsCount.balance}</span> active wallets in system.
+            There are <span className="font-bold text-sky-600">{statsCount.allWalletsCount}</span> wallets in system.
           </p>
         </motion.div>
 
-        {/* Card 3: Network LTV Revenue */}
-        <motion.div variants={itemVariants} className="bg-gradient-to-br from-indigo-900 to-indigo-800 rounded-2xl border border-indigo-750 p-6 shadow-md relative overflow-hidden group">
-          <div className="absolute right-4 top-4 p-3 bg-indigo-800 text-indigo-200 rounded-xl group-hover:scale-110 transition-transform">
-            <TrendingUp size={24} />
+        {/* Card 3: Credit Expire (เครดิตหมดอายุ) */}
+        <motion.div 
+          variants={itemVariants} 
+          onClick={() => { setActiveTab("expired_wallets"); setCurrentPage(1); }}
+          className="bg-white rounded-2xl border border-rose-200/80 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-rose-300 hover:shadow-md transition-all"
+        >
+          <div className="absolute right-4 top-4 p-2.5 bg-rose-50 text-rose-600 rounded-xl group-hover:scale-110 transition-transform">
+            <Clock size={22} />
           </div>
-          <p className="text-indigo-200/70 text-xs font-bold uppercase tracking-widest mb-2">Total Customer LTV</p>
+          <div className="flex items-center justify-between mb-1.5 pr-8">
+            <p className="text-rose-500 text-xs font-bold uppercase tracking-widest">Credit Expire</p>
+            <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">หมดอายุ</span>
+          </div>
           <div className="flex items-baseline gap-2">
-            <h3 className="text-3xl font-black text-white">
+            <h3 className="text-xl lg:text-2xl xl:text-3xl font-black text-rose-600">
+              {formatBaht(expiredCreditBalance)}
+            </h3>
+          </div>
+          <p className="text-xs text-slate-500 mt-3 font-medium">
+            There are <span className="font-bold text-rose-600">{statsCount.expiredBalance}</span> expired wallets in system.
+          </p>
+        </motion.div>
+
+        {/* Card 4: ยอดหลังหัก Expire (Active Wallet Balance) */}
+        <motion.div 
+          variants={itemVariants} 
+          onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
+          className="bg-white rounded-2xl border border-emerald-200/90 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-emerald-400 hover:shadow-md transition-all"
+        >
+          <div className="absolute right-4 top-4 p-2.5 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform">
+            <Wallet size={22} />
+          </div>
+          <div className="flex items-center justify-between mb-1.5 pr-8">
+            <p className="text-emerald-700 text-xs font-bold uppercase tracking-widest">ยอดหลังหัก Expire</p>
+            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">ใช้งานได้</span>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <h3 className={`text-xl lg:text-2xl xl:text-3xl font-black ${activeCreditBalance < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+              {formatBaht(activeCreditBalance)}
+            </h3>
+          </div>
+          <p className="text-xs text-slate-500 mt-3 font-medium">
+            There are <span className="font-bold text-emerald-600">{statsCount.activeBalance}</span> active wallets in system.
+          </p>
+        </motion.div>
+
+        {/* Card 5: Network LTV Revenue */}
+        <motion.div 
+          variants={itemVariants} 
+          className="bg-gradient-to-br from-indigo-900 to-indigo-800 rounded-2xl border border-indigo-750 p-5 shadow-md relative overflow-hidden group"
+        >
+          <div className="absolute right-4 top-4 p-2.5 bg-indigo-800 text-indigo-200 rounded-xl group-hover:scale-110 transition-transform">
+            <TrendingUp size={22} />
+          </div>
+          <p className="text-indigo-200/70 text-xs font-bold uppercase tracking-widest mb-1.5">Total Customer LTV</p>
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-xl lg:text-2xl xl:text-3xl font-black text-white">
               ฿{totalNetworkLTV.toLocaleString()}
             </h3>
           </div>
@@ -1704,7 +1784,18 @@ export function AdminCRM({
               }`}
             >
               <Wallet size={14} className="text-emerald-600" />
-              Active Wallets ({statsCount.balance})
+              Active Wallets ({statsCount.activeBalance})
+            </button>
+            <button
+              onClick={() => setActiveTab("expired_wallets")}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                activeTab === "expired_wallets"
+                  ? "bg-white text-rose-700 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Clock size={14} className="text-rose-600" />
+              Credit Expire ({statsCount.expiredBalance})
             </button>
             <button
               onClick={() => setActiveTab("topup_history")}

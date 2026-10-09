@@ -59,7 +59,9 @@ export function AdminCustomerDialog({
   const canTopUp = user?.role !== "rider";
   const isAdmin = user?.role === "admin" || user?.role === "superadmin" || user?.role === "owner" || canAdjustBalance;
   const isEditProfile = Boolean(customer);
-  const canEditMemberId = isEditProfile && isAdmin;
+  // [AUTO_MEMBER_ID_DISABLED]: เปิดให้ User สามารถใส่และแก้ไขเลข Member เองได้ก่อน
+  // const canEditMemberId = isEditProfile && isAdmin;
+  const canEditMemberId = true;
 
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
   const [localTopUpCustomer, setLocalTopUpCustomer] = useState<Customer | null>(null);
@@ -985,48 +987,26 @@ export function AdminCustomerDialog({
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {/* Member ID - Read Only on Register New Customer, Editable by Admin on Edit Customer Profile */}
+                    {/* Member ID - Manual input enabled for user */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <Label className="text-xs font-bold text-slate-800 flex items-center gap-1">
                           <Tag size={12} className="text-indigo-600" />
-                          <span>Member ID</span>
+                          <span>Member ID (รหัสสมาชิก)</span>
                         </Label>
-                        {isEditProfile ? (
-                          canEditMemberId ? (
-                            <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1">
-                              <Edit size={9} /> ADMIN EDITABLE
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1">
-                              <Lock size={9} /> READ ONLY
-                            </span>
-                          )
-                        ) : (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1">
-                            <Lock size={9} /> READ ONLY
-                          </span>
-                        )}
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
+                          <Edit size={9} /> กำหนดเองได้
+                        </span>
                       </div>
                       <div className="relative">
-                        {isEditProfile ? (
-                          canEditMemberId ? (
-                            <Input
-                              value={memberId}
-                              onChange={e => setMemberId(e.target.value.toUpperCase())}
-                              placeholder={customer?.memberId || "เว้นว่างเพื่อรันเลขอัตโนมัติ หรือระบุรหัสสมาชิกใหม่"}
-                              className="h-9 border border-indigo-200 bg-white dark:bg-slate-800 text-indigo-950 dark:text-indigo-100 font-mono font-black text-xs rounded-xl shadow-2xs focus:ring-1 focus:ring-indigo-500 uppercase"
-                            />
-                          ) : (
-                            <Input
-                              value={memberId || "—"}
-                              readOnly
-                              disabled
-                              tabIndex={-1}
-                              className="h-9 border border-slate-200 bg-slate-100/90 text-slate-600 font-mono font-bold text-xs rounded-xl cursor-not-allowed select-none"
-                            />
-                          )
-                        ) : (
+                        <Input
+                          value={memberId}
+                          onChange={e => setMemberId(e.target.value.toUpperCase())}
+                          placeholder={customer?.memberId || "ระบุรหัสสมาชิก เช่น OF2401, PTY2450 (เว้นว่างได้)"}
+                          className="h-9 border border-indigo-200 bg-white dark:bg-slate-800 text-indigo-950 dark:text-indigo-100 font-mono font-black text-xs rounded-xl shadow-2xs focus:ring-1 focus:ring-indigo-500 uppercase"
+                        />
+                        {/* [AUTO_MEMBER_ID_DISABLED]: ระบบ Auto Member ID ถูกซ่อนไว้ชั่วคราว ไม่ได้ลบทิ้ง
+                        {!isEditProfile ? (
                           <Input
                             value=""
                             readOnly
@@ -1035,18 +1015,11 @@ export function AdminCustomerDialog({
                             placeholder="— ไม่แสดงรหัส (รันอัตโนมัติตามสาขาเมื่อกด Save) —"
                             className="h-9 border border-slate-200 bg-slate-100/90 text-slate-400 font-mono text-xs rounded-xl cursor-not-allowed select-none"
                           />
-                        )}
+                        ) : null}
+                        */}
                       </div>
                       <p className="text-[10px] text-slate-500 mt-1">
-                        {isEditProfile ? (
-                          canEditMemberId ? (
-                            "* แก้ไขรหัสสมาชิกในหน้า Edit Customer Profile ได้โดยตรง (ระบบจะตรวจสอบรหัสซ้ำให้อัตโนมัติ)"
-                          ) : (
-                            "* เฉพาะ Admin เท่านั้นที่สามารถแก้ไขรหัสสมาชิกได้"
-                          )
-                        ) : (
-                          "* ช่องนี้เป็น Read Only ไม่แสดงรหัส โดยระบบจะรันเลขอัตโนมัติตามสาขาให้เมื่อกด Save (หากต้องการแก้ไข ให้ไปแก้ไขที่หน้า Edit Customer Profile)"
-                        )}
+                        * สามารถระบุรหัสสมาชิกเองได้ตามต้องการ (ระบบจะตรวจสอบรหัสซ้ำให้อัตโนมัติ)
                       </p>
                     </div>
 

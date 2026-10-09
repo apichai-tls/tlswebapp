@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
-import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown } from "@/lib/utils";
+import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
@@ -400,6 +400,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         (customer.email && customer.email.toLowerCase().includes(searchLower)) ||
         (customer.defaultAddress && customer.defaultAddress.toLowerCase().includes(searchLower)) ||
         (customer.secondaryAddress && customer.secondaryAddress.toLowerCase().includes(searchLower)) ||
+        (customer.roomNo && customer.roomNo.toLowerCase().includes(searchLower)) ||
         (customer.companyName && customer.companyName.toLowerCase().includes(searchLower)) ||
         (customer.taxId && customer.taxId.toLowerCase().includes(searchLower)) ||
         (customer.remark && customer.remark.toLowerCase().includes(searchLower))
@@ -436,7 +437,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
   const exportToCSV = () => {
     const csvData = filteredJobs.map(job => {
-      const customer = customers.find(c => c.id === job.customerId);
+      const customer = findMatchingCustomer(customers, {
+        customerId: job.customerId,
+        customerName: job.customerName,
+        customerPhone: job.customerPhone,
+      });
       const branch = shopLocations.find(s => s.id === job.branchId);
       return {
         "Job ID": formatJobDisplayId(job.id),
@@ -446,8 +451,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         "Branch": branch?.name || "-",
         "Customer Name": job.customerName || "Walk-in Guest",
         "Customer Phone": job.customerPhone || "-",
-        "Pickup Location": job.pickupLocation || "-",
-        "Dropoff Location": job.dropoffLocation || "-",
+        "Pickup Location": formatLocationWithRoom(job.pickupLocation, customer, shopLocations),
+        "Dropoff Location": formatLocationWithRoom(job.dropoffLocation, customer, shopLocations),
         "Total Amount (THB)": job.totalAmount || 0,
         "Delivery Fee (THB)": job.fee || 0,
         "Pickup Rider": job.pickupRiderId ? (riders.find(r => r.id === job.pickupRiderId)?.name || job.pickupRiderId) : "-",
@@ -859,16 +864,27 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center gap-1.5">
-                            <MapPin size={12} className="shrink-0 text-emerald-600" />
-                            <span className="text-[11px] text-slate-600 leading-tight truncate max-w-[180px]">{job.pickupLocation}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <Navigation size={12} className="shrink-0 text-red-500" />
-                            <span className="text-[11px] text-slate-600 leading-tight truncate max-w-[180px]">{job.dropoffLocation}</span>
-                          </div>
-                        </div>
+                        {(() => {
+                          const c = findMatchingCustomer(customers, {
+                            customerId: job.customerId,
+                            customerName: job.customerName,
+                            customerPhone: job.customerPhone,
+                          });
+                          const pLoc = formatLocationWithRoom(job.pickupLocation, c, shopLocations);
+                          const dLoc = formatLocationWithRoom(job.dropoffLocation, c, shopLocations);
+                          return (
+                            <div className="flex flex-col gap-1.5">
+                              <div className="flex items-center gap-1.5">
+                                <MapPin size={12} className="shrink-0 text-emerald-600" />
+                                <span className="text-[11px] text-slate-600 leading-tight truncate max-w-[180px]" title={pLoc}>{pLoc}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Navigation size={12} className="shrink-0 text-red-500" />
+                                <span className="text-[11px] text-slate-600 leading-tight truncate max-w-[180px]" title={dLoc}>{dLoc}</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </TableCell>
 
                       <TableCell className="align-middle py-2 text-center">
@@ -1372,23 +1388,36 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               </div>
                             )}
 
-                            {['billing', 'delivery', 'completed'].includes(job.status) ? (
-                              <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Delivery Address">
-                                <Navigation size={12} className="shrink-0 mt-0.5 text-rose-500" />
-                                <span className="line-clamp-2 font-medium text-slate-700">
-                                  <span className="text-[9px] font-bold text-rose-600 uppercase mr-1 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">ส่ง</span>
-                                  {job.dropoffLocation || "-"}
-                                </span>
-                              </div>
-                            ) : (
-                              <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Pickup Address">
-                                <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
-                                <span className="line-clamp-2">
-                                  <span className="text-[9px] font-bold text-emerald-600 uppercase mr-1 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">รับ</span>
-                                  {job.pickupLocation || "-"}
-                                </span>
-                              </div>
-                            )}
+                            {(() => {
+                              const c = findMatchingCustomer(customers, {
+                                customerId: job.customerId,
+                                customerName: job.customerName,
+                                customerPhone: job.customerPhone,
+                              });
+                              if (['billing', 'delivery', 'completed'].includes(job.status)) {
+                                const dLoc = formatLocationWithRoom(job.dropoffLocation, c, shopLocations);
+                                return (
+                                  <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Delivery Address">
+                                    <Navigation size={12} className="shrink-0 mt-0.5 text-rose-500" />
+                                    <span className="line-clamp-2 font-medium text-slate-700">
+                                      <span className="text-[9px] font-bold text-rose-600 uppercase mr-1 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">ส่ง</span>
+                                      {dLoc}
+                                    </span>
+                                  </div>
+                                );
+                              } else {
+                                const pLoc = formatLocationWithRoom(job.pickupLocation, c, shopLocations);
+                                return (
+                                  <div className="text-xs text-slate-500 mb-3 flex items-start gap-1" title="Pickup Address">
+                                    <MapPin size={12} className="shrink-0 mt-0.5 text-emerald-600" />
+                                    <span className="line-clamp-2">
+                                      <span className="text-[9px] font-bold text-emerald-600 uppercase mr-1 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">รับ</span>
+                                      {pLoc}
+                                    </span>
+                                  </div>
+                                );
+                              }
+                            })()}
 
                             <div className="flex flex-col gap-1.5 mb-2">
                               <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
