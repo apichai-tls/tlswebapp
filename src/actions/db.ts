@@ -61,168 +61,181 @@ export async function getNextMemberIdAction(branchId?: string | null): Promise<s
   return `${prefix}${maxNum + 1}`;
 }
 
-export async function addCustomerAction(data: any) {
-  let memberId = null;
-  const isMember = Boolean(data.isMember || data.tier === "member" || data.tier === "vip");
-  if (isMember) {
-    if (data.memberId && data.memberId.trim()) {
-      const memberIdUpper = data.memberId.trim().toUpperCase();
-      const existing = await prisma.customer.findUnique({
-        where: { memberId: memberIdUpper }
+export async function addCustomerAction(data: any): Promise<{ success: boolean; customer?: any; error?: string }> {
+  try {
+    let memberId = null;
+    const isMember = Boolean(data.isMember || data.tier === "member" || data.tier === "vip");
+    if (isMember) {
+      if (data.memberId && data.memberId.trim()) {
+        const memberIdUpper = data.memberId.trim().toUpperCase();
+        const existing = await prisma.customer.findUnique({
+          where: { memberId: memberIdUpper }
+        });
+        if (existing) {
+          return { success: false, error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น` };
+        }
+        memberId = memberIdUpper;
+      } else {
+        // [AUTO_MEMBER_ID_DISABLED]: ระบบ Auto Member ID ถูกปิดชั่วคราวตามคำขอ (Hidden ไว้ ไม่ลบทิ้ง)
+        // เพื่อให้ User สามารถใส่เลขสมาชิกเองได้ หากไม่ได้ระบุจะบันทึกเป็น null
+        // memberId = await getNextMemberIdAction(data.branchId);
+        memberId = null;
+      }
+    }
+
+    // Check duplicate phone (both Thai and international)
+    if (data.phone || data.secondaryPhone) {
+      const existingCustomers = await prisma.customer.findMany({
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          secondaryPhone: true,
+          memberId: true,
+        },
       });
-      if (existing) {
-        throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+      const duplicate = findDuplicateCustomerByPhone({
+        phone: data.phone,
+        secondaryPhone: data.secondaryPhone,
+        customers: existingCustomers,
+      });
+      if (duplicate) {
+        return { success: false, error: `เบอร์โทรศัพท์ ${duplicate.matchedPhone} มีอยู่ในระบบแล้ว (ลูกค้า: ${duplicate.customer.name || "ไม่ระบุชื่อ"}${duplicate.customer.memberId ? ` - รหัส ${duplicate.customer.memberId}` : ""})` };
       }
-      memberId = memberIdUpper;
-    } else {
-      // [AUTO_MEMBER_ID_DISABLED]: ระบบ Auto Member ID ถูกปิดชั่วคราวตามคำขอ (Hidden ไว้ ไม่ลบทิ้ง)
-      // เพื่อให้ User สามารถใส่เลขสมาชิกเองได้ หากไม่ได้ระบุจะบันทึกเป็น null
-      // memberId = await getNextMemberIdAction(data.branchId);
-      memberId = null;
     }
-  }
 
-  // Check duplicate phone (both Thai and international)
-  if (data.phone || data.secondaryPhone) {
-    const existingCustomers = await prisma.customer.findMany({
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        secondaryPhone: true,
-        memberId: true,
-      },
-    });
-    const duplicate = findDuplicateCustomerByPhone({
-      phone: data.phone,
-      secondaryPhone: data.secondaryPhone,
-      customers: existingCustomers,
-    });
-    if (duplicate) {
-      throw new Error(`เบอร์โทรศัพท์ ${duplicate.matchedPhone} มีอยู่ในระบบแล้ว (ลูกค้า: ${duplicate.customer.name || "ไม่ระบุชื่อ"}${duplicate.customer.memberId ? ` - รหัส ${duplicate.customer.memberId}` : ""})`);
-    }
-  }
+    const nameUpper = data.name ? data.name.toUpperCase() : data.name;
 
-  const nameUpper = data.name ? data.name.toUpperCase() : data.name;
+    let c;
+    let attempts = 0;
+    const maxAttempts = 5;
 
-  let c;
-  let attempts = 0;
-  const maxAttempts = 5;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    let currentMemberId = memberId;
-    /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
-    if (isMember && !currentMemberId) {
-      currentMemberId = await getNextMemberIdAction(data.branchId);
-    }
-    */
-
-    const resolvedStartDate = data.memberStartDate ? new Date(data.memberStartDate) : (data.isMember ? new Date() : null);
-    let resolvedExpiryDate = data.memberExpiryDate ? new Date(data.memberExpiryDate) : null;
-    if (data.isMember && !resolvedExpiryDate && resolvedStartDate) {
-      const expStr = computeMembershipExpiryDate(resolvedStartDate);
-      if (expStr) {
-        resolvedExpiryDate = new Date(`${expStr}T23:59:59.999Z`);
+    while (attempts < maxAttempts) {
+      attempts++;
+      let currentMemberId = memberId;
+      /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
+      if (isMember && !currentMemberId) {
+        currentMemberId = await getNextMemberIdAction(data.branchId);
       }
+      */
+
+      const resolvedStartDate = data.memberStartDate ? new Date(data.memberStartDate) : (data.isMember ? new Date() : null);
+      let resolvedExpiryDate = data.memberExpiryDate ? new Date(data.memberExpiryDate) : null;
+      if (data.isMember && !resolvedExpiryDate && resolvedStartDate) {
+        const expStr = computeMembershipExpiryDate(resolvedStartDate);
+        if (expStr) {
+          resolvedExpiryDate = new Date(`${expStr}T23:59:59.999Z`);
+        }
+      }
+
+      try {
+        c = await prisma.customer.create({
+          data: {
+            name: nameUpper,
+            phone: data.phone,
+            defaultAddress: data.defaultAddress,
+            defaultLat: data.defaultCoords?.lat || 0,
+            defaultLng: data.defaultCoords?.lng || 0,
+            priceListId: data.priceListId,
+            creditBalance: data.creditBalance || 0,
+            tier: data.tier,
+            isMember: data.isMember || false,
+            memberId: currentMemberId,
+            isVIP: data.isVIP || false,
+            isCorporate: data.isCorporate || false,
+            isWhatsapp: data.isWhatsapp || false,
+            email: data.email,
+            lineId: data.lineId,
+            language: data.language,
+            remark: data.remark,
+            secondaryAddress: data.secondaryAddress,
+            dob: data.dob,
+            taxId: data.taxId,
+            companyName: data.companyName,
+            vatType: data.vatType || 'default',
+            corporateCommissionType: data.corporateCommissionType || 'default',
+            corporatePickupCommission: data.corporatePickupCommission != null ? Number(data.corporatePickupCommission) : 0,
+            corporateDeliveryCommission: data.corporateDeliveryCommission != null ? Number(data.corporateDeliveryCommission) : 0,
+            corporateCommissionRatePerKm: data.corporateCommissionRatePerKm != null ? Number(data.corporateCommissionRatePerKm) : 0,
+            brand: data.brand || 'that_laundry_shop',
+            nickName: data.nickName || null,
+            gender: data.gender || 'Rather not say',
+            secondaryPhone: data.secondaryPhone || null,
+            isSecondaryWhatsapp: Boolean(data.isSecondaryWhatsapp),
+            isVerified: Boolean(data.isVerified),
+            verifiedVia: data.verifiedVia || null,
+            sourceSystem: data.sourceSystem || 'web_booking',
+            roomNo: data.roomNo || null,
+            branchId: data.branchId || null,
+            memberStartDate: resolvedStartDate,
+            memberExpiryDate: resolvedExpiryDate,
+          }
+        });
+        break;
+      } catch (err: any) {
+        // If unique constraint violation on memberId and user didn't specify manual ID, retry with next number
+        if (err.code === 'P2002' && (!data.memberId || !data.memberId.trim())) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!c) {
+      return { success: false, error: "ไม่สามารถสร้างลูกค้าใหม่ได้ กรุณาลองใหม่อีกครั้ง" };
     }
 
     try {
-      c = await prisma.customer.create({
+      await prisma.activityLog.create({
         data: {
-          name: nameUpper,
-          phone: data.phone,
-          defaultAddress: data.defaultAddress,
-          defaultLat: data.defaultCoords?.lat || 0,
-          defaultLng: data.defaultCoords?.lng || 0,
-          priceListId: data.priceListId,
-          creditBalance: data.creditBalance || 0,
-          tier: data.tier,
-          isMember: data.isMember || false,
-          memberId: currentMemberId,
-          isVIP: data.isVIP || false,
-          isCorporate: data.isCorporate || false,
-          isWhatsapp: data.isWhatsapp || false,
-          email: data.email,
-          lineId: data.lineId,
-          language: data.language,
-          remark: data.remark,
-          secondaryAddress: data.secondaryAddress,
-          dob: data.dob,
-          taxId: data.taxId,
-          companyName: data.companyName,
-          vatType: data.vatType || 'default',
-          corporateCommissionType: data.corporateCommissionType || 'default',
-          corporatePickupCommission: data.corporatePickupCommission != null ? Number(data.corporatePickupCommission) : 0,
-          corporateDeliveryCommission: data.corporateDeliveryCommission != null ? Number(data.corporateDeliveryCommission) : 0,
-          corporateCommissionRatePerKm: data.corporateCommissionRatePerKm != null ? Number(data.corporateCommissionRatePerKm) : 0,
-          brand: data.brand || 'that_laundry_shop',
-          nickName: data.nickName || null,
-          gender: data.gender || 'Rather not say',
-          secondaryPhone: data.secondaryPhone || null,
-          isSecondaryWhatsapp: Boolean(data.isSecondaryWhatsapp),
-          isVerified: Boolean(data.isVerified),
-          verifiedVia: data.verifiedVia || null,
-          sourceSystem: data.sourceSystem || 'web_booking',
-          roomNo: data.roomNo || null,
-          branchId: data.branchId || null,
-          memberStartDate: resolvedStartDate,
-          memberExpiryDate: resolvedExpiryDate,
+          entityId: c.id,
+          entityType: 'customer',
+          action: 'create',
+          details: JSON.stringify({
+            name: c.name,
+            phone: c.phone,
+            memberId: c.memberId,
+            tier: c.tier,
+            creditBalance: c.creditBalance,
+            brand: c.brand,
+            sourceSystem: c.sourceSystem,
+          }),
+          userId: data.actorId || null,
+          userName: data.actorName || null,
         }
       });
-      break;
+      console.log(`[ActivityLog] Created customer ${c.id} (${c.name}) by ${data.actorName || 'Unknown'}`);
     } catch (err: any) {
-      // If unique constraint violation on memberId and user didn't specify manual ID, retry with next number
-      if (err.code === 'P2002' && (!data.memberId || !data.memberId.trim())) {
-        continue;
-      }
-      throw err;
+      console.error("Failed to write ActivityLog on customer create:", err.message);
     }
-  }
 
-  if (!c) {
-    throw new Error("ไม่สามารถสร้างลูกค้าใหม่ได้ กรุณาลองใหม่อีกครั้ง");
-  }
-
-  try {
-    await prisma.activityLog.create({
-      data: {
-        entityId: c.id,
-        entityType: 'customer',
-        action: 'create',
-        details: JSON.stringify({
-          name: c.name,
-          phone: c.phone,
-          memberId: c.memberId,
-          tier: c.tier,
-          creditBalance: c.creditBalance,
-          brand: c.brand,
-          sourceSystem: c.sourceSystem,
-        }),
-        userId: data.actorId || null,
-        userName: data.actorName || null,
-      }
-    });
-    console.log(`[ActivityLog] Created customer ${c.id} (${c.name}) by ${data.actorName || 'Unknown'}`);
+    invalidateDbCache();
+    return { success: true, customer: c };
   } catch (err: any) {
-    console.error("Failed to write ActivityLog on customer create:", err.message);
+    console.error("[addCustomerAction Error]:", err);
+    if (err?.code === 'P2002') {
+      const target = err?.meta?.target;
+      if (Array.isArray(target) && target.includes('memberId')) {
+        return { success: false, error: "เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น" };
+      }
+      return { success: false, error: "ข้อมูลซ้ำกับรายการอื่นในระบบ (Unique constraint failed)" };
+    }
+    return { success: false, error: err?.message || "เกิดข้อผิดพลาดในการสร้างลูกค้าใหม่" };
   }
-
-  invalidateDbCache();
-  return c;
 }
 
-export async function updateCustomerAction(id: string, updates: any) {
-  const currentCustomer = await prisma.customer.findUnique({ where: { id } });
-  if (!currentCustomer) throw new Error("Customer not found");
+export async function updateCustomerAction(id: string, updates: any): Promise<{ success: boolean; customer?: any; error?: string }> {
+  try {
+    const currentCustomer = await prisma.customer.findUnique({ where: { id } });
+    if (!currentCustomer) return { success: false, error: "ไม่พบข้อมูลลูกค้าในระบบ (Customer not found)" };
 
-  if (updates.updatedAt) {
-    const incomingTime = new Date(updates.updatedAt).getTime();
-    const dbTime = new Date(currentCustomer.updatedAt!).getTime();
-    if (dbTime > incomingTime + 1000) {
-      throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
+    if (updates.updatedAt) {
+      const incomingTime = new Date(updates.updatedAt).getTime();
+      const dbTime = new Date(currentCustomer.updatedAt!).getTime();
+      if (dbTime > incomingTime + 1000) {
+        return { success: false, error: "409 Conflict: ข้อมูลลูกค้ารายนี้ถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชแล้วลองใหม่อีกครั้ง" };
+      }
     }
-  }
   const data: any = {};
   if (updates.name !== undefined) {
     data.name = updates.name ? updates.name.toUpperCase() : updates.name;
@@ -258,7 +271,7 @@ export async function updateCustomerAction(id: string, updates: any) {
             }
           });
           if (existing) {
-            throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+            return { success: false, error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น` };
           }
           data.memberId = memberIdUpper;
         } else {
@@ -290,7 +303,7 @@ export async function updateCustomerAction(id: string, updates: any) {
         }
       });
       if (existing) {
-        throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+        return { success: false, error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น` };
       }
       data.memberId = memberIdUpper;
     } else if (updates.memberId === "") {
@@ -315,7 +328,7 @@ export async function updateCustomerAction(id: string, updates: any) {
           }
         });
         if (existing) {
-          throw new Error("เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น");
+          return { success: false, error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น` };
         }
         data.memberId = memberIdUpper;
       } else {
@@ -367,15 +380,27 @@ export async function updateCustomerAction(id: string, updates: any) {
     }
   }
 
-  const updatedCustomer = await prisma.customer.update({
-    where: { id },
-    data,
-    include: {
-      addresses: {
-        orderBy: { isPrimary: 'desc' }
+  let updatedCustomer: any;
+  try {
+    updatedCustomer = await prisma.customer.update({
+      where: { id },
+      data,
+      include: {
+        addresses: {
+          orderBy: { isPrimary: 'desc' }
+        }
       }
+    });
+  } catch (dbErr: any) {
+    if (dbErr?.code === 'P2002') {
+      const target = dbErr?.meta?.target;
+      if (Array.isArray(target) && target.includes('memberId')) {
+        return { success: false, error: "เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น" };
+      }
+      return { success: false, error: "ข้อมูลซ้ำกับรายการอื่นในระบบ (Unique constraint failed)" };
     }
-  });
+    throw dbErr;
+  }
 
   // If room number was added or changed, sync it to active in-flight jobs for this customer
   const cleanNewRoom = (data.roomNo || (data.secondaryAddress ? data.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
@@ -567,8 +592,19 @@ export async function updateCustomerAction(id: string, updates: any) {
     }
   }
 
-  invalidateDbCache();
-  return updatedCustomer;
+    invalidateDbCache();
+    return { success: true, customer: updatedCustomer };
+  } catch (err: any) {
+    console.error("[updateCustomerAction Error]:", err);
+    if (err?.code === 'P2002') {
+      const target = err?.meta?.target;
+      if (Array.isArray(target) && target.includes('memberId')) {
+        return { success: false, error: "เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น" };
+      }
+      return { success: false, error: "ข้อมูลซ้ำกับรายการอื่นในระบบ (Unique constraint failed)" };
+    }
+    return { success: false, error: err?.message || "เกิดข้อผิดพลาดในการบันทึกข้อมูลลูกค้า" };
+  }
 }
 
 export async function deleteCustomerAction(id: string, actorId?: string, actorName?: string) {

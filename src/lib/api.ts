@@ -356,7 +356,13 @@ export const api = {
   async addCustomer(customer: Omit<Customer, 'id'> & Record<string, any>): Promise<Customer> {
     const db = initDb();
     // Let PostgreSQL generate the UUID; do NOT pass a pre-generated id
-    const savedCustomer = await dbActions.addCustomerAction(customer);
+    const res = await dbActions.addCustomerAction(customer);
+    if (res && typeof res === 'object' && 'success' in res) {
+      if (!res.success) {
+        throw new Error((res as any).error || "เกิดข้อผิดพลาดในการสร้างลูกค้าใหม่");
+      }
+    }
+    const savedCustomer = (res && typeof res === 'object' && 'customer' in res) ? (res as any).customer : res;
     const newCustomer: Customer = {
       ...customer,
       id: savedCustomer.id,
@@ -375,7 +381,13 @@ export const api = {
     const currentCustomer = db.customers.find(c => c.id === id);
     if (!currentCustomer) throw new Error("Customer not found");
 
-    const savedCustomer = await dbActions.updateCustomerAction(id, updates);
+    const res = await dbActions.updateCustomerAction(id, updates);
+    if (res && typeof res === 'object' && 'success' in res) {
+      if (!res.success) {
+        throw new Error((res as any).error || "เกิดข้อผิดพลาดในการบันทึกข้อมูลลูกค้า");
+      }
+    }
+    const savedCustomer = (res && typeof res === 'object' && 'customer' in res) ? (res as any).customer : res;
 
     let updatedCustomer: Customer | null = null;
     db.customers = db.customers.map(c => {

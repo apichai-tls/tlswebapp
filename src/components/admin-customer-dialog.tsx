@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { 
   Edit, UserPlus, MessageCircle, Crown, Users, Database, Wallet, SlidersHorizontal, 
   Plus, Minus, Building, MapPin, Globe, Shield, Calendar, X, Check, Tag, Receipt, Bike, AlertTriangle,
-  Lock, RefreshCw, Loader2
+  Lock, RefreshCw, Loader2, AlertCircle, CheckCircle2
 } from "lucide-react";
 import { customerStore, priceListStore, poiStore, walletApprovalStore, shopStore, type Customer } from "@/lib/store";
 import { useSyncExternalStore } from "react";
@@ -161,6 +161,47 @@ export function AdminCustomerDialog({
       excludeCustomerId: null,
     });
   }, [phone, secondaryPhone, intlCountryCode, allCustomers, customer]);
+
+  const isMemberTierOrActive = customerTier === "member" || customerTier === "vip" || Boolean(memberId.trim());
+
+  // Realtime duplicate Member ID check
+  const duplicateMemberIdCheck = useMemo(() => {
+    if (!isMemberTierOrActive || !memberId.trim()) return null;
+    const cleanMem = memberId.trim().toUpperCase();
+    const dup = allCustomers.find(c => c.id !== customer?.id && c.memberId?.trim().toUpperCase() === cleanMem);
+    if (!dup) return null;
+    return dup;
+  }, [isMemberTierOrActive, memberId, allCustomers, customer]);
+
+  // Suggest next available Member ID for selected branch
+  const suggestedNextMemberId = useMemo(() => {
+    if (!isMemberTierOrActive || !branchId) return null;
+    const b = branchId.toLowerCase().trim();
+    let prefix = 'OF';
+    let baseStartingNum = 2399;
+    if (b === 'shop-molcj2x8' || b.includes('pty') || b.includes('pattaya')) {
+      prefix = 'PTY';
+      baseStartingNum = 2442;
+    } else if (b === 'shop-head' || b.includes('sr') || b.includes('sukhumvit') || b.includes('15')) {
+      prefix = 'SR';
+      baseStartingNum = 2176;
+    } else if (b === 'shop-mogwz0x0' || b.includes('pk') || b.includes('phattanakarn') || b.includes('pattanakarn')) {
+      prefix = 'PK';
+      baseStartingNum = 2599;
+    }
+    const regex = new RegExp(`^${prefix}-?(\\d+)$`, 'i');
+    let maxNum = baseStartingNum;
+    for (const c of allCustomers) {
+      if (!c.memberId) continue;
+      const match = c.memberId.match(regex);
+      if (!match) continue;
+      const num = parseInt(match[1], 10);
+      if (!isNaN(num) && num < 10000 && num > maxNum) {
+        maxNum = num;
+      }
+    }
+    return `${prefix}${maxNum + 1}`;
+  }, [isMemberTierOrActive, branchId, allCustomers]);
 
   const localDataForSearch = useMemo(() => pois.map(p => ({ 
     name: p.name, 
@@ -431,6 +472,17 @@ export function AdminCustomerDialog({
       const isCorporateBool = customerTier === "corporate" || isCorporate;
       const isMemberBool = customerTier === "member" || customerTier === "vip" || Boolean(memberId.trim());
       const isVIPBool = customerTier === "vip";
+
+      if (isMemberBool && memberId.trim()) {
+        const cleanMemId = memberId.trim().toUpperCase();
+        const dup = allCustomers.find(c => c.id !== customer?.id && c.memberId?.trim().toUpperCase() === cleanMemId);
+        if (dup) {
+          const branchLabel = dup.branchId ? (shopLocations.find(s => s.id === dup.branchId)?.name || dup.branchId) : "-";
+          toast.error(`รหัสสมาชิก "${cleanMemId}" มีผู้ใช้งานแล้วในระบบ (ลูกค้า: ${dup.name}${branchLabel !== "-" ? ` สาขา ${branchLabel}` : ""}) กรุณาใช้รหัสอื่น`, { duration: 6000 });
+          setIsSaving(false);
+          return;
+        }
+      }
 
       if (!branchId || !branchId.trim()) {
         toast.error("กรุณาเลือกสาขา (บังคับระบุ)");
@@ -1002,25 +1054,56 @@ export function AdminCustomerDialog({
                         <Input
                           value={memberId}
                           onChange={e => setMemberId(e.target.value.toUpperCase())}
-                          placeholder={customer?.memberId || "ระบุรหัสสมาชิก เช่น OF2401, PTY2450 (เว้นว่างได้)"}
-                          className="h-9 border border-indigo-200 bg-white dark:bg-slate-800 text-indigo-950 dark:text-indigo-100 font-mono font-black text-xs rounded-xl shadow-2xs focus:ring-1 focus:ring-indigo-500 uppercase"
+                          placeholder={customer?.memberId || (suggestedNextMemberId ? `แนะนำ: ${suggestedNextMemberId}` : "ระบุรหัสสมาชิก เช่น OF2401, PTY2450 (เว้นว่างได้)")}
+                          className={`h-9 border font-mono font-black text-xs rounded-xl shadow-2xs uppercase transition-all ${
+                            duplicateMemberIdCheck
+                              ? "border-rose-400 bg-rose-50/50 text-rose-950 focus:ring-1 focus:ring-rose-500"
+                              : memberId.trim()
+                                ? "border-emerald-400 bg-emerald-50/20 text-emerald-950 focus:ring-1 focus:ring-emerald-500"
+                                : "border-indigo-200 bg-white dark:bg-slate-800 text-indigo-950 dark:text-indigo-100 focus:ring-1 focus:ring-indigo-500"
+                          }`}
                         />
-                        {/* [AUTO_MEMBER_ID_DISABLED]: ระบบ Auto Member ID ถูกซ่อนไว้ชั่วคราว ไม่ได้ลบทิ้ง
-                        {!isEditProfile ? (
-                          <Input
-                            value=""
-                            readOnly
-                            disabled
-                            tabIndex={-1}
-                            placeholder="— ไม่แสดงรหัส (รันอัตโนมัติตามสาขาเมื่อกด Save) —"
-                            className="h-9 border border-slate-200 bg-slate-100/90 text-slate-400 font-mono text-xs rounded-xl cursor-not-allowed select-none"
-                          />
-                        ) : null}
-                        */}
                       </div>
-                      <p className="text-[10px] text-slate-500 mt-1">
-                        * สามารถระบุรหัสสมาชิกเองได้ตามต้องการ (ระบบจะตรวจสอบรหัสซ้ำให้อัตโนมัติ)
-                      </p>
+                      {duplicateMemberIdCheck ? (
+                        <div className="mt-1 flex flex-col gap-1">
+                          <p className="text-[11px] text-rose-600 font-semibold flex items-center gap-1">
+                            <AlertCircle size={12} className="shrink-0 text-rose-500" />
+                            <span>
+                              รหัสนี้ซ้ำกับ: <strong>{duplicateMemberIdCheck.name}</strong>
+                              {duplicateMemberIdCheck.branchId ? ` (${shopLocations.find(s => s.id === duplicateMemberIdCheck.branchId)?.name || duplicateMemberIdCheck.branchId})` : ""}
+                            </span>
+                          </p>
+                          {suggestedNextMemberId && suggestedNextMemberId !== memberId.trim().toUpperCase() && (
+                            <button
+                              type="button"
+                              onClick={() => setMemberId(suggestedNextMemberId)}
+                              className="text-[11px] text-indigo-600 hover:text-indigo-800 underline font-bold text-left cursor-pointer flex items-center gap-1"
+                            >
+                              <span>👉 คลิกเพื่อใช้รหัสถัดไปที่ยังว่าง: <strong>{suggestedNextMemberId}</strong></span>
+                            </button>
+                          )}
+                        </div>
+                      ) : memberId.trim() ? (
+                        <p className="text-[10px] text-emerald-600 font-medium mt-1 flex items-center gap-1">
+                          <CheckCircle2 size={11} className="shrink-0 text-emerald-500" />
+                          <span>รหัสสมาชิกนี้สามารถใช้งานได้</span>
+                        </p>
+                      ) : (
+                        <div className="mt-1 flex items-center justify-between flex-wrap gap-1">
+                          <p className="text-[10px] text-slate-500">
+                            * สามารถระบุรหัสสมาชิกเองได้ตามต้องการ
+                          </p>
+                          {suggestedNextMemberId && (
+                            <button
+                              type="button"
+                              onClick={() => setMemberId(suggestedNextMemberId)}
+                              className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold cursor-pointer hover:underline"
+                            >
+                              + ใช้รหัสถัดไป: {suggestedNextMemberId}
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {/* Start Date */}
