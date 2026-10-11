@@ -37,12 +37,17 @@ fi
 echo "✅ E2E tests passed successfully. Proceeding with deployment..."
 echo "===================================================="
 
-# Submit the build and deploy
+# Submit the build and deploy with optimized production specs (Warm Standby + 2 vCPU + 2GiB RAM)
 gcloud run deploy $SERVICE_NAME \
   --source . \
   --region $REGION \
   --allow-unauthenticated \
+  --min-instances 1 \
   --max-instances 5 \
+  --cpu 2 \
+  --memory 2Gi \
+  --concurrency 50 \
+  --cpu-throttling \
   --quiet
 
 echo "===================================================="
