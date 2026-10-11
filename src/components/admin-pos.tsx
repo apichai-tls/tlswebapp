@@ -43,6 +43,7 @@ import {
   Building,
   Receipt,
   Ticket,
+  Lock,
   QrCode
 } from "lucide-react";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
@@ -1344,6 +1345,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     customer: Customer | null = selectedCustomer,
     addressStr: string = deliveryAddress
   ) => {
+    if (isPaidJob) return 0;
     if (type !== "both" && type !== "delivery_only") return 0;
     const fee = await calculateAutoDeliveryFee(type, customer, addressStr);
     const resolvedPrice = fee !== null ? fee : (parseFloat(localDeliveryPrice) || 0);
@@ -4580,7 +4582,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       type="checkbox"
                       id="delivery-only"
                       checked={deliveryServiceType === "delivery_only"}
+                      disabled={isPaidJob}
                       onChange={async (e) => {
+                        if (isPaidJob) return;
                         if (e.target.checked) {
                           const targetAddr = deliveryAddress || formatCustomerFullAddress(selectedCustomer) || "";
                           if (!deliveryAddress && targetAddr) {
@@ -4592,9 +4596,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           setCart(prev => prev.filter(item => item.id !== "delivery-only-service-item"));
                         }
                       }}
-                      className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                     />
-                    <label htmlFor="delivery-only" className="text-[11px] font-bold text-foreground cursor-pointer whitespace-nowrap flex items-center gap-1">
+                    <label 
+                      htmlFor="delivery-only" 
+                      className={`text-[11px] font-bold text-foreground whitespace-nowrap flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                      title={isPaidJob ? (currentLanguage === "en" ? "Job is paid. Unlock Paid to change delivery options." : "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนบริการจัดส่งได้") : undefined}
+                    >
                       <Truck size={12} className="text-blue-500" />
                       {currentLanguage === "en" ? "Delivery" : "บริการส่ง (Delivery)"}
                     </label>
@@ -4606,7 +4614,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       type="checkbox"
                       id="delivery-both"
                       checked={deliveryServiceType === "both"}
+                      disabled={isPaidJob}
                       onChange={async (e) => {
+                        if (isPaidJob) return;
                         if (e.target.checked) {
                           const targetAddr = deliveryAddress || formatCustomerFullAddress(selectedCustomer) || "";
                           if (!deliveryAddress && targetAddr) {
@@ -4618,12 +4628,23 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           setCart(prev => prev.filter(item => item.id !== "delivery-pickup-service-item"));
                         }
                       }}
-                      className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer shrink-0"
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                     />
-                    <label htmlFor="delivery-both" className="text-[11px] font-bold text-muted-foreground hover:text-foreground cursor-pointer whitespace-nowrap">
+                    <label 
+                      htmlFor="delivery-both" 
+                      className={`text-[11px] font-bold text-muted-foreground hover:text-foreground whitespace-nowrap ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                      title={isPaidJob ? (currentLanguage === "en" ? "Job is paid. Unlock Paid to change delivery options." : "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนบริการจัดส่งได้") : undefined}
+                    >
                       {currentLanguage === "en" ? "Pickup & Delivery" : "บริการรับ-ส่ง"}
                     </label>
                   </div>
+
+                  {isPaidJob && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded shadow-xs" title="งานนี้ชำระเงินแล้ว">
+                      <Lock size={10} className="text-amber-600" />
+                      <span>Locked</span>
+                    </span>
+                  )}
                 </div>
 
                 {/* Price Input (Visible when any delivery type is selected) */}
@@ -4636,8 +4657,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         type="number"
                         min="0"
                         placeholder="0.00"
+                        disabled={isPaidJob}
                         value={localDeliveryPrice}
                         onChange={(e) => {
+                          if (isPaidJob) return;
                           const val = e.target.value;
                           setLocalDeliveryPrice(val);
                           const price = parseFloat(val) || 0;
@@ -4648,7 +4671,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                             return item;
                           }));
                         }}
-                        className="w-full h-7 pl-5 pr-1.5 text-[11px] bg-card border border-border rounded-lg outline-none focus:border-primary font-bold text-foreground text-right"
+                        className="w-full h-7 pl-5 pr-1.5 text-[11px] bg-card border border-border rounded-lg outline-none focus:border-primary font-bold text-foreground text-right disabled:opacity-60 disabled:cursor-not-allowed"
                       />
                     </div>
                   </div>

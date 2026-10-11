@@ -73,17 +73,20 @@ export async function GET(req: NextRequest) {
       ];
     }
 
+    const limitParam = searchParams.get("limit");
+    const limit = limitParam ? Math.min(Math.max(1, parseInt(limitParam) || 200), 1000) : (q ? 500 : 200);
+
     const logs = await prisma.activityLog.findMany({
       where: whereClause,
       orderBy: { createdAt: 'desc' },
-      take: 1000 // Limit to 1000 recent logs to prevent huge payloads
+      take: limit
     });
 
 
     const jobIds = logs.filter(l => l.entityType === 'job').map(l => l.entityId);
     const custIds = logs.filter(l => l.entityType === 'customer').map(l => l.entityId);
 
-    const [jobs, customers] = await Promise.all([
+    const [jobs, customers, riders, users] = await Promise.all([
       prisma.job.findMany({
         where: { id: { in: jobIds } },
         select: { id: true, customerName: true }
@@ -91,29 +94,43 @@ export async function GET(req: NextRequest) {
       prisma.customer.findMany({
         where: { id: { in: custIds } },
         select: { id: true, name: true }
+      }),
+      prisma.rider.findMany({
+        select: { id: true, name: true, nickname: true }
+      }),
+      prisma.adminUser.findMany({
+        select: { id: true, name: true }
       })
     ]);
 
     const jobMap = new Map(jobs.map(j => [j.id, j.customerName]));
     const custMap = new Map(customers.map(c => [c.id, c.name]));
+    const riderMap: Record<string, string> = {};
+    riders.forEach(r => {
+      riderMap[r.id] = r.nickname ? `${r.name} (${r.nickname})` : r.name;
+    });
+    users.forEach(u => {
+      if (!riderMap[u.id]) riderMap[u.id] = u.name;
+    });
 
     const logsWithCustomer = logs.map(log => {
+      let cName = null;
       if (log.entityType === 'job') {
-        return {
-          ...log,
-          customerName: jobMap.get(log.entityId) || null
-        };
+        cName = jobMap.get(log.entityId) || null;
+      } else if (log.entityType === 'customer') {
+        cName = custMap.get(log.entityId) || null;
       }
-      if (log.entityType === 'customer') {
-        return {
-          ...log,
-          customerName: custMap.get(log.entityId) || null
-        };
-      }
-      return log;
+      return {
+        ...log,
+        customerName: cName,
+        userName: log.userName || (log.userId ? riderMap[log.userId] || null : null)
+      };
     });
     
-    return NextResponse.json(logsWithCustomer);
+    return NextResponse.json({
+      logs: logsWithCustomer,
+      riders: riderMap
+    });
 
   } catch (error) {
     console.error("Failed to fetch activity logs:", error);

@@ -892,12 +892,26 @@ export default function AdminPage() {
     }));
 
 
+  const isPaidJob = editingJobId ? (() => {
+    const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
+    return isJobFullyPaid(j);
+  })() : false;
+  const isPricingLocked = isPaidJob;
+  const isCartLocked = isPaidJob;
+  const isLogisticsLocked = isPaidJob;
+
   // --- POS/Cashier Shift Enhancements ---
   const [dialogCart, setDialogCart] = useState<any[]>([]);
   const hasPackage = dialogCart.some(item => item.category === "PACKAGE");
-  const activeIsFreeDelivery = isFreeDelivery || hasPackage;
-  const baseFee = editingFeeLock !== null ? editingFeeLock : calculateTotalFee();
-  const fee = activeIsFreeDelivery ? 0 : baseFee;
+  const activeIsFreeDelivery = (isPaidJob && activeJob)
+    ? (activeJob.fee === 0 && activeJob.type !== "in_store")
+    : (isFreeDelivery || hasPackage);
+  const baseFee = (isPaidJob && activeJob)
+    ? (activeJob.fee ?? 0)
+    : (editingFeeLock !== null ? editingFeeLock : calculateTotalFee());
+  const fee = (isPaidJob && activeJob)
+    ? (activeJob.fee ?? 0)
+    : (activeIsFreeDelivery ? 0 : baseFee);
   const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [categorySearch, setCategorySearch] = useState<string>("");
   
@@ -928,10 +942,6 @@ export default function AdminPage() {
   }, [activeShift]);
 
   const hasValidActiveShift = !!activeShift && !isShiftFromPreviousDay;
-  const isPaidJob = editingJobId ? (() => {
-    const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
-    return isJobFullyPaid(j);
-  })() : false;
 
   const isNewCustomer = useMemo(() => {
     // If no customer selected or typed, not a new customer
@@ -993,9 +1003,6 @@ export default function AdminPage() {
   const canDeleteBills = isAdmin;
   const canSeeTaxInvoice = isCSO || isAdmin || user?.role === 'accounting';
   const canSeeStuck = isAdmin || isCSO;
-  // Shift-based lock disabled (CASHIER_SHIFT_ENABLED=false) — only lock if job is already paid
-  const isPricingLocked = isPaidJob;
-  const isCartLocked = isPaidJob;
   const [dialogSelectedCategory, setDialogSelectedCategory] = useState<string | null>(null);
 
   // Proforma states
@@ -2359,7 +2366,9 @@ export default function AdminPage() {
       discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
-      type: isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store"))),
+      type: (isAlreadyPaidJob && existingJob?.type)
+        ? existingJob.type
+        : (isWalkIn ? (isDelivery ? "delivery" : "in_store") : ((isPickup && isDelivery) ? "full_service" : (isPickup ? "pickup" : (isDelivery ? "delivery" : "in_store")))),
       subStatus: isWalkIn && !editingSubStatus ? "billing" : editingSubStatus,
       source: isWalkIn ? "pos" : "app",
       status: (() => {
@@ -2405,8 +2414,8 @@ export default function AdminPage() {
       isPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (isWalkIn ? false : paymentMethod === 'paid')),
       isShopPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
 
-      fee,
-      totalAmount: calculatedTotal,
+      fee: (isAlreadyPaidJob && existingJob) ? (existingJob.fee ?? 0) : fee,
+      totalAmount: (isAlreadyPaidJob && existingJob) ? (Number(existingJob.totalAmount) || 0) : calculatedTotal,
       billNo: billNo?.trim() || null,
       serviceType: dialogCart[0]?.id || "wash_fold",
 
@@ -4559,7 +4568,7 @@ export default function AdminPage() {
                 )}
 
                 {/* Main Content Grid */}
-                <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3">
+                <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3 min-h-0 flex flex-col">
                   {!showJobLogs ? (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-auto lg:h-full">
                     
@@ -4699,9 +4708,11 @@ export default function AdminPage() {
                             </Label>
                             <select 
                               id="store-select"
-                              className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+                              disabled={isPaidJob}
+                              className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed"
                               value={selectedStoreIndex}
                               onChange={(e) => {
+                                if (isPaidJob) return;
                                 setSelectedStoreIndex(Number(e.target.value));
                                 setEditingFeeLock(null);
                               }}
@@ -4713,47 +4724,68 @@ export default function AdminPage() {
                           </div>
 
                           <div className="flex items-center justify-start gap-4 pb-1 w-full sm:w-auto flex-wrap sm:flex-nowrap">
-                            <Label className="flex items-center gap-1.5 cursor-pointer">
+                            <Label 
+                              className={`flex items-center gap-1.5 ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                              title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
+                            >
                               <input 
                                 type="checkbox" 
                                 checked={isPickup}
+                                disabled={isLogisticsLocked}
                                 onChange={(e) => {
+                                  if (isLogisticsLocked) return;
                                   setIsPickup(e.target.checked);
                                   if (e.target.checked) setIsWalkIn(false);
                                   setEditingFeeLock(null);
                                 }}
-                                className="rounded text-blue-600 w-3 h-3 border-slate-300"
+                                className="rounded text-blue-600 w-3 h-3 border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
                               />
                               <span className="text-xs font-semibold text-slate-700">Pickup</span>
                             </Label>
-                            <Label className="flex items-center gap-1.5 cursor-pointer">
+                            <Label 
+                              className={`flex items-center gap-1.5 ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                              title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
+                            >
                               <input 
                                 type="checkbox" 
                                 checked={isDelivery}
+                                disabled={isLogisticsLocked}
                                 onChange={(e) => {
+                                  if (isLogisticsLocked) return;
                                   setIsDelivery(e.target.checked);
                                   if (e.target.checked && isPickup) setIsWalkIn(false);
                                   setEditingFeeLock(null);
                                 }}
-                                className="rounded text-blue-600 w-3 h-3 border-slate-300"
+                                className="rounded text-blue-600 w-3 h-3 border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
                               />
                               <span className="text-xs font-semibold text-slate-700">Delivery</span>
                             </Label>
-                            <Label className="flex items-center gap-1.5 cursor-pointer ml-2">
+                            <Label 
+                              className={`flex items-center gap-1.5 ml-2 ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                              title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
+                            >
                               <input 
                                 type="checkbox" 
                                 checked={isWalkIn}
+                                disabled={isLogisticsLocked}
                                 onChange={(e) => {
+                                  if (isLogisticsLocked) return;
                                   setIsWalkIn(e.target.checked);
                                   if (e.target.checked) {
                                     setIsPickup(false);
                                   }
                                   setEditingFeeLock(null);
                                 }}
-                                className="rounded text-amber-500 w-3 h-3 border-slate-300 focus:ring-amber-500"
+                                className="rounded text-amber-500 w-3 h-3 border-slate-300 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
                               />
                               <span className="text-xs font-semibold text-amber-700">Walk-In</span>
                             </Label>
+                            {isLogisticsLocked && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded shadow-xs" title="งานนี้ชำระเงินแล้ว ค่าบริการและการรับ-ส่งถูกล็อค">
+                                <LockIcon size={11} className="text-amber-600" />
+                                <span>Locked</span>
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -6848,8 +6880,21 @@ export default function AdminPage() {
                         
                         <div className="flex justify-between items-end mb-2">
                           <div className="flex flex-col gap-0.5">
-                             <Label className="flex items-center gap-1 cursor-pointer">
-                                <input type="checkbox" checked={isFreeDelivery} onChange={(e) => { setIsFreeDelivery(e.target.checked); if (!e.target.checked) setEditingFeeLock(null); }} />
+                             <Label 
+                               className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                               title={isPaidJob ? "งานนี้ชำระเงินแล้ว ไม่สามารถแก้ไขค่าจัดส่งได้" : undefined}
+                             >
+                                <input 
+                                  type="checkbox" 
+                                  checked={isFreeDelivery} 
+                                  disabled={isPaidJob}
+                                  onChange={(e) => { 
+                                    if (isPaidJob) return;
+                                    setIsFreeDelivery(e.target.checked); 
+                                    if (!e.target.checked) setEditingFeeLock(null); 
+                                  }} 
+                                  className="disabled:opacity-50 disabled:cursor-not-allowed"
+                                />
                                 <span className="text-xs text-slate-300">Free Delivery</span>
                               </Label>
                               <span className="text-[10px] text-slate-400 ml-5">Fee: {selectedVIPLabel ? '4' : '10'}฿/km</span>
@@ -6915,7 +6960,7 @@ export default function AdminPage() {
 )}
                   </div>
                   ) : (
-                    <div className="h-full w-full bg-white rounded-xl border border-slate-200 overflow-hidden">
+                    <div className="h-full w-full bg-slate-50 rounded-xl border border-slate-200 overflow-hidden flex flex-col min-h-0">
                       {hasAccess("activity-logs") ? (
                         <AdminLogs jobId={editingJobId || undefined} />
                       ) : (

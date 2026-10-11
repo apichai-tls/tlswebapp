@@ -1384,7 +1384,16 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
   const data: any = {};
-  if (updates.type !== undefined) data.type = updates.type;
+  const isPaidLockedJob = Boolean(existingJob && (existingJob.isPaid || existingJob.isShopPaid) && updates.isPaid !== false);
+
+  if (updates.type !== undefined) {
+    if (isPaidLockedJob && existingJob?.type && updates.type !== existingJob.type) {
+      console.warn(`[Financial Guard] Blocked attempt to change type from '${existingJob.type}' to '${updates.type}' on paid job ${id} without unlocking.`);
+      data.type = existingJob.type;
+    } else {
+      data.type = updates.type;
+    }
+  }
   if (updates.status !== undefined) {
     if (existingJob) {
       if (existingJob.status === 'completed' && ['pending', 'tba', 'pickup', 'billing'].includes(updates.status)) {
@@ -1523,11 +1532,26 @@ export async function updateJobAction(id: string, updates: any) {
       data.csoPaidAt = null;
     }
   }
-  if ((updates as any).csoPaidAt !== undefined) data.csoPaidAt = (updates as any).csoPaidAt;
-  if (updates.fee !== undefined) data.fee = Math.max(0, Number(updates.fee) || 0);
+  if (updates.fee !== undefined) {
+    const newFee = Math.max(0, Number(updates.fee) || 0);
+    if (isPaidLockedJob && existingJob && (existingJob.fee ?? 0) !== newFee) {
+      console.warn(`[Financial Guard] Blocked attempt to change fee from ${existingJob.fee} to ${newFee} on paid job ${id} without unlocking.`);
+      data.fee = existingJob.fee ?? 0;
+    } else {
+      data.fee = newFee;
+    }
+  }
   if (updates.discount !== undefined) data.discount = updates.discount;
   if (updates.discountPercent !== undefined) data.discountPercent = updates.discountPercent;
-  if (updates.totalAmount !== undefined) data.totalAmount = updates.totalAmount !== null ? Math.max(0, Number(updates.totalAmount) || 0) : null;
+  if (updates.totalAmount !== undefined) {
+    const newTotal = updates.totalAmount !== null ? Math.max(0, Number(updates.totalAmount) || 0) : null;
+    if (isPaidLockedJob && existingJob && (Number(existingJob.totalAmount) || 0) !== (newTotal || 0)) {
+      console.warn(`[Financial Guard] Blocked attempt to change totalAmount from ${existingJob.totalAmount} to ${newTotal} on paid job ${id} without unlocking.`);
+      data.totalAmount = existingJob.totalAmount;
+    } else {
+      data.totalAmount = newTotal;
+    }
+  }
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
   if (updates.laundryTypes !== undefined) {
     data.laundryTypes = Array.isArray(updates.laundryTypes)
@@ -1597,6 +1621,24 @@ export async function updateJobAction(id: string, updates: any) {
 
   if (Object.keys(changes).length > 0) {
     try {
+      // Enrich rider names directly into the log details so no search/lookup is needed later
+      const riderKeys = ['pickupRiderId', 'deliveryRiderId', 'riderId'];
+      const rawRiderIds = riderKeys.map(k => changes[k]).filter(Boolean);
+      if (rawRiderIds.length > 0) {
+        try {
+          const foundRiders = await prisma.rider.findMany({
+            where: { id: { in: rawRiderIds } },
+            select: { id: true, name: true, nickname: true }
+          });
+          const rMap = new Map(foundRiders.map(r => [r.id, r.nickname ? `${r.name} (${r.nickname})` : r.name]));
+          if (changes.pickupRiderId) changes.pickupRiderName = rMap.get(changes.pickupRiderId) || changes.pickupRiderId;
+          if (changes.deliveryRiderId) changes.deliveryRiderName = rMap.get(changes.deliveryRiderId) || changes.deliveryRiderId;
+          if (changes.riderId) changes.riderName = rMap.get(changes.riderId) || changes.riderId;
+        } catch (rErr: any) {
+          console.error("Failed to enrich rider names for activity log:", rErr.message);
+        }
+      }
+
       await prisma.activityLog.create({
         data: {
           entityId: id,

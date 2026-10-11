@@ -1,6 +1,34 @@
-import { useState, useEffect, Fragment } from "react";
+"use client";
+
+import { useState, useEffect, useMemo, Fragment } from "react";
 import { format } from "date-fns";
-import { Loader2, Search, ChevronDown, Wrench, ShieldAlert, AlertTriangle, Check, FileImage, RefreshCw } from "lucide-react";
+import {
+  Loader2,
+  Search,
+  ChevronDown,
+  Wrench,
+  AlertTriangle,
+  Check,
+  RefreshCw,
+  ExternalLink,
+  Eye,
+  X,
+  Copy,
+  CheckCheck,
+  Truck,
+  Camera,
+  Receipt,
+  Banknote,
+  FileText,
+  User,
+  Filter,
+  Maximize2,
+  Calendar,
+  MapPin,
+  Package,
+  Layers,
+  Sparkles,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +38,7 @@ import { diagnoseJobAction, resolveJobDiscrepancyAction } from "@/actions/db";
 import { toast } from "sonner";
 import { formatBaht } from "@/lib/utils";
 
+// --- TYPES ---
 interface ActivityLog {
   id: string;
   entityId: string;
@@ -22,20 +51,404 @@ interface ActivityLog {
   customerName?: string | null;
 }
 
+interface PhotoItem {
+  url: string;
+  label: string;
+  category: 'pickup' | 'delivery' | 'bill' | 'slip' | 'bag' | 'general';
+}
+
+interface ParsedActionBadge {
+  label: string;
+  category: 'status' | 'photo' | 'finance' | 'rider' | 'note' | 'general';
+  variantClass: string;
+  icon?: any;
+}
+
+type FilterCategory = 'all' | 'status' | 'photo' | 'finance' | 'rider' | 'note';
+
+// --- UTILITY: Extract all valid image URLs from any string / array / JSON ---
+function extractImageUrls(val: any): string[] {
+  if (!val) return [];
+  if (Array.isArray(val)) {
+    return val.flatMap(item => extractImageUrls(item));
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.flatMap(item => extractImageUrls(item));
+        }
+      } catch {}
+    }
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed
+        .split(',')
+        .map(s => s.trim().replace(/^["']|["']$/g, ''))
+        .filter(s => s.startsWith('http'));
+    }
+  }
+  return [];
+}
+
+// --- UTILITY: Extract all photos categorized from parsed details ---
+function extractPhotosFromDetails(parsed: Record<string, any>): PhotoItem[] {
+  const photos: PhotoItem[] = [];
+
+  const addUrls = (val: any, label: string, category: PhotoItem['category']) => {
+    const urls = extractImageUrls(val);
+    urls.forEach(url => {
+      if (!photos.some(p => p.url === url)) {
+        photos.push({ url, label, category });
+      }
+    });
+  };
+
+  if (parsed.deliveryProofImageUrl) addUrls(parsed.deliveryProofImageUrl, "Delivery Proof", "delivery");
+  if (parsed.pickupProofImageUrl) addUrls(parsed.pickupProofImageUrl, "Pickup Proof", "pickup");
+  if (parsed.proofImageUrl) addUrls(parsed.proofImageUrl, "Proof Photo", "general");
+  if (parsed.billImageUrl) addUrls(parsed.billImageUrl, "Bill / Receipt", "bill");
+  if (parsed.slipImageUrl) addUrls(parsed.slipImageUrl, "Payment Slip", "slip");
+  if (parsed.bagImageUrl) addUrls(parsed.bagImageUrl, "Laundry Bag", "bag");
+
+  return photos;
+}
+
+// --- UTILITY: Status styling helper ---
+function getStatusBadgeStyle(status: string) {
+  const s = status.toLowerCase();
+  if (s === 'completed') return 'bg-emerald-100 text-emerald-800 border-emerald-300';
+  if (s === 'billing') return 'bg-amber-100 text-amber-800 border-amber-300';
+  if (s === 'delivery' || s === 'pickup') return 'bg-sky-100 text-sky-800 border-sky-300';
+  if (s === 'processing' || s === 'wash' || s === 'dry' || s === 'iron') return 'bg-purple-100 text-purple-800 border-purple-300';
+  if (s === 'cancel' || s === 'cancelled') return 'bg-rose-100 text-rose-800 border-rose-300';
+  return 'bg-slate-100 text-slate-800 border-slate-300';
+}
+
+const DEFAULT_RIDERS: Record<string, string> = {
+  'RIDER-01': 'Pai Lampai (Pai)',
+  'RIDER-02': 'Jub Vitoon (Jub)',
+  '2c8e8f14-5ab0-43cd-90ea-8297c1e38801': 'Zack Jeerawut (Jeerawut)',
+  'fd2c2f01-999d-4604-9c62-1300b4f70723': 'Ball Chanthat (Ball)',
+  'RIDER-03': 'Ko Nawat (Ko)',
+  'RIDER-04': 'Billy Sitthikorn (Billy)',
+  'RIDER-005': 'Man Nawat (Man)',
+  'aed029b5-cedc-4f5d-92af-d7bde96eddb6': 'Gus Kritsada (Gus)',
+  'RIDER-006': 'Q Apinun (Q)',
+};
+
+// --- UTILITY: Detect high-level smart badges for table row ---
+function detectActionBadges(log: ActivityLog, parsed: Record<string, any> | null, riderMap: Record<string, string> = DEFAULT_RIDERS): ParsedActionBadge[] {
+  const badges: ParsedActionBadge[] = [];
+
+  if (log.action === 'TOPUP') {
+    badges.push({
+      label: "Wallet Top-Up",
+      category: "finance",
+      variantClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
+      icon: Banknote,
+    });
+    return badges;
+  }
+
+  if (log.action === 'ADJUST') {
+    badges.push({
+      label: "Wallet Adjustment",
+      category: "finance",
+      variantClass: "bg-amber-100 text-amber-800 border-amber-300",
+      icon: Banknote,
+    });
+    return badges;
+  }
+
+  if (log.action === 'WALLET_APPROVED') {
+    badges.push({
+      label: "Wallet Approved",
+      category: "finance",
+      variantClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
+      icon: Check,
+    });
+    return badges;
+  }
+
+  if (log.action === 'WALLET_REJECTED') {
+    badges.push({
+      label: "Wallet Rejected",
+      category: "finance",
+      variantClass: "bg-rose-100 text-rose-800 border-rose-300",
+      icon: X,
+    });
+    return badges;
+  }
+
+  if (log.action === 'create') {
+    badges.push({
+      label: "Job Created",
+      category: "status",
+      variantClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
+      icon: Sparkles,
+    });
+    return badges;
+  }
+
+  if (log.action === 'delete') {
+    badges.push({
+      label: "Deleted",
+      category: "general",
+      variantClass: "bg-rose-100 text-rose-800 border-rose-300",
+    });
+    return badges;
+  }
+
+  // UPDATE action analysis
+  if (log.action === 'update' && parsed) {
+    // 1. Status change
+    if (parsed.status) {
+      const statusTitle = String(parsed.status).charAt(0).toUpperCase() + String(parsed.status).slice(1);
+      badges.push({
+        label: `Status: ${statusTitle}`,
+        category: "status",
+        variantClass: getStatusBadgeStyle(parsed.status),
+        icon: RefreshCw,
+      });
+    }
+
+    // 2. Photos uploaded
+    const photoCount = extractPhotosFromDetails(parsed).length;
+    if (photoCount > 0) {
+      badges.push({
+        label: `Proof Photos (${photoCount})`,
+        category: "photo",
+        variantClass: "bg-cyan-100 text-cyan-800 border-cyan-300",
+        icon: Camera,
+      });
+    }
+
+    // 3. Bill / Receipt
+    if (parsed.billNo || (parsed.billImageUrl && !parsed.deliveryProofImageUrl && !parsed.pickupProofImageUrl)) {
+      badges.push({
+        label: "Bill / Receipt",
+        category: "photo",
+        variantClass: "bg-blue-100 text-blue-800 border-blue-300",
+        icon: Receipt,
+      });
+    }
+
+    // 4. Rider assigned/changed
+    if (parsed.pickupRiderId || parsed.deliveryRiderId || parsed.riderId) {
+      const rawRiderId = String(parsed.deliveryRiderId || parsed.pickupRiderId || parsed.riderId);
+      const riderName = riderMap[rawRiderId] || DEFAULT_RIDERS[rawRiderId] || rawRiderId;
+      badges.push({
+        label: `Rider Assigned: ${riderName}`,
+        category: "rider",
+        variantClass: "bg-violet-100 text-violet-800 border-violet-300",
+        icon: Truck,
+      });
+    }
+
+    // 5. Total amount / price update
+    if (parsed.totalAmount !== undefined && !parsed.status) {
+      badges.push({
+        label: `Total: ${formatBaht(parsed.totalAmount)}`,
+        category: "finance",
+        variantClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
+        icon: Banknote,
+      });
+    }
+
+    // 6. Admin Note
+    if (parsed.adminNotesJson) {
+      badges.push({
+        label: "Admin Note",
+        category: "note",
+        variantClass: "bg-slate-100 text-slate-700 border-slate-300",
+        icon: FileText,
+      });
+    }
+
+    // 7. Items updated
+    if (parsed.itemsJson) {
+      badges.push({
+        label: "Items Updated",
+        category: "general",
+        variantClass: "bg-indigo-100 text-indigo-800 border-indigo-300",
+        icon: Package,
+      });
+    }
+  }
+
+  // Fallback if no specific badges detected
+  if (badges.length === 0) {
+    badges.push({
+      label: log.action.toUpperCase(),
+      category: "general",
+      variantClass: "bg-slate-100 text-slate-700 border-slate-300",
+    });
+  }
+
+  return badges;
+}
+
+// --- COMPONENT: Fullscreen Image Lightbox Modal ---
+function ImageLightboxModal({
+  photo,
+  onClose,
+}: {
+  photo: { url: string; label: string } | null;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  if (!photo) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-4xl max-h-[90vh] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header bar */}
+        <div className="flex items-center justify-between px-5 py-3.5 bg-slate-900/90 border-b border-slate-800 text-white z-10">
+          <div className="flex items-center gap-2.5">
+            <Camera size={18} className="text-indigo-400" />
+            <span className="font-semibold text-sm">{photo.label}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href={photo.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition flex items-center gap-1.5 text-xs px-2.5"
+              title="Open full image in new tab"
+            >
+              <ExternalLink size={14} />
+              <span>Open Original</span>
+            </a>
+            <button
+              onClick={onClose}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Image Display */}
+        <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-black/60">
+          <img
+            src={photo.url}
+            alt={photo.label}
+            className="max-h-[75vh] w-auto max-w-full object-contain rounded-lg shadow-md"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- MAIN COMPONENT ---
 export function AdminLogs({ jobId }: { jobId?: string }) {
   const { user } = useAuth();
   const isSuperAdmin = user?.email === "admin@tls.com";
 
   const [logs, setLogs] = useState<ActivityLog[]>([]);
+  const [riderMap, setRiderMap] = useState<Record<string, string>>(DEFAULT_RIDERS);
   const [isLoading, setIsLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedFilter, setSelectedFilter] = useState<FilterCategory>("all");
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
+  const [rawJsonOpen, setRawJsonOpen] = useState<Record<string, boolean>>({});
+  const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
 
-  // Diagnostics state
+  const formatRiderName = (id?: string | null): string => {
+    if (!id) return '-';
+    return riderMap[id] || DEFAULT_RIDERS[id] || id;
+  };
+
+  // Lightbox state
+  const [activePhoto, setActivePhoto] = useState<{ url: string; label: string } | null>(null);
+
+  // Diagnostics state (Super Admin)
   const [diagJobId, setDiagJobId] = useState("");
   const [diagResult, setDiagResult] = useState<any>(null);
   const [isDiagnosing, setIsDiagnosing] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
+
+  const fetchLogs = async (searchVal?: string) => {
+    setIsLoading(true);
+    try {
+      const currentQuery = searchVal !== undefined ? searchVal : searchTerm;
+      let url = jobId ? `/api/logs?entityId=${jobId}&limit=200` : "/api/logs?limit=200";
+      if (!jobId && currentQuery.trim()) {
+        url = `/api/logs?q=${encodeURIComponent(currentQuery.trim())}&limit=500`;
+      }
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setLogs(data);
+        } else if (data && Array.isArray(data.logs)) {
+          setLogs(data.logs);
+          if (data.riders) {
+            setRiderMap(prev => ({ ...prev, ...data.riders }));
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch logs", e);
+      toast.error("Failed to load activity logs");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (jobId) {
+      fetchLogs();
+      return;
+    }
+
+    // Debounce search input
+    const delayDebounceFn = setTimeout(() => {
+      fetchLogs();
+    }, 400);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [jobId, searchTerm]);
+
+  const toggleRow = (logId: string) => {
+    setExpandedLogIds(prev => ({
+      ...prev,
+      [logId]: !prev[logId]
+    }));
+  };
+
+  const toggleRawJson = (logId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRawJsonOpen(prev => ({
+      ...prev,
+      [logId]: !prev[logId]
+    }));
+  };
+
+  const copyRawJson = (logId: string, details: string | null, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!details) return;
+    navigator.clipboard.writeText(details);
+    setCopiedLogId(logId);
+    toast.success("Raw JSON copied to clipboard");
+    setTimeout(() => setCopiedLogId(null), 2000);
+  };
 
   const handleDiagnose = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,327 +496,508 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
     }
   };
 
-  const fetchLogs = async (searchVal?: string) => {
-    setIsLoading(true);
-    try {
-      const currentQuery = searchVal !== undefined ? searchVal : searchTerm;
-      let url = jobId ? `/api/logs?entityId=${jobId}` : "/api/logs";
-      if (!jobId && currentQuery.trim()) {
-        url = `/api/logs?q=${encodeURIComponent(currentQuery.trim())}`;
-      }
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        setLogs(data);
-      }
-    } catch (e) {
-      console.error("Failed to fetch logs", e);
-    } finally {
-      setIsLoading(false);
-    }
+  // Pre-parse details & compute smart badges for all logs
+  const parsedLogs = useMemo(() => {
+    return logs.map(log => {
+      let parsed: Record<string, any> | null = null;
+      try {
+        if (log.details) parsed = JSON.parse(log.details);
+      } catch {}
+
+      const badges = detectActionBadges(log, parsed, riderMap);
+      const photos = parsed ? extractPhotosFromDetails(parsed) : [];
+
+      return {
+        ...log,
+        parsedDetails: parsed,
+        actionBadges: badges,
+        photos,
+      };
+    });
+  }, [logs, riderMap]);
+
+  // Client-side category filtering
+  const filteredLogs = useMemo(() => {
+    if (selectedFilter === 'all') return parsedLogs;
+    return parsedLogs.filter(log => {
+      return log.actionBadges.some(b => b.category === selectedFilter);
+    });
+  }, [parsedLogs, selectedFilter]);
+
+  // Field label mapping for human-readable changes
+  const mapKeyToLabel = (key: string): string => {
+    const labels: Record<string, string> = {
+      status: "Order Status",
+      subStatus: "Laundry Process Stage",
+      isPaid: "Payment Status",
+      isShopPaid: "Shop Paid Confirmation",
+      paymentMethod: "Payment Method",
+      paymentChannel: "Payment Channel",
+      totalAmount: "Total Amount",
+      fee: "Delivery Fee",
+      discount: "Discount",
+      remark: "Customer / Order Remark",
+      customerName: "Customer Name",
+      customerPhone: "Customer Phone",
+      branchId: "Branch Location",
+      deliveryLocation: "Delivery Address",
+      pickupLocation: "Pickup Address",
+      pickupDistance: "Pickup Distance (km)",
+      deliveryDistance: "Delivery Distance (km)",
+      pickupCommission: "Pickup Commission (฿)",
+      deliveryCommission: "Delivery Commission (฿)",
+      pickupRiderId: "Pickup Rider",
+      deliveryRiderId: "Delivery Rider",
+      riderId: "Assigned Rider",
+      pickupScheduledAt: "Pickup Scheduled Time",
+      deliveryScheduledAt: "Delivery Scheduled Time",
+      csoPaidAt: "CSO Paid Timestamp",
+      shopPaidAt: "Shop Paid Timestamp",
+      isStuck: "Flagged Stuck",
+      cashPlaced: "Cash Placed at Shop",
+      serviceType: "Service Code",
+      type: "Order Type",
+      billNo: "Bill Number",
+      laundryTypes: "Laundry Categories",
+    };
+    return labels[key] || key;
   };
 
-  useEffect(() => {
-    // If general view and search is empty, do not load anything
-    if (!jobId && !searchTerm.trim()) {
-      setLogs([]);
-      setIsLoading(false);
-      return;
+  // Human-readable value formatter
+  const formatFieldValue = (key: string, val: any): React.ReactNode => {
+    if (val === null || val === undefined || val === '') return <span className="text-slate-400 italic">None</span>;
+    if (key === 'pickupRiderId' || key === 'deliveryRiderId' || key === 'riderId') {
+      const riderIdStr = String(val);
+      const riderName = formatRiderName(riderIdStr);
+      return (
+        <div className="flex items-center gap-1.5 font-bold text-violet-700">
+          <Truck size={14} className="shrink-0 text-violet-500" />
+          <span>{riderName}</span>
+          {val !== riderName && (
+            <span className="font-mono text-[10px] text-slate-400 font-normal">({riderIdStr.split('-')[0]})</span>
+          )}
+        </div>
+      );
     }
-
-    if (jobId) {
-      fetchLogs();
-      return;
+    if (key === 'branchId') {
+      const branchNames: Record<string, string> = {
+        'shop-head': '⭐ That Laundry Shop (Sukhumvit 15)',
+        'shop-pty': '🌊 That Laundry Shop (Pattaya)',
+      };
+      return <span className="font-bold text-slate-800">{branchNames[String(val)] || String(val)}</span>;
     }
-
-    // Debounce search query
-    const delayDebounceFn = setTimeout(() => {
-      fetchLogs();
-    }, 400);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [jobId, searchTerm]);
-
-  const toggleRow = (logId: string) => {
-    setExpandedLogIds(prev => ({
-      ...prev,
-      [logId]: !prev[logId]
-    }));
+    if (key === 'isPaid' || key === 'isShopPaid') {
+      return val ? (
+        <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-[11px] font-bold">
+          Paid / Confirmed
+        </Badge>
+      ) : (
+        <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-[11px] font-bold">
+          Unpaid
+        </Badge>
+      );
+    }
+    if (key === 'status') {
+      return (
+        <Badge variant="outline" className={`text-[11px] font-bold capitalize ${getStatusBadgeStyle(String(val))}`}>
+          {String(val)}
+        </Badge>
+      );
+    }
+    if (key === 'subStatus') {
+      return (
+        <Badge variant="outline" className="bg-indigo-50 text-indigo-700 border-indigo-200 text-[11px] font-bold capitalize">
+          {String(val)}
+        </Badge>
+      );
+    }
+    if (key === 'totalAmount' || key === 'fee' || key === 'discount' || key === 'pickupCommission' || key === 'deliveryCommission') {
+      return <span className="font-mono font-bold text-slate-900">{formatBaht(Number(val) || 0)}</span>;
+    }
+    if (key === 'pickupScheduledAt' || key === 'deliveryScheduledAt' || key === 'csoPaidAt' || key === 'shopPaidAt') {
+      try {
+        const d = new Date(val);
+        if (!isNaN(d.getTime())) {
+          return <span className="font-medium text-slate-800">{format(d, "dd MMM yyyy, HH:mm")}</span>;
+        }
+      } catch {}
+    }
+    if (typeof val === 'boolean') {
+      return val ? "Yes" : "No";
+    }
+    if (typeof val === 'object') {
+      return <span className="font-mono text-xs">{JSON.stringify(val)}</span>;
+    }
+    return String(val);
   };
 
-  const filteredLogs = logs;
+  // Render expanded row details
+  const renderDetails = (log: typeof parsedLogs[0]) => {
+    const parsed = log.parsedDetails;
+    if (!parsed) {
+      return <div className="text-xs text-slate-500 italic p-3">{log.details || "No details available"}</div>;
+    }
 
-  const parseDetails = (detailsStr: string | null, action: string) => {
-    if (!detailsStr) return null;
-    try {
-      const parsed = JSON.parse(detailsStr);
-      
-      if (action === 'create') {
-        return (
-          <div className="flex flex-col gap-2 text-sm">
-            <div className="flex items-center gap-2 text-emerald-700 font-semibold">
-              <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse animate-duration-1000" />
-              Created New Job Successfully
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 mt-1 text-xs text-slate-600 max-w-lg bg-emerald-50/40 p-3 rounded-lg border border-emerald-100/50">
-              <div>
-                <span className="text-slate-400">Customer:</span>{" "}
-                <span className="font-semibold text-slate-800">{parsed.customerName || '-'}</span>
-              </div>
-              <div>
-                <span className="text-slate-400">Total Amount:</span>{" "}
-                <span className="font-semibold text-slate-800">฿{parsed.totalAmount || 0}</span>
-              </div>
-              <div>
-                <span className="text-slate-400">Initial Status:</span>{" "}
-                <span className="font-semibold text-slate-800 capitalize">{parsed.status || 'Pending'}</span>
-              </div>
-              <div>
-                <span className="text-slate-400">Process Type:</span>{" "}
-                <span className="font-semibold text-slate-800 capitalize">{parsed.subStatus || 'None'}</span>
-              </div>
-            </div>
+    // 1. TOPUP Action Card
+    if (log.action === 'TOPUP') {
+      const balBefore = parsed.balanceBefore !== undefined ? Number(parsed.balanceBefore) : undefined;
+      const balAfter = parsed.balanceAfter !== undefined ? Number(parsed.balanceAfter) : undefined;
+
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
+            <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+            Member Wallet Top-Up Successful
           </div>
-        );
-      }
-      if (action === 'TOPUP') {
-        const balBefore = parsed.balanceBefore !== undefined ? Number(parsed.balanceBefore) : undefined;
-        const balAfter = parsed.balanceAfter !== undefined ? Number(parsed.balanceAfter) : undefined;
-
-        return (
-          <div className="flex flex-col gap-2 text-sm">
-            <div className="flex items-center gap-2 text-emerald-700 font-bold">
-              <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-              Member Wallet Top-Up Successful (เติมเงินสมาชิก)
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 bg-emerald-50/50 p-4 rounded-xl border border-emerald-200/70 text-xs">
+            <div>
+              <span className="text-slate-400 font-medium">Customer:</span>{" "}
+              <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-2 mt-1 text-xs text-slate-700 max-w-2xl bg-emerald-50/50 p-3.5 rounded-xl border border-emerald-200/60 shadow-xs">
-              <div>
-                <span className="text-slate-400 font-medium">Customer:</span>{" "}
-                <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
+            <div>
+              <span className="text-slate-400 font-medium">Receipt No:</span>{" "}
+              <span className="font-mono font-bold text-emerald-800">{parsed.receiptNo || '-'}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 font-medium">Package:</span>{" "}
+              <span className="font-bold text-slate-900">{parsed.packageName || 'Standard Top-Up'}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 font-medium">Paid Amount:</span>{" "}
+              <span className="font-black text-slate-900">{formatBaht(parsed.amount || 0)}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 font-medium">Bonus Added:</span>{" "}
+              <span className="font-bold text-emerald-600">+{formatBaht(parsed.bonusAmount || 0)}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 font-medium">Total Credit Added:</span>{" "}
+              <span className="font-black text-emerald-700">{formatBaht(parsed.totalCredit || parsed.amount || 0)}</span>
+            </div>
+            {balBefore !== undefined && balAfter !== undefined && (
+              <div className="col-span-full pt-2.5 mt-1 border-t border-emerald-200/70 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span>
+                  Previous Balance: <strong className="font-mono text-slate-700">{formatBaht(balBefore)}</strong> →{" "}
+                  <strong className="font-mono font-black text-emerald-800">New Balance: {formatBaht(balAfter)}</strong>
+                </span>
+                <span className="text-slate-500 font-medium">Channel: {parsed.paymentChannel || 'Transfer'}</span>
               </div>
-              <div>
-                <span className="text-slate-400 font-medium">Receipt No:</span>{" "}
-                <span className="font-mono font-bold text-emerald-800">{parsed.receiptNo || '-'}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 font-medium">Package:</span>{" "}
-                <span className="font-bold text-slate-900">{parsed.packageName || 'Member Package'}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 font-medium">Paid Amount (ยอดที่ชำระ):</span>{" "}
-                <span className="font-black text-slate-900">฿{Number(parsed.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 font-medium">Bonus Added (โบนัส):</span>{" "}
-                <span className="font-bold text-emerald-600">+฿{Number(parsed.bonusAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 font-medium">Total Credit (เครดิตที่ได้):</span>{" "}
-                <span className="font-black text-emerald-700">฿{Number(parsed.totalCredit || parsed.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-              </div>
-              {balBefore !== undefined && balAfter !== undefined && (
-                <div className="col-span-full pt-2 mt-1 border-t border-emerald-200/60 text-xs text-slate-700 flex flex-wrap items-center justify-between gap-2">
-                  <span>
-                    ยอดก่อนเติม: <strong className={`font-mono ${balBefore < 0 ? 'text-rose-600 font-bold' : 'text-slate-600'}`}>{formatBaht(balBefore)}</strong> → <strong className={`font-mono font-bold ${balAfter < 0 ? 'text-rose-600' : 'text-emerald-800'}`}>ยอดคงเหลือใหม่: {formatBaht(balAfter)}</strong>
-                  </span>
-                  <span className="text-slate-500 font-medium text-[11px]">
-                    ช่องทาง: {parsed.paymentChannel || 'Transfer'}
-                  </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // 2. ADJUST Action Card
+    if (log.action === 'ADJUST' || (log.action === 'update' && parsed.creditBalance)) {
+      const balBefore = parsed.balanceBefore !== undefined ? Number(parsed.balanceBefore) : (parsed.creditBalance?.from !== undefined ? Number(parsed.creditBalance.from) : 0);
+      const balAfter = parsed.balanceAfter !== undefined ? Number(parsed.balanceAfter) : (parsed.creditBalance?.to !== undefined ? Number(parsed.creditBalance.to) : 0);
+      const diff = balAfter - balBefore;
+      const isAdd = diff >= 0;
+      const absAmount = parsed.adjustAmount !== undefined ? Number(parsed.adjustAmount) : Math.abs(diff);
+
+      return (
+        <div className="space-y-4">
+          <div className={`flex items-center gap-2 font-bold text-sm ${isAdd ? 'text-emerald-700' : 'text-rose-700'}`}>
+            <span className={`flex h-2.5 w-2.5 rounded-full ${isAdd ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+            {isAdd ? 'Wallet Credit Adjusted (+ Added)' : 'Wallet Credit Adjusted (- Deducted)'}
+          </div>
+          <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 p-4 rounded-xl border text-xs ${isAdd ? 'bg-emerald-50/50 border-emerald-200/70' : 'bg-rose-50/50 border-rose-200/70'}`}>
+            <div>
+              <span className="text-slate-400 font-medium">Customer:</span>{" "}
+              <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 font-medium">Adjustment:</span>{" "}
+              <span className={`font-black ${isAdd ? 'text-emerald-600' : 'text-rose-600'}`}>
+                {isAdd ? `+${formatBaht(absAmount)}` : `-${formatBaht(absAmount)}`}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-400 font-medium">New Balance:</span>{" "}
+              <span className="font-black font-mono text-slate-900">{formatBaht(balAfter)}</span>
+            </div>
+            <div className="col-span-full pt-2.5 mt-1 border-t border-slate-200/70 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                Previous: <strong className="font-mono text-slate-600">{formatBaht(balBefore)}</strong> →{" "}
+                <strong className="font-mono font-bold text-slate-900">New: {formatBaht(balAfter)}</strong>
+              </span>
+              {parsed.reason && (
+                <div className="bg-white/90 border border-slate-300 px-2.5 py-0.5 rounded text-[11px] text-slate-800">
+                  <span className="text-slate-500 font-medium">Reason: </span>
+                  <span className="font-bold">{parsed.reason}</span>
                 </div>
               )}
             </div>
           </div>
-        );
-      }
-
-      if (action === 'ADJUST' || (action === 'update' && parsed.creditBalance)) {
-        const balBefore = parsed.balanceBefore !== undefined ? Number(parsed.balanceBefore) : (parsed.creditBalance?.from !== undefined ? Number(parsed.creditBalance.from) : 0);
-        const balAfter = parsed.balanceAfter !== undefined ? Number(parsed.balanceAfter) : (parsed.creditBalance?.to !== undefined ? Number(parsed.creditBalance.to) : 0);
-        const diff = balAfter - balBefore;
-        const isAdd = diff >= 0;
-        const absAmount = parsed.adjustAmount !== undefined ? Number(parsed.adjustAmount) : Math.abs(diff);
-
-        return (
-          <div className="flex flex-col gap-2 text-sm">
-            <div className={`flex items-center gap-2 font-bold ${isAdd ? 'text-emerald-700' : 'text-rose-700'}`}>
-              <span className={`flex h-2.5 w-2.5 rounded-full ${isAdd ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-              {isAdd ? 'Credit Wallet Adjusted (+ เพิ่มยอดเงิน)' : 'Credit Wallet Adjusted (- หักยอดเงิน)'}
-            </div>
-            <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-2 mt-1 text-xs text-slate-700 max-w-2xl p-3.5 rounded-xl border shadow-xs ${isAdd ? 'bg-emerald-50/50 border-emerald-200/60' : 'bg-rose-50/50 border-rose-200/60'}`}>
-              <div>
-                <span className="text-slate-400 font-medium">Customer:</span>{" "}
-                <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 font-medium">Adjustment (ปรับยอด):</span>{" "}
-                <span className={`font-black ${isAdd ? 'text-emerald-600' : 'text-rose-600'}`}>
-                  {isAdd ? `+฿${absAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `-฿${absAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-400 font-medium">New Balance (ยอดคงเหลือใหม่):</span>{" "}
-                <span className={`font-black font-mono ${balAfter < 0 ? "text-rose-600" : "text-slate-900"}`}>
-                  {balAfter < 0 ? `-฿${Math.abs(balAfter).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `฿${balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-                </span>
-              </div>
-              <div className="col-span-full pt-2 mt-1 border-t border-slate-200/60 text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span>
-                  ยอดเดิม: <strong className="font-mono text-slate-600">{balBefore < 0 ? `-฿${Math.abs(balBefore).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `฿${balBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</strong> → <strong className={`font-mono font-bold ${balAfter < 0 ? 'text-rose-600' : isAdd ? 'text-emerald-700' : 'text-slate-700'}`}>ยอดคงเหลือใหม่: {balAfter < 0 ? `-฿${Math.abs(balAfter).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : `฿${balAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</strong>
-                </span>
-                {parsed.reason && (
-                  <div className="flex items-center gap-1.5 bg-white/90 border border-slate-300/80 px-2.5 py-1 rounded-lg text-slate-800 text-[11px] shadow-xs">
-                    <span className="text-slate-500 font-bold">เหตุผล:</span>
-                    <span className="text-slate-900 font-extrabold">{parsed.reason}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-
-      const cleaned = { ...parsed };
-      const ignoredKeys = ['updatedAt', 'actorId', 'actorName', 'actorRole', 'createdAt', 'completedAt', 'id'];
-      ignoredKeys.forEach(k => delete cleaned[k]);
-      
-      if (Object.keys(cleaned).length === 0) {
-        return <span className="text-xs text-slate-400 italic">No specific changes recorded</span>;
-      }
-
-
-      const mapKeyToLabel = (key: string) => {
-        const labels: Record<string, string> = {
-          status: "Status",
-          subStatus: "Process",
-          isPaid: "Payment Status",
-          paymentMethod: "Payment Method",
-          totalAmount: "Total Amount",
-          discount: "Discount",
-          remark: "Remark",
-          customerName: "Customer",
-          branchId: "Branch",
-          items: "Laundry Items",
-          deliveryLocation: "Delivery Address",
-          pickupLocation: "Pickup Address",
-          pickupDistance: "Pickup Distance",
-          deliveryDistance: "Delivery Distance",
-          pickupCommission: "Pickup Commission",
-          deliveryCommission: "Delivery Commission",
-          adminNotesJson: "Admin Note",
-          serviceSpeed: "Service Speed",
-        };
-        return labels[key] || key;
-      };
-
-      const formatValue = (key: string, val: any) => {
-        if (key === 'isPaid') return val ? 'Paid' : 'Unpaid';
-        if (key === 'pickupScheduledAt' || key === 'deliveryScheduledAt') {
-          if (!val) return 'None';
-          try {
-            const date = new Date(val);
-            if (!isNaN(date.getTime())) {
-              return new Intl.DateTimeFormat('en-GB', {
-                timeZone: 'Asia/Bangkok',
-                day: 'numeric',
-                month: 'short',
-                year: 'numeric',
-                hour: 'numeric',
-                minute: '2-digit',
-                hour12: false
-              }).format(date);
-            }
-          } catch (e) {
-            // fallback
-          }
-        }
-        if (typeof val === 'object') return 'Modified';
-        return String(val);
-      };
-
-      return (
-        <div className="flex flex-col gap-1.5 text-xs text-slate-600" title={JSON.stringify(cleaned, null, 2)}>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Modified Fields:</div>
-          {Object.entries(cleaned).map(([k, v]) => (
-            <div key={k} className="flex items-start gap-1.5">
-              <span className="text-indigo-400 shrink-0 select-none">•</span>
-              <span>
-                Changed <span className="font-semibold text-slate-700">{mapKeyToLabel(k)}</span> to{" "}
-                <span className="text-indigo-600 font-semibold bg-indigo-50/50 px-1.5 py-0.5 rounded border border-indigo-100/30">
-                  {formatValue(k, v)}
-                </span>
-              </span>
-            </div>
-          ))}
         </div>
       );
-    } catch {
-      return <div className="text-xs text-slate-500">{detailsStr}</div>;
     }
+
+    // 3. CREATE Action Card
+    if (log.action === 'create') {
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
+            <Sparkles size={16} className="text-emerald-600" />
+            New Job Created Successfully
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-emerald-50/40 p-4 rounded-xl border border-emerald-100 text-xs">
+            <div>
+              <span className="text-slate-400 block mb-0.5">Customer:</span>
+              <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-0.5">Total Amount:</span>
+              <span className="font-mono font-bold text-slate-900">{formatBaht(parsed.totalAmount || 0)}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-0.5">Initial Status:</span>
+              <Badge variant="outline" className={`font-bold capitalize ${getStatusBadgeStyle(parsed.status || 'pending')}`}>
+                {parsed.status || 'Pending'}
+              </Badge>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-0.5">Process Stage:</span>
+              <span className="font-semibold text-slate-800 capitalize">{parsed.subStatus || 'None'}</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // 4. Photos Gallery (if any photo URLs exist)
+    const photos = log.photos;
+
+    // 5. Laundry Items (if itemsJson exists)
+    let laundryItems: any[] = [];
+    if (parsed.itemsJson) {
+      try {
+        const itemParsed = typeof parsed.itemsJson === 'string' ? JSON.parse(parsed.itemsJson) : parsed.itemsJson;
+        if (Array.isArray(itemParsed)) laundryItems = itemParsed;
+      } catch {}
+    }
+
+    // 6. Admin Notes (if adminNotesJson exists)
+    let adminNotes: any[] = [];
+    if (parsed.adminNotesJson) {
+      try {
+        const notesParsed = typeof parsed.adminNotesJson === 'string' ? JSON.parse(parsed.adminNotesJson) : parsed.adminNotesJson;
+        if (Array.isArray(notesParsed)) {
+          adminNotes = notesParsed;
+        } else if (notesParsed && Array.isArray(notesParsed.notes)) {
+          adminNotes = notesParsed.notes;
+        }
+      } catch {}
+    }
+
+    // 7. Filter other modified keys
+    const ignoredKeys = new Set([
+      'updatedAt', 'actorId', 'actorName', 'actorRole', 'createdAt', 'completedAt', 'id',
+      'deliveryProofImageUrl', 'pickupProofImageUrl', 'proofImageUrl', 'billImageUrl', 'slipImageUrl', 'bagImageUrl',
+      'itemsJson', 'adminNotesJson',
+      'pickupRiderName', 'deliveryRiderName', 'riderName'
+    ]);
+
+    const remainingKeys = Object.entries(parsed).filter(([k]) => !ignoredKeys.has(k));
+
+    return (
+      <div className="space-y-4">
+        {/* Photos Grid */}
+        {photos.length > 0 && (
+          <div className="bg-slate-50/70 p-3.5 rounded-xl border border-slate-200/80 space-y-2.5">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
+              <Camera size={15} className="text-cyan-600" />
+              <span>Attached Proof Photos & Receipts ({photos.length})</span>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              {photos.map((p, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => setActivePhoto({ url: p.url, label: `${p.label} • Order #${log.entityId}` })}
+                  className="group relative w-18 h-18 rounded-xl border border-slate-200 overflow-hidden bg-white shadow-xs hover:border-indigo-400 hover:shadow-md transition-all cursor-pointer flex flex-col items-center justify-center"
+                >
+                  <img src={p.url} alt={p.label} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                    <Maximize2 size={16} />
+                  </div>
+                  <span className="absolute bottom-0 inset-x-0 bg-slate-900/75 text-[9px] text-white font-medium text-center truncate px-1 py-0.5">
+                    {p.label}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Laundry Items Grid */}
+        {laundryItems.length > 0 && (
+          <div className="bg-slate-50/70 p-3.5 rounded-xl border border-slate-200/80 space-y-2.5">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
+              <Package size={15} className="text-indigo-600" />
+              <span>Laundry Items List ({laundryItems.length} items)</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {laundryItems.map((item, idx) => (
+                <div key={idx} className="bg-white p-2.5 rounded-lg border border-slate-200/70 text-xs flex justify-between items-center shadow-xs">
+                  <div>
+                    <span className="font-bold text-slate-800">{item.nameEn || item.name}</span>
+                    <span className="text-[10px] text-slate-400 block">{item.category || 'Standard'}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="font-mono font-bold text-slate-800">{formatBaht(item.price || 0)}</span>
+                    <span className="text-[10px] text-slate-400 block">Qty: {item.quantity || 1}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Admin Notes */}
+        {adminNotes.length > 0 && (
+          <div className="bg-slate-50/70 p-3.5 rounded-xl border border-slate-200/80 space-y-2.5">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
+              <FileText size={15} className="text-slate-600" />
+              <span>Internal Admin Notes</span>
+            </div>
+            <div className="space-y-1.5">
+              {adminNotes.map((note, idx) => (
+                <div key={idx} className="bg-white p-2.5 rounded-lg border border-slate-200/70 text-xs shadow-xs flex flex-col gap-1">
+                  <p className="text-slate-800 font-medium">{typeof note === 'string' ? note : (note.text || note.note || JSON.stringify(note))}</p>
+                  {note.author && (
+                    <span className="text-[10px] text-slate-400 font-medium">By {note.author} {note.createdAt ? `• ${format(new Date(note.createdAt), "dd MMM, HH:mm")}` : ''}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Modified Fields */}
+        {remainingKeys.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Modified Field Values:</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {remainingKeys.map(([k, v]) => (
+                <div key={k} className="bg-slate-50/80 p-2.5 rounded-lg border border-slate-200/60 flex flex-col gap-1 text-xs">
+                  <span className="text-slate-400 text-[11px] font-medium">{mapKeyToLabel(k)}</span>
+                  <div className="font-semibold text-slate-800 break-words">{formatFieldValue(k, v)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
-    <div className="flex-1 overflow-y-auto bg-slate-50 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="h-full w-full flex flex-col min-h-0 bg-slate-50 overflow-hidden">
+      {/* Lightbox Modal */}
+      <ImageLightboxModal photo={activePhoto} onClose={() => setActivePhoto(null)} />
+
+      {/* Header, Search & Filter Controls (Fixed at Top) */}
+      <div className="shrink-0 p-4 sm:p-6 pb-3 space-y-3.5 max-w-7xl w-full mx-auto">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Activity Logs</h1>
-            <p className="text-slate-500 text-sm mt-1">Track all automated and manual system activities</p>
+            <p className="text-slate-500 text-xs sm:text-sm mt-0.5">
+              Audit trail of job state changes, proof photo uploads, price edits, and wallet transactions
+            </p>
           </div>
+
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <Input
-                placeholder="Search logs..."
+                placeholder="Search order ID, customer, rider, or action..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
-                className="pl-9 w-[250px] bg-white"
+                className="pl-9 w-[260px] sm:w-[320px] bg-white h-9.5 text-xs rounded-xl border-slate-200 shadow-xs"
               />
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fetchLogs()}
+              disabled={isLoading}
+              className="h-9.5 px-3 rounded-xl border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-xs cursor-pointer"
+              title="Refresh logs"
+            >
+              <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
+            </Button>
           </div>
         </div>
 
+        {/* Quick Filter Chips */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs scrollbar-none">
+          <span className="text-slate-400 font-semibold flex items-center gap-1 mr-1 text-[11px] shrink-0">
+            <Filter size={12} /> Filter:
+          </span>
+          {[
+            { id: 'all', label: 'All Activities' },
+            { id: 'status', label: '🔄 Status Changes' },
+            { id: 'photo', label: '📸 Proof Photos' },
+            { id: 'finance', label: '💰 Financial & Top-Up' },
+            { id: 'rider', label: '🚚 Riders' },
+            { id: 'note', label: '📝 Admin Notes' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setSelectedFilter(tab.id as FilterCategory)}
+              className={`px-3 py-1.5 rounded-lg font-medium text-xs whitespace-nowrap transition cursor-pointer ${
+                selectedFilter === tab.id
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Super Admin Diagnostics Tool */}
         {isSuperAdmin && !jobId && (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
               <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
-                <Wrench size={20} />
+                <Wrench size={18} />
               </div>
               <div>
-                <h3 className="text-base font-bold text-slate-900">Job Image Diagnostic & Sync Tool</h3>
-                <p className="text-xs text-slate-500 font-medium">Verify GCS bucket files against database records and resolve sync issues instantly (Super Admin Only).</p>
+                <h3 className="text-sm font-bold text-slate-900">Job Image Diagnostic & Sync Tool</h3>
+                <p className="text-xs text-slate-500">Verify Cloud Storage files against database records and resolve sync gaps (Super Admin Only).</p>
               </div>
             </div>
 
-            <form onSubmit={handleDiagnose} className="flex gap-3 max-w-md">
+            <form onSubmit={handleDiagnose} className="flex gap-2.5 max-w-md">
               <Input
-                placeholder="Enter Job ID (e.g. 2026000937)..."
+                placeholder="Enter Job ID (e.g. 2026005423)..."
                 value={diagJobId}
                 onChange={e => setDiagJobId(e.target.value)}
-                className="h-10 border-slate-200 bg-slate-50/50 focus-visible:ring-indigo-500 rounded-xl text-xs font-semibold"
+                className="h-9 border-slate-200 bg-slate-50/50 rounded-xl text-xs font-semibold"
               />
               <Button 
                 type="submit" 
                 disabled={isDiagnosing}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-10 px-5 rounded-xl shadow-lg shadow-indigo-100 flex items-center gap-1.5 shrink-0"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-9 px-4 rounded-xl shadow-xs flex items-center gap-1.5 shrink-0 text-xs cursor-pointer"
               >
-                {isDiagnosing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-                {isDiagnosing ? "Diagnosing..." : "Run Diagnosis"}
+                {isDiagnosing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                {isDiagnosing ? "Diagnosing..." : "Run Diagnostic"}
               </Button>
             </form>
 
             {diagResult && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-2">
-                {/* 1. Job Status in DB */}
-                <div className="lg:col-span-5 bg-slate-50/50 p-4 rounded-xl border border-slate-200/60 space-y-4">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-1">
+                <div className="lg:col-span-5 bg-slate-50/60 p-3.5 rounded-xl border border-slate-200/60 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Database Status</span>
-                    <Badge variant="outline" className="text-[10px] font-black capitalize bg-indigo-50 text-indigo-700 border-indigo-200">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">Database Record</span>
+                    <Badge variant="outline" className={`text-[10px] font-bold capitalize ${getStatusBadgeStyle(diagResult.job?.status || '')}`}>
                       {diagResult.job?.status || 'N/A'}
                     </Badge>
                   </div>
-
-                  <div className="space-y-2 text-xs">
+                  <div className="space-y-1.5 text-xs">
                     <div className="flex justify-between">
                       <span className="text-slate-400">Order ID:</span>
                       <span className="font-bold text-slate-800">{diagResult.job?.id}</span>
@@ -412,61 +1006,38 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                       <span className="text-slate-400">Customer:</span>
                       <span className="font-bold text-slate-800">{diagResult.job?.customerName || '-'}</span>
                     </div>
-                    <div className="flex flex-col gap-1 pt-2 border-t border-slate-200/50">
-                      <span className="text-slate-400">Pickup Proof (DB):</span>
-                      <span className="font-mono text-[10px] break-all bg-white p-1.5 rounded border border-slate-200">
-                        {diagResult.job?.pickupProofImageUrl || 'null'}
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1 pt-1">
-                      <span className="text-slate-400">Delivery Proof (DB):</span>
-                      <span className="font-mono text-[10px] break-all bg-white p-1.5 rounded border border-slate-200">
-                        {diagResult.job?.deliveryProofImageUrl || 'null'}
-                      </span>
-                    </div>
                   </div>
                 </div>
 
-                {/* 2. GCS Files Status */}
-                <div className="lg:col-span-7 bg-slate-50/50 p-4 rounded-xl border border-slate-200/60 space-y-4 flex flex-col">
+                <div className="lg:col-span-7 bg-slate-50/60 p-3.5 rounded-xl border border-slate-200/60 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Google Cloud Storage Files</span>
-                    <span className="text-xs font-bold text-slate-500">
-                      Found {diagResult.gcsFiles?.length || 0} file(s)
-                    </span>
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">Cloud Storage Files</span>
+                    <span className="text-xs font-bold text-slate-500">Found {diagResult.gcsFiles?.length || 0} file(s)</span>
                   </div>
-
-                  <div className="flex-1 overflow-y-auto max-h-[220px] space-y-2 pr-1">
+                  <div className="max-h-[160px] overflow-y-auto space-y-1.5 pr-1">
                     {diagResult.gcsFiles && diagResult.gcsFiles.length > 0 ? (
                       diagResult.gcsFiles.map((file: any, idx: number) => (
-                        <div key={idx} className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/60 shadow-sm text-xs gap-3">
+                        <div key={idx} className="flex items-center justify-between p-1.5 rounded-lg bg-white border border-slate-200/70 text-xs">
                           <div className="flex items-center gap-2 overflow-hidden">
-                            <div className="w-8 h-8 rounded-md bg-slate-100 flex items-center justify-center text-slate-400 shrink-0 border border-slate-200 overflow-hidden">
+                            <div className="w-7 h-7 rounded bg-slate-100 overflow-hidden shrink-0">
                               <img src={file.publicUrl} alt="Thumbnail" className="w-full h-full object-cover" />
                             </div>
-                            <div className="flex flex-col overflow-hidden">
-                              <span className="font-bold text-slate-700 truncate" title={file.name}>
-                                {file.name.split('/').pop()}
-                              </span>
-                              <span className="text-[10px] text-slate-400 font-medium">
-                                Uploaded: {file.created ? format(new Date(file.created), "dd MMM HH:mm") : 'unknown'}
-                              </span>
-                            </div>
+                            <span className="font-medium text-slate-700 truncate max-w-[200px]" title={file.name}>
+                              {file.name.split('/').pop()}
+                            </span>
                           </div>
-                          <span className="text-[10px] text-slate-500 font-bold shrink-0">
-                            {file.size ? `${(Number(file.size) / 1024 / 1024).toFixed(2)} MB` : 'N/A'}
+                          <span className="text-[10px] text-slate-400 font-bold shrink-0">
+                            {file.size ? `${(Number(file.size) / 1024 / 1024).toFixed(2)} MB` : ''}
                           </span>
                         </div>
                       ))
                     ) : (
-                      <div className="text-center py-8 text-slate-400 italic text-xs">
-                        No files found in GCS for this Job ID.
-                      </div>
+                      <div className="text-center py-4 text-slate-400 italic text-xs">No files in GCS bucket for this Job ID.</div>
                     )}
                   </div>
                 </div>
 
-                {/* 3. Discrepancy Analysis & Resolution Actions */}
+                {/* Discrepancy Action */}
                 <div className="lg:col-span-12">
                   {(() => {
                     if (!diagResult.job) return null;
@@ -478,20 +1049,18 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
 
                     if (hasUnlinkedPickupProof) {
                       return (
-                        <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-300">
-                          <div className="flex items-start gap-3">
-                            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
-                            <div>
-                              <h4 className="text-sm font-black text-amber-900">Sync Discrepancy Found (Pickup Leg)</h4>
-                              <p className="text-xs text-amber-700 font-semibold mt-0.5">Rider uploaded {pickupFiles.length} proof image(s) to GCS, but the job status remains "Pickup" and database URLs are empty.</p>
-                            </div>
+                        <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <AlertTriangle className="text-amber-600 shrink-0" size={16} />
+                            <p className="text-xs text-amber-800 font-medium">Pickup photos exist in GCS but order is still in Pickup status.</p>
                           </div>
                           <Button
+                            size="sm"
                             disabled={isResolving}
                             onClick={() => handleResolve('pickup', pickupFiles.map((f: any) => f.publicUrl))}
-                            className="bg-amber-600 hover:bg-amber-700 text-white font-bold h-9 px-4 rounded-lg shadow-md shrink-0 flex items-center gap-1 text-xs cursor-pointer"
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-bold h-8 px-3 rounded-lg text-xs shrink-0 cursor-pointer"
                           >
-                            {isResolving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                            {isResolving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                             Sync GCS & Complete Pickup
                           </Button>
                         </div>
@@ -500,20 +1069,18 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
 
                     if (hasUnlinkedDeliveryProof) {
                       return (
-                        <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-300">
-                          <div className="flex items-start gap-3">
-                            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
-                            <div>
-                              <h4 className="text-sm font-black text-amber-900">Sync Discrepancy Found (Delivery Leg)</h4>
-                              <p className="text-xs text-amber-700 font-semibold mt-0.5">Rider uploaded {pickupFiles.length} proof image(s) to GCS, but the job status remains "Delivery" and database URLs are empty.</p>
-                            </div>
+                        <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <AlertTriangle className="text-amber-600 shrink-0" size={16} />
+                            <p className="text-xs text-amber-800 font-medium">Delivery photos exist in GCS but order is still in Delivery status.</p>
                           </div>
                           <Button
+                            size="sm"
                             disabled={isResolving}
                             onClick={() => handleResolve('delivery', pickupFiles.map((f: any) => f.publicUrl))}
-                            className="bg-amber-600 hover:bg-amber-700 text-white font-bold h-9 px-4 rounded-lg shadow-md shrink-0 flex items-center gap-1 text-xs cursor-pointer"
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-bold h-8 px-3 rounded-lg text-xs shrink-0 cursor-pointer"
                           >
-                            {isResolving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                            {isResolving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                             Sync GCS & Complete Delivery
                           </Button>
                         </div>
@@ -521,12 +1088,9 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                     }
 
                     return (
-                      <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center gap-3 animate-in fade-in duration-300">
-                        <Check className="text-emerald-600 shrink-0" size={18} />
-                        <div>
-                          <h4 className="text-sm font-black text-emerald-900">Database & GCS are in sync</h4>
-                          <p className="text-xs text-emerald-700 font-semibold mt-0.5">No discrepancies detected for this job. All uploaded images are correctly registered in the database.</p>
-                        </div>
+                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center gap-2.5 text-xs text-emerald-800 font-medium">
+                        <Check className="text-emerald-600 shrink-0" size={16} />
+                        <span>Database and Cloud Storage are in sync. No discrepancies found.</span>
                       </div>
                     );
                   })()}
@@ -535,101 +1099,178 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
             )}
           </div>
         )}
+      </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      {/* Scrollable Table Area with Visible Custom Scrollbar */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-6 max-w-7xl w-full mx-auto custom-scrollbar">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
           <Table>
-            <TableHeader className="bg-slate-50">
-              <TableRow>
-                <TableHead className="w-[180px]">Timestamp</TableHead>
-                <TableHead className="w-[140px]">Target / ID</TableHead>
-                <TableHead className="w-[220px]">Customer</TableHead>
-                <TableHead className="w-[100px]">Action</TableHead>
-                <TableHead className="w-[150px]">Actor</TableHead>
-                <TableHead className="w-[50px]"></TableHead>
+            <TableHeader className="bg-slate-50/95 sticky top-0 z-10 backdrop-blur-xs border-b border-slate-200 shadow-2xs">
+              <TableRow className="border-slate-100">
+                <TableHead className="w-[170px] text-xs font-bold text-slate-500">Timestamp</TableHead>
+                <TableHead className="w-[140px] text-xs font-bold text-slate-500">Target / ID</TableHead>
+                <TableHead className="w-[200px] text-xs font-bold text-slate-500">Customer</TableHead>
+                <TableHead className="text-xs font-bold text-slate-500">Action & Key Changes</TableHead>
+                <TableHead className="w-[160px] text-xs font-bold text-slate-500">Actor</TableHead>
+                <TableHead className="w-[45px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoading ? (
+              {isLoading && logs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-32 text-center">
+                  <TableCell colSpan={6} className="h-40 text-center">
                     <Loader2 className="w-6 h-6 animate-spin text-slate-400 mx-auto mb-2" />
-                    <p className="text-sm text-slate-500">Loading logs...</p>
+                    <p className="text-xs text-slate-500 font-medium">Loading activity logs...</p>
                   </TableCell>
                 </TableRow>
               ) : filteredLogs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-32 text-center text-slate-500">
-                    {!jobId && !searchTerm.trim() 
-                      ? "Please enter a search term (Order ID, Customer, Action, or Actor) to view activity logs."
-                      : "No logs found."}
+                  <TableCell colSpan={6} className="h-40 text-center text-slate-500 text-xs">
+                    No activity logs match your filter.
                   </TableCell>
                 </TableRow>
               ) : (
                 filteredLogs.map(log => {
                   const isExpanded = !!expandedLogIds[log.id];
-                  const displayCustomer = log.customerName || (() => {
-                    try {
-                      const parsed = JSON.parse(log.details || '{}');
-                      return parsed.customerName;
-                    } catch {}
-                    return null;
-                  })() || '-';
+                  const isRawOpen = !!rawJsonOpen[log.id];
+                  const isCopied = copiedLogId === log.id;
 
-                  const entityPrefix = log.entityType === 'customer' ? '👤 Cust' : log.entityType === 'transaction' ? '🧾 TopUp' : '#';
+                  const displayCustomer = log.customerName || log.parsedDetails?.customerName || '-';
+
+                  const entityPrefix =
+                    log.entityType === 'customer'
+                      ? '👤 Customer'
+                      : log.entityType === 'wallet' || log.entityType === 'transaction'
+                      ? '💳 Wallet'
+                      : log.entityType === 'task'
+                      ? '📋 Task'
+                      : '#';
 
                   return (
                     <Fragment key={log.id}>
-                      <TableRow 
-                        className="cursor-pointer hover:bg-slate-50/80 transition-colors select-none"
+                      <TableRow
+                        className={`cursor-pointer transition-colors border-slate-100 select-none ${
+                          isExpanded ? 'bg-slate-50/90' : 'hover:bg-slate-50/60'
+                        }`}
                         onClick={() => toggleRow(log.id)}
                       >
-                        <TableCell className="font-medium text-slate-700 whitespace-nowrap">
+                        {/* Timestamp */}
+                        <TableCell className="text-xs font-medium text-slate-700 whitespace-nowrap">
                           {format(new Date(log.createdAt), "dd MMM yyyy, HH:mm:ss")}
                         </TableCell>
-                        <TableCell className="font-mono text-xs font-semibold text-indigo-600">
-                          {entityPrefix} {log.entityId.split('-')[0].toUpperCase()}
+
+                        {/* Target ID */}
+                        <TableCell className="font-mono text-xs font-bold text-indigo-600 whitespace-nowrap">
+                          <span className="text-slate-400 font-normal mr-1">{entityPrefix}</span>
+                          {log.entityId.split('-')[0].toUpperCase()}
                         </TableCell>
 
-                        <TableCell className="font-medium text-slate-800">
+                        {/* Customer */}
+                        <TableCell className="text-xs font-semibold text-slate-800 truncate max-w-[200px]" title={displayCustomer}>
                           {displayCustomer}
                         </TableCell>
+
+                        {/* Smart Action Badges */}
                         <TableCell>
-                          <Badge 
-                            variant="secondary"
-                            className={`uppercase text-[10px] font-bold ${
-                              log.action === 'TOPUP'
-                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                : log.action === 'create' 
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
-                                  : 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                            }`}
-                          >
-                            {log.action}
-                          </Badge>
+                          <div className="flex flex-wrap items-center gap-1.5 py-0.5">
+                            {log.actionBadges.map((badge, bIdx) => {
+                              const IconComponent = badge.icon;
+                              return (
+                                <span
+                                  key={bIdx}
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold border shadow-2xs ${badge.variantClass}`}
+                                >
+                                  {IconComponent && <IconComponent size={12} className="shrink-0" />}
+                                  {badge.label}
+                                </span>
+                              );
+                            })}
+                          </div>
                         </TableCell>
-                        <TableCell className="font-medium text-slate-700">
-                          {log.userName || 'System'}
+
+                        {/* Actor */}
+                        <TableCell className="text-xs text-slate-600">
+                          <div className="flex items-center gap-1.5 truncate max-w-[150px]" title={log.userName || 'System'}>
+                            <User size={13} className="text-slate-400 shrink-0" />
+                            <span className="font-medium truncate">{log.userName || 'System (Automated)'}</span>
+                          </div>
                         </TableCell>
+
+                        {/* Expand Chevron */}
                         <TableCell>
-                          <ChevronDown 
+                          <ChevronDown
                             className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                              isExpanded ? 'rotate-180 text-indigo-500' : ''
-                            }`} 
+                              isExpanded ? 'rotate-180 text-indigo-600' : ''
+                            }`}
                           />
                         </TableCell>
                       </TableRow>
+
+                      {/* Expanded Details Card */}
                       {isExpanded && (
-                        <TableRow key={`${log.id}-details`} className="bg-slate-50/30 hover:bg-slate-50/30">
-                          <TableCell colSpan={6} className="p-4 border-t border-slate-100">
-                            <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm space-y-2 ml-4">
-                              {parseDetails(log.details, log.action)}
+                        <TableRow key={`${log.id}-details`} className="bg-slate-50/40 hover:bg-slate-50/40 border-slate-100">
+                          <TableCell colSpan={6} className="p-4 sm:p-5">
+                            <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4 ml-2 sm:ml-4">
+                              {/* Summary Header */}
+                              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 text-xs text-slate-500">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-slate-800">Target ID:</span>
+                                  <span className="font-mono font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                                    {log.entityId}
+                                  </span>
+                                  <span className="text-slate-300">•</span>
+                                  <span className="font-bold text-slate-800">Entity:</span>
+                                  <span className="capitalize">{log.entityType}</span>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <span>Logged by: <strong className="text-slate-700">{log.userName || 'System'}</strong></span>
+                                  <span>At: <strong className="text-slate-700">{format(new Date(log.createdAt), "dd MMM yyyy, HH:mm:ss")}</strong></span>
+                                </div>
+                              </div>
+
+                              {/* Main Parsed Details Section */}
+                              {renderDetails(log)}
+
+                              {/* Collapsible Raw JSON Data */}
+                              <div className="pt-2 border-t border-slate-100">
+                                <div className="flex items-center justify-between">
+                                  <button
+                                    onClick={e => toggleRawJson(log.id, e)}
+                                    className="text-[11px] font-semibold text-slate-400 hover:text-slate-700 flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>{isRawOpen ? "Hide Raw JSON Payload" : "View Raw JSON Payload"}</span>
+                                    <ChevronDown size={12} className={`transition-transform ${isRawOpen ? 'rotate-180' : ''}`} />
+                                  </button>
+
+                                  {isRawOpen && (
+                                    <button
+                                      onClick={e => copyRawJson(log.id, log.details, e)}
+                                      className="text-[11px] font-medium text-slate-500 hover:text-indigo-600 flex items-center gap-1 transition cursor-pointer"
+                                    >
+                                      {isCopied ? <CheckCheck size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                                      <span>{isCopied ? "Copied" : "Copy JSON"}</span>
+                                    </button>
+                                  )}
+                                </div>
+
+                                {isRawOpen && (
+                                  <pre className="mt-2.5 p-3.5 bg-slate-900 text-slate-200 text-[11px] font-mono rounded-xl overflow-x-auto max-h-[300px] border border-slate-800 shadow-inner">
+                                    {log.details ? (() => {
+                                      try {
+                                        return JSON.stringify(JSON.parse(log.details), null, 2);
+                                      } catch {
+                                        return log.details;
+                                      }
+                                    })() : "null"}
+                                  </pre>
+                                )}
+                              </div>
                             </div>
                           </TableCell>
                         </TableRow>
                       )}
                     </Fragment>
                   );
-
                 })
               )}
             </TableBody>

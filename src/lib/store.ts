@@ -578,8 +578,12 @@ export const jobStore = {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
 
-    // Auto-hydrate actor details from localStorage on client side if not provided
-    let finalActorDetails = { ...actorDetails };
+    // Auto-hydrate actor details from updates or localStorage on client side if not provided
+    let finalActorDetails = {
+      actorId: actorDetails?.actorId || (updates as any).actorId,
+      actorName: actorDetails?.actorName || (updates as any).actorName,
+      actorRole: actorDetails?.actorRole || (updates as any).actorRole,
+    };
     if (!finalActorDetails.actorId && !finalActorDetails.actorName && typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('authUser');
