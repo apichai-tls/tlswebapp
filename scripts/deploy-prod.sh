@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-SERVICE_NAME="tls-prod"
+SERVICE_NAME="tlswebapp"
 REGION="asia-southeast1" # Update if your region is different
 
 echo "===================================================="

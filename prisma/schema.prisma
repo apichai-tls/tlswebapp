@@ -226,6 +226,8 @@ model RiderTransaction {
   rider     Rider    @relation(fields: [riderId], references: [id])
 
   @@index([riderId, type, createdAt])
+  @@index([jobId, type])
+  @@index([type, createdAt, riderId])
 }
 
 model PriceList {
