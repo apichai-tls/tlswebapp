@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, settingsStore, customerStore, type Job } from "@/lib/store";
 import { formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { generateThermalReceiptImage, uploadReceiptImage } from "@/lib/thermal-canvas-generator";
@@ -17,6 +18,10 @@ import { checkJobOnlinePaymentStatusAction } from "@/actions/online-payment";
  * Runs 100% in the background without modals, popups, or user interaction.
  */
 export function AutoReceiptWorker() {
+  const { user } = useAuth();
+  const isAreaRestricted = Boolean(user && user.role !== 'admin' && user.area && user.area !== 'ALL');
+  const userArea = (user?.area && user.area !== 'ALL') ? user.area.toUpperCase() : null;
+
   const processingRef = useRef<Set<string>>(new Set());
   const completedRef = useRef<Set<string>>(new Set());
   const lastBeamCheckMap = useRef<Map<string, number>>(new Map());
@@ -41,6 +46,10 @@ export function AutoReceiptWorker() {
       const unpaidBeamJob = jobs.find((job) => {
         if (!job.id || job.id === "DRAFT" || job.isPaid || job.isShopPaid) return false;
         if (['cancel', 'return', 'completed'].includes(job.status)) return false;
+        if (isAreaRestricted && userArea) {
+          const jobShop = shopLocations.find((s) => s.id === job.branchId);
+          if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) return false;
+        }
         const channel = (job.paymentChannel || "").toLowerCase();
         if (!channel.includes("beam") && !channel.includes("gateway")) return false;
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
@@ -78,6 +87,14 @@ export function AutoReceiptWorker() {
         if (['cancel', 'return'].includes(job.status)) {
           completedRef.current.add(receiptKey);
           return false;
+        }
+
+        if (isAreaRestricted && userArea) {
+          const jobShop = shopLocations.find((s) => s.id === job.branchId);
+          if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
+            completedRef.current.add(receiptKey);
+            return false;
+          }
         }
 
         // Only process jobs updated or paid recently (within the last 2 hours)
@@ -227,6 +244,14 @@ export function AutoReceiptWorker() {
         if (['completed', 'cancel', 'return'].includes(job.status)) {
           completedRef.current.add(`proforma_${job.id}`);
           return false;
+        }
+
+        if (isAreaRestricted && userArea) {
+          const jobShop = shopLocations.find((s) => s.id === job.branchId);
+          if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
+            completedRef.current.add(`proforma_${job.id}`);
+            return false;
+          }
         }
 
         const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;

@@ -276,12 +276,12 @@ export function BranchFilterDropdown({
  * Resolves the branch IDs assigned to a user based on user.branchId and user.area
  */
 export function getUserAssignedBranchIds(
-  user?: { area?: string | null; branchId?: string | null } | null,
+  user?: { area?: string | null; branchId?: string | null; role?: string | null } | null,
   branches: BranchOption[] = []
 ): string[] {
   if (!user) return branches.map((b) => b.id);
 
-  if ((!user.area && !user.branchId) || user.area === "ALL") {
+  if ((!user.area && !user.branchId) || user.area === "ALL" || user.role === "admin") {
     return branches.map((b) => b.id);
   }
 
@@ -308,7 +308,8 @@ export function getUserAssignedBranchIds(
     }
   }
 
-  return ids.size > 0 ? Array.from(ids) : branches.map((b) => b.id);
+  // Strictly return only assigned branches; never fall back to all branches for restricted users
+  return Array.from(ids);
 }
 
 /**

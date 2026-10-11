@@ -20,7 +20,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
 import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
-import { BranchFilterDropdown, getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
+import { BranchFilterDropdown, getUserAssignedBranchIds, getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
@@ -129,12 +129,35 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null);
   const [selectedBranchIds, setSelectedBranchIds] = useState<string[]>([]);
   const isInitialBranchSetRef = useRef(false);
+  const prevUserIdRef = useRef<string | undefined>(undefined);
   const [activeKanbanColumn, setActiveKanbanColumn] = useState<JobStatus>("pickup");
   
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const customers = useSyncExternalStore(customerStore.subscribe, customerStore.getSnapshot, customerStore.getSnapshot);
+
+  // Area restriction check: true if user is not global admin and has area or branch assignment
+  const isAreaRestricted = useMemo(() => {
+    if (!user || user.role === 'admin') return false;
+    return Boolean((user.area && user.area !== 'ALL') || user.branchId);
+  }, [user]);
+
+  // Compute allowed branches strictly for current user
+  const allowedBranches = useMemo(() => {
+    if (!isAreaRestricted) return shopLocations;
+    const assignedIds = getUserAssignedBranchIds(user, shopLocations);
+    return shopLocations.filter((s) => assignedIds.includes(s.id));
+  }, [isAreaRestricted, user, shopLocations]);
+
+  const allowedBranchIdSet = useMemo(() => {
+    return new Set(allowedBranches.map((s) => s.id));
+  }, [allowedBranches]);
+
+  const effectiveSelectedBranchIds = useMemo(() => {
+    if (!isAreaRestricted) return selectedBranchIds;
+    return selectedBranchIds.filter((id) => allowedBranchIdSet.has(id));
+  }, [isAreaRestricted, selectedBranchIds, allowedBranchIdSet]);
 
   const handleConfirmCancel = async () => {
     if (!cancellingJob || !cancelReason.trim()) return;
@@ -225,7 +248,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   }, [dateFilter, startDate, endDate]);
 
   useEffect(() => {
-    if (shopLocations.length === 0 || isInitialBranchSetRef.current) return;
+    if (isAuthLoading || shopLocations.length === 0) return;
+
+    if (prevUserIdRef.current !== user?.id) {
+      prevUserIdRef.current = user?.id;
+      isInitialBranchSetRef.current = false;
+    }
+
+    if (isInitialBranchSetRef.current) return;
+
+    if (isAreaRestricted) {
+      const initialIds = allowedBranches.map((s) => s.id);
+      setSelectedBranchIds(initialIds);
+      isInitialBranchSetRef.current = true;
+      return;
+    }
+
     if (user?.role === 'manager') {
       const userBranches = getUserAssignedBranchIds(user, shopLocations);
       if (userBranches.length > 0 && userBranches.length < shopLocations.length) {
@@ -234,9 +272,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         return;
       }
     }
+
     setSelectedBranchIds(shopLocations.map((s) => s.id));
     isInitialBranchSetRef.current = true;
-  }, [user, shopLocations]);
+  }, [isAuthLoading, user, shopLocations, isAreaRestricted, allowedBranches]);
 
   const availablePaymentChannels = useMemo(() => {
     const configured = getPaymentChannels(systemSettings).map((c) => c.name);
@@ -251,12 +290,17 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     const searchLower = searchTerm.toLowerCase().trim();
 
     return jobs.filter((job) => {
-      // 0. Manager Role Filter
+      // 0. Hard Area / Assigned Branches Boundary (Prevents cross-branch/area viewing)
+      if (isAreaRestricted) {
+        if (!job.branchId || !allowedBranchIdSet.has(job.branchId)) return false;
+      }
+
+      // 0.1 Manager Role Filter
       if (user?.role === 'manager' && !isCSO) {
         if (job.status === 'tba') return false;
       }
 
-      // 0.1 Brand Filter
+      // 0.2 Brand Filter
       if (selectedBrand !== "ALL") {
         const jobBrand = job.brand || "that_laundry_shop";
         if (jobBrand !== selectedBrand) return false;
@@ -272,10 +316,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       }
 
       // Branch Filter (Excel-style Multi-Select)
-      const isAllBranchesSelected = selectedBranchIds.length >= shopLocations.length;
-      if (!isAllBranchesSelected && selectedBranchIds.length > 0) {
-        if (!job.branchId || !selectedBranchIds.includes(job.branchId)) return false;
-      } else if (selectedBranchIds.length === 0) {
+      const currentSelectedBranchIds = isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds;
+      const totalBranchCount = isAreaRestricted ? allowedBranches.length : shopLocations.length;
+      const isAllBranchesSelected = currentSelectedBranchIds.length >= totalBranchCount;
+      if (!isAllBranchesSelected && currentSelectedBranchIds.length > 0) {
+        if (!job.branchId || !currentSelectedBranchIds.includes(job.branchId)) return false;
+      } else if (currentSelectedBranchIds.length === 0) {
         return false;
       }
 
@@ -407,7 +453,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       ));
     });
   }, [
-    jobs, user?.role, isCSO, selectedBrand, jobSourceFilter, stuckOnly, selectedBranchIds, shopLocations,
+    jobs, user?.role, isCSO, isAreaRestricted, allowedBranchIdSet, effectiveSelectedBranchIds, allowedBranches,
+    selectedBrand, jobSourceFilter, stuckOnly, selectedBranchIds, shopLocations,
     statusFilter, showCompleted, showCancelled, viewMode, paymentChannelFilter,
     dateFilter, today, yesterday, startDate, endDate, searchTerm, riders, customers
   ]);
@@ -543,10 +590,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           </div>
 
           <BranchFilterDropdown
-            branches={shopLocations}
-            selectedIds={selectedBranchIds}
+            branches={allowedBranches}
+            selectedIds={isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds}
             onChange={setSelectedBranchIds}
-            placeholder="All Branches"
+            placeholder={isAreaRestricted && allowedBranches.length === 1 ? getCleanBranchName(allowedBranches[0]?.name) : "All Branches"}
           />
 
           <div className="relative">

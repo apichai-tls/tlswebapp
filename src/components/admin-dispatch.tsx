@@ -63,7 +63,18 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   
-  const [filterArea, setFilterArea] = useState<string>("ALL");
+  const isAreaRestricted = Boolean(user && user.role !== 'admin' && user.area && user.area !== 'ALL');
+  const userArea = (user?.area && user.area !== 'ALL') ? user.area.toUpperCase() : null;
+
+  const [filterArea, setFilterArea] = useState<string>(() => userArea || "ALL");
+
+  useEffect(() => {
+    if (userArea) {
+      setFilterArea(userArea);
+    }
+  }, [userArea]);
+
+  const effectiveArea = isAreaRestricted && userArea ? userArea : filterArea;
   const [selectedRiderIds, setSelectedRiderIds] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
   
@@ -95,12 +106,12 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   // Filter riders by selected area (only active riders with branch assigned)
   const filteredRiders = useMemo(() => {
     const activeRiders = allRiders.filter(r => r.branchId && r.isActive !== false);
-    if (filterArea === "ALL") return activeRiders;
+    if (effectiveArea === "ALL") return activeRiders;
     return activeRiders.filter(r => {
       const branch = shopLocations.find(s => s.id === r.branchId);
-      return branch?.area === filterArea;
+      return branch?.area === effectiveArea;
     });
-  }, [allRiders, filterArea, shopLocations]);
+  }, [allRiders, effectiveArea, shopLocations]);
 
   // Selectable riders for reassigning (filtered active riders + currently assigned rider if resigned)
   const reassignOptions = useMemo(() => {
@@ -139,11 +150,11 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
       jobs = jobs.filter(j => j.status !== 'tba');
     }
     
-    // Filter jobs by selected area
-    if (filterArea !== "ALL") {
+    // Filter jobs by selected area (or enforced user area)
+    if (effectiveArea !== "ALL") {
       jobs = jobs.filter(j => {
         const branch = shopLocations.find(s => s.id === j.branchId);
-        return branch?.area === filterArea;
+        return branch?.area === effectiveArea;
       });
     }
     
@@ -206,7 +217,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     });
 
     return calendarEvents;
-  }, [allJobs, selectedRiderIds, showCompleted, filterArea, shopLocations, user]);
+  }, [allJobs, selectedRiderIds, showCompleted, effectiveArea, shopLocations, user]);
 
   const onEventDrop = async ({ event, start, end }: any) => {
     const e = event as CalendarEvent;
@@ -372,16 +383,18 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
           <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar w-full lg:w-auto lg:flex-1 lg:mx-6 justify-start lg:justify-center py-1">
             <div className="flex items-center gap-2 pr-4 border-r border-slate-200 shrink-0">
               <select
-                className="text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700"
-                value={filterArea}
+                className="text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 disabled:opacity-75 disabled:cursor-not-allowed"
+                value={effectiveArea}
+                disabled={isAreaRestricted}
                 onChange={(e) => {
+                  if (isAreaRestricted) return;
                   setFilterArea(e.target.value);
                   setSelectedRiderIds(new Set()); // Reset selected riders when area changes
                 }}
               >
-                <option value="ALL">All Areas</option>
-                <option value="BKK">BKK</option>
-                <option value="PTY">PTY</option>
+                {!isAreaRestricted && <option value="ALL">All Areas</option>}
+                {(!isAreaRestricted || userArea === "BKK") && <option value="BKK">BKK</option>}
+                {(!isAreaRestricted || userArea === "PTY") && <option value="PTY">PTY</option>}
               </select>
             </div>
             <div className="flex items-center gap-2 pr-4 border-r border-slate-200 shrink-0">

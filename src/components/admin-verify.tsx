@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useSyncExternalStore } from "react";
 import { Search, CheckCircle2, XCircle, Image as ImageIcon, Eye, Edit2, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useJobs } from "@/lib/use-jobs";
+import { useAuth } from "@/providers/auth-provider";
 import { format } from "date-fns";
 import {
   Dialog,
@@ -15,11 +16,16 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { jobStore, type Job } from "@/lib/store";
+import { jobStore, shopStore, type Job } from "@/lib/store";
 import { Label } from "@/components/ui/label";
 
 export function AdminVerify({ onEditJob }: { onEditJob?: (job: Job) => void }) {
   const jobs = useJobs();
+  const { user } = useAuth();
+  const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  const isAreaRestricted = Boolean(user && user.role !== 'admin' && user.area && user.area !== 'ALL');
+  const userArea = (user?.area && user.area !== 'ALL') ? user.area.toUpperCase() : null;
+
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   
@@ -52,13 +58,17 @@ export function AdminVerify({ onEditJob }: { onEditJob?: (job: Job) => void }) {
     }
   };
 
-  const verifications = jobs.filter(j => 
-    j.status === "pending" &&
-    (
+  const verifications = jobs.filter(j => {
+    if (j.status !== "pending") return false;
+    if (isAreaRestricted && userArea) {
+      const branch = shopLocations.find(s => s.id === j.branchId);
+      if (!branch || (branch.area || "").toUpperCase() !== userArea) return false;
+    }
+    return (
       j.id.toLowerCase().includes(searchQuery.toLowerCase()) || 
       (j.customerName || "").toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    );
+  }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const getDisplayImage = (jobDetails: any) => {
     if (!jobDetails) return null;
