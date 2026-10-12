@@ -188,8 +188,25 @@ export function A5ReceiptDialog({
             let newBills: string[];
             if (isProforma) {
               const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
-              const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-`) && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
-              newBills = [uploadResult.publicUrl, ...filtered];
+              const curRev = snapshotData.proformaRevision || 0;
+              const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-rev${curRev}.png`) && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+              newBills = Array.from(new Set([uploadResult.publicUrl, ...filtered]));
+              newBills.sort((a: string, b: string) => {
+                const aIsPf = a.includes("proforma-");
+                const bIsPf = b.includes("proforma-");
+                if (aIsPf && !bIsPf) return -1;
+                if (!aIsPf && bIsPf) return 1;
+                if (aIsPf && bIsPf) {
+                  const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                  const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                  return bRev - aRev;
+                }
+                const aIsRc = a.includes("receipt-");
+                const bIsRc = b.includes("receipt-");
+                if (aIsRc && !bIsRc) return 1;
+                if (!aIsRc && bIsRc) return -1;
+                return 0;
+              });
             } else {
               const filtered = existingBills.filter((u: string) => !u.includes(`receipt-${targetJob.id}`) && !u.includes("/receipt-") && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
               newBills = [uploadResult.publicUrl, ...filtered];
@@ -254,6 +271,23 @@ export function A5ReceiptDialog({
 
   const handlePrint = async () => {
     setIsPrinting(true);
+
+    // Auto kick cash drawer if enabled in settings and receipt contains cash
+    if (!receiptData.isDraft) {
+      let splitPayments: any[] = [];
+      if (receiptData.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(receiptData.adminNotesJson);
+          if (parsed && Array.isArray(parsed.payments)) {
+            splitPayments = parsed.payments;
+          }
+        } catch {}
+      }
+      import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
+        triggerCashDrawerIfEnabled("print", receiptData.paymentChannel, splitPayments);
+      }).catch(() => {});
+    }
+
     try {
       // Race image generation with a 4-second timeout to prevent hanging on slower connections
       const imagePromise = (async () => {
@@ -383,7 +417,7 @@ export function A5ReceiptDialog({
           onOpenChange(isOpen);
         }}
       >
-        <DialogContent className="max-w-[590px] max-h-[92vh] overflow-y-auto rounded-2xl p-0 border-none shadow-2xl bg-neutral-900 print:hidden overflow-x-hidden">
+        <DialogContent className="max-w-[590px] max-h-[92vh] overflow-y-auto rounded-2xl p-0 border-none shadow-2xl bg-neutral-900 print:hidden overflow-x-hidden z-[1100]">
           <div className="flex flex-col items-center bg-neutral-800 min-h-full pb-6">
             <div className="w-full bg-neutral-900 p-4 border-b border-neutral-700 flex justify-between items-center sticky top-0 z-20 shadow-md">
               <h2 className="text-white font-bold text-sm">

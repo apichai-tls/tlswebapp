@@ -1486,9 +1486,19 @@ export async function updateJobAction(id: string, updates: any) {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           // If incoming has a receipt, replace older receipt from existing
           const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-")));
-          const baseExisting = incomingHasReceipt
+          let baseExisting = incomingHasReceipt
             ? existingUrls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes("receipt-"))
             : existingUrls;
+
+          // If incoming has a proforma, only replace duplicate of that exact same revision if present, preserving historical revisions (rev0, rev1, etc.)
+          const incomingProforma = incomingUrls.find(u => typeof u === "string" && u.includes("proforma-"));
+          if (incomingProforma) {
+            const match = incomingProforma.match(/proforma-([a-zA-Z0-9_-]+?-rev\d+\.png)/i);
+            if (match) {
+              baseExisting = baseExisting.filter(u => typeof u === "string" && !u.includes(match[1]));
+            }
+          }
+
           // Merge unique URLs so concurrent background uploads (e.g. proforma and receipt) never clobber each other
           const merged = Array.from(new Set([...baseExisting, ...incomingUrls]));
           // Sort so highest revision proforma always comes first, followed by receipt, then other proofs
@@ -1552,6 +1562,40 @@ export async function updateJobAction(id: string, updates: any) {
       data.totalAmount = newTotal;
     }
   }
+
+  // Proforma Smart Auto-Bump Backend Guard:
+  // If items, fee, or total amount is updated on an unpaid job that already has a proforma,
+  // and the caller didn't explicitly pass proformaRevision, auto-increment proformaRevision.
+  // This ensures AutoReceiptWorker will auto-generate an updated Proforma matching the new items/amount.
+  if (
+    existingJob &&
+    !existingJob.isPaid &&
+    !existingJob.isShopPaid &&
+    (existingJob.proformaNumber || (existingJob.billImageUrl && existingJob.billImageUrl.includes("proforma-"))) &&
+    (updates as any).proformaRevision === undefined
+  ) {
+    const oldItems = existingJob.itemsJson || "";
+    const newItems = data.itemsJson !== undefined ? (data.itemsJson || "") : oldItems;
+    const isItemsChanged = data.itemsJson !== undefined && newItems !== oldItems;
+
+    const oldFee = Number(existingJob.fee) || 0;
+    const newFee = data.fee !== undefined ? (Number(data.fee) || 0) : oldFee;
+    const isFeeChanged = data.fee !== undefined && Math.abs(newFee - oldFee) > 0.01;
+
+    const oldTotal = Number(existingJob.totalAmount) || 0;
+    const newTotal = data.totalAmount !== undefined ? (Number(data.totalAmount) || 0) : oldTotal;
+    const isTotalChanged = data.totalAmount !== undefined && Math.abs(newTotal - oldTotal) > 0.01;
+
+    if (isItemsChanged || isFeeChanged || isTotalChanged) {
+      const nextRev = (existingJob.proformaRevision ?? 0) + 1;
+      (data as any).proformaRevision = nextRev;
+      if (!existingJob.proformaNumber && !(data as any).proformaNumber) {
+        (data as any).proformaNumber = id;
+      }
+      console.log(`[AutoProforma] Auto-bumped proformaRevision for Job ${id} from Rev ${existingJob.proformaRevision ?? 0} to Rev ${nextRev}`);
+    }
+  }
+
   if (updates.serviceType !== undefined) data.serviceType = updates.serviceType;
   if (updates.laundryTypes !== undefined) {
     data.laundryTypes = Array.isArray(updates.laundryTypes)

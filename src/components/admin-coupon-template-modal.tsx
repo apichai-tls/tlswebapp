@@ -239,7 +239,7 @@ export function AdminCouponTemplateModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl z-[80]">
+      <DialogContent className="sm:max-w-3xl p-0 bg-white overflow-hidden rounded-2xl border-none shadow-2xl z-[1200]">
         {/* Header */}
         <DialogHeader className="p-5 pb-4 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border-b border-indigo-100/60">
           <div className="flex items-center justify-between">

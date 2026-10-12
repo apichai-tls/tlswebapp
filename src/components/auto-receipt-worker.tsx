@@ -6,7 +6,7 @@ import { jobStore, shopStore, settingsStore, customerStore, type Job } from "@/l
 import { formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { generateThermalReceiptImage, uploadReceiptImage } from "@/lib/thermal-canvas-generator";
 import { generateA5ReceiptImage } from "@/lib/a5-canvas-generator";
-import { isJobFullyPaid, cleanProformaNumber } from "@/lib/utils";
+import { isJobFullyPaid, cleanProformaNumber, computeCartHash } from "@/lib/utils";
 import { checkJobOnlinePaymentStatusAction } from "@/actions/online-payment";
 
 /**
@@ -238,18 +238,18 @@ export function AutoReceiptWorker() {
       const pendingProformaJob = jobs.find((job) => {
         if (!job.id || job.id === "DRAFT") return false;
         if (processingRef.current.has(job.id)) return false;
-        if (completedRef.current.has(`proforma_${job.id}`)) return false;
+        if (completedRef.current.has(`proforma_skip_${job.id}`)) return false;
 
         // Skip historical or finished jobs
         if (['completed', 'cancel', 'return'].includes(job.status)) {
-          completedRef.current.add(`proforma_${job.id}`);
+          completedRef.current.add(`proforma_skip_${job.id}`);
           return false;
         }
 
         if (isAreaRestricted && userArea) {
           const jobShop = shopLocations.find((s) => s.id === job.branchId);
           if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
-            completedRef.current.add(`proforma_${job.id}`);
+            completedRef.current.add(`proforma_skip_${job.id}`);
             return false;
           }
         }
@@ -336,9 +336,39 @@ export function AutoReceiptWorker() {
               } catch {}
 
               const cleanFiltered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBaseProforma}-rev${rev}.png`));
-              const mergedBills = [publicUrl, ...cleanFiltered];
+              const mergedBills = Array.from(new Set([publicUrl, ...cleanFiltered]));
+              mergedBills.sort((a: string, b: string) => {
+                const aIsPf = a.includes("proforma-");
+                const bIsPf = b.includes("proforma-");
+                if (aIsPf && !bIsPf) return -1;
+                if (!aIsPf && bIsPf) return 1;
+                if (aIsPf && bIsPf) {
+                  const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                  const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                  return bRev - aRev;
+                }
+                const aIsRc = a.includes("receipt-");
+                const bIsRc = b.includes("receipt-");
+                if (aIsRc && !bIsRc) return 1;
+                if (!aIsRc && bIsRc) return -1;
+                return 0;
+              });
+
+              let currentItemsArr: any[] = [];
+              try {
+                currentItemsArr = typeof pendingProformaJob.items === 'string' ? JSON.parse(pendingProformaJob.items) : (pendingProformaJob.items || []);
+              } catch {}
+
+              const proformaHash = computeCartHash({
+                items: currentItemsArr,
+                fee: pendingProformaJob.fee ?? 0,
+                customerName: pendingProformaJob.customerName,
+                customerPhone: pendingProformaJob.customerPhone,
+              });
+
               await jobStore.updateJobDetails(jobId, {
                 billImageUrl: JSON.stringify(mergedBills),
+                proformaCartHash: proformaHash,
               } as any);
 
               console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached Proforma INV image for Job #${jobId}`);

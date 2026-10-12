@@ -36,12 +36,14 @@ import {
   ExternalLink,
   ChevronRight,
   TrendingUp,
-  Award
+  Award,
+  Ticket
 } from "lucide-react";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { AdminMarketingCalendar } from "@/components/admin-marketing-calendar";
 import { AdminMarketingLinks } from "@/components/admin-marketing-links";
+import { AdminMarketingCoupons } from "@/components/admin-marketing-coupons";
 import { getWalletTransactionsAction } from "@/actions/db";
 
 interface AdminMarketingProps {
@@ -55,7 +57,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
 
   // Sub-tabs state (extensible for future marketing tools)
-  const [subTab, setSubTab] = useState<"calendar" | "links" | "promo">("calendar");
+  const [subTab, setSubTab] = useState<"calendar" | "links" | "promo" | "coupons">("calendar");
 
   // Filters State
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
@@ -835,6 +837,17 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         >
           <Tag size={14} />
           Promo Report (รายงานโค้ดส่วนลด)
+        </button>
+        <button
+          onClick={() => setSubTab("coupons")}
+          className={`flex items-center gap-1.5 pb-2.5 px-3 text-xs font-black uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
+            subTab === "coupons"
+              ? "border-indigo-600 text-indigo-600"
+              : "border-transparent text-slate-450 hover:text-slate-800"
+          }`}
+        >
+          <Ticket size={14} />
+          Customer Coupons (คูปองลูกค้า & เทมเพลต)
         </button>
       </div>
 
@@ -1974,6 +1987,13 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       )}
     </div>
   )}
+
+      {/* CUSTOMER COUPONS & TEMPLATES CONTENT */}
+      {subTab === "coupons" && (
+        <div className="animate-in fade-in duration-200">
+          <AdminMarketingCoupons />
+        </div>
+      )}
 
       {/* View-Only Job Detail Modal */}
       {selectedJobForView && (

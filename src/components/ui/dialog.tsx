@@ -43,13 +43,19 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  overlayClassName,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
+  overlayClassName?: string
 }) {
+  const zClass = typeof className === "string"
+    ? className.split(/\s+/).find((c: string) => /^z-(\d+|\[.+\])$/.test(c))
+    : undefined
+
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className={cn(zClass, overlayClassName)} />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(

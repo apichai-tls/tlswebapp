@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
@@ -8,6 +8,12 @@ import {
   PAYMENT_TYPE_LABELS, 
   DEFAULT_PAYMENT_CHANNELS 
 } from "@/lib/payment-channels";
+import { 
+  getCashDrawerStatus, 
+  pairCashDrawer, 
+  kickCashDrawer, 
+  type CashDrawerStatus 
+} from "@/lib/cash-drawer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -48,6 +54,14 @@ export function AdminSettings() {
 
   const [receiptPaperSize, setReceiptPaperSize] = useState("80mm");
   const [currentLanguage, setCurrentLanguage] = useState("th");
+
+  // Cash Drawer Settings
+  const [cashDrawerAutoOpenOnPay, setCashDrawerAutoOpenOnPay] = useState(true);
+  const [cashDrawerAutoOpenOnPrint, setCashDrawerAutoOpenOnPrint] = useState(true);
+  const [cashDrawerShowManualButton, setCashDrawerShowManualButton] = useState(true);
+  const [drawerStatus, setDrawerStatus] = useState<CashDrawerStatus>({ supported: true, isPaired: false });
+  const [isPairingDrawer, setIsPairingDrawer] = useState(false);
+  const [isTestingDrawer, setIsTestingDrawer] = useState(false);
 
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [enableGoogleApi, setEnableGoogleApi] = useState(false);
@@ -180,6 +194,11 @@ export function AdminSettings() {
       setCurrentLanguage(systemSettings.language || "th");
       setVatTypeInput(systemSettings.vatType || "none");
       setVatRateInput(systemSettings.vatRate || "7");
+
+      // Cash drawer settings
+      setCashDrawerAutoOpenOnPay(systemSettings.cashDrawerAutoOpenOnPay !== "false");
+      setCashDrawerAutoOpenOnPrint(systemSettings.cashDrawerAutoOpenOnPrint !== "false");
+      setCashDrawerShowManualButton(systemSettings.cashDrawerShowManualButton !== "false");
       
       const pp: Record<string, string> = {};
       pp["global_id"] = systemSettings.promptpayId_global || "";
@@ -191,6 +210,43 @@ export function AdminSettings() {
       setPpSettings(pp);
     }
   }, [systemSettings, shopLocations]);
+
+  // Initial check of cash drawer hardware pairing on component mount
+  useEffect(() => {
+    getCashDrawerStatus().then(status => {
+      setDrawerStatus(status);
+    }).catch(() => {});
+  }, []);
+
+  const handlePairDrawer = async () => {
+    setIsPairingDrawer(true);
+    try {
+      const res = await pairCashDrawer();
+      if (res.success) {
+        toast.success(`Cash drawer connected: ${res.portInfo || ""}`);
+        const status = await getCashDrawerStatus();
+        setDrawerStatus(status);
+      } else if (res.error && res.error !== "User cancelled device pairing.") {
+        toast.error(res.error);
+      }
+    } finally {
+      setIsPairingDrawer(false);
+    }
+  };
+
+  const handleTestKick = async () => {
+    setIsTestingDrawer(true);
+    try {
+      const res = await kickCashDrawer();
+      if (res.success) {
+        toast.success("Cash drawer test kick signal sent successfully!");
+      } else {
+        toast.error(res.error || "Failed to trigger cash drawer. Please check device pairing.");
+      }
+    } finally {
+      setIsTestingDrawer(false);
+    }
+  };
 
   const [isVerifyingKey, setIsVerifyingKey] = useState(false);
 
@@ -774,13 +830,150 @@ export function AdminSettings() {
         </div>
       </div>
 
+      {/* Cash Drawer Settings (BT-100U / USB-RJ11) */}
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-amber-100 text-amber-700 rounded-xl">
+            <Banknote size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">Cash Drawer Settings</h3>
+            <p className="text-xs text-slate-500 font-medium">
+              Configure automatic cash drawer kick behavior and pair USB-to-RJ11 (BT-100U) triggers via Web Serial API.
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-6">
+          {/* Hardware Connection Card */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Device Status on this PC:</span>
+                {drawerStatus.isPaired ? (
+                  <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 font-semibold px-2 py-0.5 text-xs flex items-center gap-1">
+                    <CheckCircle2 size={12} className="text-emerald-600" />
+                    Connected ({drawerStatus.portInfo})
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="bg-slate-200/80 text-slate-700 border-slate-300 font-semibold px-2 py-0.5 text-xs flex items-center gap-1">
+                    <AlertCircle size={12} className="text-slate-500" />
+                    Not Paired
+                  </Badge>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Supports BT-100U and USB-to-RJ11 adapters (Prolific PL2303, CH340, FTDI). Pairing is required only once per workstation.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handlePairDrawer}
+                disabled={isPairingDrawer}
+                className="h-9 px-3.5 text-xs font-bold bg-white hover:bg-slate-50 border-slate-300 text-slate-700 shadow-sm cursor-pointer"
+              >
+                {isPairingDrawer ? (
+                  <RefreshCw size={13} className="animate-spin mr-1.5" />
+                ) : (
+                  <Usb size={13} className="mr-1.5 text-indigo-600" />
+                )}
+                {drawerStatus.isPaired ? "Re-pair Device" : "Pair BT-100U Device"}
+              </Button>
+
+              <Button
+                type="button"
+                onClick={handleTestKick}
+                disabled={isTestingDrawer || !drawerStatus.isPaired}
+                className="h-9 px-3.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-sm disabled:opacity-50 cursor-pointer"
+              >
+                {isTestingDrawer ? (
+                  <RefreshCw size={13} className="animate-spin mr-1.5" />
+                ) : (
+                  <Banknote size={13} className="mr-1.5" />
+                )}
+                Test Drawer Kick
+              </Button>
+            </div>
+          </div>
+
+          {/* Trigger Options */}
+          <div className="space-y-3">
+            <Label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
+              Drawer Kick Trigger Conditions (Global for all branches):
+            </Label>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/80 cursor-pointer transition-colors shadow-xs">
+                <input
+                  type="checkbox"
+                  checked={cashDrawerAutoOpenOnPay}
+                  onChange={e => {
+                    const checked = e.target.checked;
+                    setCashDrawerAutoOpenOnPay(checked);
+                    handleUpdateReceiptSetting("cashDrawerAutoOpenOnPay", checked ? "true" : "false");
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-slate-800 block">Open on Cash Pay</span>
+                  <span className="text-[11px] text-slate-500 block leading-tight">
+                    Automatically opens the cash drawer when clicking Pay with Cash or Split Payment containing cash.
+                  </span>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/80 cursor-pointer transition-colors shadow-xs">
+                <input
+                  type="checkbox"
+                  checked={cashDrawerAutoOpenOnPrint}
+                  onChange={e => {
+                    const checked = e.target.checked;
+                    setCashDrawerAutoOpenOnPrint(checked);
+                    handleUpdateReceiptSetting("cashDrawerAutoOpenOnPrint", checked ? "true" : "false");
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-slate-800 block">Open on Print Receipt</span>
+                  <span className="text-[11px] text-slate-500 block leading-tight">
+                    Automatically opens the cash drawer when clicking Print in the receipt dialog (A5 / Thermal) for cash orders.
+                  </span>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/80 cursor-pointer transition-colors shadow-xs">
+                <input
+                  type="checkbox"
+                  checked={cashDrawerShowManualButton}
+                  onChange={e => {
+                    const checked = e.target.checked;
+                    setCashDrawerShowManualButton(checked);
+                    handleUpdateReceiptSetting("cashDrawerShowManualButton", checked ? "true" : "false");
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-slate-800 block">Show [Open Drawer] Button</span>
+                  <span className="text-[11px] text-slate-500 block leading-tight">
+                    Display a manual [Open Drawer] button on the All Jobs table toolbar and POS header bar.
+                  </span>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="space-y-4 pt-8 border-t border-slate-100">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-rose-100 text-rose-600 rounded-xl">
             <Coins size={24} />
           </div>
           <div>
-            <h3 className="text-xl font-bold text-slate-800">VAT Settings (ตั้งค่าภาษีมูลค่าเพิ่ม)</h3>
+            <h3 className="text-xl font-bold text-slate-800">VAT Settings</h3>
             <p className="text-xs text-slate-500 font-medium">Configure the default VAT type and rate applied to orders.</p>
           </div>
         </div>
@@ -789,7 +982,7 @@ export function AdminSettings() {
           <div className="max-w-2xl space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label className="font-semibold text-slate-700">VAT Type (ประเภทภาษี)</Label>
+                <Label className="font-semibold text-slate-700">VAT Type</Label>
                 <select
                   value={vatTypeInput}
                   onChange={e => {
@@ -798,14 +991,14 @@ export function AdminSettings() {
                   }}
                   className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10 shadow-sm"
                 >
-                  <option value="none">No VAT (ไม่มี VAT)</option>
-                  <option value="inclusive">Inclusive VAT (รวมในราคาสินค้า)</option>
-                  <option value="exclusive">Exclusive VAT (แยกต่างหาก)</option>
+                  <option value="none">No VAT</option>
+                  <option value="inclusive">Inclusive VAT</option>
+                  <option value="exclusive">Exclusive VAT</option>
                 </select>
               </div>
 
               <div className="space-y-2">
-                <Label className="font-semibold text-slate-700">VAT Rate (อัตราภาษี %)</Label>
+                <Label className="font-semibold text-slate-700">VAT Rate (%)</Label>
                 <div className="relative">
                   <Input 
                     type="number" 

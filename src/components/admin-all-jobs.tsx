@@ -542,6 +542,24 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           <div className="flex items-center gap-4">
             {viewMode === "list" && (
               <div className="flex gap-2 shrink-0 print:hidden">
+                {systemSettings?.cashDrawerShowManualButton !== "false" && (
+                  <button
+                    onClick={async () => {
+                      const { kickCashDrawer } = await import("@/lib/cash-drawer");
+                      const res = await kickCashDrawer();
+                      if (res.success) {
+                        toast.success("Cash drawer opened");
+                      } else {
+                        toast.error(res.error || "Failed to open cash drawer. Please check device pairing.");
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200 transition-colors shadow-sm cursor-pointer"
+                    title="Open Cash Drawer"
+                  >
+                    <Banknote size={16} />
+                    <span className="hidden sm:inline">Open Drawer</span>
+                  </button>
+                )}
                 <button
                   onClick={exportToCSV}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors shadow-sm"

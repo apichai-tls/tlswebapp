@@ -2276,7 +2276,8 @@ export default function AdminPage() {
         ? currentCartHash !== baseCartHashToCompare
         : existingJob && (
             (Number(existingJob.totalAmount) || 0) !== calculatedTotal ||
-            (existingJob.itemsJson && existingJob.itemsJson !== JSON.stringify(dialogCart))
+            (existingJob.itemsJson && existingJob.itemsJson !== JSON.stringify(dialogCart)) ||
+            (isPayment && Boolean(existingProformaNum || (existingJob.billImageUrl && existingJob.billImageUrl.includes("proforma-"))))
           )
     );
 
@@ -2336,10 +2337,15 @@ export default function AdminPage() {
         effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
         effectiveProformaCartHash = currentCartHash;
       } else if (existingProformaNum) {
-        // Job had a proforma, but user did NOT press proforma button in this session -> Keep existing revision, do NOT bump!
         targetProformaNum = existingProformaNum;
-        effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
-        effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
+        if (isCartChangedFromLastProforma && !isAlreadyPaidJob) {
+          // Smart Auto-Regen: Items / weights / fee changed on unpaid job with existing proforma -> bump revision!
+          effectiveProformaRevision = (proformaRevision !== null ? proformaRevision : (isRfJob ? 1 : 0)) + 1;
+          effectiveProformaCartHash = currentCartHash;
+        } else {
+          effectiveProformaRevision = isRfJob ? Math.max(1, proformaRevision ?? 1) : (proformaRevision ?? 0);
+          effectiveProformaCartHash = (existingJob as any)?.proformaCartHash || lastProformaCartHash || currentCartHash;
+        }
       } else {
         // Job had NO proforma and user did NOT press Proforma button -> keep null!
         targetProformaNum = null;
@@ -2727,7 +2733,7 @@ export default function AdminPage() {
         );
         const shouldCaptureProforma = Boolean(
           targetProformaNum && 
-          (proformaPressedSinceLastEdit || (isShopPaidNow && hasActualItems))
+          (proformaPressedSinceLastEdit || (isShopPaidNow && hasActualItems) || (isCartChangedFromLastProforma && !isAlreadyPaidJob))
         );
         if (shouldCaptureProforma) {
           let finalProformaNum = targetProformaNum!;
@@ -2767,7 +2773,7 @@ export default function AdminPage() {
           })();
           const alreadyHasThisRev = existingBillUrls.some(u => u.includes(proformaFilename));
 
-          if (!alreadyHasThisRev || (isPayment && isCartChangedFromLastProforma)) {
+          if (!alreadyHasThisRev || (isPayment && isCartChangedFromLastProforma) || (isCartChangedFromLastProforma && !isAlreadyPaidJob)) {
             const proformaCapData = {
               ...formatJobToReceiptData({
                 ...existingJob,
@@ -2837,8 +2843,24 @@ export default function AdminPage() {
                     // Use functional update to get latest state, but call DB update in a deferred way
                     setBillImageUrls(prev => {
                       const cleanBase = finalProformaNum;
-                      const filtered = prev.filter(u => !u.includes(`proforma-${cleanBase}-`));
-                      const next = [capturedUrl, ...filtered];
+                      const filtered = prev.filter(u => !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
+                      const next = Array.from(new Set([capturedUrl, ...filtered]));
+                      next.sort((a, b) => {
+                        const aIsPf = a.includes("proforma-");
+                        const bIsPf = b.includes("proforma-");
+                        if (aIsPf && !bIsPf) return -1;
+                        if (!aIsPf && bIsPf) return 1;
+                        if (aIsPf && bIsPf) {
+                          const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                          const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                          return bRev - aRev;
+                        }
+                        const aIsRc = a.includes("receipt-");
+                        const bIsRc = b.includes("receipt-");
+                        if (aIsRc && !bIsRc) return 1;
+                        if (!aIsRc && bIsRc) return -1;
+                        return 0;
+                      });
                       // Schedule DB update outside React's render (setTimeout = macrotask, safe from setState-in-render)
                       setTimeout(() => {
                         api.updateJob(targetEditingJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
@@ -2863,6 +2885,11 @@ export default function AdminPage() {
           setIsDraftPreview(false);
           setIsPaymentEvent(true);
           setShowReceipt(true);
+          // Auto kick cash drawer if payment contains cash and setting is enabled
+          import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
+            triggerCashDrawerIfEnabled("pay", paymentChannel, splitPayments, systemSettings);
+          }).catch(() => {});
+
           if (selectedProfileCustomer?.isNew && selectedProfileCustomer?.id) {
             customerStore.updateCustomer(selectedProfileCustomer.id, { 
               isNew: false,
@@ -3060,6 +3087,11 @@ export default function AdminPage() {
           setIsDraftPreview(false);
           setIsPaymentEvent(true);
           setShowReceipt(true);
+          // Auto kick cash drawer if payment contains cash and setting is enabled
+          import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
+            triggerCashDrawerIfEnabled("pay", paymentChannel, splitPayments, systemSettings);
+          }).catch(() => {});
+
           if (selectedProfileCustomer?.isNew && selectedProfileCustomer?.id) {
             customerStore.updateCustomer(selectedProfileCustomer.id, { 
               isNew: false,

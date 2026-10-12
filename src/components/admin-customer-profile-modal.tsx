@@ -91,6 +91,10 @@ export function AdminCustomerProfileModal({
   onEditCustomer?: (c: Customer) => void;
 }) {
   const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
+  const canSeeCoupons = isAdmin || isCSO;
+
   const jobs = useJobs();
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const activeShop = shops[0];
@@ -123,7 +127,7 @@ export function AdminCustomerProfileModal({
   const [isLoadingJobs, setIsLoadingJobs] = useState(false);
 
   const fetchCoupons = () => {
-    if (!customer?.id) return;
+    if (!customer?.id || !canSeeCoupons) return;
     setIsLoadingCoupons(true);
     getCustomerCouponsAction({ customerId: customer.id })
       .then(res => {
@@ -273,11 +277,13 @@ export function AdminCustomerProfileModal({
         .finally(() => setIsLoadingWallet(false));
 
       // Fetch customer coupons
-      fetchCoupons();
+      if (canSeeCoupons) {
+        fetchCoupons();
+      }
     } else {
       setDbJobs([]);
     }
-  }, [open, customer?.id, customer?.phone]);
+  }, [open, customer?.id, customer?.phone, canSeeCoupons]);
 
   // Jobs calculation from actual jobs (combining DB on-demand jobs + in-memory jobs)
   const { jobsCount, ltv, customerJobs } = useMemo(() => {
@@ -1212,18 +1218,20 @@ export function AdminCustomerProfileModal({
                     >
                       Credit Wallet Ledger ({walletTxs.length || topUpTxs.length})
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setOrdersSubTab("coupons")}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                        ordersSubTab === "coupons"
-                          ? "bg-white text-indigo-700 shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <Ticket size={13} />
-                      Coupons (คูปองลูกค้า) ({coupons.length})
-                    </button>
+                    {canSeeCoupons && (
+                      <button
+                        type="button"
+                        onClick={() => setOrdersSubTab("coupons")}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                          ordersSubTab === "coupons"
+                            ? "bg-white text-indigo-700 shadow-2xs"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        <Ticket size={13} />
+                        Coupons (คูปองลูกค้า) ({coupons.length})
+                      </button>
+                    )}
                   </div>
 
                   {ordersSubTab === "ledger" && (
@@ -1232,7 +1240,7 @@ export function AdminCustomerProfileModal({
                     </span>
                   )}
 
-                  {ordersSubTab === "coupons" && (
+                  {ordersSubTab === "coupons" && canSeeCoupons && (
                     <Button
                       type="button"
                       size="sm"
@@ -1440,7 +1448,7 @@ export function AdminCustomerProfileModal({
                 )}
 
                 {/* VIEW 3: CUSTOMER COUPONS & VOUCHERS */}
-                {ordersSubTab === "coupons" && (
+                {ordersSubTab === "coupons" && canSeeCoupons && (
                   <div className="space-y-4">
                     {/* Filter and Summary Bar */}
                     <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl">
@@ -2241,7 +2249,7 @@ export function AdminCustomerProfileModal({
       )}
 
       {/* Issue Coupon Modal */}
-      {issueCouponModalOpen && customer && (
+      {issueCouponModalOpen && customer && canSeeCoupons && (
         <AdminIssueCouponDialog
           open={issueCouponModalOpen}
           onOpenChange={setIssueCouponModalOpen}

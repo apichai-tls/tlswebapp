@@ -627,6 +627,14 @@ export function ThermalReceiptDialog({
   const handlePrint = async () => {
     if (!receiptData) { window.print(); return; }
     setIsPrinting(true);
+
+    // Auto kick cash drawer if enabled in settings and receipt contains cash
+    if (!receiptData.isDraft) {
+      import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
+        triggerCashDrawerIfEnabled("print", receiptData.paymentChannel, payments);
+      }).catch(() => {});
+    }
+
     try {
       const { generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
       const blob = await generateThermalReceiptImage(receiptData, activeShop);

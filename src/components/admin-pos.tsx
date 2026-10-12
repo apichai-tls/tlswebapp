@@ -3138,6 +3138,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       } else {
         setShowReceipt(true);
         playAudioFeedback("success");
+        if (isPaidFlag && (paymentMethod === "cash" || finalChannel?.toLowerCase().includes("cash") || finalChannel?.includes("เงินสด"))) {
+          import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
+            triggerCashDrawerIfEnabled("pay", "Cash", null, settings);
+          }).catch(() => {});
+        }
       }
 
       let descriptionMsg = `Order for ${selectedCustomer ? selectedCustomer.name : "Walk-In"} has been recorded.`;
@@ -3793,6 +3798,29 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 {currentLanguage === "en" ? "History" : "ประวัติกะ"}
               </Button>
             </div>
+          )}
+
+          {/* Manual Cash Drawer Kick Button */}
+          {settings?.cashDrawerShowManualButton !== "false" && !isSpectatorMode && (
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              className="h-8 px-2.5 text-[11px] font-black text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 border-amber-200 dark:border-amber-800 rounded-xl cursor-pointer transition-all shadow-xs flex items-center gap-1.5"
+              onClick={async () => {
+                const { kickCashDrawer } = await import("@/lib/cash-drawer");
+                const res = await kickCashDrawer();
+                if (res.success) {
+                  toast.success(currentLanguage === "en" ? "Cash drawer opened" : "เปิดลิ้นชักเรียบร้อยแล้ว");
+                } else {
+                  toast.error(res.error || (currentLanguage === "en" ? "Failed to open drawer" : "ไม่สามารถเปิดลิ้นชักได้ กรุณาตรวจสอบการจับคู่อุปกรณ์"));
+                }
+              }}
+              title={currentLanguage === "en" ? "Open Cash Drawer" : "เปิดลิ้นชักเก็บเงิน"}
+            >
+              <Banknote size={14} />
+              <span className="hidden sm:inline">{currentLanguage === "en" ? "Open Drawer" : "เปิดลิ้นชัก"}</span>
+            </Button>
           )}
 
           {/* Desktop User profile badge at the top-right corner */}
