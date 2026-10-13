@@ -153,7 +153,11 @@ export async function kickCashDrawer(): Promise<{ success: boolean; error?: stri
     await new Promise((r) => setTimeout(r, 80));
 
     if (openedByUs) {
-      await port.close();
+      try {
+        await port.close();
+      } catch (closeErr) {
+        console.warn("[CashDrawer] Port close error:", closeErr);
+      }
     }
 
     return { success: true };
@@ -179,7 +183,7 @@ export function isCashPayment(
   if (!paymentChannel) return false;
 
   const normalized = paymentChannel.trim().toLowerCase();
-  if (normalized === "cash" || normalized.includes("เงินสด")) {
+  if (normalized === "cash" || normalized.includes("cash") || normalized.includes("cod") || normalized.includes("เงินสด")) {
     return true;
   }
 
@@ -187,7 +191,7 @@ export function isCashPayment(
     return splitPayments.some((s) => {
       const ch = (s.channel || "").trim().toLowerCase();
       const amt = Number(s.amount) || 0;
-      return (ch === "cash" || ch.includes("เงินสด")) && amt > 0;
+      return (ch === "cash" || ch.includes("cash") || ch.includes("cod") || ch.includes("เงินสด")) && amt > 0;
     });
   }
 

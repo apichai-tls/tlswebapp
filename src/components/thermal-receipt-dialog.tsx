@@ -1065,7 +1065,7 @@ export function ThermalReceiptDialog({
           }
         }}
       >
-        <DialogContent className={`${isA5 ? "max-w-[460px]" : (isSmall ? "max-w-[260px]" : "max-w-[320px]")} max-h-[90vh] overflow-y-auto rounded-2xl p-0 border-none shadow-2xl bg-neutral-900 dark:bg-neutral-950 font-mono print:hidden`}>
+        <DialogContent className={`${isA5 ? "max-w-[460px]" : (isSmall ? "max-w-[260px]" : "max-w-[320px]")} max-h-[90vh] overflow-y-auto rounded-2xl p-0 border-none shadow-2xl bg-neutral-900 dark:bg-neutral-950 font-mono print:hidden z-[1100]`}>
           <div className="p-4 flex flex-col items-center">
             {renderReceiptContent(false)}
 

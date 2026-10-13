@@ -1590,7 +1590,7 @@ export async function updateJobAction(id: string, updates: any) {
       const nextRev = (existingJob.proformaRevision ?? 0) + 1;
       (data as any).proformaRevision = nextRev;
       if (!existingJob.proformaNumber && !(data as any).proformaNumber) {
-        (data as any).proformaNumber = id;
+        (data as any).proformaNumber = id.startsWith("PR-") ? id : `PR-${id}`;
       }
       console.log(`[AutoProforma] Auto-bumped proformaRevision for Job ${id} from Rev ${existingJob.proformaRevision ?? 0} to Rev ${nextRev}`);
     }

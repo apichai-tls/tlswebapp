@@ -2275,9 +2275,9 @@ export default function AdminPage() {
       baseCartHashToCompare
         ? currentCartHash !== baseCartHashToCompare
         : existingJob && (
-            (Number(existingJob.totalAmount) || 0) !== calculatedTotal ||
+            Math.abs((Number(existingJob.totalAmount) || 0) - calculatedTotal) > 0.01 ||
             (existingJob.itemsJson && existingJob.itemsJson !== JSON.stringify(dialogCart)) ||
-            (isPayment && Boolean(existingProformaNum || (existingJob.billImageUrl && existingJob.billImageUrl.includes("proforma-"))))
+            Math.abs((Number(existingJob.fee) || 0) - fee) > 0.01
           )
     );
 

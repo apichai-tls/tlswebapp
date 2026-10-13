@@ -356,12 +356,22 @@ export function AutoReceiptWorker() {
 
               let currentItemsArr: any[] = [];
               try {
-                currentItemsArr = typeof pendingProformaJob.items === 'string' ? JSON.parse(pendingProformaJob.items) : (pendingProformaJob.items || []);
+                if (Array.isArray(pendingProformaJob.items)) {
+                  currentItemsArr = pendingProformaJob.items;
+                } else if (typeof pendingProformaJob.items === 'string') {
+                  currentItemsArr = JSON.parse(pendingProformaJob.items);
+                } else if (pendingProformaJob.itemsJson) {
+                  currentItemsArr = JSON.parse(pendingProformaJob.itemsJson);
+                }
               } catch {}
 
               const proformaHash = computeCartHash({
                 items: currentItemsArr,
+                serviceSpeed: pendingProformaJob.serviceType || 'standard',
                 fee: pendingProformaJob.fee ?? 0,
+                discountPercent: pendingProformaJob.discountPercent ?? 0,
+                vatType: pendingProformaJob.remark?.includes('VAT: inclusive') ? 'inclusive' : (pendingProformaJob.remark?.includes('VAT: exclusive') ? 'exclusive' : 'none'),
+                vatRate: 7,
                 customerName: pendingProformaJob.customerName,
                 customerPhone: pendingProformaJob.customerPhone,
               });

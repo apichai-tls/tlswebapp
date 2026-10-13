@@ -38,7 +38,7 @@ import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-m
 
 export function AdminMarketingCoupons() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
   const customers = useCustomers();
 
   // Data states
