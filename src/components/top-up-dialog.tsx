@@ -637,6 +637,9 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
       setReceiptData(rdata);
       setReceiptJobId(topUpReceiptNo);
       setShowReceipt(true);
+      import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
+        triggerCashDrawerIfEnabled("pay", paymentChannel);
+      }).catch(() => {});
       onSuccess?.(topUpReceiptNo);
     } catch (err: any) {
       isPaymentCompletedRef.current = false;

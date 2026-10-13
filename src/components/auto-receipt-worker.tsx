@@ -264,7 +264,13 @@ export function AutoReceiptWorker() {
         // Guard: If job has 0 items (e.g. initial booking with fee only), NEVER auto-generate proforma!
         let proformaItemsArr: any[] = [];
         try {
-          proformaItemsArr = typeof job.items === 'string' ? JSON.parse(job.items) : (job.items || []);
+          if (Array.isArray(job.items)) {
+            proformaItemsArr = job.items;
+          } else if (typeof job.items === 'string') {
+            proformaItemsArr = JSON.parse(job.items);
+          } else if (job.itemsJson) {
+            proformaItemsArr = JSON.parse(job.itemsJson);
+          }
         } catch {}
         if (proformaItemsArr.length === 0) {
           completedRef.current.add(revKey);
@@ -365,13 +371,30 @@ export function AutoReceiptWorker() {
                 }
               } catch {}
 
+              const speedMatch = pendingProformaJob.remark?.match(/Express\s*(\d+)%/i);
+              const parsedSpeed = speedMatch ? `express_${speedMatch[1]}` : "standard";
+              const promoMatch = pendingProformaJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+              const hasValidPromo = Boolean(promoMatch && promoMatch[3] && parseFloat(promoMatch[3]) > 0);
+              const hasRawPromo = Boolean(promoMatch && promoMatch[1]);
+              const hasDiscountOn = Boolean(
+                pendingProformaJob.remark?.includes("Discount: on") ||
+                (pendingProformaJob.discountPercent && pendingProformaJob.discountPercent > 0) ||
+                hasValidPromo ||
+                hasRawPromo
+              );
+              const vatMatch = pendingProformaJob.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
+              const parsedVatType = vatMatch ? vatMatch[1].toLowerCase() : (systemSettings?.vatType || "none");
+              const parsedVatRate = vatMatch ? parseFloat(vatMatch[2]) : (parseFloat(systemSettings?.vatRate || "7") || 7);
+
               const proformaHash = computeCartHash({
                 items: currentItemsArr,
-                serviceSpeed: pendingProformaJob.serviceType || 'standard',
+                serviceSpeed: parsedSpeed,
                 fee: pendingProformaJob.fee ?? 0,
-                discountPercent: pendingProformaJob.discountPercent ?? 0,
-                vatType: pendingProformaJob.remark?.includes('VAT: inclusive') ? 'inclusive' : (pendingProformaJob.remark?.includes('VAT: exclusive') ? 'exclusive' : 'none'),
-                vatRate: 7,
+                discountPercent: hasDiscountOn ? (pendingProformaJob.discountPercent ?? 0) : 0,
+                promoCode: promoMatch ? promoMatch[1] : null,
+                promoDiscount: (promoMatch && promoMatch[3]) ? parseFloat(promoMatch[3]) : 0,
+                vatType: parsedVatType,
+                vatRate: parsedVatRate,
                 customerName: pendingProformaJob.customerName,
                 customerPhone: pendingProformaJob.customerPhone,
               });

@@ -1765,7 +1765,8 @@ export default function AdminPage() {
       vatRate: initialVatRate,
     });
 
-    setLastProformaCartHash(hasExistingProforma ? (loadedCartHash || initialLoadedCartHash) : null);
+    const validLoadedCartHash = loadedCartHash && loadedCartHash.includes('"speed":') ? loadedCartHash : null;
+    setLastProformaCartHash(hasExistingProforma ? (validLoadedCartHash || initialLoadedCartHash) : null);
     setProformaPressedSinceLastEdit(false); // reset: user hasn't pressed Proforma yet in this edit session
     setIsDraftPreview(false);
     setShowReceipt(false);
@@ -2270,13 +2271,22 @@ export default function AdminPage() {
 
     const isNewJobProformaRequested = !editingJobId && (proformaReceiptNumber === "DRAFT" || proformaPressedSinceLastEdit);
 
-    const baseCartHashToCompare = (existingJob as any)?.proformaCartHash || lastProformaCartHash;
+    const rawExistingHash = (existingJob as any)?.proformaCartHash;
+    const validExistingHash = rawExistingHash && rawExistingHash.includes('"speed":') ? rawExistingHash : null;
+    const baseCartHashToCompare = validExistingHash || lastProformaCartHash;
     const isCartChangedFromLastProforma = Boolean(
       baseCartHashToCompare
         ? currentCartHash !== baseCartHashToCompare
         : existingJob && (
             Math.abs((Number(existingJob.totalAmount) || 0) - calculatedTotal) > 0.01 ||
-            (existingJob.itemsJson && existingJob.itemsJson !== JSON.stringify(dialogCart)) ||
+            (existingJob.itemsJson && (() => {
+              try {
+                const oldArr = JSON.parse(existingJob.itemsJson);
+                return computeCartHash({ items: oldArr }) !== computeCartHash({ items: dialogCart });
+              } catch {
+                return false;
+              }
+            })()) ||
             Math.abs((Number(existingJob.fee) || 0) - fee) > 0.01
           )
     );
@@ -6403,8 +6413,10 @@ export default function AdminPage() {
                                   }
                                 } else {
                                   const currentEditingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
-                                  const baseHash = (currentEditingJob as any)?.proformaCartHash || lastProformaCartHash;
-                                  const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : ((currentEditingJob?.totalAmount || 0) !== dialogTotal));
+                                  const rawHash = (currentEditingJob as any)?.proformaCartHash;
+                                  const validHash = rawHash && rawHash.includes('"speed":') ? rawHash : null;
+                                  const baseHash = validHash || lastProformaCartHash;
+                                  const isCartChanged = Boolean(baseHash ? (cartHash !== baseHash) : (Math.abs((currentEditingJob?.totalAmount || 0) - dialogTotal) > 0.01));
                                   if (isCartChanged) {
                                     targetRevision = (proformaRevision !== null ? proformaRevision : (editingJobId?.startsWith("RF-") ? 1 : 0)) + 1;
                                     setProformaRevision(targetRevision);

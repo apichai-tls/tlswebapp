@@ -154,6 +154,9 @@ export function JobPaymentPanel({
       }
 
       toast.success(`บันทึกรับชำระ ฿${amt.toLocaleString()} (${activeChannelName}) เรียบร้อยแล้ว`);
+      import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
+        triggerCashDrawerIfEnabled("pay", activeChannelName);
+      }).catch(() => {});
       setPayAmount("");
       setPayNote("");
 

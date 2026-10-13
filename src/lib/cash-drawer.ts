@@ -178,18 +178,18 @@ export async function kickCashDrawer(): Promise<{ success: boolean; error?: stri
  */
 export function isCashPayment(
   paymentChannel?: string | null,
-  splitPayments?: Array<{ channel?: string; amount?: number }> | null
+  splitPayments?: Array<{ channel?: string; method?: string; amount?: number }> | null
 ): boolean {
-  if (!paymentChannel) return false;
-
-  const normalized = paymentChannel.trim().toLowerCase();
-  if (normalized === "cash" || normalized.includes("cash") || normalized.includes("cod") || normalized.includes("เงินสด")) {
-    return true;
+  if (paymentChannel) {
+    const normalized = paymentChannel.trim().toLowerCase();
+    if (normalized === "cash" || normalized.includes("cash") || normalized.includes("cod") || normalized.includes("เงินสด")) {
+      return true;
+    }
   }
 
-  if (normalized.includes("split") && Array.isArray(splitPayments)) {
+  if (Array.isArray(splitPayments) && splitPayments.length > 0) {
     return splitPayments.some((s) => {
-      const ch = (s.channel || "").trim().toLowerCase();
+      const ch = `${s.channel || ""} ${s.method || ""}`.trim().toLowerCase();
       const amt = Number(s.amount) || 0;
       return (ch === "cash" || ch.includes("cash") || ch.includes("cod") || ch.includes("เงินสด")) && amt > 0;
     });

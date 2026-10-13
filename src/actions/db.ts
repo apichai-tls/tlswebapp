@@ -1576,7 +1576,16 @@ export async function updateJobAction(id: string, updates: any) {
   ) {
     const oldItems = existingJob.itemsJson || "";
     const newItems = data.itemsJson !== undefined ? (data.itemsJson || "") : oldItems;
-    const isItemsChanged = data.itemsJson !== undefined && newItems !== oldItems;
+    let isItemsChanged = false;
+    if (data.itemsJson !== undefined && newItems !== oldItems) {
+      try {
+        const oldArr = oldItems ? JSON.parse(oldItems) : [];
+        const newArr = newItems ? JSON.parse(newItems) : [];
+        isItemsChanged = computeCartHash({ items: oldArr }) !== computeCartHash({ items: newArr });
+      } catch {
+        isItemsChanged = true;
+      }
+    }
 
     const oldFee = Number(existingJob.fee) || 0;
     const newFee = data.fee !== undefined ? (Number(data.fee) || 0) : oldFee;

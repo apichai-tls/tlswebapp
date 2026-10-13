@@ -106,7 +106,7 @@ export function computeCartHash(data: {
   return JSON.stringify({
     items: (data.items || [])
       .map(i => ({
-        key: String(i.serviceId || i.name || i.id || "").trim(),
+        key: String(i.name || i.serviceId || i.id || "").trim(),
         qty: Number(i.quantity) || 1,
         price: Number(i.price) || 0,
       }))

@@ -3138,9 +3138,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       } else {
         setShowReceipt(true);
         playAudioFeedback("success");
-        if (isPaidFlag && (paymentMethod === "cash" || finalChannel?.toLowerCase().includes("cash") || finalChannel?.includes("เงินสด"))) {
+        if (isPaidFlag) {
           import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
-            triggerCashDrawerIfEnabled("pay", "Cash", null, settings);
+            triggerCashDrawerIfEnabled("pay", finalChannel || paymentMethod, newPayments, settings);
           }).catch(() => {});
         }
       }

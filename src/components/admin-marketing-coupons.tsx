@@ -35,6 +35,7 @@ import {
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { AdminCouponTemplateModal } from "@/components/admin-coupon-template-modal";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
+import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 
 export function AdminMarketingCoupons() {
   const { user } = useAuth();
@@ -53,9 +54,11 @@ export function AdminMarketingCoupons() {
   const [couponPage, setCouponPage] = useState(1);
   const couponPageSize = 20;
 
-  // Customer Profile Modal state
+  // Customer Profile & Edit Modal state
   const [selectedProfileCustomer, setSelectedProfileCustomer] = useState<Customer | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [editCustomerOpen, setEditCustomerOpen] = useState(false);
 
   const fetchCoupons = async () => {
     setIsLoadingAllCoupons(true);
@@ -605,10 +608,29 @@ export function AdminMarketingCoupons() {
         <AdminCustomerProfileModal
           customer={selectedProfileCustomer}
           open={profileOpen}
-          onOpenChange={setProfileOpen}
-          onEditCustomer={() => {}}
+          onOpenChange={(open) => {
+            setProfileOpen(open);
+            if (!open) fetchCoupons();
+          }}
+          onEditCustomer={(c) => {
+            setEditingCustomer(c);
+            setEditCustomerOpen(true);
+          }}
         />
       )}
+
+      {/* Customer Edit Dialog */}
+      <AdminCustomerDialog
+        open={editCustomerOpen}
+        onOpenChange={(open) => {
+          setEditCustomerOpen(open);
+          if (!open) {
+            setEditingCustomer(null);
+            fetchCoupons();
+          }
+        }}
+        customer={editingCustomer}
+      />
     </div>
   );
 }
