@@ -4399,9 +4399,20 @@ export async function unlockPaidJobAction(data: {
         userName: data.actorName || "CSO",
       };
 
+      const prevClearedIds = Array.isArray(existingNotes.clearedChargeIds) ? existingNotes.clearedChargeIds : [];
+      const newClearedIds = Array.from(
+        new Set([
+          ...prevClearedIds,
+          ...existingPayments.map((p: any) => p?.chargeId).filter(Boolean),
+          ...(existingNotes.lastBeamPaymentLink?.id ? [existingNotes.lastBeamPaymentLink.id] : []),
+        ])
+      );
+
+      const { lastBeamPaymentLink: _removedBeamLink, ...restNotes } = existingNotes;
       const updatedNotesJson = JSON.stringify({
-        ...existingNotes,
+        ...restNotes,
         payments: [], // Clear ALL payments (Option A)
+        clearedChargeIds: newClearedIds,
         notes: [...existingLogs, unlockLog],
       });
 

@@ -219,7 +219,9 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   const parsedPromoCode = promoMatch && parsedPromoDiscount > 0 ? promoMatch[1] : null;
   const parsedPromoTarget = promoMatch && parsedPromoDiscount > 0 ? ((promoMatch[2] as "ALL" | "DELIVERY") || "ALL") : null;
 
-  const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0)) - (job.discount || 0) - parsedPromoDiscount);
+  const isFreeDelivery = /Free\s*Delivery/i.test(job.remark || "");
+  const effectiveFee = isFreeDelivery ? 0 : (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0));
+  const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + effectiveFee - (job.discount || 0) - parsedPromoDiscount);
   let jobVatAmount = 0;
   if (jobVatType === "inclusive" && jobVatRate > 0) {
     jobVatAmount = baseTotal * (jobVatRate / (100 + jobVatRate));
@@ -270,7 +272,8 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     }
   } catch {}
 
-  const jobTotal = job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0);
+  const rawJobTotal = job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0);
+  const jobTotal = safeCeil(rawJobTotal);
   const targetCustId = job.customerId || (rawJob as any).customerId;
   const cust = findMatchingCustomer(customerStore.getSnapshot(), {
     customerId: targetCustId,
@@ -292,7 +295,12 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ? (job as any).walletBalanceAfter
     : preDeductWalletBalance;
 
-  const isJobPaid = Boolean((job as any).isShopPaid || rawJob.isShopPaid || job.isPaid || (totalPayments >= jobTotal && jobTotal > 0));
+  const isJobPaid = Boolean(
+    (job as any).isShopPaid ||
+    rawJob.isShopPaid ||
+    ((job as any).source === "pos" && job.isPaid) ||
+    (totalPayments >= jobTotal && jobTotal > 0)
+  );
   const isDraftJob = (job as any).isDraft !== undefined ? Boolean((job as any).isDraft) : !isJobPaid;
   const walletBalance = isDraftJob ? preDeductWalletBalance : postDeductWalletBalance;
   const receiptDate = (isJobPaid && paymentTime && !isNaN(paymentTime.getTime()))
@@ -334,7 +342,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     promoCode: (job as any).promoCode || parsedPromoCode || null,
     promoDiscount: (job as any).promoDiscount !== undefined ? (job as any).promoDiscount : (parsedPromoDiscount > 0 ? parsedPromoDiscount : null),
     promoTarget: (job as any).promoTarget || parsedPromoTarget || null,
-    total: job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0),
+    total: jobTotal,
     isPaid: isJobPaid,
     paymentChannel: job.paymentChannel,
     remark: job.remark,
@@ -345,7 +353,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     deliveryScheduledAt: job.deliveryScheduledAt,
     status: job.status,
     adminNotesJson: job.adminNotesJson,
-    deliveryFee: rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0),
+    deliveryFee: effectiveFee,
     jobType: job.type || (rawJob as any).type || "full_service",
     customerId: job.customerId || (rawJob as any).customerId || cust?.id,
     isMember,
@@ -570,6 +578,9 @@ export function ThermalReceiptDialog({
               
               if (!existingBills.includes(uploadResult.publicUrl)) {
                 const isProforma = uploadResult.publicUrl.includes("proforma-");
+                if (!isProforma && !snapshotData.autoCapture && !targetJob.isShopPaid && !(targetJob.source === "pos" && targetJob.isPaid)) {
+                  return;
+                }
                 let newBills: string[];
                 if (isProforma) {
                   const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
@@ -582,12 +593,6 @@ export function ThermalReceiptDialog({
                 await jobStore.updateJobDetails(targetJob.id, {
                   billImageUrl: JSON.stringify(newBills)
                 });
-                try {
-                  const { api } = await import("@/lib/api");
-                  await api.updateJob(targetJob.id, {
-                    billImageUrl: JSON.stringify(newBills),
-                  } as any);
-                } catch {}
               }
             }
           }
@@ -888,7 +893,7 @@ export function ThermalReceiptDialog({
             <span>{currentLanguage === "en" ? "SUBTOTAL:" : "ยอดรวม:"}</span>
             <span>฿{formatCurrency(receiptData.subtotal != null ? receiptData.subtotal : (receiptData.total || 0))}</span>
           </div>
-          {getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType).map((feeItem, idx) => (
+          {getTransportFeeBreakdown(/Free\s*Delivery/i.test(receiptData.remark || "") ? 0 : receiptData.deliveryFee, receiptData.jobType).map((feeItem, idx) => (
             <div key={`fee-${idx}`} className="flex justify-between text-neutral-800 font-medium">
               <span>{currentLanguage === "en" ? feeItem.name : feeItem.nameTh}:</span>
               <span>฿{formatCurrency(feeItem.total)}</span>
@@ -936,7 +941,7 @@ export function ThermalReceiptDialog({
           )}
           <div className={`flex justify-between font-black text-neutral-900 ${isA5 ? "text-lg" : (isSmall ? "text-[11px]" : "text-xs")} pt-1 border-t border-neutral-450/40`}>
             <span>GRAND TOTAL:</span>
-            <span>฿{formatCurrency(receiptData.total)}</span>
+            <span>฿{formatCurrency(safeCeil(receiptData.total))}</span>
           </div>
 
           {/* Payments List Breakdown on Receipt */}

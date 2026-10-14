@@ -44,6 +44,7 @@ export default function ReceiptPreviewClient({
         phone: initialBranch.phone,
         taxId: initialBranch.taxId,
         logoUrl: initialBranch.logoUrl,
+        proformaQrUrl: initialBranch.proformaQrUrl,
       }
     : {
         id: "shop_seed",
@@ -68,7 +69,7 @@ export default function ReceiptPreviewClient({
   receiptData.isPaid = !isDraft;
   if (isDraft) {
     receiptData.proformaId = initialJob.proformaNumber || `PR-${initialJob.id}`;
-    receiptData.proformaRevision = initialJob.proformaRevision || 2;
+    receiptData.proformaRevision = initialJob.proformaRevision !== undefined && initialJob.proformaRevision !== null ? Number(initialJob.proformaRevision) : 0;
   }
   // Crucial: Member identity and true post-deduction Wallet Balance After
   receiptData.isMember = Boolean(initialCustomer?.isMember || initialCustomer?.memberId || initialJob.isMember || initialJob.memberId);

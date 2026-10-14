@@ -185,6 +185,9 @@ export function A5ReceiptDialog({
           } catch {}
           if (!existingBills.includes(uploadResult.publicUrl)) {
             const isProforma = uploadResult.publicUrl.includes("proforma-");
+            if (!isProforma && !snapshotData.autoCapture && !targetJob.isShopPaid && !(targetJob.source === "pos" && targetJob.isPaid)) {
+              return;
+            }
             let newBills: string[];
             if (isProforma) {
               const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
@@ -214,12 +217,6 @@ export function A5ReceiptDialog({
             await jobStore.updateJobDetails(targetJob.id, {
               billImageUrl: JSON.stringify(newBills),
             });
-            try {
-              const { api } = await import("@/lib/api");
-              await api.updateJob(targetJob.id, {
-                billImageUrl: JSON.stringify(newBills),
-              } as any);
-            } catch {}
           }
         }
       }
@@ -653,7 +650,8 @@ export function A5ReceiptContent({
       : receiptData.proformaId || "DRAFT"
     : null;
 
-  const transportFeeItems = getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType);
+  const effectiveDeliveryFee = /Free\s*Delivery/i.test(receiptData.remark || "") ? 0 : receiptData.deliveryFee;
+  const transportFeeItems = getTransportFeeBreakdown(effectiveDeliveryFee, receiptData.jobType);
 
   const services = useSyncExternalStore(serviceStore.subscribe, serviceStore.getSnapshot, serviceStore.getSnapshot);
 
@@ -837,7 +835,8 @@ export function A5ReceiptContent({
       ? Math.max(0.45, (A5_MAX_HEIGHT - 6) / estimatedTotalHeight)
       : 1;
 
-  const remainingBalance = Math.max(0, (receiptData.total || 0) - totalPaid);
+  const effectiveGrandTotal = safeCeil(receiptData.total || 0);
+  const remainingBalance = Math.max(0, effectiveGrandTotal - totalPaid);
 
   return (
     <div
@@ -1122,7 +1121,7 @@ export function A5ReceiptContent({
               )}
               <div className={`flex justify-between items-center border-t-2 border-neutral-900 whitespace-nowrap gap-2 ${grandTotalClass}`}>
                 <span className="shrink-0">{currentLanguage === "en" ? "GRAND TOTAL" : "ยอดสุทธิ"}</span>
-                <span className="font-mono shrink-0">฿{formatCurrency(receiptData.total)}</span>
+                <span className="font-mono shrink-0">฿{formatCurrency(effectiveGrandTotal)}</span>
               </div>
               {receiptData.vatType === "inclusive" && receiptData.vatRate > 0 && (
                 <div className="flex justify-between py-0.5 text-[9.5px] text-neutral-500">
@@ -1167,13 +1166,13 @@ export function A5ReceiptContent({
               {!isPaidEffective &&
                 payments.length === 0 &&
                 !receiptData.isDraft &&
-                (receiptData.total || 0) > 0 && (
+                effectiveGrandTotal > 0 && (
                   <div className="mt-1.5 pt-1.5 border-t border-dashed border-neutral-300">
                     <div className={`flex justify-between py-0.5 text-rose-600 font-black ${isUltraCompact ? "text-[9.5px]" : "text-xs"}`}>
                       <span>
                         {currentLanguage === "en" ? "BALANCE DUE (UNPAID)" : "ยอดรอชำระ"}
                       </span>
-                      <span className="font-mono">฿{formatCurrency(receiptData.total)}</span>
+                      <span className="font-mono">฿{formatCurrency(effectiveGrandTotal)}</span>
                     </div>
                   </div>
                 )}
@@ -1252,7 +1251,7 @@ export function A5ReceiptContent({
                 ✓ {currentLanguage === "en" ? "Payment Completed" : "ชำระเงินเรียบร้อยแล้ว"}
               </span>
               <span className="font-mono font-black text-emerald-900">
-                ฿{formatCurrency(totalPaid || receiptData.total || 0)}
+                ฿{formatCurrency(totalPaid || effectiveGrandTotal)}
               </span>
             </div>
           )}
@@ -1328,7 +1327,7 @@ export function A5ReceiptContent({
                         Scan to Pay
                       </p>
                       <p className={qrAmountClass}>
-                        ฿{formatCurrency(remainingBalance > 0 ? remainingBalance : receiptData.total || 0)}
+                        ฿{formatCurrency(remainingBalance > 0 ? remainingBalance : effectiveGrandTotal)}
                       </p>
                       <p className={qrSubtextClass}>
                         Scan QR code to complete

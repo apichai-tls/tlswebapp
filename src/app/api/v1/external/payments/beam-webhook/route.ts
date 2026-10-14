@@ -350,14 +350,13 @@ export async function POST(req: Request) {
       }
     } catch {}
 
-    // Idempotency: avoid recording duplicate payment if job is already marked as paid via Beam or this charge is already recorded
-    const isAlreadyPaidViaBeam =
-      job.isPaid &&
-      (existingPayments.some((p: any) => p.chargeId === chargeId || (p.channel && p.channel.toLowerCase().includes('beam'))) ||
-        (job.paymentChannel && job.paymentChannel.toLowerCase().includes('beam')))
+    // Idempotency: avoid recording duplicate payment if this exact chargeId is already recorded
+    const isThisChargeRecorded = existingPayments.some(
+      (p: any) => p && p.chargeId && (p.chargeId === chargeId || (paymentLinkId && p.chargeId === paymentLinkId))
+    )
 
-    if (isAlreadyPaidViaBeam) {
-      console.log(`[Beam Webhook] Job ${job.id} is already marked as paid via Beam. Acknowledging event: ${event}`)
+    if (isThisChargeRecorded && job.isPaid && job.isShopPaid) {
+      console.log(`[Beam Webhook] Job ${job.id} already recorded charge ${chargeId}. Acknowledging event: ${event}`)
       return NextResponse.json({
         success: true,
         message: 'Payment already recorded previously',
@@ -366,29 +365,41 @@ export async function POST(req: Request) {
       })
     }
 
-    const newPaymentEntry = {
-      amount: paidAmount,
-      method: paymentMethodCode,
-      channel: paymentChannel,
-      timestamp: now.toISOString(),
-      chargeId,
+    const updatedPayments = isThisChargeRecorded
+      ? existingPayments
+      : [
+          ...existingPayments,
+          {
+            amount: paidAmount,
+            method: paymentMethodCode,
+            channel: paymentChannel,
+            timestamp: now.toISOString(),
+            chargeId,
+          },
+        ]
+
+    adminNotesObj.payments = updatedPayments
+
+    const totalPaidAfter = updatedPayments.reduce((sum: number, p: any) => sum + (Number(p?.amount) || 0), 0)
+    const currentJobTotal = Number(job.totalAmount) || 0
+    const effectiveTotalAmount = Math.max(currentJobTotal, totalPaidAfter)
+    const isFullyPaidNow = effectiveTotalAmount > 0 && totalPaidAfter >= effectiveTotalAmount - 0.01
+
+    if (!isFullyPaidNow) {
+      delete adminNotesObj.lastBeamPaymentLink
     }
 
-    adminNotesObj.payments = [...existingPayments, newPaymentEntry]
-
-    // Update Job to Paid
+    // Update Job payment state
     const updatedJob = await prisma.job.update({
       where: { id: job.id },
       data: {
-        isPaid: true,
-        isShopPaid: true,
+        isPaid: isFullyPaidNow,
+        isShopPaid: isFullyPaidNow,
         paymentMethod: paymentMethodCode,
         paymentChannel,
-        totalAmount: paidAmount,
-        csoPaidAt: now,
-        shopPaidAt: now,
-        status: job.status === 'billing' ? 'pending' : job.status,
-        subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus,
+        totalAmount: effectiveTotalAmount,
+        ...(isFullyPaidNow ? { csoPaidAt: now, shopPaidAt: now } : {}),
+        subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
         adminNotesJson: JSON.stringify(adminNotesObj),
       },
     })

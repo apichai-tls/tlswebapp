@@ -290,18 +290,31 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     return null;
   };
 
-  // Distinct employees for the employee dropdown (only shop-paid jobs + topups + refunds)
+  // Helper to check if a job is a Top-Up job
+  const isTopUpJob = (job: Job): boolean => {
+    if (job.status === "topup" || String(job.id).toUpperCase().startsWith("TU-")) return true;
+    const jobItems = Array.isArray(job.items) ? job.items : [];
+    if (
+      jobItems.length > 0 &&
+      jobItems.every(
+        (it: any) =>
+          it?.category === "PACKAGE" ||
+          it?.serviceId === "topup-member-item" ||
+          it?.id === "topup-member-item"
+      )
+    ) {
+      return true;
+    }
+    return false;
+  };
+
+  // Distinct employees for the employee dropdown (only shop-paid non-topup jobs + refunds)
   const employeeList = useMemo(() => {
     const set = new Set<string>();
     jobs.forEach(j => {
-      if (j.isShopPaid) {
+      if (j.isShopPaid && !isTopUpJob(j)) {
         const payee = getJobPayee(j);
         if (payee) set.add(payee);
-      }
-    });
-    topups.forEach(t => {
-      if (t.createdBy && t.createdBy.trim()) {
-        set.add(t.createdBy.trim());
       }
     });
     refunds.forEach(r => {
@@ -311,13 +324,13 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     });
     if (set.size === 0) {
       jobs.forEach(j => {
-        if (j.isShopPaid && j.createdBy && j.createdBy.trim()) {
+        if (j.isShopPaid && !isTopUpJob(j) && j.createdBy && j.createdBy.trim()) {
           set.add(j.createdBy.trim());
         }
       });
     }
     return Array.from(set).sort();
-  }, [jobs, topups, refunds]);
+  }, [jobs, refunds]);
 
   // Time range filter helper
   const isInTimeRange = (date: Date, range: string) => {
@@ -330,7 +343,7 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     return true;
   };
 
-  // Format Receipt Number nicely matching Loyverse (e.g. 1-36849 or TU-2608-00001)
+  // Format Receipt Number nicely matching Loyverse (e.g. 1-36849)
   const formatReceiptNumber = (job: Job): string => {
     if ((job as any).receiptNumber) return (job as any).receiptNumber;
     const isRf = Boolean(job.id && job.id.startsWith("RF-"));
@@ -366,11 +379,17 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
   const allReceipts = useMemo(() => {
     const list: ReceiptItem[] = [];
 
-    // 1. Process Jobs
+    // 1. Process Jobs (Shop Paid only, excluding Top-up jobs, using shopPaidAt date)
     jobs.forEach(job => {
-      if (!job.createdAt) return;
-      const jDate = new Date(job.createdAt);
-      if (jDate < startDate || jDate > endDate) return false;
+      // ดึงเฉพาะรายการที่หน้าร้านรับชำระ (Shop Paid) และไม่รวมงาน Top-up
+      if (!job.isShopPaid) return;
+      if (isTopUpJob(job)) return;
+
+      const rawPaidDate = (job as any).shopPaidAt || (job as any).csoPaidAt || job.createdAt;
+      if (!rawPaidDate) return;
+      const jDate = new Date(rawPaidDate);
+      if (isNaN(jDate.getTime())) return;
+      if (jDate < startDate || jDate > endDate) return;
 
       // Store filter
       if (selectedStore !== "all" && job.branchId !== selectedStore) {
@@ -387,9 +406,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
       if (selectedEmployee !== "all" && employee !== selectedEmployee) {
         return;
       }
-
-      // ดึงมาเฉพาะรายการที่หน้าร้านรับชำระ (Shop Paid) ยกเว้น Topup ซึ่งประมวลผลแยกอยู่ด้านล่าง
-      if (!job.isShopPaid) return;
 
       const isCancelled = job.status === "cancel";
       const type: "Sale" | "Refund" = isCancelled ? "Refund" : "Sale";
@@ -419,50 +435,6 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
         isTopUp: false,
         isRefunded,
         isCorrected,
-      });
-    });
-
-    // 2. Process Top-ups
-    topups.forEach(topup => {
-      if (!topup.createdAt) return;
-      const tDate = new Date(topup.createdAt);
-      if (tDate < startDate || tDate > endDate) return;
-
-      // Store filter
-      if (selectedStore !== "all" && topup.branchId !== selectedStore) {
-        return;
-      }
-
-      // Time filter
-      if (!isInTimeRange(tDate, selectedTimeRange)) {
-        return;
-      }
-
-      // Employee filter
-      const creator = (topup.createdBy || "Staff").trim();
-      if (selectedEmployee !== "all" && creator !== selectedEmployee) {
-        return;
-      }
-
-      const type: "Sale" | "Refund" = topup.status === "cancelled" ? "Refund" : "Sale";
-      const store = getStoreName(topup.branchId);
-      const total = Number(topup.amount) || 0;
-
-      list.push({
-        id: topup.id,
-        receiptNo: topup.id || `TU-${topup.memberId}`,
-        billNo: "",
-        date: tDate,
-        dateStr: format(tDate, "MMM dd, yyyy hh:mm a"),
-        store,
-        storeId: topup.branchId || undefined,
-        employee: creator,
-        customerName: topup.customerName || "",
-        customerPhone: topup.customerPhone || "",
-        type,
-        total,
-        rawTopUp: topup,
-        isTopUp: true,
       });
     });
 

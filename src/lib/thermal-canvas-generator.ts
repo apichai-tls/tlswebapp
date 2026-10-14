@@ -64,7 +64,8 @@ export async function generateThermalReceiptImage(
     </div>
   `).join("");
 
-  const feeItems = getTransportFeeBreakdown(receiptData.deliveryFee, receiptData.jobType);
+  const effectiveDeliveryFee = /Free\s*Delivery/i.test(receiptData.remark || "") ? 0 : receiptData.deliveryFee;
+  const feeItems = getTransportFeeBreakdown(effectiveDeliveryFee, receiptData.jobType);
   const deliveryFeeHtml = feeItems.map(item => `
     <div style="display: flex; font-size: 10px; line-height: 1.25; margin-bottom: 4px; font-weight: 500;">
       <span style="flex: 1; min-width: 0; padding-right: 8px; text-align: left;">${item.name}</span>
@@ -147,7 +148,7 @@ export async function generateThermalReceiptImage(
         ` : ""}
         <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 900; color: #171717; border-top: 1px solid #171717; padding-top: 4px; margin-top: 4px;">
           <span>GRAND TOTAL</span>
-          <span style="font-family: monospace;">฿${formatCurrency(receiptData.total)}</span>
+          <span style="font-family: monospace;">฿${formatCurrency(safeCeil(receiptData.total))}</span>
         </div>
       </div>
 

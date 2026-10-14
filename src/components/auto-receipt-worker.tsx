@@ -109,21 +109,29 @@ export function AutoReceiptWorker() {
         }
 
         const isPaid = isJobFullyPaid(job);
-        if (!isPaid) return false;
+        if (!isPaid || !job.isShopPaid) return false;
+
+        // Only use background worker for Online Gateway / Beam webhook payments where no staff
+        // machine clicked [Pay] directly. Normal staff payments generate and save receipts on the machine that clicked.
+        const channel = (job.paymentChannel || "").toLowerCase();
+        const isOnlineGateway = channel.includes("beam") || channel.includes("gateway");
+        if (!isOnlineGateway) return false;
 
         // Guard: Job must have actual laundry items to auto-generate receipt!
         // Delivery booking fees alone without clothes must NOT generate a receipt!
         let itemsArr: any[] = [];
         try {
-          itemsArr = typeof job.items === 'string' ? JSON.parse(job.items) : (job.items || []);
+          if (Array.isArray(job.items)) {
+            itemsArr = job.items;
+          } else if (typeof job.items === 'string') {
+            itemsArr = JSON.parse(job.items);
+          } else if ((job as any).itemsJson) {
+            itemsArr = JSON.parse((job as any).itemsJson);
+          }
         } catch {}
         if (itemsArr.length === 0) {
           return false;
         }
-
-        // Receipt requires shop payment confirmation (isShopPaid) or walk-in POS payment
-        const isShopPaidOrWalkIn = Boolean(job.isShopPaid || (job.source === 'pos' && isPaid));
-        if (!isShopPaidOrWalkIn) return false;
 
         let bills: string[] = [];
         try {
@@ -143,25 +151,6 @@ export function AutoReceiptWorker() {
           return false;
         }
 
-        // Guard against premature capture for Member Wallet payments:
-        // When staff marks a job as paid via Member Wallet / Deduct Member, ensure we have
-        // the confirmed post-deduction wallet balance (either from job.walletBalanceAfter or customerStore).
-        // This prevents capturing a receipt image with a stale pre-deduction balance or ฿0.00.
-        const isMemberPayment = 
-          (job.paymentChannel || "").toLowerCase().includes("member") ||
-          (job.paymentChannel || "").toLowerCase().includes("credit") ||
-          (job.paymentChannel || "").toLowerCase().includes("deduct") ||
-          Boolean(job.adminNotesJson && job.adminNotesJson.includes('"method":"credit"'));
-
-        if (isMemberPayment) {
-          const cust = customerStore.getSnapshot().find((c) => c.id === job.customerId);
-          const hasConfirmedBalance = (job as any).walletBalanceAfter != null || cust?.creditBalance != null;
-          if (!hasConfirmedBalance) {
-            // Cannot confirm wallet balance yet; wait for wallet deduction/sync
-            return false;
-          }
-        }
-
         return true;
       });
 
@@ -172,25 +161,7 @@ export function AutoReceiptWorker() {
 
         try {
           const activeShop = shopLocations.find((s) => s.id === pendingPaidJob.branchId) || shopLocations[0];
-          
-          let jobToFormat = pendingPaidJob;
-          const isMemberPayment = 
-            (pendingPaidJob.paymentChannel || "").toLowerCase().includes("member") ||
-            (pendingPaidJob.paymentChannel || "").toLowerCase().includes("credit") ||
-            (pendingPaidJob.paymentChannel || "").toLowerCase().includes("deduct") ||
-            Boolean(pendingPaidJob.adminNotesJson && pendingPaidJob.adminNotesJson.includes('"method":"credit"'));
-
-          if (isMemberPayment && (pendingPaidJob as any).walletBalanceAfter == null) {
-            const cust = customerStore.getSnapshot().find((c) => c.id === pendingPaidJob.customerId);
-            if (cust?.creditBalance != null) {
-              jobToFormat = {
-                ...pendingPaidJob,
-                walletBalanceAfter: cust.creditBalance,
-              } as any;
-            }
-          }
-
-          const receiptData = formatJobToReceiptData(jobToFormat);
+          const receiptData = formatJobToReceiptData(pendingPaidJob);
           receiptData.isDraft = false;
           receiptData.isPaid = true;
           receiptData.autoCapture = true;
@@ -219,198 +190,13 @@ export function AutoReceiptWorker() {
                 billImageUrl: JSON.stringify(mergedBills),
               } as any);
 
-              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached receipt image for Job #${jobId}`);
+              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached receipt image for Online Job #${jobId}`);
             }
           }
 
           completedRef.current.add(`receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`);
         } catch (err) {
           console.warn(`[AutoReceiptWorker] Failed to auto-generate receipt for Job #${jobId}:`, err);
-        } finally {
-          processingRef.current.delete(jobId);
-          isWorkingRef.current = false;
-        }
-
-        return; // process 1 per interval to keep CPU 100% smooth
-      }
-
-      // 2. Check for recent active jobs that have a proformaNumber but missing proforma image
-      const pendingProformaJob = jobs.find((job) => {
-        if (!job.id || job.id === "DRAFT") return false;
-        if (processingRef.current.has(job.id)) return false;
-        if (completedRef.current.has(`proforma_skip_${job.id}`)) return false;
-
-        // Skip historical or finished jobs
-        if (['completed', 'cancel', 'return'].includes(job.status)) {
-          completedRef.current.add(`proforma_skip_${job.id}`);
-          return false;
-        }
-
-        if (isAreaRestricted && userArea) {
-          const jobShop = shopLocations.find((s) => s.id === job.branchId);
-          if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
-            completedRef.current.add(`proforma_skip_${job.id}`);
-            return false;
-          }
-        }
-
-        const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
-        const targetProforma = (job as any).proformaNumber || (job as any).proformaReceiptNumber;
-        if (!targetProforma || targetProforma === "DRAFT") return false;
-        const cleanBaseProforma = cleanProformaNumber(targetProforma) || job.id;
-        const rev = (job as any).proformaRevision || 0;
-        const revKey = `proforma_${job.id}_rev${rev}`;
-
-        // Guard: If job has 0 items (e.g. initial booking with fee only), NEVER auto-generate proforma!
-        let proformaItemsArr: any[] = [];
-        try {
-          if (Array.isArray(job.items)) {
-            proformaItemsArr = job.items;
-          } else if (typeof job.items === 'string') {
-            proformaItemsArr = JSON.parse(job.items);
-          } else if (job.itemsJson) {
-            proformaItemsArr = JSON.parse(job.itemsJson);
-          }
-        } catch {}
-        if (proformaItemsArr.length === 0) {
-          completedRef.current.add(revKey);
-          return false;
-        }
-
-        if (now - jobUpdatedTime > MAX_JOB_AGE_MS) {
-          completedRef.current.add(revKey);
-          return false;
-        }
-
-        if (completedRef.current.has(revKey)) {
-          return false;
-        }
-
-        let bills: string[] = [];
-        try {
-          if (job.billImageUrl) {
-            const parsed = JSON.parse(job.billImageUrl);
-            bills = Array.isArray(parsed) ? parsed : [parsed];
-          }
-        } catch {}
-
-        const revFilename = `proforma-${cleanBaseProforma}-rev${rev}.png`;
-        const hasThisRev = bills.some(
-          (url) => typeof url === "string" && url.includes(revFilename)
-        );
-
-        if (hasThisRev) {
-          completedRef.current.add(revKey);
-          return false;
-        }
-
-        return true;
-      });
-
-      if (pendingProformaJob) {
-        const jobId = pendingProformaJob.id;
-        const targetProforma = (pendingProformaJob as any).proformaNumber || (pendingProformaJob as any).proformaReceiptNumber;
-        const cleanBaseProforma = cleanProformaNumber(targetProforma) || jobId;
-        const rev = (pendingProformaJob as any).proformaRevision || 0;
-
-        isWorkingRef.current = true;
-        processingRef.current.add(jobId);
-
-        try {
-          const activeShop = shopLocations.find((s) => s.id === pendingProformaJob.branchId) || shopLocations[0];
-          const receiptData = formatJobToReceiptData(pendingProformaJob);
-          receiptData.isDraft = true;
-          receiptData.proformaId = cleanBaseProforma;
-          receiptData.proformaRevision = rev;
-
-          const blob = isA5
-            ? await generateA5ReceiptImage(receiptData, activeShop)
-            : await generateThermalReceiptImage(receiptData, activeShop);
-
-          if (blob) {
-            const filename = `proforma-${cleanBaseProforma}-rev${rev}.png`;
-            const publicUrl = await uploadReceiptImage(blob, jobId, filename);
-
-            if (publicUrl) {
-              let existingBills: string[] = [];
-              try {
-                const currentJob = jobStore.getSnapshot().find((j) => j.id === jobId) || pendingProformaJob;
-                if (currentJob.billImageUrl) {
-                  const parsed = JSON.parse(currentJob.billImageUrl);
-                  existingBills = Array.isArray(parsed) ? parsed : [parsed];
-                }
-              } catch {}
-
-              const cleanFiltered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBaseProforma}-rev${rev}.png`));
-              const mergedBills = Array.from(new Set([publicUrl, ...cleanFiltered]));
-              mergedBills.sort((a: string, b: string) => {
-                const aIsPf = a.includes("proforma-");
-                const bIsPf = b.includes("proforma-");
-                if (aIsPf && !bIsPf) return -1;
-                if (!aIsPf && bIsPf) return 1;
-                if (aIsPf && bIsPf) {
-                  const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
-                  const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
-                  return bRev - aRev;
-                }
-                const aIsRc = a.includes("receipt-");
-                const bIsRc = b.includes("receipt-");
-                if (aIsRc && !bIsRc) return 1;
-                if (!aIsRc && bIsRc) return -1;
-                return 0;
-              });
-
-              let currentItemsArr: any[] = [];
-              try {
-                if (Array.isArray(pendingProformaJob.items)) {
-                  currentItemsArr = pendingProformaJob.items;
-                } else if (typeof pendingProformaJob.items === 'string') {
-                  currentItemsArr = JSON.parse(pendingProformaJob.items);
-                } else if (pendingProformaJob.itemsJson) {
-                  currentItemsArr = JSON.parse(pendingProformaJob.itemsJson);
-                }
-              } catch {}
-
-              const speedMatch = pendingProformaJob.remark?.match(/Express\s*(\d+)%/i);
-              const parsedSpeed = speedMatch ? `express_${speedMatch[1]}` : "standard";
-              const promoMatch = pendingProformaJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
-              const hasValidPromo = Boolean(promoMatch && promoMatch[3] && parseFloat(promoMatch[3]) > 0);
-              const hasRawPromo = Boolean(promoMatch && promoMatch[1]);
-              const hasDiscountOn = Boolean(
-                pendingProformaJob.remark?.includes("Discount: on") ||
-                (pendingProformaJob.discountPercent && pendingProformaJob.discountPercent > 0) ||
-                hasValidPromo ||
-                hasRawPromo
-              );
-              const vatMatch = pendingProformaJob.remark?.match(/VAT:\s*(\w+)\s*\((\d+(?:\.\d+)?)\%\)/i);
-              const parsedVatType = vatMatch ? vatMatch[1].toLowerCase() : (systemSettings?.vatType || "none");
-              const parsedVatRate = vatMatch ? parseFloat(vatMatch[2]) : (parseFloat(systemSettings?.vatRate || "7") || 7);
-
-              const proformaHash = computeCartHash({
-                items: currentItemsArr,
-                serviceSpeed: parsedSpeed,
-                fee: pendingProformaJob.fee ?? 0,
-                discountPercent: hasDiscountOn ? (pendingProformaJob.discountPercent ?? 0) : 0,
-                promoCode: promoMatch ? promoMatch[1] : null,
-                promoDiscount: (promoMatch && promoMatch[3]) ? parseFloat(promoMatch[3]) : 0,
-                vatType: parsedVatType,
-                vatRate: parsedVatRate,
-                customerName: pendingProformaJob.customerName,
-                customerPhone: pendingProformaJob.customerPhone,
-              });
-
-              await jobStore.updateJobDetails(jobId, {
-                billImageUrl: JSON.stringify(mergedBills),
-                proformaCartHash: proformaHash,
-              } as any);
-
-              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached Proforma INV image for Job #${jobId}`);
-            }
-          }
-
-          completedRef.current.add(`proforma_${jobId}_rev${rev}`);
-        } catch (err) {
-          console.warn(`[AutoReceiptWorker] Failed to auto-generate proforma for Job #${jobId}:`, err);
         } finally {
           processingRef.current.delete(jobId);
           isWorkingRef.current = false;

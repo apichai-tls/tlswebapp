@@ -1392,6 +1392,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     setProformaReceiptNumber("");
     setProformaRevision(null);
     setLastProformaCartHash("");
+    capturedReceiptUrlsRef.current = [];
+    setSessionCapturedReceiptUrls([]);
     // Reset VAT to current system settings defaults
     setVatType(normalizeVatType(settings?.vatType));
     setVatRate(parseFloat(settings?.vatRate || "7") || 7);
@@ -2121,7 +2123,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     const baseTotal = subtotal + expressSurcharge - totalDiscount;
     const vat = vatType === "exclusive" ? (baseTotal * (vatRate / 100)) : 0;
     const rawTotal = baseTotal + vat + manualAdjustment;
-    return Math.max(0, Math.round(rawTotal * 100) / 100);
+    return safeCeil(Math.max(0, rawTotal));
   }, [subtotal, expressSurcharge, totalDiscount, vatType, vatRate, manualAdjustment]);
 
   const handleApplyPromo = async (codeOverride?: unknown) => {
@@ -2342,7 +2344,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       const displayId = latestJob.id ? formatJobDisplayId(latestJob.id) : "";
 
-      const isJobPaid = Boolean(latestJob.isPaid || latestJob.isShopPaid);
+      const isJobPaid = Boolean(latestJob.isShopPaid || (latestJob.source === "pos" && latestJob.isPaid));
       const isDraftDoc = !isJobPaid;
 
       return {
@@ -2361,7 +2363,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         expressSurcharge: jobSurcharge,
         serviceSpeed: jobSpeed,
         discount: latestJob.discount || 0,
-        total: latestJob.totalAmount,
+        total: safeCeil(latestJob.totalAmount || 0),
         isPaid: isJobPaid,
         paymentChannel: latestJob.paymentChannel,
         remark: latestJob.remark,
@@ -2372,7 +2374,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         deliveryScheduledAt: latestJob.deliveryScheduledAt,
         status: latestJob.status,
         adminNotesJson: latestJob.adminNotesJson,
-        deliveryFee: latestJob.fee || 0,
+        deliveryFee: /Free\s*Delivery/i.test(latestJob.remark || "") ? 0 : (latestJob.fee || 0),
         walletBalance: latestJob.walletBalanceAfter != null
           ? latestJob.walletBalanceAfter
           : (latestJob.walletBalance != null
@@ -2819,6 +2821,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
       let finalJob = null;
+      const isPosBillUrlBelongingToJob = (u: string, jobId: string | null) => {
+        if (typeof u !== "string" || u.includes("proforma-DRAFT") || u.includes("/DRAFT/")) return false;
+        if (!jobId) {
+          return !u.includes("proforma-") && !u.includes("receipt-");
+        }
+        const cleanId = jobId.replace(/^RF-/i, "");
+        if (u.includes("proforma-") && !u.includes(jobId) && !u.includes(cleanId)) return false;
+        if (u.includes("receipt-") && !u.includes(jobId) && !u.includes(cleanId)) return false;
+        return true;
+      };
       if (loadedJobId) {
         const loadedJob = jobs.find(j => j.id === loadedJobId);
         let existingBills: string[] = [];
@@ -2829,8 +2841,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             else if (typeof parsed === 'string') existingBills = [parsed];
           }
         } catch {}
-        const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]));
-        const mergedBills = Array.from(new Set([...existingBills, ...allSessionUrls]));
+        const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]))
+          .filter(u => isPosBillUrlBelongingToJob(u, loadedJobId));
+        const cleanExistingBills = existingBills.filter(u => isPosBillUrlBelongingToJob(u, loadedJobId));
+        const mergedBills = Array.from(new Set([...cleanExistingBills, ...allSessionUrls]));
 
         const updateType = isPickupAndDelivery ? "full_service" : (isDelivery ? "delivery" : "in_store");
         const updateStatus = hasPosPackage 
@@ -2877,7 +2891,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const allJobs = jobStore.getSnapshot();
         finalJob = allJobs.find(j => j.id === loadedJobId);
       } else {
-        const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]));
+        const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]))
+          .filter(u => isPosBillUrlBelongingToJob(u, null));
         const targetType = isPickupAndDelivery ? "full_service" : (isDelivery ? "delivery" : "in_store");
         const targetStatus = hasPosPackage ? "topup" : (isPickupAndDelivery ? "pending" : "billing");
         const targetPickupLoc = isPickupAndDelivery 
@@ -4248,6 +4263,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               onClick={() => {
                 setCart([]);
                 setLoadedJobId(null);
+                capturedReceiptUrlsRef.current = [];
+                setSessionCapturedReceiptUrls([]);
                 playAudioFeedback("delete");
                 setEditingPriceItemId(null);
                 setDeliveryScheduledTime(getTomorrowDateTimeString());
@@ -5729,6 +5746,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                                 setDeliveryScheduledTime(getTomorrowDateTimeString());
                               }
 
+                              capturedReceiptUrlsRef.current = [];
+                              setSessionCapturedReceiptUrls([]);
                               setLoadedJobId(job.id);
                               setIsRecallOpen(false);
                               playAudioFeedback("success");

@@ -417,6 +417,8 @@ export default function AdminPage() {
   const clientBuildTime = process.env.NEXT_PUBLIC_BUILD_TIME;
   const dialogOpenRef = useRef(dialogOpen);
   dialogOpenRef.current = dialogOpen;
+  const editingJobIdRef = useRef(editingJobId);
+  editingJobIdRef.current = editingJobId;
   const activeJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
@@ -1112,7 +1114,7 @@ export default function AdminPage() {
     // Formula: (subtotal + surcharge) - % discount - promo discount + fee + VAT
     const baseTotal = currentLaundryPrice + surcharge - dialogDiscountAmount - promoDisc + fee;
     const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    return Math.max(0, baseTotal + vat);
+    return safeCeil(Math.max(0, baseTotal + vat));
   }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate, promoDiscountAmount]);
 
 
@@ -1306,6 +1308,7 @@ export default function AdminPage() {
       };
 
       stripNewNotes();
+      editingJobIdRef.current = null;
       setEditingJobId(null);
       setAdminLogs([]);
     }
@@ -1349,6 +1352,7 @@ export default function AdminPage() {
     setAdminNote("");
     setAdminNoteInput("");
     setShowAdminNote(false);
+    editingJobIdRef.current = null;
     setEditingJobId(null);
     setNoteLogsModalOpen(false);
     setPreviewAdminNoteImage(null);
@@ -1362,7 +1366,16 @@ export default function AdminPage() {
 
   const resetDialogForm = () => {
     originalJobRef.current = null;
+    editingJobIdRef.current = null;
     setEditingJobId(null);
+    setBagImageUrls([]);
+    setBillImageUrls([]);
+    setPickupProofImageUrls([]);
+    setDeliveryProofImageUrls([]);
+    setOrigBagImageUrls([]);
+    setOrigBillImageUrls([]);
+    setOrigPickupProofImageUrls([]);
+    setOrigDeliveryProofImageUrls([]);
     setReviewingWalletTx(null);
     setBillNo("");
     setIsTaxInvoiceRequested(false);
@@ -1584,6 +1597,7 @@ export default function AdminPage() {
   const handleEditFullJob = (job: Job) => {
     setSaveError(null);
     originalJobRef.current = JSON.parse(JSON.stringify(job));
+    editingJobIdRef.current = job.id;
     setEditingJobId(job.id);
     setDialogDiscountPercent(job.discountPercent || 0);
     const hasDiscountOn = job.remark ? job.remark.includes("Discount: on") : false;
@@ -1971,10 +1985,14 @@ export default function AdminPage() {
     // No need to show blocking loader because we loaded images instantly!
     setIsDetailLoading(false);
 
+    editingJobIdRef.current = job.id;
+    setEditingJobId(job.id);
+
     // Silent background fetch to ensure perfect consistency with the server DB
     fetch(`/api/jobs/${job.id}/details`)
       .then(r => r.json())
       .then(data => {
+        if (editingJobIdRef.current !== job.id) return;
         const remoteBagUrls = parseUrls(data.bagImageUrl);
         const remoteBillUrls = parseUrls(data.billImageUrl);
         const remotePickupUrls = parseUrls(data.pickupProofImageUrl);
@@ -2027,7 +2045,6 @@ export default function AdminPage() {
     const branchIndex = shopLocations.findIndex(s => s.id === job.branchId);
     setSelectedStoreIndex(branchIndex >= 0 ? branchIndex : 0);
 
-    setEditingJobId(job.id);
     setBillNo(job.billNo || "");
     let isTaxReq = Boolean(job.remark && (job.remark.includes("ขอใบกำกับภาษี") || job.remark.includes("Tax Invoice") || job.remark.includes("Req Tax Inv")));
     if (job.adminNotesJson) {
@@ -2164,7 +2181,7 @@ export default function AdminPage() {
     const promoDisc = appliedPromo ? promoDiscountAmount : 0;
     const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
     const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    const calculatedTotal = Math.max(0, baseTotal + vatVal);
+    const calculatedTotal = safeCeil(Math.max(0, baseTotal + vatVal));
 
     const now = new Date();
     const effectiveCreatedAt = editingJobId 
@@ -2675,9 +2692,20 @@ export default function AdminPage() {
           }
         }
 
-        let safeBillUrls = billUrls.filter(u => typeof u === "string" && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+        const isBillUrlBelongingToJob = (u: string, jobId: string | null) => {
+          if (typeof u !== "string" || u.includes("proforma-DRAFT") || u.includes("/DRAFT/")) return false;
+          if (!jobId) {
+            return !u.includes("proforma-") && !u.includes("receipt-");
+          }
+          const cleanId = jobId.replace(/^RF-/i, "");
+          if (u.includes("proforma-") && !u.includes(jobId) && !u.includes(cleanId)) return false;
+          if (u.includes("receipt-") && !u.includes(jobId) && !u.includes(cleanId)) return false;
+          return true;
+        };
+
+        let safeBillUrls = billUrls.filter(u => isBillUrlBelongingToJob(u, targetEditingJobId));
         if (!isAdmin && origBillImageUrls.length > 0) {
-          const cleanOrigBills = origBillImageUrls.filter(url => typeof url === "string" && !url.includes("proforma-DRAFT") && !url.includes("/DRAFT/"));
+          const cleanOrigBills = origBillImageUrls.filter(url => isBillUrlBelongingToJob(url, targetEditingJobId));
           const missingBills = cleanOrigBills.filter(url => !safeBillUrls.includes(url));
           if (missingBills.length > 0) {
             safeBillUrls = [...missingBills, ...safeBillUrls];
@@ -2790,6 +2818,10 @@ export default function AdminPage() {
                 id: targetEditingJobId,
                 items: itemsPayload,
                 itemsJson: JSON.stringify(itemsPayload),
+                fee: newJobData.fee !== undefined ? newJobData.fee : existingJob?.fee,
+                discount: newJobData.discount !== undefined ? newJobData.discount : existingJob?.discount,
+                discountPercent: newJobData.discountPercent !== undefined ? newJobData.discountPercent : existingJob?.discountPercent,
+                type: newJobData.type || existingJob?.type,
                 proformaNumber: finalProformaNum,
                 proformaRevision: finalRevision,
                 remark: (newJobData.remark !== undefined ? newJobData.remark : existingJob?.remark),
@@ -2805,6 +2837,7 @@ export default function AdminPage() {
               autoCapture: false,
               walletBalanceAfter: undefined,
             };
+            const baseBillsForCapture = [...safeBillUrls];
             // Offload to microtask so it doesn't block dialog close
             Promise.resolve().then(async () => {
               try {
@@ -2850,12 +2883,9 @@ export default function AdminPage() {
                   }
                   if (proformaUrl) {
                     const capturedUrl = proformaUrl;
-                    // Use functional update to get latest state, but call DB update in a deferred way
-                    setBillImageUrls(prev => {
-                      const cleanBase = finalProformaNum;
-                      const filtered = prev.filter(u => !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
-                      const next = Array.from(new Set([capturedUrl, ...filtered]));
-                      next.sort((a, b) => {
+                    const cleanBase = finalProformaNum;
+                    const sortBills = (arr: string[]) => {
+                      arr.sort((a, b) => {
                         const aIsPf = a.includes("proforma-");
                         const bIsPf = b.includes("proforma-");
                         if (aIsPf && !bIsPf) return -1;
@@ -2871,12 +2901,32 @@ export default function AdminPage() {
                         if (!aIsRc && bIsRc) return -1;
                         return 0;
                       });
-                      // Schedule DB update outside React's render (setTimeout = macrotask, safe from setState-in-render)
-                      setTimeout(() => {
-                        api.updateJob(targetEditingJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
-                      }, 0);
-                      return next;
-                    });
+                      return arr;
+                    };
+
+                    // Always compute next bills from target job's latest store snapshot (or baseBillsForCapture)
+                    // so we NEVER mix with another job's billImageUrls state!
+                    const currentTargetJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
+                    let targetCurrentBills = baseBillsForCapture;
+                    try {
+                      if (currentTargetJob?.billImageUrl) {
+                        const parsed = JSON.parse(currentTargetJob.billImageUrl);
+                        if (Array.isArray(parsed)) targetCurrentBills = parsed;
+                      }
+                    } catch {}
+                    const filteredTargetBills = targetCurrentBills
+                      .filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
+                    const nextTargetBills = sortBills(Array.from(new Set([capturedUrl, ...filteredTargetBills])));
+
+                    api.updateJob(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any).catch(() => {});
+
+                    // ONLY update React state if the dialog is still editing this exact same job!
+                    if (editingJobIdRef.current === targetEditingJobId) {
+                      setBillImageUrls(prev => {
+                        const filtered = prev.filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
+                        return sortBills(Array.from(new Set([capturedUrl, ...filtered])));
+                      });
+                    }
                   }
                 }
               } catch (e) {
@@ -2927,7 +2977,7 @@ export default function AdminPage() {
           deliveryUploadPromise
         ]);
         newJobData.bagImageUrl = bagUrls.length > 0 ? JSON.stringify(bagUrls) : null;
-        const safeNewBillUrls = billUrls.filter(u => typeof u === "string" && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+        const safeNewBillUrls = billUrls.filter(u => typeof u === "string" && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/") && !u.includes("proforma-") && !u.includes("receipt-"));
         newJobData.billImageUrl = safeNewBillUrls.length > 0 ? JSON.stringify(safeNewBillUrls) : null;
         newJobData.pickupProofImageUrl = pickupUrls.length > 0 ? JSON.stringify(pickupUrls) : null;
         newJobData.deliveryProofImageUrl = deliveryUrls.length > 0 ? JSON.stringify(deliveryUrls) : null;
@@ -3072,14 +3122,22 @@ export default function AdminPage() {
                 }
                 if (proformaUrl) {
                   const capturedUrl = proformaUrl;
-                  setBillImageUrls(prev => {
-                    const next = prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev];
-                    // Schedule DB update outside React's render cycle (macrotask = safe)
-                    setTimeout(() => {
-                      jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(next) } as any).catch(() => {});
-                    }, 0);
-                    return next;
-                  });
+                  const currentTargetJob = jobStore.getSnapshot().find(j => j.id === capturedSavedJobId);
+                  let targetCurrentBills = [...safeNewBillUrls];
+                  try {
+                    if (currentTargetJob?.billImageUrl) {
+                      const parsed = JSON.parse(currentTargetJob.billImageUrl);
+                      if (Array.isArray(parsed)) targetCurrentBills = parsed;
+                    }
+                  } catch {}
+                  const nextTargetBills = targetCurrentBills.includes(capturedUrl)
+                    ? targetCurrentBills
+                    : [capturedUrl, ...targetCurrentBills];
+                  jobStore.updateJobDetails(capturedSavedJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any).catch(() => {});
+
+                  if (editingJobIdRef.current === capturedSavedJobId) {
+                    setBillImageUrls(prev => prev.includes(capturedUrl) ? prev : [capturedUrl, ...prev]);
+                  }
                 }
               }
             } catch (e) {
@@ -3093,6 +3151,7 @@ export default function AdminPage() {
         setSaveError(null);
         setDialogOpen(false);
         if (isPayment) {
+          editingJobIdRef.current = savedJobId;
           setEditingJobId(savedJobId);
           setIsDraftPreview(false);
           setIsPaymentEvent(true);
@@ -3205,7 +3264,7 @@ export default function AdminPage() {
       const promoDisc = promoDiscountAmount;
       const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
       const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-      const calculatedTotal = Math.max(0, baseTotal + vatVal);
+      const calculatedTotal = safeCeil(Math.max(0, baseTotal + vatVal));
       
       const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
       const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
@@ -3287,6 +3346,10 @@ export default function AdminPage() {
     } else if (activeJob) {
       const formatted = formatJobToReceiptData(activeJob);
       formatted.autoCapture = isPaymentEvent;
+      if (isPaymentEvent) {
+        formatted.isPaid = true;
+        formatted.isDraft = false;
+      }
       const targetProforma = lastPaidProformaInfoRef.current?.id || (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT" ? cleanProformaNumber(proformaReceiptNumber) : null) || (activeJob as any)?.proformaNumber;
       const targetRevision = lastPaidProformaInfoRef.current ? lastPaidProformaInfoRef.current.rev : proformaRevision;
       if (targetProforma) {
@@ -7598,7 +7661,13 @@ export default function AdminPage() {
               }
             }}
             onBillImageUploaded={(newUrl) => {
-              if (typeof newUrl === "string" && (newUrl.includes("proforma-DRAFT") || newUrl.includes("/DRAFT/"))) return;
+              if (typeof newUrl !== "string" || newUrl.includes("proforma-DRAFT") || newUrl.includes("/DRAFT/")) return;
+              const currentEditId = editingJobIdRef.current;
+              if (!currentEditId) return;
+              const cleanEditId = currentEditId.replace(/^RF-/i, "");
+              if ((newUrl.includes("proforma-") || newUrl.includes("receipt-")) && !newUrl.includes(currentEditId) && !newUrl.includes(cleanEditId)) {
+                return;
+              }
               setBillImageUrls(prev => {
                 if (!prev.includes(newUrl)) {
                   return [...prev, newUrl];
@@ -7627,7 +7696,13 @@ export default function AdminPage() {
               }
             }}
             onBillImageUploaded={(newUrl) => {
-              if (typeof newUrl === "string" && (newUrl.includes("proforma-DRAFT") || newUrl.includes("/DRAFT/"))) return;
+              if (typeof newUrl !== "string" || newUrl.includes("proforma-DRAFT") || newUrl.includes("/DRAFT/")) return;
+              const currentEditId = editingJobIdRef.current;
+              if (!currentEditId) return;
+              const cleanEditId = currentEditId.replace(/^RF-/i, "");
+              if ((newUrl.includes("proforma-") || newUrl.includes("receipt-")) && !newUrl.includes(currentEditId) && !newUrl.includes(cleanEditId)) {
+                return;
+              }
               setBillImageUrls(prev => {
                 if (!prev.includes(newUrl)) {
                   return [...prev, newUrl];

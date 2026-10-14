@@ -17,20 +17,27 @@ export async function GET(req: NextRequest) {
   endDate.setHours(23, 59, 59, 999);
 
   try {
-    const whereClause: any = {
-      createdAt: {
-        gte: startDate,
-        lte: endDate,
-      }
+    const dateRangeCondition = {
+      OR: [
+        { createdAt: { gte: startDate, lte: endDate } },
+        { shopPaidAt: { gte: startDate, lte: endDate } },
+      ],
     };
 
-    if (riderId) {
-      whereClause.OR = [
-        { pickupRiderId: riderId },
-        { deliveryRiderId: riderId },
-        { riderId: riderId }
-      ];
-    }
+    const whereClause: any = riderId
+      ? {
+          AND: [
+            dateRangeCondition,
+            {
+              OR: [
+                { pickupRiderId: riderId },
+                { deliveryRiderId: riderId },
+                { riderId: riderId },
+              ],
+            },
+          ],
+        }
+      : dateRangeCondition;
 
     const jobs = await prisma.job.findMany({
       where: whereClause,
@@ -62,6 +69,7 @@ export async function GET(req: NextRequest) {
         totalAmount: true,
         paymentMethod: true,
         discount: true,
+        discountPercent: true,
         pickupDistance: true,
         deliveryDistance: true,
         deliveryRiderId: true,
@@ -94,6 +102,9 @@ export async function GET(req: NextRequest) {
         proformaNumber: true,
         proformaRevision: true,
         proformaCartHash: true,
+        refundId: true,
+        refundedFromId: true,
+        walletBalanceAfter: true,
       }
     });
     // Map Raw DB data back to the format expected by the frontend (consistent with /api/db)

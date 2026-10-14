@@ -30,7 +30,7 @@ export interface CheckPaymentStatusResult {
 }
 
 /**
- * Helper to mark a job as paid in DB and append to adminNotes payments history
+ * Helper to record a Beam payment in DB and mark job as paid once full totalAmount is covered
  */
 async function markJobAsPaidInDb(params: {
   job: any;
@@ -53,28 +53,46 @@ async function markJobAsPaidInDb(params: {
     }
   } catch {}
 
-  const newPaymentEntry = {
-    amount: paidAmount,
-    method: paymentMethodCode === 'card' ? 'card' : 'transfer',
-    channel: channelName,
-    timestamp: now.toISOString(),
-    chargeId: chargeId || 'BEAM-' + Date.now(),
-  };
+  const effectiveChargeId = chargeId || 'BEAM-' + Date.now();
+  const alreadyRecorded = existingPayments.some(
+    (p: any) => p && p.chargeId && (p.chargeId === effectiveChargeId || p.chargeId === adminNotesObj.lastBeamPaymentLink?.id)
+  );
 
-  adminNotesObj.payments = [...existingPayments, newPaymentEntry];
+  const updatedPayments = alreadyRecorded
+    ? existingPayments
+    : [
+        ...existingPayments,
+        {
+          amount: paidAmount,
+          method: paymentMethodCode === 'card' ? 'card' : 'transfer',
+          channel: channelName,
+          timestamp: now.toISOString(),
+          chargeId: effectiveChargeId,
+        },
+      ];
+
+  adminNotesObj.payments = updatedPayments;
+
+  const totalPaidAfter = updatedPayments.reduce((sum: number, p: any) => sum + (Number(p?.amount) || 0), 0);
+  const currentJobTotal = Number(job.totalAmount) || 0;
+  const effectiveTotalAmount = Math.max(currentJobTotal, totalPaidAfter);
+  const isFullyPaidNow = effectiveTotalAmount > 0 && totalPaidAfter >= effectiveTotalAmount - 0.01;
+
+  if (!isFullyPaidNow) {
+    // Clear consumed link so a new link can be generated for the remaining balance
+    delete adminNotesObj.lastBeamPaymentLink;
+  }
 
   const updated = await prisma.job.update({
     where: { id: job.id },
     data: {
-      isPaid: true,
-      isShopPaid: true,
+      isPaid: isFullyPaidNow,
+      isShopPaid: isFullyPaidNow,
       paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
       paymentChannel: channelName,
-      totalAmount: paidAmount,
-      csoPaidAt: now,
-      shopPaidAt: now,
-      status: job.status === 'billing' ? 'pending' : job.status,
-      subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus,
+      totalAmount: effectiveTotalAmount,
+      ...(isFullyPaidNow ? { csoPaidAt: now, shopPaidAt: now } : {}),
+      subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
       adminNotesJson: JSON.stringify(adminNotesObj),
     },
   });
@@ -108,37 +126,79 @@ export async function createJobOnlinePaymentAction(
       return { success: false, isAlreadyPaid: true, error: 'ออเดอร์นี้ชำระเงินเรียบร้อยแล้ว' };
     }
 
-    const amount = Number(customAmount !== undefined ? customAmount : (job.totalAmount || 0));
+    // Guard: Prevent generating a Beam link when the job has 0 laundry items (only delivery fee)
+    let jobItems: any[] = [];
+    try {
+      if (job.itemsJson) {
+        const parsed = JSON.parse(job.itemsJson);
+        if (Array.isArray(parsed)) jobItems = parsed;
+      }
+    } catch {}
+    if (jobItems.length === 0) {
+      return {
+        success: false,
+        error: 'กรุณาเพิ่มและบันทึกรายการผ้าก่อนสร้างลิงก์ชำระเงิน Beam (ป้องกันการคิดเฉพาะค่ารถ)',
+      };
+    }
+
+    // Check existing payments & links in adminNotesJson
+    let adminNotesObj: any = {};
+    let existingPayments: any[] = [];
+    try {
+      if (job.adminNotesJson) {
+        adminNotesObj = JSON.parse(job.adminNotesJson);
+        if (Array.isArray(adminNotesObj.payments)) {
+          existingPayments = adminNotesObj.payments;
+        }
+      }
+    } catch {}
+
+    const alreadyPaid = existingPayments.reduce((sum: number, p: any) => sum + (Number(p?.amount) || 0), 0);
+    const jobTotal = Number(job.totalAmount) || 0;
+    const remainingBalance = Math.max(0, Math.round((jobTotal - alreadyPaid) * 100) / 100);
+
+    const amount = Number(
+      alreadyPaid > 0 && remainingBalance > 0
+        ? remainingBalance
+        : customAmount !== undefined
+          ? customAmount
+          : remainingBalance || jobTotal
+    );
     if (amount <= 0) {
       return { success: false, error: 'ยอดชำระต้องมากกว่า 0 บาท' };
     }
 
-    // Check if we already have an active Beam Payment Link for this job
-    let adminNotesObj: any = {};
-    try {
-      if (job.adminNotesJson) {
-        adminNotesObj = JSON.parse(job.adminNotesJson);
-      }
-    } catch {}
+    const clearedIds: string[] = Array.isArray(adminNotesObj.clearedChargeIds) ? adminNotesObj.clearedChargeIds : [];
+    const recordedIds = new Set<string>([
+      ...clearedIds,
+      ...existingPayments.map((p: any) => p?.chargeId).filter(Boolean),
+    ]);
 
     const existingLink = adminNotesObj.lastBeamPaymentLink;
-    if (existingLink?.id && existingLink?.url && Math.abs((existingLink.amount || 0) - amount) < 0.01) {
+    if (
+      existingLink?.id &&
+      existingLink?.url &&
+      !recordedIds.has(existingLink.id) &&
+      Math.abs((existingLink.amount || 0) - amount) < 0.01
+    ) {
       // Check status of existing link with Beam
       const linkCheck = await getBeamPaymentLink(existingLink.id);
       if (linkCheck.success && linkCheck.data) {
         if (linkCheck.data.status === 'PAID') {
           // Already paid! Update DB immediately
-          await markJobAsPaidInDb({
+          const updated = await markJobAsPaidInDb({
             job,
             paidAmount: amount,
             channelName: 'Beam Checkout (PAID)',
             chargeId: existingLink.id,
           });
-          return {
-            success: false,
-            isAlreadyPaid: true,
-            error: 'ออเดอร์นี้ลูกค้าชำระเงินเรียบร้อยแล้ว',
-          };
+          if (updated.isShopPaid) {
+            return {
+              success: false,
+              isAlreadyPaid: true,
+              error: 'ออเดอร์นี้ลูกค้าชำระเงินเรียบร้อยแล้ว',
+            };
+          }
         }
 
         if (linkCheck.data.status === 'ACTIVE') {
@@ -156,7 +216,9 @@ export async function createJobOnlinePaymentAction(
     }
 
     // Call Beam API to generate a new payment link
-    const description = `TLS Order #${job.billNo || job.id} (${job.customerName || 'Customer'})`;
+    const description = alreadyPaid > 0
+      ? `TLS Order #${job.billNo || job.id} (${job.customerName || 'Customer'}) - Remaining Balance`
+      : `TLS Order #${job.billNo || job.id} (${job.customerName || 'Customer'})`;
     const res = await createBeamPaymentLink({
       referenceId: job.id,
       amount,
@@ -173,7 +235,7 @@ export async function createJobOnlinePaymentAction(
     // Use standard QR code generator service for the payment URL
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(paymentUrl)}`;
 
-    // Update job notes with payment link metadata
+    // Update job notes with payment link metadata (never shrink job.totalAmount!)
     try {
       adminNotesObj.lastBeamPaymentLink = {
         id: paymentLinkId,
@@ -186,7 +248,7 @@ export async function createJobOnlinePaymentAction(
         where: { id: job.id },
         data: {
           adminNotesJson: JSON.stringify(adminNotesObj),
-          ...(Math.abs((job.totalAmount || 0) - amount) >= 0.01 ? { totalAmount: amount } : {}),
+          ...(alreadyPaid === 0 && amount > (job.totalAmount || 0) ? { totalAmount: amount } : {}),
         },
       });
     } catch (dbErr) {
@@ -222,7 +284,7 @@ export async function checkJobOnlinePaymentStatusAction(
     }
 
     // 1. Check if already marked as paid in local database (via Webhook)
-    if (job.isPaid || job.isShopPaid) {
+    if (job.isPaid && job.isShopPaid) {
       return {
         success: true,
         isPaid: true,
@@ -233,14 +295,24 @@ export async function checkJobOnlinePaymentStatusAction(
     }
 
     let adminNotesObj: any = {};
+    let existingPayments: any[] = [];
     try {
       if (job.adminNotesJson) {
         adminNotesObj = JSON.parse(job.adminNotesJson);
+        if (Array.isArray(adminNotesObj.payments)) {
+          existingPayments = adminNotesObj.payments;
+        }
       }
     } catch {}
 
-    // 2. Check Beam Payment Link status directly
-    if (adminNotesObj.lastBeamPaymentLink?.id) {
+    const clearedIds: string[] = Array.isArray(adminNotesObj.clearedChargeIds) ? adminNotesObj.clearedChargeIds : [];
+    const ignoredIds = new Set<string>([
+      ...clearedIds,
+      ...existingPayments.map((p: any) => p?.chargeId).filter(Boolean),
+    ]);
+
+    // 2. Check Beam Payment Link status directly (only if not already recorded/cleared)
+    if (adminNotesObj.lastBeamPaymentLink?.id && !ignoredIds.has(adminNotesObj.lastBeamPaymentLink.id)) {
       const linkRes = await getBeamPaymentLink(adminNotesObj.lastBeamPaymentLink.id);
       if (linkRes.success && linkRes.data?.status === 'PAID') {
         const paidAmount = adminNotesObj.lastBeamPaymentLink.amount || job.totalAmount || 0;
@@ -253,7 +325,7 @@ export async function checkJobOnlinePaymentStatusAction(
 
         return {
           success: true,
-          isPaid: true,
+          isPaid: Boolean(updated.isShopPaid),
           paidAmount,
           paymentChannel: updated.paymentChannel || 'Beam Checkout',
           paidAt: new Date().toISOString(),
@@ -261,12 +333,18 @@ export async function checkJobOnlinePaymentStatusAction(
       }
     }
 
-    // 3. Fallback: check Beam charges directly
+    // 3. Fallback: check Beam charges directly (skipping any charge/sourceId already recorded or unlocked)
     const chargesRes = await getBeamChargesByReference(job.id);
     if (chargesRes.success && chargesRes.data && chargesRes.data.length > 0) {
-      const successfulCharge = chargesRes.data.find(
-        (c: any) => c.status === 'SUCCEEDED' || c.status === 'SUCCESS' || c.status === 'CAPTURED'
-      );
+      const successfulCharge = chargesRes.data.find((c: any) => {
+        const isSuccess = c.status === 'SUCCEEDED' || c.status === 'SUCCESS' || c.status === 'CAPTURED';
+        if (!isSuccess) return false;
+        const cId = c.chargeId || c.id;
+        const sId = c.sourceId;
+        if (cId && ignoredIds.has(cId)) return false;
+        if (sId && ignoredIds.has(sId)) return false;
+        return true;
+      });
 
       if (successfulCharge) {
         const paidAmount = successfulCharge.amount ? successfulCharge.amount / 100 : (job.totalAmount || 0);
@@ -281,7 +359,7 @@ export async function checkJobOnlinePaymentStatusAction(
 
         return {
           success: true,
-          isPaid: true,
+          isPaid: Boolean(updated.isShopPaid),
           paidAmount,
           paymentChannel: updated.paymentChannel || 'Beam Checkout',
           paidAt: new Date().toISOString(),

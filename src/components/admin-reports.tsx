@@ -237,17 +237,58 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
     return () => window.removeEventListener("afterprint", handleAfterPrint);
   }, []);
 
-  // Filtered Jobs based on main branch & date timeframe
+  const isTopUpJob = useCallback((job: any): boolean => {
+    if (!job) return false;
+    if (job.status === "topup" || String(job.id).toUpperCase().startsWith("TU-")) return true;
+    const jobItems = Array.isArray(job.items)
+      ? job.items
+      : typeof job.items === "string"
+      ? (() => {
+          try {
+            return JSON.parse(job.items);
+          } catch {
+            return [];
+          }
+        })()
+      : [];
+    if (
+      Array.isArray(jobItems) &&
+      jobItems.length > 0 &&
+      jobItems.every(
+        (it: any) =>
+          it?.category === "PACKAGE" ||
+          it?.serviceId === "topup-member-item" ||
+          it?.id === "topup-member-item"
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }, []);
+
+  // Filtered Jobs based on main branch, shopPaidAt timeframe, and excluding Top-Up jobs
   const filteredJobs = useMemo(() => {
     return jobs.filter(job => {
+      // Exclude Top-Up jobs
+      if (isTopUpJob(job)) {
+        return false;
+      }
+
+      // Only include Shop Paid jobs
+      if (!job.isShopPaid) {
+        return false;
+      }
+
       // Branch filter
       if (selectedBranch !== "all" && job.branchId !== selectedBranch) {
         return false;
       }
 
-      // Date filter
-      if (!job.createdAt) return false;
-      const jobDate = new Date(job.createdAt);
+      // Date filter using shopPaidAt (fallback to csoPaidAt / createdAt for legacy records)
+      const rawPaidDate = (job as any).shopPaidAt || (job as any).csoPaidAt || job.createdAt;
+      if (!rawPaidDate) return false;
+      const jobDate = new Date(rawPaidDate);
+      if (isNaN(jobDate.getTime())) return false;
       const today = new Date();
 
       if (dateRange === "today") {
@@ -272,7 +313,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
       return true;
     });
-  }, [jobs, selectedBranch, dateRange, customStartDate, customEndDate]);
+  }, [jobs, selectedBranch, dateRange, customStartDate, customEndDate, isTopUpJob]);
 
   // Segment counts for jobs within selected timeframe & branch
   const segmentCounts = useMemo(() => {
@@ -335,7 +376,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         pendingCount++;
       }
 
-      if (job.isPaid) {
+      if (job.isShopPaid) {
         totalRevenue += job.totalAmount || 0;
         
         let splitProcessed = false;
@@ -396,12 +437,19 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
         }
       }
 
-      // Item breakdown
+      // Item breakdown (excluding Top-Up package items)
       try {
         if (job.items) {
           const itemsList = typeof job.items === "string" ? JSON.parse(job.items) : job.items;
           if (Array.isArray(itemsList)) {
             itemsList.forEach((item: any) => {
+              if (
+                item?.category === "PACKAGE" ||
+                item?.serviceId === "topup-member-item" ||
+                item?.id === "topup-member-item"
+              ) {
+                return;
+              }
               const name = item.name || "General Laundry";
               const qty = item.quantity || 1;
               const price = item.price || 0;
@@ -418,7 +466,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       } catch (e) {}
     });
 
-    const averageTicket = completedCount > 0 ? totalRevenue / completedCount : 0;
+    const paidOrdersCount = completedCount + pendingCount;
+    const averageTicket = paidOrdersCount > 0 ? totalRevenue / paidOrdersCount : 0;
 
     const channelBreakdown = Object.values(channelMap)
       .map(item => ({
@@ -594,18 +643,20 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       }
     }
 
-    // Populate data from overviewJobs
+    // Populate data from overviewJobs (using shopPaidAt timestamp)
     overviewJobs.forEach((job) => {
       if (job.status === "cancel") return;
-      if (!job.createdAt) return;
-      const jobTime = new Date(job.createdAt).getTime();
+      const rawPaidDate = (job as any).shopPaidAt || (job as any).csoPaidAt || job.createdAt;
+      if (!rawPaidDate) return;
+      const jobTime = new Date(rawPaidDate).getTime();
+      if (isNaN(jobTime)) return;
 
       const b = buckets.find(
         (b) => jobTime >= b.dateStart.getTime() && jobTime <= b.dateEnd.getTime()
       );
       if (b) {
         b.volume += 1;
-        if (job.isPaid) {
+        if (job.isShopPaid) {
           b.sales += job.totalAmount || 0;
         }
       }
