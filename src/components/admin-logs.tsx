@@ -116,13 +116,23 @@ function extractPhotosFromDetails(parsed: Record<string, any>): PhotoItem[] {
 }
 
 // --- UTILITY: Status styling helper ---
-function getStatusBadgeStyle(status: string) {
-  const s = status.toLowerCase();
-  if (s === 'completed') return 'bg-emerald-100 text-emerald-800 border-emerald-300';
-  if (s === 'billing') return 'bg-amber-100 text-amber-800 border-amber-300';
-  if (s === 'delivery' || s === 'pickup') return 'bg-sky-100 text-sky-800 border-sky-300';
+function extractScalarString(val: any): string {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'object' && !Array.isArray(val)) {
+    if ('to' in val && val.to !== undefined && val.to !== null) return String(val.to);
+    if ('from' in val && val.from !== undefined && val.from !== null) return String(val.from);
+    return JSON.stringify(val);
+  }
+  return String(val);
+}
+
+function getStatusBadgeStyle(status: any) {
+  const s = extractScalarString(status).toLowerCase();
+  if (s === 'completed' || s === 'done') return 'bg-emerald-100 text-emerald-800 border-emerald-300';
+  if (s === 'billing' || s === 'in_progress') return 'bg-amber-100 text-amber-800 border-amber-300';
+  if (s === 'delivery' || s === 'pickup' || s === 'todo') return 'bg-sky-100 text-sky-800 border-sky-300';
   if (s === 'processing' || s === 'wash' || s === 'dry' || s === 'iron') return 'bg-purple-100 text-purple-800 border-purple-300';
-  if (s === 'cancel' || s === 'cancelled') return 'bg-rose-100 text-rose-800 border-rose-300';
+  if (s === 'cancel' || s === 'cancelled' || s === 'stuck') return 'bg-rose-100 text-rose-800 border-rose-300';
   return 'bg-slate-100 text-slate-800 border-slate-300';
 }
 
@@ -183,8 +193,14 @@ function detectActionBadges(log: ActivityLog, parsed: Record<string, any> | null
   }
 
   if (log.action === 'create') {
+    const createLabel =
+      log.entityType === 'task'
+        ? "Task Created"
+        : log.entityType === 'customer'
+        ? "Customer Created"
+        : "Job Created";
     badges.push({
-      label: "Job Created",
+      label: createLabel,
       category: "status",
       variantClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
       icon: Sparkles,
@@ -203,13 +219,17 @@ function detectActionBadges(log: ActivityLog, parsed: Record<string, any> | null
 
   // UPDATE action analysis
   if (log.action === 'update' && parsed) {
-    // 1. Status change
+    // 1. Status change (supports both scalar string and { from, to } diff object)
     if (parsed.status) {
-      const statusTitle = String(parsed.status).charAt(0).toUpperCase() + String(parsed.status).slice(1);
+      const isDiffObj = typeof parsed.status === 'object' && parsed.status !== null && ('to' in parsed.status || 'from' in parsed.status);
+      const targetStatus = extractScalarString(parsed.status);
+      const statusTitle = isDiffObj
+        ? `${parsed.status.from || '-'} → ${parsed.status.to || '-'}`
+        : targetStatus.charAt(0).toUpperCase() + targetStatus.slice(1);
       badges.push({
         label: `Status: ${statusTitle}`,
         category: "status",
-        variantClass: getStatusBadgeStyle(parsed.status),
+        variantClass: getStatusBadgeStyle(targetStatus),
         icon: RefreshCw,
       });
     }
@@ -237,7 +257,8 @@ function detectActionBadges(log: ActivityLog, parsed: Record<string, any> | null
 
     // 4. Rider assigned/changed
     if (parsed.pickupRiderId || parsed.deliveryRiderId || parsed.riderId) {
-      const rawRiderId = String(parsed.deliveryRiderId || parsed.pickupRiderId || parsed.riderId);
+      const rawRiderVal = parsed.deliveryRiderId || parsed.pickupRiderId || parsed.riderId;
+      const rawRiderId = extractScalarString(rawRiderVal);
       const riderName = riderMap[rawRiderId] || DEFAULT_RIDERS[rawRiderId] || rawRiderId;
       badges.push({
         label: `Rider Assigned: ${riderName}`,
@@ -249,8 +270,11 @@ function detectActionBadges(log: ActivityLog, parsed: Record<string, any> | null
 
     // 5. Total amount / price update
     if (parsed.totalAmount !== undefined && !parsed.status) {
+      const rawTotal = typeof parsed.totalAmount === 'object' && parsed.totalAmount !== null && 'to' in parsed.totalAmount
+        ? parsed.totalAmount.to
+        : parsed.totalAmount;
       badges.push({
-        label: `Total: ${formatBaht(parsed.totalAmount)}`,
+        label: `Total: ${formatBaht(Number(rawTotal) || 0)}`,
         category: "finance",
         variantClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
         icon: Banknote,
@@ -281,7 +305,7 @@ function detectActionBadges(log: ActivityLog, parsed: Record<string, any> | null
   // Fallback if no specific badges detected
   if (badges.length === 0) {
     badges.push({
-      label: log.action.toUpperCase(),
+      label: String(log.action || 'LOG').toUpperCase(),
       category: "general",
       variantClass: "bg-slate-100 text-slate-700 border-slate-300",
     });
@@ -566,6 +590,18 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
   // Human-readable value formatter
   const formatFieldValue = (key: string, val: any): React.ReactNode => {
     if (val === null || val === undefined || val === '') return <span className="text-slate-400 italic">None</span>;
+
+    // Handle { from, to } diff objects (from Task or Customer field updates)
+    if (typeof val === 'object' && !Array.isArray(val) && ('from' in val || 'to' in val)) {
+      return (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <span className="opacity-75">{formatFieldValue(key, val.from)}</span>
+          <span className="text-slate-400 font-bold">→</span>
+          <span>{formatFieldValue(key, val.to)}</span>
+        </span>
+      );
+    }
+
     if (key === 'pickupRiderId' || key === 'deliveryRiderId' || key === 'riderId') {
       const riderIdStr = String(val);
       const riderName = formatRiderName(riderIdStr);
@@ -599,15 +635,15 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
     }
     if (key === 'status') {
       return (
-        <Badge variant="outline" className={`text-[11px] font-bold capitalize ${getStatusBadgeStyle(String(val))}`}>
-          {String(val)}
+        <Badge variant="outline" className={`text-[11px] font-bold capitalize ${getStatusBadgeStyle(val)}`}>
+          {extractScalarString(val)}
         </Badge>
       );
     }
     if (key === 'subStatus') {
       return (
         <Badge variant="outline" className="bg-indigo-50 text-indigo-700 border-indigo-200 text-[11px] font-bold capitalize">
-          {String(val)}
+          {extractScalarString(val)}
         </Badge>
       );
     }
@@ -734,8 +770,8 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
       );
     }
 
-    // 3. CREATE Action Card
-    if (log.action === 'create') {
+    // 3. CREATE Action Card (Job)
+    if (log.action === 'create' && log.entityType === 'job') {
       return (
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
@@ -745,21 +781,21 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-emerald-50/40 p-4 rounded-xl border border-emerald-100 text-xs">
             <div>
               <span className="text-slate-400 block mb-0.5">Customer:</span>
-              <span className="font-bold text-slate-900">{parsed.customerName || '-'}</span>
+              <span className="font-bold text-slate-900">{extractScalarString(parsed.customerName) || '-'}</span>
             </div>
             <div>
               <span className="text-slate-400 block mb-0.5">Total Amount:</span>
-              <span className="font-mono font-bold text-slate-900">{formatBaht(parsed.totalAmount || 0)}</span>
+              <span className="font-mono font-bold text-slate-900">{formatBaht(Number(parsed.totalAmount) || 0)}</span>
             </div>
             <div>
               <span className="text-slate-400 block mb-0.5">Initial Status:</span>
               <Badge variant="outline" className={`font-bold capitalize ${getStatusBadgeStyle(parsed.status || 'pending')}`}>
-                {parsed.status || 'Pending'}
+                {extractScalarString(parsed.status) || 'Pending'}
               </Badge>
             </div>
             <div>
               <span className="text-slate-400 block mb-0.5">Process Stage:</span>
-              <span className="font-semibold text-slate-800 capitalize">{parsed.subStatus || 'None'}</span>
+              <span className="font-semibold text-slate-800 capitalize">{extractScalarString(parsed.subStatus) || 'None'}</span>
             </div>
           </div>
         </div>
@@ -1135,7 +1171,7 @@ export function AdminLogs({ jobId }: { jobId?: string }) {
                   const isRawOpen = !!rawJsonOpen[log.id];
                   const isCopied = copiedLogId === log.id;
 
-                  const displayCustomer = log.customerName || log.parsedDetails?.customerName || '-';
+                  const displayCustomer = extractScalarString(log.customerName || log.parsedDetails?.customerName || log.parsedDetails?.name || log.parsedDetails?.title) || '-';
 
                   const entityPrefix =
                     log.entityType === 'customer'

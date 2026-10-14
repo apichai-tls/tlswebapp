@@ -497,9 +497,19 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
         console.log(`[ActivityLog] Adjusted wallet for customer ${id} (${currentCustomer.name}): ฿${balBefore} → ฿${balAfter}`);
 
         // Create WalletTransaction record for Post-Approval Tracking
+        // Option B: If customer already has any APPROVED wallet transaction, auto-approve non-Adjust transactions
         if (!updates.skipWalletTx) {
           const txType = updates.walletTxType || (isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT');
           const refType = updates.walletRefType || (txType === 'DEDUCT' ? 'job' : 'manual');
+          const isAdjustTx = txType === 'ADJUST_ADD' || txType === 'ADJUST_DEDUCT';
+          let isAutoApproved = false;
+          if (!isAdjustTx) {
+            const prevApproved = await prisma.walletTransaction.findFirst({
+              where: { customerId: id, approvalStatus: 'APPROVED' },
+              select: { id: true },
+            });
+            isAutoApproved = Boolean(prevApproved);
+          }
           await prisma.walletTransaction.create({
             data: {
               customerId: id,
@@ -515,7 +525,9 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
               createdById: updates.actorId || null,
               createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
               branchId: updates.branchId || null,
-              approvalStatus: 'PENDING',
+              approvalStatus: isAutoApproved ? 'APPROVED' : 'PENDING',
+              approvedByName: isAutoApproved ? 'System (Auto-Approved Customer)' : null,
+              approvedAt: isAutoApproved ? new Date() : null,
             }
           });
         }
@@ -3002,6 +3014,13 @@ export async function processTopUpAction(data: {
     });
 
     // 6. Create WalletTransaction for Post-Approval Tracking
+    // Option B: If customer already has any APPROVED wallet transaction, auto-approve TOPUP
+    const prevApproved = await tx.walletTransaction.findFirst({
+      where: { customerId: data.customerId, approvalStatus: 'APPROVED' },
+      select: { id: true },
+    });
+    const isAutoApproved = Boolean(prevApproved);
+
     await tx.walletTransaction.create({
       data: {
         customerId: data.customerId,
@@ -3021,7 +3040,9 @@ export async function processTopUpAction(data: {
         createdById: data.actorId || null,
         createdByName: data.actorName || 'Staff',
         branchId: effectiveBranchId,
-        approvalStatus: 'PENDING',
+        approvalStatus: isAutoApproved ? 'APPROVED' : 'PENDING',
+        approvedByName: isAutoApproved ? 'System (Auto-Approved Customer)' : null,
+        approvedAt: isAutoApproved ? new Date() : null,
       }
     });
 
@@ -3323,6 +3344,16 @@ export async function createWalletTransactionAction(data: {
   createdByName?: string | null;
   branchId?: string | null;
 }) {
+  const isAdjustTx = data.type === 'ADJUST_ADD' || data.type === 'ADJUST_DEDUCT';
+  let isAutoApproved = false;
+  if (!isAdjustTx && data.customerId) {
+    const prevApproved = await prisma.walletTransaction.findFirst({
+      where: { customerId: data.customerId, approvalStatus: 'APPROVED' },
+      select: { id: true },
+    });
+    isAutoApproved = Boolean(prevApproved);
+  }
+
   return await prisma.walletTransaction.create({
     data: {
       customerId: data.customerId,
@@ -3343,7 +3374,9 @@ export async function createWalletTransactionAction(data: {
       createdById: data.createdById || null,
       createdByName: data.createdByName || 'Staff',
       branchId: data.branchId || null,
-      approvalStatus: 'PENDING',
+      approvalStatus: isAutoApproved ? 'APPROVED' : 'PENDING',
+      approvedByName: isAutoApproved ? 'System (Auto-Approved Customer)' : null,
+      approvedAt: isAutoApproved ? new Date() : null,
     }
   });
 }
@@ -3425,15 +3458,33 @@ export async function approveWalletTransactionAction(data: {
   if (!tx) throw new Error("Transaction not found");
   if (tx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${tx.approvalStatus}`);
 
+  const now = new Date();
   const updated = await prisma.walletTransaction.update({
     where: { id: data.id },
     data: {
       approvalStatus: 'APPROVED',
       approvedById: data.approvedById,
       approvedByName: data.approvedByName,
-      approvedAt: new Date(),
+      approvedAt: now,
     }
   });
+
+  // Option B: Once a customer is approved by Accounting, auto-approve any other PENDING non-Adjust transactions for this customer
+  if (tx.customerId) {
+    await prisma.walletTransaction.updateMany({
+      where: {
+        customerId: tx.customerId,
+        approvalStatus: 'PENDING',
+        type: { notIn: ['ADJUST_ADD', 'ADJUST_DEDUCT'] },
+      },
+      data: {
+        approvalStatus: 'APPROVED',
+        approvedById: data.approvedById,
+        approvedByName: `${data.approvedByName} (Auto-Approved Customer)`,
+        approvedAt: now,
+      }
+    });
+  }
 
   await prisma.activityLog.create({
     data: {
@@ -3685,6 +3736,13 @@ export async function bulkApproveWalletAction(data: {
   approvedById: string;
   approvedByName: string;
 }) {
+  const targetTxs = await prisma.walletTransaction.findMany({
+    where: { id: { in: data.ids } },
+    select: { customerId: true },
+  });
+  const customerIds = Array.from(new Set(targetTxs.map(t => t.customerId).filter(Boolean)));
+  const now = new Date();
+
   const count = await prisma.walletTransaction.updateMany({
     where: {
       id: { in: data.ids },
@@ -3694,9 +3752,26 @@ export async function bulkApproveWalletAction(data: {
       approvalStatus: 'APPROVED',
       approvedById: data.approvedById,
       approvedByName: data.approvedByName,
-      approvedAt: new Date(),
+      approvedAt: now,
     }
   });
+
+  // Option B: Auto-approve any remaining PENDING non-Adjust transactions for these customers
+  if (customerIds.length > 0) {
+    await prisma.walletTransaction.updateMany({
+      where: {
+        customerId: { in: customerIds },
+        approvalStatus: 'PENDING',
+        type: { notIn: ['ADJUST_ADD', 'ADJUST_DEDUCT'] },
+      },
+      data: {
+        approvalStatus: 'APPROVED',
+        approvedById: data.approvedById,
+        approvedByName: `${data.approvedByName} (Auto-Approved Customer)`,
+        approvedAt: now,
+      }
+    });
+  }
 
   try {
     await prisma.activityLog.create({
