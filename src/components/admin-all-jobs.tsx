@@ -24,6 +24,7 @@ import { BranchFilterDropdown, getUserAssignedBranchIds, getCleanBranchName } fr
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
+import { DailySaleDialog } from "@/components/daily-sale-dialog";
 const statusConfig: Record<JobStatus, { label: string; className: string }> = {
   tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
   pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -108,6 +109,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [onlinePaymentJob, setOnlinePaymentJob] = useState<Job | null>(null);
   const [receiptJob, setReceiptJob] = useState<Job | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
+  const [showDailySale, setShowDailySale] = useState(false);
   
   const [reopenDialog, setReopenDialog] = useState<{
     isOpen: boolean;
@@ -542,6 +544,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           <div className="flex items-center gap-4">
             {viewMode === "list" && (
               <div className="flex gap-2 shrink-0 print:hidden">
+                <button
+                  onClick={() => setShowDailySale(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-bold rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition-colors shadow-sm cursor-pointer"
+                  title="Daily Sale Summary (Shop Paid & Top-up)"
+                >
+                  <Banknote size={16} className="text-indigo-600" />
+                  <span>Daily Sale</span>
+                </button>
                 {systemSettings?.cashDrawerShowManualButton !== "false" && (
                   <button
                     onClick={async () => {
@@ -1741,6 +1751,18 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
           />
         )
       )}
+
+      {/* Daily Sale Summary Dialog */}
+      <DailySaleDialog
+        isOpen={showDailySale}
+        onClose={() => setShowDailySale(false)}
+        jobs={jobs}
+        user={user}
+        shopLocations={shopLocations}
+        selectedBranchIds={selectedBranchIds}
+        customers={customers}
+        onViewJob={onEditJob}
+      />
     </div>
   );
 });
