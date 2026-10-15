@@ -1742,7 +1742,7 @@ export function AdminCRM({
                 }`}
               >
                 <Ticket size={14} className={activeTab === "coupons" ? "text-white" : "text-indigo-600"} />
-                <span>Customer Coupons (คูปองลูกค้า)</span>
+                <span>Customer Vouchers (วอยเชอร์ลูกค้า)</span>
               </button>
             )}
           </div>

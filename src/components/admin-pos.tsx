@@ -79,7 +79,8 @@ import {
   type CashierShift,
   type LatLng
 } from "@/lib/store";
-import { getCustomerCouponsAction } from "@/actions/db";
+import { getCustomerCouponsAction, evaluateAndIssuePromotionCouponsAction, getPromotionCampaignsAction } from "@/actions/db";
+import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS } from "@/lib/promotions";
 import { getRoute } from "@/lib/map-api";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -91,7 +92,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht, formatCustomerFullAddress } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, roundGrandTotal, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht, formatCustomerFullAddress } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -1179,6 +1180,28 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     walletApprovalStore.refreshPendingMap().catch(() => {});
   }, []);
 
+  // Promotion Campaigns (Dynamic start/end date and rules)
+  const [promotionCampaigns, setPromotionCampaigns] = useState<PromotionCampaign[]>(DEFAULT_PROMOTION_CAMPAIGNS);
+  useEffect(() => {
+    getPromotionCampaignsAction().then((res) => {
+      if (res.success && res.campaigns && res.campaigns.length > 0) {
+        setPromotionCampaigns(res.campaigns);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const activeShoePromoCampaign = useMemo(() => {
+    return promotionCampaigns.find(c => c.id === "promo_shoe100_oct26") || DEFAULT_PROMOTION_CAMPAIGNS[0];
+  }, [promotionCampaigns]);
+
+  const isShoePromoActive = useMemo(() => {
+    if (!activeShoePromoCampaign || activeShoePromoCampaign.enabled === false) return false;
+    const now = new Date();
+    const start = new Date(activeShoePromoCampaign.startDate);
+    const end = new Date(activeShoePromoCampaign.endDate);
+    return now >= start && now <= end;
+  }, [activeShoePromoCampaign]);
+
   // Auto-sync selectedCustomer with latest customerStore state when credit balance or member status changes
   useEffect(() => {
     if (selectedCustomer && customers.length > 0) {
@@ -1454,8 +1477,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [promoCodeInput, setPromoCodeInput] = useState<string>("");
   const [appliedPromo, setAppliedPromo] = useState<{
     code: string;
-    discountType: "PERCENTAGE" | "FIXED_AMOUNT";
-    discountTarget: "ALL" | "DELIVERY";
+    discountType: "PERCENTAGE" | "FIXED_AMOUNT" | "FIXED";
+    discountTarget: "ALL" | "DELIVERY" | string;
+    applicableCategory?: string | null;
     discountValue: number;
     discountAmount: number;
     netPayable: number;
@@ -2069,6 +2093,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }, 0);
   }, [cart]);
 
+  const laundrySubtotal = useMemo(() => {
+    return cart.reduce((sum, item) => {
+      const sid = (item.id || "").toLowerCase();
+      const cat = (item.category || "").toUpperCase();
+      if (sid.includes("delivery") || cat === "DELIVERY" || cat === "PACKAGE") {
+        return sum;
+      }
+      return sum + safeCeil((item.price || 0) * (item.quantity || 0));
+    }, 0);
+  }, [cart]);
+
   const expressSurcharge = useMemo(() => {
     if (selectedExpressPercent > 0) {
       return safeCeil(subtotal * (selectedExpressPercent / 100));
@@ -2093,6 +2128,32 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         return Math.max(0, Math.min(appliedPromo.discountValue, fee));
       }
     }
+    // Category-specific promo discounts (e.g. SHOES)
+    if (appliedPromo.applicableCategory) {
+      const catTarget = appliedPromo.applicableCategory.toUpperCase().trim();
+      const catSubtotal = cart
+        .filter(it => {
+          const cat = (it.category || "").toUpperCase();
+          const sid = (it.id || "").toUpperCase();
+          const name = (it.name || "").toLowerCase();
+          const nameEn = (it.nameEn || "").toLowerCase();
+          if (catTarget === "SHOES" || catTarget === "SHOE") {
+            return cat === "SHOES" || sid.startsWith("SHO-") || name.includes("รองเท้า") || name.includes("shoe") || nameEn.includes("shoe");
+          }
+          return cat === catTarget;
+        })
+        .reduce((sum, it) => sum + (it.price * it.quantity), 0);
+
+      if (catSubtotal <= 0) return 0;
+
+      if (appliedPromo.discountType === "PERCENTAGE") {
+        let val = (catSubtotal * appliedPromo.discountValue) / 100;
+        if (appliedPromo.maxDiscount) val = Math.min(val, appliedPromo.maxDiscount);
+        return Math.max(0, Math.min(val, catSubtotal));
+      } else {
+        return Math.max(0, Math.min(appliedPromo.discountValue, catSubtotal));
+      }
+    }
     const base = subtotal + expressSurcharge;
     if (appliedPromo.discountType === "PERCENTAGE") {
       let val = (base * appliedPromo.discountValue) / 100;
@@ -2101,7 +2162,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     } else {
       return Math.max(0, Math.min(appliedPromo.discountValue, base));
     }
-  }, [appliedPromo, subtotal, expressSurcharge, localDeliveryPrice]);
+  }, [appliedPromo, subtotal, expressSurcharge, localDeliveryPrice, cart]);
 
   const effectivePromoDiscount = appliedPromo ? promoDiscountAmount : 0;
   const totalDiscount = discountAmount + effectivePromoDiscount;
@@ -2123,7 +2184,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     const baseTotal = subtotal + expressSurcharge - totalDiscount;
     const vat = vatType === "exclusive" ? (baseTotal * (vatRate / 100)) : 0;
     const rawTotal = baseTotal + vat + manualAdjustment;
-    return safeCeil(Math.max(0, rawTotal));
+    return roundGrandTotal(Math.max(0, rawTotal), vatType);
   }, [subtotal, expressSurcharge, totalDiscount, vatType, vatRate, manualAdjustment]);
 
   const handleApplyPromo = async (codeOverride?: unknown) => {
@@ -2164,14 +2225,30 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           customerPhone: custPhone,
           customerName: custName,
           currentJobId: loadedJobId || undefined,
+          items: cart.map(item => ({
+            id: item.id,
+            serviceId: item.id,
+            name: item.name,
+            nameEn: item.nameEn,
+            price: item.price,
+            quantity: item.quantity,
+            category: item.category,
+          })),
         }),
       });
       const data = await res.json();
       if (res.ok && data.valid) {
         const isDeliveryOnly = data.discountTarget === "DELIVERY";
+        const isCategorySpecific = Boolean(data.applicableCategory);
         let calcDiscount = data.discountAmount;
 
-        if (isDeliveryOnly) {
+        if (isCategorySpecific && data.applicableCategory === "SHOES") {
+          toast.success(
+            currentLanguage === "en"
+              ? `✅ Code ${data.code} applied — Shoe discount ฿${calcDiscount.toFixed(2)}`
+              : `✅ โค้ด ${data.code} — ส่วนลดซักรองเท้า ฿${calcDiscount.toFixed(2)}`
+          );
+        } else if (isDeliveryOnly) {
           if (data.discountType === "PERCENTAGE") {
             calcDiscount = (deliveryFee * data.discountValue) / 100;
           } else {
@@ -2194,7 +2271,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         setAppliedPromo({
           code: data.code,
           discountType: data.discountType,
-          discountTarget: isDeliveryOnly ? "DELIVERY" : "ALL",
+          discountTarget: isDeliveryOnly ? "DELIVERY" : (data.applicableCategory || "ALL"),
+          applicableCategory: data.applicableCategory ?? null,
           discountValue: data.discountValue,
           discountAmount: calcDiscount,
           netPayable: Math.max(0, grandTotalBeforePromo - calcDiscount),
@@ -2299,7 +2377,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const jobVatType = vatMatch ? vatMatch[1].toLowerCase() : "none";
       const jobVatRate = vatMatch ? parseFloat(vatMatch[2]) : 0;
       
-      const baseTotal = jobSubtotal + jobSurcharge;
+      const promoMatch = latestJob.remark?.match(/Promo:\s*([^\s|]+)\s*\(-\u0E3F(\d+(?:\.\d+)?)\)(?:\s*\[(\w+)\])?/i);
+      const parsedPromoDiscount = promoMatch ? parseFloat(promoMatch[2]) : 0;
+      const isFreeDelivery = /Free\s*Delivery/i.test(latestJob.remark || "");
+      const effectiveFee = isFreeDelivery ? 0 : (latestJob.fee || 0);
+      const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + effectiveFee - (latestJob.discount || 0) - parsedPromoDiscount);
       let jobVatAmount = 0;
       if (jobVatType === "inclusive") {
         jobVatAmount = baseTotal * (jobVatRate / (100 + jobVatRate));
@@ -2347,6 +2429,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const isJobPaid = Boolean(latestJob.isShopPaid || (latestJob.source === "pos" && latestJob.isPaid));
       const isDraftDoc = !isJobPaid;
 
+      const rawJobTotal = latestJob.totalAmount || 0;
+      const exactExclusiveTotal = Math.round((baseTotal + jobVatAmount) * 100) / 100;
+      const effectiveJobTotal = jobVatType === "exclusive"
+        ? (jobItems.length > 0 && Math.abs(rawJobTotal - Math.ceil(exactExclusiveTotal)) <= 1
+            ? exactExclusiveTotal
+            : roundGrandTotal(rawJobTotal, jobVatType))
+        : safeCeil(rawJobTotal);
+
       return {
         id: displayId,
         receiptNumber: isJobPaid ? ((latestJob as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined)) : undefined,
@@ -2363,7 +2453,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         expressSurcharge: jobSurcharge,
         serviceSpeed: jobSpeed,
         discount: latestJob.discount || 0,
-        total: safeCeil(latestJob.totalAmount || 0),
+        total: effectiveJobTotal,
         isPaid: isJobPaid,
         paymentChannel: latestJob.paymentChannel,
         remark: latestJob.remark,
@@ -3141,6 +3231,36 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           effectivePromoDiscount
         );
       }
+
+      // Evaluate promotion coupons for qualifying customer orders (ซักครบ 1,000 บ. ได้คูปองซักรองเท้า 100.-)
+      if (finalJob?.id && selectedCustomer?.id) {
+        evaluateAndIssuePromotionCouponsAction({
+          jobId: finalJob.id,
+          customerId: selectedCustomer.id,
+          actor: { id: user?.id, name: user?.name || user?.email || "POS Cashier" },
+        }).then((res) => {
+          if (res.success && res.qualified && res.couponsIssued && res.couponsIssued.length > 0) {
+            const issuedCodes = res.couponsIssued.map((c: any) => c.code).join(", ");
+            toast.success(
+              currentLanguage === "en"
+                ? `🎉 Order earned Shoe Cleaning Voucher! Code: ${issuedCodes}`
+                : `🎉 ออเดอร์นี้ได้รับวอยเชอร์ส่วนลดซักรองเท้า 100 บาท! รหัส: ${issuedCodes}`,
+              { duration: 8000 }
+            );
+            if (selectedCustomer?.id) {
+              getCustomerCouponsAction({ customerId: selectedCustomer.id, status: "ACTIVE" })
+                .then(cRes => {
+                  if (cRes.success && cRes.coupons) {
+                    setAvailableCoupons(cRes.coupons as unknown as CustomerCoupon[]);
+                  }
+                }).catch(() => {});
+            }
+          }
+        }).catch((err) => {
+          console.warn("[Promotion POS] Evaluation failed (non-blocking):", err);
+        });
+      }
+
       const isBeamOnline = (finalChannel?.toLowerCase().includes("beam") || finalChannel?.toLowerCase().includes("gateway") || isBeamOnlineChannel) && !isPaidFlag;
       if (isBeamOnline && finalJob) {
         setOnlinePaymentJob({
@@ -5072,13 +5192,28 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               )}
 
 
+              {/* Promotion Qualification Banner (ซักครบ 1,000 บ. ได้วอยเชอร์ซักรองเท้า 100.-) */}
+              {selectedCustomer && !selectedCustomer.isCorporate && isShoePromoActive && laundrySubtotal >= (activeShoePromoCampaign?.conditions?.minOrderSubtotal ?? 1000) && (
+                <div className="py-2 px-2.5 rounded-xl bg-gradient-to-r from-emerald-500/15 via-teal-500/15 to-indigo-500/15 border border-emerald-500/40 text-foreground space-y-1 my-1">
+                  <div className="flex items-center gap-1.5 text-[11px] font-black text-emerald-700 dark:text-emerald-400">
+                    <Sparkles size={13} className="text-emerald-500 shrink-0" />
+                    <span>{currentLanguage === "en" ? `🎉 Qualified for Promo! Earn Shoe Voucher ฿${activeShoePromoCampaign?.reward?.discountValue ?? 100}` : `🎉 ยอดซักถึง ฿${(activeShoePromoCampaign?.conditions?.minOrderSubtotal ?? 1000).toLocaleString()} รับวอยเชอร์ซักรองเท้า ${activeShoePromoCampaign?.reward?.discountValue ?? 100}.-`}</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground leading-tight">
+                    {currentLanguage === "en"
+                      ? `Order subtotal is ฿${(activeShoePromoCampaign?.conditions?.minOrderSubtotal ?? 1000).toLocaleString()}+ (excl. delivery). Customer will receive a ฿${activeShoePromoCampaign?.reward?.discountValue ?? 100} shoe voucher on checkout.`
+                      : `ยอดซักครบ ฿${(activeShoePromoCampaign?.conditions?.minOrderSubtotal ?? 1000).toLocaleString()} (ไม่รวมค่าส่ง) เมื่อคิดเงินเสร็จสิ้น ลูกค้าจะได้รับวอยเชอร์ส่วนลดซักรองเท้า ฿${activeShoePromoCampaign?.reward?.discountValue ?? 100} อัตโนมัติ (ใช้ได้ถึง ${activeShoePromoCampaign?.rewardCouponExpiryDate ? format(new Date(activeShoePromoCampaign.rewardCouponExpiryDate), "d MMM yyyy") : "31 ธ.ค."})`}
+                  </p>
+                </div>
+              )}
+
               {/* Customer Available Coupons Banner */}
               {availableCoupons.length > 0 && (
                 <div className="py-2 px-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-foreground space-y-1.5 my-1">
                   <div className="flex items-center justify-between text-[11px] font-bold text-amber-700 dark:text-amber-400">
                     <span className="flex items-center gap-1.5">
                       <Sparkles size={13} className="text-amber-500 shrink-0" />
-                      {currentLanguage === "en" ? `Available Coupons (${availableCoupons.length})` : `ลูกค้ามีคูปอง (${availableCoupons.length} ใบ)`}
+                      {currentLanguage === "en" ? `Available Vouchers (${availableCoupons.length})` : `ลูกค้ามีวอยเชอร์ (${availableCoupons.length} ใบ)`}
                     </span>
                     {appliedPromo && (
                       <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
@@ -5086,7 +5221,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                       </span>
                     )}
                   </div>
-                  <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-0.5">
+                  <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto pr-0.5">
                     {availableCoupons.map((coupon) => {
                       const isApplied = appliedPromo?.code?.toUpperCase() === coupon.code.toUpperCase();
                       const discountLabel = coupon.discountType === "PERCENTAGE" 
@@ -5096,6 +5231,18 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         : `ลด ฿${coupon.discountValue}`;
                       const minOrderLabel = coupon.minOrderAmount ? ` • ขั้นต่ำ ฿${coupon.minOrderAmount.toLocaleString()}` : "";
                       
+                      const hasCategoryRequirement = Boolean(coupon.applicableCategory);
+                      const hasMatchingCategoryInCart = !coupon.applicableCategory || cart.some(it => {
+                        const cat = (it.category || "").toUpperCase();
+                        const sid = (it.id || "").toUpperCase();
+                        const name = (it.name || "").toLowerCase();
+                        const nameEn = (it.nameEn || "").toLowerCase();
+                        if (coupon.applicableCategory?.toUpperCase() === "SHOES" || coupon.applicableCategory?.toUpperCase() === "SHOE") {
+                          return cat === "SHOES" || sid.startsWith("SHO-") || name.includes("รองเท้า") || name.includes("shoe") || nameEn.includes("shoe");
+                        }
+                        return cat === coupon.applicableCategory?.toUpperCase();
+                      });
+
                       return (
                         <div 
                           key={coupon.id} 
@@ -5106,15 +5253,25 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           }`}
                         >
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-1 flex-wrap">
                               <span className="font-mono font-black tracking-wide text-foreground">{coupon.code}</span>
                               <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300 font-bold">
                                 {discountLabel}
                               </span>
+                              {coupon.applicableCategory && (
+                                <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-700 dark:text-blue-300 font-bold">
+                                  👟 {coupon.applicableCategory === "SHOES" ? "ซักรองเท้า" : coupon.applicableCategory}
+                                </span>
+                              )}
                             </div>
                             <p className="text-[9px] text-muted-foreground truncate">
                               {coupon.name}{minOrderLabel}
                             </p>
+                            {hasCategoryRequirement && !hasMatchingCategoryInCart && (
+                              <p className="text-[9px] text-rose-500 font-semibold flex items-center gap-0.5 mt-0.5">
+                                ⚠️ ในบิลยังไม่มีบริการซักรองเท้า
+                              </p>
+                            )}
                           </div>
                           {isApplied ? (
                             <button
@@ -5131,11 +5288,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           ) : (
                             <button
                               type="button"
-                              onClick={() => handleApplyPromo(coupon.code)}
+                              onClick={() => {
+                                if (hasCategoryRequirement && !hasMatchingCategoryInCart) {
+                                  toast.warning("วอยเชอร์นี้ใช้ได้เฉพาะบริการซักรองเท้าเท่านั้น กรุณาเพิ่มรายการซักรองเท้าในบิลก่อน");
+                                  return;
+                                }
+                                handleApplyPromo(coupon.code);
+                              }}
                               disabled={promoLoading}
-                              className="px-2 py-1 rounded bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[9px] cursor-pointer shadow-xs disabled:opacity-50 transition-colors whitespace-nowrap"
+                              className="px-2 py-1 rounded bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[9px] cursor-pointer shadow-2xs disabled:opacity-50 transition-colors whitespace-nowrap"
                             >
-                              {promoLoading ? "..." : (currentLanguage === "en" ? "Apply" : "ใช้คูปอง")}
+                              {promoLoading ? "..." : (currentLanguage === "en" ? "Apply" : "ใช้วอยเชอร์")}
                             </button>
                           )}
                         </div>

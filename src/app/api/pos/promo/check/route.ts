@@ -7,7 +7,7 @@ const PROMO_KEY  = process.env.TLS_PROMO_API_KEY  || "tls_pos_live_4cd242ae264a9
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { code, orderTotal, customerId, customerPhone, customerName, currentJobId } = body;
+    const { code, orderTotal, customerId, customerPhone, customerName, currentJobId, items } = body;
 
     const promoCode = (code || "").trim().toUpperCase();
     if (!promoCode) {
@@ -71,13 +71,53 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Category restriction validation (e.g. SHOES)
+      let categorySubtotal: number | null = null;
+      if (localCoupon.applicableCategory) {
+        const { isItemMatchingCategory } = await import("@/lib/promotions");
+        const catTarget = localCoupon.applicableCategory.toUpperCase().trim();
+        const cartItems = Array.isArray(items) ? items : [];
+        const matchingItems = cartItems.filter((it: any) => isItemMatchingCategory(it, catTarget));
+
+        if (matchingItems.length === 0) {
+          const catNameThai = catTarget === "SHOES" ? "ซักรองเท้า (Shoe Cleaning)" : catTarget;
+          return NextResponse.json({
+            valid: false,
+            error: `คูปองนี้ใช้ได้เฉพาะบริการ "${catNameThai}" เท่านั้น กรุณาเพิ่มรายการในหมวดนี้ในบิล`,
+          }, { status: 200 });
+        }
+
+        categorySubtotal = matchingItems.reduce((sum: number, it: any) => {
+          const p = Number(it.price) || 0;
+          const q = Number(it.quantity) || 1;
+          return sum + (p * q);
+        }, 0);
+
+        if (categorySubtotal <= 0) {
+          return NextResponse.json({
+            valid: false,
+            error: `ยอดบริการสำหรับหมวด ${localCoupon.applicableCategory} ต้องมากกว่า 0 บาท`,
+          }, { status: 200 });
+        }
+      }
+
       // Calculate discount amount
       let calcDiscount = 0;
       const isDeliveryOnly = localCoupon.discountType === "FREE_DELIVERY";
       const discountType = localCoupon.discountType === "PERCENTAGE" ? "PERCENTAGE" : "FIXED";
-      const discountTarget = isDeliveryOnly ? "DELIVERY" : "ALL";
+      const discountTarget = isDeliveryOnly ? "DELIVERY" : (localCoupon.applicableCategory ? localCoupon.applicableCategory : "ALL");
 
-      if (isDeliveryOnly) {
+      if (localCoupon.applicableCategory && categorySubtotal != null) {
+        if (localCoupon.discountType === "PERCENTAGE") {
+          calcDiscount = (categorySubtotal * localCoupon.discountValue) / 100;
+          if (localCoupon.maxDiscount != null && localCoupon.maxDiscount > 0) {
+            calcDiscount = Math.min(calcDiscount, localCoupon.maxDiscount);
+          }
+        } else {
+          // FIXED or CASH_VOUCHER: capped at category subtotal
+          calcDiscount = Math.min(localCoupon.discountValue, categorySubtotal);
+        }
+      } else if (isDeliveryOnly) {
         const feeVal = Number(body.deliveryFee) || 0;
         calcDiscount = feeVal > 0 ? (localCoupon.discountValue ? Math.min(localCoupon.discountValue, feeVal) : feeVal) : 0;
       } else if (localCoupon.discountType === "PERCENTAGE") {
@@ -100,6 +140,7 @@ export async function POST(req: NextRequest) {
         description: localCoupon.description || localCoupon.name,
         discountType,
         discountTarget,
+        applicableCategory: localCoupon.applicableCategory ?? null,
         discountValue: localCoupon.discountValue,
         discountAmount: calcDiscount,
         maxDiscount: localCoupon.maxDiscount ?? null,

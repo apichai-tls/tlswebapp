@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { type Job, customerStore, shopStore, serviceStore, type ServiceItem } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, formatJobDisplayId, generateReceiptNumber, getTransportFeeBreakdown, safeCeil, findMatchingCustomer, formatBaht } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, formatJobDisplayId, generateReceiptNumber, getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatBaht } from "@/lib/utils";
 
 export interface ReceiptItem {
   name: string;
@@ -214,10 +214,10 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
       }
     } catch {}
   }
-  const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+  const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY|SHOES|[A-Z_]+):([\d.]+)\))?/i);
   const parsedPromoDiscount = (promoMatch && promoMatch[3]) ? parseFloat(promoMatch[3]) : 0;
   const parsedPromoCode = promoMatch && parsedPromoDiscount > 0 ? promoMatch[1] : null;
-  const parsedPromoTarget = promoMatch && parsedPromoDiscount > 0 ? ((promoMatch[2] as "ALL" | "DELIVERY") || "ALL") : null;
+  const parsedPromoTarget = promoMatch && parsedPromoDiscount > 0 ? (promoMatch[2] || "ALL") : null;
 
   const isFreeDelivery = /Free\s*Delivery/i.test(job.remark || "");
   const effectiveFee = isFreeDelivery ? 0 : (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0));
@@ -273,7 +273,12 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
   } catch {}
 
   const rawJobTotal = job.totalAmount !== undefined ? job.totalAmount : (rawJob.total || 0);
-  const jobTotal = safeCeil(rawJobTotal);
+  const exactExclusiveTotal = Math.round((baseTotal + jobVatAmount) * 100) / 100;
+  const jobTotal = jobVatType === "exclusive"
+    ? (jobItems.length > 0 && Math.abs(rawJobTotal - Math.ceil(exactExclusiveTotal)) <= 1
+        ? exactExclusiveTotal
+        : roundGrandTotal(rawJobTotal, jobVatType))
+    : safeCeil(rawJobTotal);
   const targetCustId = job.customerId || (rawJob as any).customerId;
   const cust = findMatchingCustomer(customerStore.getSnapshot(), {
     customerId: targetCustId,
@@ -926,8 +931,8 @@ export function ThermalReceiptDialog({
             <div className="flex justify-between text-amber-700 font-bold">
               <span>
                 {currentLanguage === "en"
-                  ? (receiptData.promoTarget === "DELIVERY" ? "DELIVERY DISCOUNT:" : "PROMO CODE:")
-                  : (receiptData.promoTarget === "DELIVERY" ? "ส่วนลดค่าจัดส่ง:" : "โค้ดส่วนลด:")}
+                  ? (receiptData.promoTarget === "DELIVERY" ? "DELIVERY DISCOUNT:" : (receiptData.promoTarget === "SHOES" ? "SHOE DISCOUNT:" : "PROMO CODE:"))
+                  : (receiptData.promoTarget === "DELIVERY" ? "ส่วนลดค่าจัดส่ง:" : (receiptData.promoTarget === "SHOES" ? "ส่วนลดซักรองเท้า:" : "โค้ดส่วนลด:"))}
                 {receiptData.promoCode ? ` (${receiptData.promoCode})` : ""}
               </span>
               <span>-฿{formatCurrency(receiptData.promoDiscount)}</span>
@@ -941,7 +946,7 @@ export function ThermalReceiptDialog({
           )}
           <div className={`flex justify-between font-black text-neutral-900 ${isA5 ? "text-lg" : (isSmall ? "text-[11px]" : "text-xs")} pt-1 border-t border-neutral-450/40`}>
             <span>GRAND TOTAL:</span>
-            <span>฿{formatCurrency(safeCeil(receiptData.total))}</span>
+            <span>฿{formatCurrency(roundGrandTotal(receiptData.total, receiptData.vatType))}</span>
           </div>
 
           {/* Payments List Breakdown on Receipt */}

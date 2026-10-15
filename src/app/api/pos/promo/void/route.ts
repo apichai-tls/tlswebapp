@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
             status: "ACTIVE",
             usedAt: null,
             usedJobId: null,
+            discountAmountUsed: null,
           },
         });
         console.log(`[CustomerCoupon/void] Successfully restored ${promoCode} to ACTIVE`);

@@ -127,9 +127,9 @@ export function AdminCouponTemplateModal({
   const handleStartCreate = () => {
     resetForm();
     setIsCreatingNew(true);
-    setLabel("🎁 New Template (แม่แบบใหม่)");
+    setLabel("🎁 New Template (เทมเพลตใหม่)");
     setCodePrefix("PROMO");
-    setName("คูปองส่วนลดพิเศษ");
+    setName("วอยเชอร์ส่วนลดพิเศษ");
     setDiscountType("FIXED");
     setDiscountValue(100);
     setDays(30);
@@ -138,7 +138,7 @@ export function AdminCouponTemplateModal({
   const handleSaveTemplate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!label.trim() || !name.trim()) {
-      toast.error("Please enter Template Label and Coupon Name");
+      toast.error("Please enter Template Label and Voucher Name");
       return;
     }
 
@@ -162,7 +162,7 @@ export function AdminCouponTemplateModal({
       if (res.success && res.templates) {
         setTemplates(res.templates);
         onTemplatesUpdated?.(res.templates);
-        toast.success(editingTemplate ? "Template updated (อัปเดตแม่แบบสำเร็จ)" : "Template created (สร้างแม่แบบสำเร็จ)");
+        toast.success(editingTemplate ? "Template updated (อัปเดตเทมเพลตสำเร็จ)" : "Template created (สร้างเทมเพลตสำเร็จ)");
         resetForm();
       } else {
         toast.error(res.error || "Failed to save template");
@@ -175,7 +175,7 @@ export function AdminCouponTemplateModal({
   };
 
   const handleDeleteTemplate = async (id: string, tplLabel: string) => {
-    if (!confirm(`Are you sure you want to delete template "${tplLabel}"? (ยืนยันลบแม่แบบนี้หรือไม่?)`)) {
+    if (!confirm(`Are you sure you want to delete template "${tplLabel}"? (ยืนยันลบเทมเพลตนี้หรือไม่?)`)) {
       return;
     }
 
@@ -184,7 +184,7 @@ export function AdminCouponTemplateModal({
       if (res.success && res.templates) {
         setTemplates(res.templates);
         onTemplatesUpdated?.(res.templates);
-        toast.success("Template deleted (ลบแม่แบบเรียบร้อย)");
+        toast.success("Template deleted (ลบเทมเพลตเรียบร้อย)");
         if (editingTemplate?.id === id) {
           resetForm();
         }
@@ -195,7 +195,7 @@ export function AdminCouponTemplateModal({
   };
 
   const handleResetDefaults = async () => {
-    if (!confirm("Reset all templates back to system default presets? (รีเซ็ตแม่แบบทั้งหมดกลับเป็นค่าเริ่มต้นหรือไม่?)")) {
+    if (!confirm("Reset all templates back to system default presets? (รีเซ็ตเทมเพลตทั้งหมดกลับเป็นค่าเริ่มต้นหรือไม่?)")) {
       return;
     }
     try {
@@ -249,10 +249,10 @@ export function AdminCouponTemplateModal({
               </div>
               <div>
                 <DialogTitle className="text-lg font-black text-slate-900 flex items-center gap-2">
-                  Coupon Templates (แม่แบบคูปอง)
+                  Voucher Templates (เทมเพลตวอยเชอร์)
                 </DialogTitle>
                 <DialogDescription className="text-xs text-slate-500 mt-0.5">
-                  Manage reusable coupon presets for quick issuance (จัดการแม่แบบคูปองที่ใช้แจกลูกค้าบ่อย ๆ)
+                  Manage reusable voucher presets for quick issuance (จัดการเทมเพลตวอยเชอร์ที่ใช้แจกลูกค้าบ่อย ๆ)
                 </DialogDescription>
               </div>
             </div>
@@ -277,7 +277,7 @@ export function AdminCouponTemplateModal({
                   className="h-8 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 shadow-xs cursor-pointer"
                 >
                   <Plus size={14} />
-                  <span>+ Create Template (สร้างแม่แบบ)</span>
+                  <span>+ Create Template (สร้างเทมเพลต)</span>
                 </Button>
               )}
             </div>
@@ -293,7 +293,7 @@ export function AdminCouponTemplateModal({
                 <div className="flex items-center gap-2">
                   <Sparkles size={16} className="text-indigo-600" />
                   <span className="font-black text-indigo-950 text-sm">
-                    {editingTemplate ? "Edit Template (แก้ไขแม่แบบ)" : "New Coupon Template (สร้างแม่แบบใหม่)"}
+                    {editingTemplate ? "Edit Template (แก้ไขเทมเพลต)" : "New Voucher Template (สร้างเทมเพลตใหม่)"}
                   </span>
                 </div>
                 <Button
@@ -310,7 +310,7 @@ export function AdminCouponTemplateModal({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <Label className="font-bold text-slate-700">Template Label (ชื่อปุ่ม/แม่แบบ) <span className="text-rose-500">*</span></Label>
+                  <Label className="font-bold text-slate-700">Template Label (ชื่อปุ่ม/เทมเพลต) <span className="text-rose-500">*</span></Label>
                   <Input
                     placeholder="e.g. 🎁 Welcome Member (ลด ฿100)"
                     value={label}
@@ -332,9 +332,9 @@ export function AdminCouponTemplateModal({
                 </div>
 
                 <div className="space-y-1 sm:col-span-2">
-                  <Label className="font-bold text-slate-700">Coupon Name for Customer (ชื่อคูปองที่จะแสดงให้ลูกค้า) <span className="text-rose-500">*</span></Label>
+                  <Label className="font-bold text-slate-700">Voucher Name for Customer (ชื่อวอยเชอร์ที่จะแสดงให้ลูกค้า) <span className="text-rose-500">*</span></Label>
                   <Input
-                    placeholder="e.g. คูปองต้อนรับสมาชิกใหม่ ลดทันที ฿100"
+                    placeholder="e.g. วอยเชอร์ต้อนรับสมาชิกใหม่ ลดทันที ฿100"
                     value={name}
                     onChange={e => setName(e.target.value)}
                     className="h-9 text-xs font-bold rounded-xl border-slate-200 bg-white"
@@ -462,7 +462,7 @@ export function AdminCouponTemplateModal({
                 </div>
 
                 <div className="space-y-1">
-                  <Label className="font-bold text-slate-700">Validity Days (อายุคูปองวัน)</Label>
+                  <Label className="font-bold text-slate-700">Validity Days (อายุวอยเชอร์วัน)</Label>
                   <Input
                     type="number"
                     min="0"
@@ -517,7 +517,7 @@ export function AdminCouponTemplateModal({
                   className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl px-5 shadow-xs cursor-pointer gap-1.5"
                 >
                   <Check size={14} />
-                  <span>{isSaving ? "Saving..." : (editingTemplate ? "Update Template (บันทึกแก้ไข)" : "Save Template (สร้างแม่แบบ)")}</span>
+                  <span>{isSaving ? "Saving..." : (editingTemplate ? "Update Template (บันทึกแก้ไข)" : "Save Template (สร้างเทมเพลต)")}</span>
                 </Button>
               </div>
             </form>
@@ -527,7 +527,7 @@ export function AdminCouponTemplateModal({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="font-bold text-slate-700 text-xs uppercase tracking-wider">
-                Available Templates ({templates.length} แม่แบบที่มีอยู่ในระบบ)
+                Available Templates ({templates.length} เทมเพลตที่มีอยู่ในระบบ)
               </span>
             </div>
 
@@ -593,7 +593,7 @@ export function AdminCouponTemplateModal({
                             {tpl.minOrderAmount ? `Min ฿${tpl.minOrderAmount.toLocaleString()}` : "No Min"}
                           </span>
                           {tpl.maxDiscount && (
-                            <span>Max ฿{tpl.maxDiscount.toLocaleString()}</span>
+                            <span>Max ฿${tpl.maxDiscount.toLocaleString()}</span>
                           )}
                           <span>
                             {tpl.days > 0 ? `${tpl.days} days validity` : "No Expiry"}
@@ -622,7 +622,7 @@ export function AdminCouponTemplateModal({
             ) : (
               <div className="p-8 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-slate-400">
                 <Ticket size={24} className="mx-auto mb-2 opacity-50" />
-                <p className="font-bold">No templates created yet (ยังไม่มีแม่แบบคูปอง)</p>
+                <p className="font-bold">No templates created yet (ยังไม่มีเทมเพลตวอยเชอร์)</p>
                 <p className="text-[11px] mt-1">Click "Create Template" to add one or Reset Defaults.</p>
               </div>
             )}

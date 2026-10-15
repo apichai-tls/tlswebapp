@@ -635,6 +635,11 @@ model CustomerCoupon {
 
   brand          String    @default("that_laundry_shop")
 
+  applicableCategory String?   // "SHOES" | "DRY CLEAN" etc. (null = all categories)
+  campaignId         String?   // e.g. "promo_shoe100_oct26"
+  discountAmountUsed Float?    // Actual discount applied when redeemed
+  sourceJobId        String?   // Job ID that triggered issuance
+
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -642,4 +647,7 @@ model CustomerCoupon {
   @@index([code])
   @@index([status])
   @@index([brand])
+  @@index([campaignId])
+  @@index([applicableCategory])
+  @@index([sourceJobId])
 }

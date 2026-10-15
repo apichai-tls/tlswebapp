@@ -847,7 +847,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
           }`}
         >
           <Ticket size={14} />
-          Customer Coupons (คูปองลูกค้า & เทมเพลต)
+          Customer Vouchers (วอยเชอร์ลูกค้า & เทมเพลต)
         </button>
       </div>
 
@@ -890,7 +890,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                     className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 bg-slate-100/80 dark:bg-slate-800 hover:bg-slate-200/60 dark:hover:bg-slate-750 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 outline-none cursor-pointer transition-colors shadow-xs"
                   >
                     <option value="topup_4000_1000">💳 Topup Promo: แคมเปญเติมเงิน 4,000 แถม 1,000 (05/10 - 09/10/2026)</option>
-                    <option value="order_9_9">🏷️ Order Promo: โค้ดส่วนลด 9.9 & คูปองออเดอร์ (Order Discounts)</option>
+                    <option value="order_9_9">🏷️ Order Promo: โค้ดส่วนลด 9.9 & วอยเชอร์ออเดอร์ (Order Discounts)</option>
                   </select>
                 </div>
               </div>

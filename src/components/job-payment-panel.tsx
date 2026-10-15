@@ -154,6 +154,10 @@ export function JobPaymentPanel({
       }
 
       toast.success(`บันทึกรับชำระ ฿${amt.toLocaleString()} (${activeChannelName}) เรียบร้อยแล้ว`);
+      if ((res as any).couponsIssued && (res as any).couponsIssued.length > 0) {
+        const issuedCodes = (res as any).couponsIssued.map((c: any) => c.code).join(", ");
+        toast.success(`🎉 ออเดอร์นี้ได้รับวอยเชอร์ส่วนลดซักรองเท้า 100 บาท! รหัส: ${issuedCodes}`, { duration: 8000 });
+      }
       import("@/lib/cash-drawer").then(({ triggerCashDrawerIfEnabled }) => {
         triggerCashDrawerIfEnabled("pay", activeChannelName);
       }).catch(() => {});

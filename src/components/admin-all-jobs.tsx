@@ -1092,7 +1092,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         <div className="flex flex-col items-end justify-center">
                           { (job.totalAmount || 0) - (job.fee || 0) > 0 ? (
                             <div className="font-bold text-[13px] text-indigo-700">
-                              ฿{(job.totalAmount || 0).toLocaleString()}
+                              ฿{(job.totalAmount || 0).toLocaleString(undefined, {
+                                minimumFractionDigits: ((job.totalAmount || 0) % 1 !== 0 || /VAT:\s*exclusive/i.test(job.remark || "")) ? 2 : 0,
+                                maximumFractionDigits: 2,
+                              })}
                             </div>
                           ) : (
                             <div className="flex items-center gap-1">
@@ -1389,8 +1392,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                   const isCash = job.paymentChannel === "Cash / COD" || (job.paymentMethod || "").toLowerCase() === "cash";
                                   const isProcessOrLater = !['tba', 'pending', 'pickup'].includes(job.status);
                                   if (isCash && !isJobFullyPaid(job) && !job.isPaid && isProcessOrLater) {
+                                    const fmtCod = job.totalAmount
+                                      ? job.totalAmount.toLocaleString(undefined, {
+                                          minimumFractionDigits: (job.totalAmount % 1 !== 0 || /VAT:\s*exclusive/i.test(job.remark || "")) ? 2 : 0,
+                                          maximumFractionDigits: 2,
+                                        })
+                                      : "";
                                     return (
-                                      <span title={`ต้องเก็บเงินสด (COD)${job.totalAmount ? ` ฿${Math.round(job.totalAmount).toLocaleString()}` : ""}`} className="w-4 h-4 rounded flex items-center justify-center bg-rose-100 text-rose-700 border border-rose-200 animate-in fade-in duration-200">
+                                      <span title={`ต้องเก็บเงินสด (COD)${fmtCod ? ` ฿${fmtCod}` : ""}`} className="w-4 h-4 rounded flex items-center justify-center bg-rose-100 text-rose-700 border border-rose-200 animate-in fade-in duration-200">
                                         <Banknote size={10} />
                                       </span>
                                     );
@@ -1497,11 +1506,20 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             <div className="flex flex-col gap-1.5 mb-2">
                               <div className="flex items-center gap-1.5 text-[10px] flex-wrap">
                                 <Banknote size={12} className="text-slate-400" />
-                                <span className="font-bold">฿{job.totalAmount || 0}</span>
+                                <span className="font-bold">
+                                  ฿{(job.totalAmount || 0).toLocaleString(undefined, {
+                                    minimumFractionDigits: ((job.totalAmount || 0) % 1 !== 0 || /VAT:\s*exclusive/i.test(job.remark || "")) ? 2 : 0,
+                                    maximumFractionDigits: 2,
+                                  })}
+                                </span>
                                 {(() => {
                                   const breakdown = getJobPaymentBreakdown(job);
                                   const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
-                                  const statusLabel = breakdown.isFullyPaid ? 'PAID' : breakdown.isPartial ? `PARTIAL (฿${Math.round(breakdown.totalPaid).toLocaleString()})` : 'UNPAID';
+                                  const fmtPaid = breakdown.totalPaid.toLocaleString(undefined, {
+                                    minimumFractionDigits: breakdown.totalPaid % 1 !== 0 ? 2 : 0,
+                                    maximumFractionDigits: 2,
+                                  });
+                                  const statusLabel = breakdown.isFullyPaid ? 'PAID' : breakdown.isPartial ? `PARTIAL (฿${fmtPaid})` : 'UNPAID';
                                   const colorClass = breakdown.isFullyPaid ? 'bg-emerald-100 text-emerald-700' : breakdown.isPartial ? 'bg-amber-100 text-amber-800' : 'bg-orange-100 text-orange-700';
                                   const channelLabel = breakdown.isSplit ? `SPLIT (${breakdown.payments.length})` : (job.paymentChannel || '');
 

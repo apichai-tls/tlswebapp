@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
@@ -1114,7 +1114,7 @@ export default function AdminPage() {
     // Formula: (subtotal + surcharge) - % discount - promo discount + fee + VAT
     const baseTotal = currentLaundryPrice + surcharge - dialogDiscountAmount - promoDisc + fee;
     const vat = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    return safeCeil(Math.max(0, baseTotal + vat));
+    return roundGrandTotal(Math.max(0, baseTotal + vat), dialogVatType);
   }, [currentLaundryPrice, dialogDiscountAmount, serviceSpeed, fee, dialogVatType, dialogVatRate, promoDiscountAmount]);
 
 
@@ -2181,7 +2181,7 @@ export default function AdminPage() {
     const promoDisc = appliedPromo ? promoDiscountAmount : 0;
     const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
     const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    const calculatedTotal = safeCeil(Math.max(0, baseTotal + vatVal));
+    const calculatedTotal = roundGrandTotal(Math.max(0, baseTotal + vatVal), dialogVatType);
 
     const now = new Date();
     const effectiveCreatedAt = editingJobId 
@@ -3264,7 +3264,7 @@ export default function AdminPage() {
       const promoDisc = promoDiscountAmount;
       const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
       const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-      const calculatedTotal = safeCeil(Math.max(0, baseTotal + vatVal));
+      const calculatedTotal = roundGrandTotal(Math.max(0, baseTotal + vatVal), dialogVatType);
       
       const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
       const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
@@ -6147,7 +6147,12 @@ export default function AdminPage() {
                                 <span>{currentLanguage === "en" ? "Discount" : "ส่วนลด"}</span>
                               </label>
                             </div>
-                            <span className="text-xl font-black text-indigo-400">฿{dialogTotal.toFixed(0)}</span>
+                            <span className="text-xl font-black text-indigo-400">
+                              ฿{dialogTotal.toLocaleString(undefined, {
+                                minimumFractionDigits: dialogVatType === "exclusive" || dialogTotal % 1 !== 0 ? 2 : 0,
+                                maximumFractionDigits: 2,
+                              })}
+                            </span>
                           </div>
 
                           {/* Payment Section: Row 1 (Channel & Bill No), Row 2 (CSO & SHOP Statuses) */}

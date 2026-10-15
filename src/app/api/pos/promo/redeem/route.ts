@@ -7,7 +7,7 @@ const PROMO_KEY  = process.env.TLS_PROMO_API_KEY  || "tls_pos_live_4cd242ae264a9
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { code, receiptNo } = body;
+    const { code, receiptNo, discountAmount } = body;
     const promoCode = (code || "").trim().toUpperCase();
 
     // 1. Mark local CustomerCoupon as USED if it exists
@@ -20,15 +20,17 @@ export async function POST(req: NextRequest) {
       });
 
       if (localCoupon) {
+        const usedDiscount = discountAmount != null ? Math.max(0, Number(discountAmount)) : localCoupon.discountValue;
         await prisma.customerCoupon.update({
           where: { id: localCoupon.id },
           data: {
             status: "USED",
             usedAt: new Date(),
             usedJobId: receiptNo ? String(receiptNo) : null,
+            discountAmountUsed: usedDiscount,
           },
         });
-        console.log(`[CustomerCoupon/redeem] Successfully marked ${promoCode} as USED for job ${receiptNo}`);
+        console.log(`[CustomerCoupon/redeem] Successfully marked ${promoCode} as USED for job ${receiptNo} (discount: ฿${usedDiscount})`);
         return NextResponse.json({ success: true, isCustomerCoupon: true });
       }
     }

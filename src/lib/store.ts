@@ -116,6 +116,10 @@ export interface CustomerCoupon {
   issuedByName?: string | null;
   issuedReason?: string | null;
   brand?: string;
+  applicableCategory?: string | null;
+  campaignId?: string | null;
+  discountAmountUsed?: number | null;
+  sourceJobId?: string | null;
   createdAt?: string | Date;
   updatedAt?: string | Date;
 }
@@ -130,6 +134,7 @@ export interface CouponTemplate {
   discountValue: number;
   minOrderAmount?: number | null;
   maxDiscount?: number | null;
+  applicableCategory?: string | null;
   days: number;
   reason?: string | null;
   brand?: string;

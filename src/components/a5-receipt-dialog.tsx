@@ -8,7 +8,7 @@ import { Printer, X, Loader2, Wallet, RefreshCw } from "lucide-react";
 import { ReceiptData, ReceiptItem, getCategoryDisplayName, resolveItemCategory, CATEGORY_ORDER } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { getTransportFeeBreakdown, safeCeil, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber, formatBaht } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber, formatBaht } from "@/lib/utils";
 
 import { customerStore, serviceStore } from "@/lib/store";
 
@@ -835,7 +835,7 @@ export function A5ReceiptContent({
       ? Math.max(0.45, (A5_MAX_HEIGHT - 6) / estimatedTotalHeight)
       : 1;
 
-  const effectiveGrandTotal = safeCeil(receiptData.total || 0);
+  const effectiveGrandTotal = roundGrandTotal(receiptData.total || 0, receiptData.vatType);
   const remainingBalance = Math.max(0, effectiveGrandTotal - totalPaid);
 
   return (

@@ -15,7 +15,6 @@ import {
   Truck, 
   Coins, 
   AlertCircle,
-  Shuffle,
   Settings,
   BookmarkPlus,
   Layers,
@@ -45,7 +44,7 @@ const PRESET_TEMPLATES = [
   {
     label: "🎁 ต้อนรับสมาชิก (ลด ฿100)",
     codePrefix: "WELCOME100",
-    name: "คูปองต้อนรับสมาชิกใหม่ ลด ฿100",
+    name: "วอยเชอร์ต้อนรับสมาชิกใหม่ ลด ฿100",
     discountType: "FIXED" as const,
     discountValue: 100,
     minOrderAmount: 300,
@@ -56,7 +55,7 @@ const PRESET_TEMPLATES = [
   {
     label: "🎂 วันเกิด (ลด 20%)",
     codePrefix: "BDAY20",
-    name: "คูปองวันเกิดพิเศษ ลด 20%",
+    name: "วอยเชอร์วันเกิดพิเศษ ลด 20%",
     discountType: "PERCENTAGE" as const,
     discountValue: 20,
     minOrderAmount: 200,
@@ -67,7 +66,7 @@ const PRESET_TEMPLATES = [
   {
     label: "🚚 ฟรีค่าส่ง Delivery",
     codePrefix: "FREEDELIVERY",
-    name: "คูปองฟรีค่าจัดส่ง Delivery",
+    name: "วอยเชอร์ฟรีค่าจัดส่ง Delivery",
     discountType: "FREE_DELIVERY" as const,
     discountValue: 0,
     minOrderAmount: 150,
@@ -78,7 +77,7 @@ const PRESET_TEMPLATES = [
   {
     label: "🛠️ ชดเชยบริการ (ลด ฿200)",
     codePrefix: "SRV200",
-    name: "คูปองชดเชยบริการ Service Recovery ฿200",
+    name: "วอยเชอร์ชดเชยบริการ Service Recovery ฿200",
     discountType: "FIXED" as const,
     discountValue: 200,
     minOrderAmount: 0,
@@ -89,7 +88,7 @@ const PRESET_TEMPLATES = [
   {
     label: "💖 ส่วนลดแทนใจ (ลด ฿50)",
     codePrefix: "TLS50",
-    name: "คูปองส่วนลดพิเศษ ฿50",
+    name: "วอยเชอร์ส่วนลดพิเศษ ฿50",
     discountType: "FIXED" as const,
     discountValue: 50,
     minOrderAmount: 200,
@@ -200,15 +199,15 @@ export function AdminIssueCouponDialog({
     } else {
       setExpiryDate("");
     }
-    toast.success(`Applied template "${tpl.label}" (ใช้งานแม่แบบแล้ว)`);
+    toast.success(`Applied template "${tpl.label}" (ใช้งานเทมเพลตแล้ว)`);
   };
 
   const handleSaveAsTemplate = async () => {
     if (!name.trim()) {
-      toast.error("Please enter a Coupon Name first (กรุณาระบุชื่อคูปองก่อน)");
+      toast.error("Please enter a Voucher Name first (กรุณาระบุชื่อวอยเชอร์ก่อน)");
       return;
     }
-    const label = prompt("Enter a label for this template (ระบุชื่อป้ายกำกับแม่แบบ):", name.trim());
+    const label = prompt("Enter a label for this template (ระบุชื่อป้ายกำกับเทมเพลต):", name.trim());
     if (!label || !label.trim()) return;
 
     try {
@@ -227,7 +226,7 @@ export function AdminIssueCouponDialog({
       });
       if (res.success && res.templates) {
         setTemplates(res.templates);
-        toast.success("Saved as new template! (บันทึกเป็นแม่แบบใหม่เรียบร้อย)");
+        toast.success("Saved as new template! (บันทึกเป็นเทมเพลตใหม่เรียบร้อย)");
       } else {
         toast.error(res.error || "Failed to save template");
       }
@@ -239,16 +238,16 @@ export function AdminIssueCouponDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedCustomer) {
-      toast.error("กรุณาเลือกลูกค้าที่จะมอบคูปองให้");
+      toast.error("กรุณาเลือกลูกค้าที่จะมอบวอยเชอร์ให้");
       return;
     }
-    const cleanCode = code.trim().toUpperCase();
+    let cleanCode = code.trim().toUpperCase();
     if (!cleanCode) {
-      toast.error("กรุณาระบุรหัสคูปอง (Coupon Code)");
-      return;
+      const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+      cleanCode = `TLS-${randomSuffix}`;
     }
     if (!name.trim()) {
-      toast.error("กรุณาระบุชื่อคูปอง");
+      toast.error("กรุณาระบุชื่อวอยเชอร์");
       return;
     }
 
@@ -277,10 +276,10 @@ export function AdminIssueCouponDialog({
       });
 
       if (!res.success || !res.coupon) {
-        throw new Error(res.error || "Failed to create coupon");
+        throw new Error(res.error || "Failed to create voucher");
       }
 
-      toast.success(`มอบคูปอง "${cleanCode}" ให้คุณ ${selectedCustomer.name} เรียบร้อยแล้ว! 🎉`);
+      toast.success(`มอบวอยเชอร์ "${cleanCode}" ให้คุณ ${selectedCustomer.name} เรียบร้อยแล้ว! 🎉`);
       onSuccess?.(res.coupon as unknown as CustomerCoupon);
       onOpenChange(false);
 
@@ -292,7 +291,7 @@ export function AdminIssueCouponDialog({
       setMinOrderAmount("");
       setMaxDiscount("");
     } catch (err: any) {
-      toast.error(err?.message || "เกิดข้อผิดพลาดในการมอบคูปอง");
+      toast.error(err?.message || "เกิดข้อผิดพลาดในการมอบวอยเชอร์");
     } finally {
       setIsSubmitting(false);
     }
@@ -310,10 +309,10 @@ export function AdminIssueCouponDialog({
               </div>
               <div>
                 <DialogTitle className="text-lg font-black text-slate-900 flex items-center gap-2">
-                  Issue Customer Coupon (มอบคูปองให้ลูกค้า)
+                  Issue Customer Voucher (แจกวอยเชอร์ให้ลูกค้า)
                 </DialogTitle>
                 <DialogDescription className="text-xs text-slate-500 mt-0.5">
-                  Directly issue discount coupons to customer wallet (สร้างและผูกคูปองส่วนลดเข้ากระเป๋าของลูกค้าโดยตรง)
+                  Directly issue discount vouchers to customer wallet (สร้างและผูกวอยเชอร์ส่วนลดเข้ากระเป๋าของลูกค้าโดยตรง)
                 </DialogDescription>
               </div>
             </div>
@@ -324,7 +323,7 @@ export function AdminIssueCouponDialog({
             {/* Customer Selector */}
             <div className="space-y-1.5">
               <Label className="font-bold text-slate-700 flex items-center justify-between">
-                <span>Select Customer (เลือกลูกค้าที่จะมอบคูปองให้) <span className="text-rose-500">*</span></span>
+                <span>Select Customer (เลือกลูกค้าที่จะมอบวอยเชอร์ให้) <span className="text-rose-500">*</span></span>
                 {selectedCustomer && (
                   <span className="text-[10px] text-indigo-600 font-bold">
                     {selectedCustomer.brand === "noname_laundry" ? "NONAME LAUNDRY" : "THAT LAUNDRY SHOP"}
@@ -413,17 +412,17 @@ export function AdminIssueCouponDialog({
                     onClick={handleSaveAsTemplate}
                     disabled={!name.trim()}
                     className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 disabled:text-slate-300 flex items-center gap-1 cursor-pointer transition-colors"
-                    title="Save current coupon configuration as reusable template (บันทึกคูปองนี้เป็นแม่แบบ)"
+                    title="Save current voucher configuration as reusable template (บันทึกวอยเชอร์นี้เป็นเทมเพลต)"
                   >
                     <BookmarkPlus size={12} />
-                    <span>Save as Template (บันทึกเป็นแม่แบบ)</span>
+                    <span>Save as Template (บันทึกเป็นเทมเพลต)</span>
                   </button>
                   <span className="text-slate-200">|</span>
                   <button
                     type="button"
                     onClick={() => setIsTemplateModalOpen(true)}
                     className="text-[11px] font-bold text-slate-500 hover:text-indigo-600 flex items-center gap-1 cursor-pointer transition-colors"
-                    title="Manage Templates (จัดการแม่แบบทั้งหมด)"
+                    title="Manage Templates (จัดการเทมเพลตทั้งหมด)"
                   >
                     <Settings size={12} />
                     <span>Manage (จัดการ)</span>
@@ -444,41 +443,16 @@ export function AdminIssueCouponDialog({
               </div>
             </div>
 
-            {/* Code & Random Button */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label className="font-bold text-slate-700">Coupon Code (รหัสคูปอง) <span className="text-rose-500">*</span></Label>
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    placeholder="e.g. WELCOME100"
-                    value={code}
-                    onChange={e => setCode(e.target.value.toUpperCase())}
-                    className="h-9 text-xs font-mono font-black uppercase tracking-wider rounded-xl border-slate-200 text-indigo-950"
-                    required
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => generateRandomCode("TLS")}
-                    className="h-9 px-2 text-[11px] font-bold border-slate-200 text-slate-600 hover:text-indigo-600 rounded-xl shrink-0"
-                    title="Random Code (สุ่มรหัสคูปองใหม่)"
-                  >
-                    <Shuffle size={12} />
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <Label className="font-bold text-slate-700">Coupon Name (ชื่อคูปอง) <span className="text-rose-500">*</span></Label>
-                <Input
-                  placeholder="e.g. Special Discount for New Members"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  className="h-9 text-xs font-bold rounded-xl border-slate-200"
-                  required
-                />
-              </div>
+            {/* Voucher Name */}
+            <div className="space-y-1">
+              <Label className="font-bold text-slate-700">Voucher Name (ชื่อวอยเชอร์) <span className="text-rose-500">*</span></Label>
+              <Input
+                placeholder="e.g. Special Discount for New Members (เช่น ส่วนลดพิเศษลูกค้าใหม่)"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="h-9 text-xs font-bold rounded-xl border-slate-200"
+                required
+              />
             </div>
 
             {/* Discount Type Buttons */}
@@ -636,7 +610,7 @@ export function AdminIssueCouponDialog({
                     <span className="font-mono font-black text-xs text-indigo-950 uppercase">{code || "CODE"}</span>
                     <Badge className="bg-emerald-100 text-emerald-800 text-[9px] py-0 px-1.5">Active (พร้อมใช้งาน)</Badge>
                   </div>
-                  <p className="text-[11px] font-bold text-slate-800 mt-0.5">{name || "Coupon Name (ชื่อคูปองส่วนลด)"}</p>
+                  <p className="text-[11px] font-bold text-slate-800 mt-0.5">{name || "Voucher Name (ชื่อวอยเชอร์ส่วนลด)"}</p>
                   <p className="text-[10px] text-slate-500">
                     {minOrderAmount ? `Min ฿${Number(minOrderAmount).toLocaleString()} (ขั้นต่ำ) • ` : ""}
                     {expiryDate ? `Expires ${format(new Date(`${expiryDate}T23:59:59`), "dd/MM/yyyy")} (ใช้ได้ถึง)` : "No Expiry (ไม่มีวันหมดอายุ)"}
@@ -667,10 +641,10 @@ export function AdminIssueCouponDialog({
             <Button
               type="submit"
               size="sm"
-              disabled={isSubmitting || !selectedCustomer || !code.trim() || !name.trim()}
+              disabled={isSubmitting || !selectedCustomer || !name.trim()}
               className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl px-5 shadow-xs cursor-pointer gap-1.5"
             >
-              {isSubmitting ? "Saving..." : "Issue Coupon (ยืนยันมอบคูปอง)"}
+              {isSubmitting ? "Saving..." : "Issue Voucher (ยืนยันแจกวอยเชอร์)"}
             </Button>
           </DialogFooter>
         </form>

@@ -208,6 +208,19 @@ export function safeCeil(val: number): number {
 }
 
 /**
+ * Round Grand Total:
+ * - For Exclude VAT (vatType === "exclusive"), preserve exact 2-decimal satang (no ceiling).
+ * - For all other VAT types ("none", "inclusive"), round up with safeCeil.
+ */
+export function roundGrandTotal(val: number, vatType?: string | null): number {
+  if (isNaN(val) || !val) return 0;
+  if (vatType && vatType.toLowerCase() === "exclusive") {
+    return Math.round(val * 100) / 100;
+  }
+  return safeCeil(val);
+}
+
+/**
  * Calculate Wallet Expiration Date (6 months minus 1 day from given date, set to 23:59:59.999).
  * E.g., Topup: 2026-10-01 -> Expiry: 2027-03-31 23:59:59.999
  */

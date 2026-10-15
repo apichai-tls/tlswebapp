@@ -1,7 +1,7 @@
 import { format } from "date-fns";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
 import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
-import { getTransportFeeBreakdown, safeCeil } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil, roundGrandTotal } from "@/lib/utils";
 
 
 
@@ -148,7 +148,7 @@ export async function generateThermalReceiptImage(
         ` : ""}
         <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 900; color: #171717; border-top: 1px solid #171717; padding-top: 4px; margin-top: 4px;">
           <span>GRAND TOTAL</span>
-          <span style="font-family: monospace;">฿${formatCurrency(safeCeil(receiptData.total))}</span>
+          <span style="font-family: monospace;">฿${formatCurrency(roundGrandTotal(receiptData.total, receiptData.vatType))}</span>
         </div>
       </div>
 

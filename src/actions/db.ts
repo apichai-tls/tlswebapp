@@ -5,6 +5,7 @@ import { listFilesForJob } from '@/lib/gcs';
 import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
+import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode } from '@/lib/promotions';
 import { invalidateDbCache } from '@/lib/db-cache';
 
 // CUSTOMERS
@@ -1730,6 +1731,18 @@ export async function updateJobAction(id: string, updates: any) {
     } catch (err) {
       console.warn("[CustomerCoupon] Void/restore on cancel failed:", err);
     }
+  }
+
+  // Evaluate promotion coupon issuance when job is marked paid
+  if (
+    (data.isPaid === true || data.isShopPaid === true) &&
+    (!existingJob?.isPaid && !existingJob?.isShopPaid)
+  ) {
+    evaluateAndIssuePromotionCouponsAction({
+      jobId: id,
+      customerId: updatedJob.customerId,
+      actor: { id: updates.actorId, name: updates.actorName },
+    }).catch(err => console.warn("[updateJobAction] Promo coupon evaluation failed:", err));
   }
 
   invalidateDbCache();
@@ -4440,7 +4453,7 @@ export async function recordJobPaymentAction(data: {
   newBalance?: number;
 }> {
   try {
-    return await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
 
@@ -4632,6 +4645,28 @@ export async function recordJobPaymentAction(data: {
         newBalance,
       };
     });
+
+    // Evaluate promotion coupon issuance when job payment completes
+    let couponsIssued: any[] = [];
+    if (result.success && result.updatedJob && (result.updatedJob.isPaid || result.updatedJob.isShopPaid)) {
+      try {
+        const promoRes = await evaluateAndIssuePromotionCouponsAction({
+          jobId: result.updatedJob.id,
+          customerId: result.updatedJob.customerId,
+          actor: { id: data.actorId, name: data.actorName },
+        });
+        if (promoRes.success && promoRes.couponsIssued) {
+          couponsIssued = promoRes.couponsIssued;
+        }
+      } catch (e) {
+        console.warn("[recordJobPaymentAction] Promo evaluation failed:", e);
+      }
+    }
+
+    return {
+      ...result,
+      couponsIssued,
+    };
   } catch (err: any) {
     console.error("[recordJobPaymentAction] Error:", err);
     return {
@@ -4869,6 +4904,10 @@ export async function createCustomerCouponAction(data: {
   issuedById?: string;
   issuedByName?: string;
   brand?: string;
+  applicableCategory?: string | null;
+  campaignId?: string | null;
+  discountAmountUsed?: number | null;
+  sourceJobId?: string | null;
 }) {
   try {
     const customer = await prisma.customer.findUnique({
@@ -4878,7 +4917,7 @@ export async function createCustomerCouponAction(data: {
     if (!customer) throw new Error("ไม่พบข้อมูลลูกค้า");
 
     const cleanCode = (data.code || "").trim().toUpperCase();
-    if (!cleanCode) throw new Error("กรุณาระบุรหัสคูปอง (Coupon Code)");
+    if (!cleanCode) throw new Error("กรุณาระบุรหัสวอยเชอร์ (Voucher Code)");
 
     const coupon = await prisma.customerCoupon.create({
       data: {
@@ -4899,6 +4938,10 @@ export async function createCustomerCouponAction(data: {
         issuedByName: data.issuedByName || null,
         issuedReason: data.issuedReason?.trim() || null,
         brand: data.brand || customer.brand || "that_laundry_shop",
+        applicableCategory: data.applicableCategory || null,
+        campaignId: data.campaignId || null,
+        discountAmountUsed: data.discountAmountUsed != null ? Number(data.discountAmountUsed) : null,
+        sourceJobId: data.sourceJobId || null,
       },
     });
 
@@ -5033,7 +5076,7 @@ export async function updateCustomerCouponStatusAction(
 export async function deleteCustomerCouponAction(id: string, actor?: { id?: string; name?: string }) {
   try {
     const coupon = await prisma.customerCoupon.findUnique({ where: { id } });
-    if (!coupon) throw new Error("ไม่พบคูปอง");
+    if (!coupon) throw new Error("ไม่พบวอยเชอร์");
 
     await prisma.customerCoupon.delete({ where: { id } });
 
@@ -5067,7 +5110,7 @@ const DEFAULT_COUPON_TEMPLATES: CouponTemplate[] = [
     id: "tpl-welcome-100",
     label: "🎁 Welcome Member (ลด ฿100)",
     codePrefix: "WELCOME100",
-    name: "คูปองต้อนรับสมาชิกใหม่ ลด ฿100",
+    name: "วอยเชอร์ต้อนรับสมาชิกใหม่ ลด ฿100",
     description: "ต้อนรับสมาชิกใหม่ ลด ฿100 เมื่อสั่งซื้อขั้นต่ำ ฿300",
     discountType: "FIXED",
     discountValue: 100,
@@ -5081,7 +5124,7 @@ const DEFAULT_COUPON_TEMPLATES: CouponTemplate[] = [
     id: "tpl-bday-20",
     label: "🎂 Birthday Perk (ลด 20%)",
     codePrefix: "BDAY20",
-    name: "คูปองวันเกิดพิเศษ ลด 20%",
+    name: "วอยเชอร์วันเกิดพิเศษ ลด 20%",
     description: "สิทธิพิเศษวันเกิด ลด 20% สูงสุด ฿200",
     discountType: "PERCENTAGE",
     discountValue: 20,
@@ -5095,7 +5138,7 @@ const DEFAULT_COUPON_TEMPLATES: CouponTemplate[] = [
     id: "tpl-free-delivery",
     label: "🚚 Free Delivery (ฟรีค่าส่ง)",
     codePrefix: "FREEDELIVERY",
-    name: "คูปองฟรีค่าจัดส่ง Delivery",
+    name: "วอยเชอร์ฟรีค่าจัดส่ง Delivery",
     description: "ฟรีค่าจัดส่ง Delivery เมื่อสั่งซื้อขั้นต่ำ ฿150",
     discountType: "FREE_DELIVERY",
     discountValue: 0,
@@ -5109,7 +5152,7 @@ const DEFAULT_COUPON_TEMPLATES: CouponTemplate[] = [
     id: "tpl-service-recovery",
     label: "🛠️ Service Recovery (ลด ฿200)",
     codePrefix: "SRV200",
-    name: "คูปองชดเชยบริการ Service Recovery ฿200",
+    name: "วอยเชอร์ชดเชยบริการ Service Recovery ฿200",
     description: "ชดเชยกรณีบริการล่าช้า หรือเกิดปัญหาการจัดส่ง",
     discountType: "FIXED",
     discountValue: 200,
@@ -5123,7 +5166,7 @@ const DEFAULT_COUPON_TEMPLATES: CouponTemplate[] = [
     id: "tpl-loyalty-50",
     label: "💖 Special Loyalty (ลด ฿50)",
     codePrefix: "TLS50",
-    name: "คูปองส่วนลดพิเศษ ฿50",
+    name: "วอยเชอร์ส่วนลดพิเศษ ฿50",
     description: "สมนาคุณลูกค้าประจำ ลดทันที ฿50",
     discountType: "FIXED",
     discountValue: 50,
@@ -5256,6 +5299,432 @@ export async function resetCouponTemplatesAction(): Promise<{ success: boolean; 
     return { success: false, templates: DEFAULT_COUPON_TEMPLATES, error: err?.message };
   }
 }
+
+// ==========================================
+// PROMOTION CAMPAIGNS & EVALUATION ACTIONS
+// ==========================================
+
+export async function getPromotionCampaignsAction(): Promise<{ success: boolean; campaigns: PromotionCampaign[]; error?: string }> {
+  try {
+    const setting = await prisma.setting.findUnique({ where: { key: "promotion_campaigns" } });
+    if (!setting || !setting.value) {
+      await prisma.setting.upsert({
+        where: { key: "promotion_campaigns" },
+        update: { value: JSON.stringify(DEFAULT_PROMOTION_CAMPAIGNS) },
+        create: { key: "promotion_campaigns", value: JSON.stringify(DEFAULT_PROMOTION_CAMPAIGNS) },
+      });
+      return { success: true, campaigns: DEFAULT_PROMOTION_CAMPAIGNS };
+    }
+    const campaigns: PromotionCampaign[] = JSON.parse(setting.value);
+    return { success: true, campaigns: Array.isArray(campaigns) ? campaigns : DEFAULT_PROMOTION_CAMPAIGNS };
+  } catch (err: any) {
+    console.error("[getPromotionCampaignsAction] Error:", err);
+    return { success: false, campaigns: DEFAULT_PROMOTION_CAMPAIGNS, error: err?.message };
+  }
+}
+
+export async function savePromotionCampaignAction(
+  campaign: PromotionCampaign
+): Promise<{ success: boolean; campaigns?: PromotionCampaign[]; error?: string }> {
+  try {
+    const res = await getPromotionCampaignsAction();
+    let campaigns = res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS;
+
+    const existingIdx = campaigns.findIndex(c => c.id === campaign.id);
+    if (existingIdx >= 0) {
+      campaigns[existingIdx] = campaign;
+    } else {
+      campaigns.push(campaign);
+    }
+
+    await prisma.setting.upsert({
+      where: { key: "promotion_campaigns" },
+      update: { value: JSON.stringify(campaigns) },
+      create: { key: "promotion_campaigns", value: JSON.stringify(campaigns) },
+    });
+
+    return { success: true, campaigns };
+  } catch (err: any) {
+    console.error("[savePromotionCampaignAction] Error:", err);
+    return { success: false, error: err?.message };
+  }
+}
+
+export async function evaluateAndIssuePromotionCouponsAction(data: {
+  jobId: string;
+  customerId?: string;
+  actor?: { id?: string; name?: string };
+}): Promise<{
+  success: boolean;
+  qualified: boolean;
+  couponsIssued: any[];
+  reasons?: string[];
+  error?: string;
+}> {
+  try {
+    const job = await prisma.job.findUnique({
+      where: { id: data.jobId },
+      include: { customer: true },
+    });
+    if (!job) return { success: false, qualified: false, couponsIssued: [], error: "ไม่พบข้อมูลบิลงาน" };
+
+    const custId = data.customerId || job.customerId;
+    if (!custId) {
+      return { success: true, qualified: false, couponsIssued: [], reasons: ["ไม่มีข้อมูลลูกค้าผูกกับบิล"] };
+    }
+
+    const customer = job.customer || await prisma.customer.findUnique({ where: { id: custId } });
+    if (!customer) {
+      return { success: false, qualified: false, couponsIssued: [], error: "ไม่พบข้อมูลลูกค้า" };
+    }
+
+    const { campaigns } = await getPromotionCampaignsAction();
+    const activeCampaigns = campaigns.filter(c => c.enabled);
+    if (activeCampaigns.length === 0) {
+      return { success: true, qualified: false, couponsIssued: [], reasons: ["ไม่มีแคมเปญโปรโมชั่นที่เปิดใช้งาน"] };
+    }
+
+    const now = new Date();
+    const couponsIssued: any[] = [];
+    const reasons: string[] = [];
+
+    // Calculate qualifying subtotal (STRICTLY excluding delivery/transport fee)
+    // Subtotal = totalAmount + discount - fee
+    let qualifyingSubtotal = 0;
+    if (job.itemsJson) {
+      try {
+        const items = JSON.parse(job.itemsJson);
+        if (Array.isArray(items)) {
+          qualifyingSubtotal = items.reduce((sum: number, it: any) => {
+            const sid = (it.serviceId || it.id || "").toLowerCase();
+            const cat = (it.category || "").toUpperCase();
+            if (sid.includes("delivery") || cat === "DELIVERY") return sum;
+            return sum + ((Number(it.price) || 0) * (Number(it.quantity) || 1));
+          }, 0);
+        }
+      } catch {}
+    }
+    if (qualifyingSubtotal <= 0) {
+      qualifyingSubtotal = Math.max(0, (Number(job.totalAmount) || 0) + (Number(job.discount) || 0) - (Number(job.fee) || 0));
+    }
+
+    for (const campaign of activeCampaigns) {
+      const start = new Date(campaign.startDate);
+      const end = new Date(campaign.endDate);
+      if (now < start || now > end) {
+        reasons.push(`แคมเปญ "${campaign.name}" อยู่นอกช่วงเวลาการแจก (${campaign.startDate.slice(0, 10)} - ${campaign.endDate.slice(0, 10)})`);
+        continue;
+      }
+
+      // Check Corporate exclusion
+      const isCorp = Boolean(
+        customer.isCorporate || 
+        (customer as any).customerType === "corporate" || 
+        customer.priceType === "corporate"
+      );
+      if (campaign.conditions.excludeCorporate && isCorp) {
+        reasons.push(`ลูกค้านิติบุคคล (Corporate) ไม่ร่วมโปรโมชั่น "${campaign.name}"`);
+        continue;
+      }
+
+      // Check Min Subtotal
+      if (qualifyingSubtotal < campaign.conditions.minOrderSubtotal) {
+        reasons.push(`ยอดซัก ฿${qualifyingSubtotal.toLocaleString()} ไม่ถึงเกณฑ์ขั้นต่ำ ฿${campaign.conditions.minOrderSubtotal.toLocaleString()}`);
+        continue;
+      }
+
+      // Check limit per customer (Option B: max 1 per customer across campaign)
+      if (campaign.conditions.limitPerCustomer > 0) {
+        const phoneDigits = (customer.phone || "").replace(/\D/g, "");
+        const existingCount = await prisma.customerCoupon.count({
+          where: {
+            campaignId: campaign.id,
+            status: { not: "VOID" },
+            OR: [
+              { customerId: customer.id },
+              ...(phoneDigits.length >= 8 ? [{ customerPhone: customer.phone }] : []),
+            ],
+          },
+        });
+
+        if (existingCount >= campaign.conditions.limitPerCustomer) {
+          reasons.push(`ลูกค้าท่านนี้ได้รับสิทธิ์วอยเชอร์แคมเปญ "${campaign.name}" ครบ ${campaign.conditions.limitPerCustomer} สิทธิ์แล้ว`);
+          continue;
+        }
+      }
+
+      // Prevent duplicate issuance for the exact same source job
+      const duplicateJobCoupon = await prisma.customerCoupon.findFirst({
+        where: {
+          campaignId: campaign.id,
+          sourceJobId: job.id,
+          status: { not: "VOID" },
+        },
+      });
+      if (duplicateJobCoupon) {
+        reasons.push(`บิล #${job.billNo || job.id} เคยได้รับวอยเชอร์ไปแล้ว (${duplicateJobCoupon.code})`);
+        continue;
+      }
+
+      // Eligible! Generate unique code and create coupon
+      let uniqueCode = "";
+      let isCodeUnique = false;
+      let attempts = 0;
+      while (!isCodeUnique && attempts < 10) {
+        attempts++;
+        const testCode = generateCouponCode(campaign.reward.codePrefix || "SHOE");
+        const existing = await prisma.customerCoupon.findFirst({ where: { code: testCode } });
+        if (!existing) {
+          uniqueCode = testCode;
+          isCodeUnique = true;
+        }
+      }
+
+      if (!uniqueCode) {
+        uniqueCode = `${campaign.reward.codePrefix || "SHOE"}-${Date.now().toString().slice(-4)}`;
+      }
+
+      const coupon = await prisma.customerCoupon.create({
+        data: {
+          customerId: customer.id,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          code: uniqueCode,
+          name: campaign.reward.couponName,
+          description: campaign.description,
+          discountType: campaign.reward.discountType,
+          discountValue: Number(campaign.reward.discountValue) || 100,
+          applicableCategory: campaign.reward.applicableCategory || "SHOES",
+          campaignId: campaign.id,
+          sourceJobId: job.id,
+          minOrderAmount: campaign.reward.minOrderAmount ?? null,
+          maxDiscount: campaign.reward.maxDiscount ?? null,
+          status: "ACTIVE",
+          issuedAt: new Date(),
+          expiryDate: new Date(campaign.rewardCouponExpiryDate),
+          issuedById: data.actor?.id || null,
+          issuedByName: data.actor?.name || null,
+          issuedReason: `Promotion: ${campaign.name} (บิล #${job.billNo || job.id})`,
+          brand: customer.brand || "that_laundry_shop",
+        },
+      });
+
+      await prisma.activityLog.create({
+        data: {
+          entityId: customer.id,
+          entityType: "customer",
+          action: "ISSUE_PROMO_COUPON",
+          details: JSON.stringify({
+            couponId: coupon.id,
+            code: coupon.code,
+            campaignId: campaign.id,
+            sourceJobId: job.id,
+            discountValue: coupon.discountValue,
+            expiryDate: coupon.expiryDate,
+          }),
+          userId: data.actor?.id || null,
+          userName: data.actor?.name || null,
+        },
+      });
+
+      couponsIssued.push(coupon);
+    }
+
+    return {
+      success: true,
+      qualified: couponsIssued.length > 0,
+      couponsIssued,
+      reasons,
+    };
+  } catch (err: any) {
+    console.error("[evaluateAndIssuePromotionCouponsAction] Error:", err);
+    return { success: false, qualified: false, couponsIssued: [], error: err?.message };
+  }
+}
+
+export async function getPromotionReportAction(filters?: {
+  campaignId?: string;
+  branchId?: string;
+  startDate?: string;
+  endDate?: string;
+}) {
+  try {
+    const campaignId = filters?.campaignId || "promo_shoe100_oct26";
+
+    // Query all coupons belonging to this campaign
+    const coupons = await prisma.customerCoupon.findMany({
+      where: {
+        campaignId,
+      },
+      include: {
+        customer: {
+          select: { id: true, name: true, phone: true, isCorporate: true, brand: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Collect all job IDs (source jobs and used jobs)
+    const allJobIds = Array.from(
+      new Set(
+        coupons
+          .flatMap(c => [c.sourceJobId, c.usedJobId])
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+
+    const jobs = allJobIds.length > 0
+      ? await prisma.job.findMany({
+          where: { id: { in: allJobIds } },
+          select: {
+            id: true,
+            billNo: true,
+            totalAmount: true,
+            fee: true,
+            discount: true,
+            branchId: true,
+            createdBy: true,
+            status: true,
+            createdAt: true,
+            completedAt: true,
+            itemsJson: true,
+          },
+        })
+      : [];
+
+    const jobMap = new Map(jobs.map(j => [j.id, j]));
+
+    // Filter by branch if specified
+    const filteredCoupons = coupons.filter(c => {
+      if (!filters?.branchId || filters.branchId === "all") return true;
+      const srcJob = c.sourceJobId ? jobMap.get(c.sourceJobId) : null;
+      const usedJob = c.usedJobId ? jobMap.get(c.usedJobId) : null;
+      return srcJob?.branchId === filters.branchId || usedJob?.branchId === filters.branchId;
+    });
+
+    // Summary KPIs
+    const totalIssued = filteredCoupons.length;
+    const distinctCustomerIds = new Set(filteredCoupons.map(c => c.customerId));
+    const totalCustomers = distinctCustomerIds.size;
+    const usedCoupons = filteredCoupons.filter(c => c.status === "USED");
+    const totalRedeemed = usedCoupons.length;
+    const activeCoupons = filteredCoupons.filter(c => c.status === "ACTIVE");
+    const activeRemaining = activeCoupons.length;
+    const expiredOrVoid = filteredCoupons.filter(c => c.status === "EXPIRED" || c.status === "VOID").length;
+    const redemptionRate = totalIssued > 0 ? (totalRedeemed / totalIssued) * 100 : 0;
+
+    let totalDiscountGiven = 0;
+    let totalSalesGenerated = 0;
+
+    usedCoupons.forEach(c => {
+      const discount = c.discountAmountUsed != null ? Number(c.discountAmountUsed) : Number(c.discountValue);
+      totalDiscountGiven += discount;
+
+      const job = c.usedJobId ? jobMap.get(c.usedJobId) : null;
+      if (job) {
+        totalSalesGenerated += Number(job.totalAmount) || 0;
+      }
+    });
+
+    // Detail rows for UI
+    const issuedList = filteredCoupons.map(c => {
+      const srcJob = c.sourceJobId ? jobMap.get(c.sourceJobId) : null;
+      const usedJob = c.usedJobId ? jobMap.get(c.usedJobId) : null;
+      return {
+        id: c.id,
+        code: c.code,
+        name: c.name,
+        customerId: c.customerId,
+        customerName: c.customerName || c.customer?.name || "ไม่ระบุชื่อ",
+        customerPhone: c.customerPhone || c.customer?.phone || "-",
+        status: c.status,
+        discountValue: c.discountValue,
+        discountAmountUsed: c.discountAmountUsed,
+        issuedAt: c.issuedAt,
+        expiryDate: c.expiryDate,
+        sourceJobId: c.sourceJobId,
+        sourceBillNo: srcJob?.billNo || c.sourceJobId,
+        sourceJobAmount: srcJob?.totalAmount,
+        sourceBranchId: srcJob?.branchId,
+        usedAt: c.usedAt,
+        usedJobId: c.usedJobId,
+        usedBillNo: usedJob?.billNo || c.usedJobId,
+        usedJobAmount: usedJob?.totalAmount,
+        usedBranchId: usedJob?.branchId,
+      };
+    });
+
+    const redeemedList = usedCoupons.map(c => {
+      const usedJob = c.usedJobId ? jobMap.get(c.usedJobId) : null;
+      let shoeItemsSummary = "";
+      if (usedJob?.itemsJson) {
+        try {
+          const items = JSON.parse(usedJob.itemsJson);
+          if (Array.isArray(items)) {
+            const shoeItems = items.filter((it: any) => {
+              const name = (it.name || "").toLowerCase();
+              const sid = (it.serviceId || it.id || "").toUpperCase();
+              const cat = (it.category || "").toUpperCase();
+              return cat === "SHOES" || sid.startsWith("SHO-") || name.includes("รองเท้า") || name.includes("shoe");
+            });
+            shoeItemsSummary = shoeItems.map((it: any) => `${it.name} x${it.quantity}`).join(", ");
+          }
+        } catch {}
+      }
+
+      return {
+        id: c.id,
+        code: c.code,
+        customerId: c.customerId,
+        customerName: c.customerName || c.customer?.name || "ไม่ระบุชื่อ",
+        customerPhone: c.customerPhone || c.customer?.phone || "-",
+        discountAmountUsed: c.discountAmountUsed != null ? Number(c.discountAmountUsed) : Number(c.discountValue),
+        usedAt: c.usedAt,
+        usedJobId: c.usedJobId,
+        usedBillNo: usedJob?.billNo || c.usedJobId,
+        usedJobTotal: usedJob?.totalAmount,
+        usedBranchId: usedJob?.branchId,
+        cashier: usedJob?.createdBy || "-",
+        shoeItemsSummary: shoeItemsSummary || "บริการซักรองเท้า",
+      };
+    });
+
+    return {
+      success: true,
+      stats: {
+        totalIssued,
+        totalCustomers,
+        totalRedeemed,
+        redemptionRate,
+        activeRemaining,
+        expiredOrVoid,
+        totalDiscountGiven,
+        totalSalesGenerated,
+      },
+      issuedList,
+      redeemedList,
+    };
+  } catch (err: any) {
+    console.error("[getPromotionReportAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message,
+      stats: {
+        totalIssued: 0,
+        totalCustomers: 0,
+        totalRedeemed: 0,
+        redemptionRate: 0,
+        activeRemaining: 0,
+        expiredOrVoid: 0,
+        totalDiscountGiven: 0,
+        totalSalesGenerated: 0,
+      },
+      issuedList: [],
+      redeemedList: [],
+    };
+  }
+}
+
 
 
 

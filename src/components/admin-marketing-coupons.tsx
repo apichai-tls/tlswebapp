@@ -18,7 +18,8 @@ import {
   Truck, 
   Eye, 
   Ban, 
-  Trash2 
+  Trash2,
+  TrendingUp
 } from "lucide-react";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -36,11 +37,15 @@ import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { AdminCouponTemplateModal } from "@/components/admin-coupon-template-modal";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
+import { AdminPromotionReport } from "@/components/admin-promotion-report";
 
 export function AdminMarketingCoupons() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
   const customers = useCustomers();
+
+  // Navigation tab: Report vs All Coupons
+  const [viewTab, setViewTab] = useState<"report" | "coupons">("report");
 
   // Data states
   const [allCoupons, setAllCoupons] = useState<CustomerCoupon[]>([]);
@@ -81,19 +86,19 @@ export function AdminMarketingCoupons() {
   const handleCopyCouponCode = (coupon: CustomerCoupon) => {
     navigator.clipboard.writeText(coupon.code);
     setCopiedCouponId(coupon.id);
-    toast.success(`คัดลอกโค้ด ${coupon.code} เรียบร้อยแล้ว`);
+    toast.success(`คัดลอกรหัสวอยเชอร์ ${coupon.code} เรียบร้อยแล้ว`);
     setTimeout(() => setCopiedCouponId(null), 2000);
   };
 
   const handleVoidCoupon = async (coupon: CustomerCoupon) => {
-    if (!confirm(`คุณต้องการยกเลิกคูปอง "${coupon.code}" (${coupon.name}) ใช่หรือไม่?`)) return;
+    if (!confirm(`คุณต้องการยกเลิกวอยเชอร์ "${coupon.code}" (${coupon.name}) ใช่หรือไม่?`)) return;
     try {
       const res = await updateCustomerCouponStatusAction(coupon.id, "VOID");
       if (res.success) {
-        toast.success("ยกเลิกคูปองเรียบร้อย");
+        toast.success("ยกเลิกวอยเชอร์เรียบร้อย");
         fetchCoupons();
       } else {
-        toast.error(res.error || "เกิดข้อผิดพลาดในการยกเลิกคูปอง");
+        toast.error(res.error || "เกิดข้อผิดพลาดในการยกเลิกวอยเชอร์");
       }
     } catch (err: any) {
       toast.error(err.message || "เกิดข้อผิดพลาด");
@@ -101,14 +106,14 @@ export function AdminMarketingCoupons() {
   };
 
   const handleDeleteCoupon = async (coupon: CustomerCoupon) => {
-    if (!confirm(`คุณต้องการลบคูปอง "${coupon.code}" (${coupon.name}) ออกจากระบบถาวรใช่หรือไม่?`)) return;
+    if (!confirm(`คุณต้องการลบวอยเชอร์ "${coupon.code}" (${coupon.name}) ออกจากระบบถาวรใช่หรือไม่?`)) return;
     try {
       const res = await deleteCustomerCouponAction(coupon.id);
       if (res.success) {
-        toast.success("ลบคูปองเรียบร้อยแล้ว");
+        toast.success("ลบวอยเชอร์เรียบร้อยแล้ว");
         fetchCoupons();
       } else {
-        toast.error(res.error || "เกิดข้อผิดพลาดในการลบคูปอง");
+        toast.error(res.error || "เกิดข้อผิดพลาดในการลบวอยเชอร์");
       }
     } catch (err: any) {
       toast.error(err.message || "เกิดข้อผิดพลาด");
@@ -126,21 +131,23 @@ export function AdminMarketingCoupons() {
   };
 
   const renderDiscountBadge = (coupon: CustomerCoupon) => {
-    switch (coupon.discountType) {
-      case "PERCENTAGE":
-        return <span className="font-black text-rose-600">-{coupon.discountValue}%</span>;
-      case "FREE_DELIVERY":
-        return (
+    return (
+      <div className="flex flex-col items-start gap-1">
+        {coupon.discountType === "PERCENTAGE" && <span className="font-black text-rose-600">-{coupon.discountValue}%</span>}
+        {coupon.discountType === "FREE_DELIVERY" && (
           <span className="font-black text-sky-600 flex items-center gap-1">
             <Truck size={13} /> ฟรีค่าส่ง
           </span>
-        );
-      case "CASH_VOUCHER":
-        return <span className="font-black text-amber-600">วอยเชอร์ ฿{coupon.discountValue}</span>;
-      case "FIXED":
-      default:
-        return <span className="font-black text-emerald-600">-฿{coupon.discountValue}</span>;
-    }
+        )}
+        {coupon.discountType === "CASH_VOUCHER" && <span className="font-black text-amber-600">วอยเชอร์ ฿{coupon.discountValue}</span>}
+        {(coupon.discountType === "FIXED" || !coupon.discountType) && <span className="font-black text-emerald-600">-฿{coupon.discountValue}</span>}
+        {coupon.applicableCategory && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-700 dark:text-blue-300 font-bold border border-blue-500/20 whitespace-nowrap">
+            {coupon.applicableCategory === "SHOES" ? "👟 ซักรองเท้า" : coupon.applicableCategory}
+          </span>
+        )}
+      </div>
+    );
   };
 
   const filteredCoupons = useMemo(() => {
@@ -182,11 +189,46 @@ export function AdminMarketingCoupons() {
 
   return (
     <div className="space-y-6">
-      {/* 1. Quick Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Top Tab Bar: Report vs Coupon List */}
+      <div className="flex items-center gap-2 p-1.5 bg-slate-100 dark:bg-slate-800 rounded-2xl w-fit">
+        <button
+          type="button"
+          onClick={() => setViewTab("report")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            viewTab === "report"
+              ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+          }`}
+        >
+          <TrendingUp size={15} />
+          <span>Promotion Report (รายงานแคมเปญ & การใช้วอยเชอร์)</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewTab("coupons")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            viewTab === "coupons"
+              ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+          }`}
+        >
+          <Ticket size={15} />
+          <span>All Vouchers (วอยเชอร์ทั้งหมด & รายชื่อลูกค้า)</span>
+          <span className="px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-[10px]">
+            {allCoupons.length}
+          </span>
+        </button>
+      </div>
+
+      {viewTab === "report" ? (
+        <AdminPromotionReport />
+      ) : (
+        <>
+          {/* 1. Quick Stat Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Coupons (คูปองทั้งหมด)</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Vouchers (วอยเชอร์ทั้งหมด)</p>
             <h3 className="text-2xl font-black text-slate-800 mt-1">{couponStats.total}</h3>
           </div>
           <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
@@ -232,7 +274,7 @@ export function AdminMarketingCoupons() {
           <div className="relative min-w-[240px] flex-1 max-w-sm">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <Input
-              placeholder="Search code, customer, phone (ค้นหาโค้ด, ชื่อลูกค้า, เบอร์โทร)..."
+              placeholder="Search code, customer, phone (ค้นหารหัสวอยเชอร์, ชื่อลูกค้า, เบอร์โทร)..."
               value={couponSearchQuery}
               onChange={(e) => {
                 setCouponSearchQuery(e.target.value);
@@ -291,7 +333,7 @@ export function AdminMarketingCoupons() {
             className="h-9 px-3.5 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 text-slate-700 font-bold text-xs rounded-xl gap-1.5 shadow-2xs cursor-pointer"
           >
             <Layers size={14} className="text-indigo-600" />
-            <span>Templates (จัดการแม่แบบ)</span>
+            <span>Templates (เทมเพลตวอยเชอร์)</span>
           </Button>
           <Button
             type="button"
@@ -299,7 +341,7 @@ export function AdminMarketingCoupons() {
             className="h-9 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl gap-1.5 shadow-sm cursor-pointer"
           >
             <Plus size={15} />
-            <span>+ Issue Coupon (แจกคูปอง)</span>
+            <span>+ Issue Voucher (แจกวอยเชอร์)</span>
           </Button>
         </div>
       </div>
@@ -309,8 +351,8 @@ export function AdminMarketingCoupons() {
         <Table>
           <TableHeader>
             <TableRow className="bg-slate-50/80 hover:bg-slate-50/80 border-b border-slate-200">
-              <TableHead className="py-3.5 pl-6 font-bold text-xs text-slate-600 uppercase">Coupon Code & Benefit (รหัสคูปอง & ส่วนลด)</TableHead>
-              <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Coupon Name (ชื่อคูปอง)</TableHead>
+              <TableHead className="py-3.5 pl-6 font-bold text-xs text-slate-600 uppercase">Voucher Code & Benefit (รหัสวอยเชอร์ & ส่วนลด)</TableHead>
+              <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Voucher Name (ชื่อวอยเชอร์)</TableHead>
               <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Customer (ลูกค้าผู้ถือสิทธิ์)</TableHead>
               <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Conditions (เงื่อนไข)</TableHead>
               <TableHead className="py-3.5 font-bold text-xs text-slate-600 uppercase">Expiry Date (วันหมดอายุ)</TableHead>
@@ -324,7 +366,7 @@ export function AdminMarketingCoupons() {
                 <TableCell colSpan={7} className="h-44 text-center">
                   <div className="flex flex-col items-center justify-center gap-2 text-indigo-600">
                     <Loader2 size={24} className="animate-spin" />
-                    <span className="text-xs font-bold text-slate-500">กำลังโหลดรายการคูปอง...</span>
+                    <span className="text-xs font-bold text-slate-500">กำลังโหลดรายการวอยเชอร์...</span>
                   </div>
                 </TableCell>
               </TableRow>
@@ -333,15 +375,15 @@ export function AdminMarketingCoupons() {
                 <TableCell colSpan={7} className="h-44 text-center">
                   <div className="flex flex-col items-center justify-center gap-2 text-slate-400">
                     <Ticket size={32} className="text-slate-300" />
-                    <p className="font-bold text-sm text-slate-600">ไม่พบคูปองที่ตรงกับเงื่อนไขการค้นหา</p>
-                    <p className="text-xs text-slate-400">ลองเปลี่ยนคำค้นหา หรือกดปุ่ม "แจกคูปองให้ลูกค้า" เพื่อออกคูปองใหม่</p>
+                    <p className="font-bold text-sm text-slate-600">ไม่พบวอยเชอร์ที่ตรงกับเงื่อนไขการค้นหา</p>
+                    <p className="text-xs text-slate-400">ลองเปลี่ยนคำค้นหา หรือกดปุ่ม "แจกวอยเชอร์ให้ลูกค้า" เพื่อออกวอยเชอร์ใหม่</p>
                     <Button
                       type="button"
                       size="sm"
                       onClick={() => setIssueCouponModalOpen(true)}
                       className="mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl h-8 px-3.5 gap-1.5 cursor-pointer"
                     >
-                      <Plus size={13} /> + แจกคูปองใหม่
+                      <Plus size={13} /> + แจกวอยเชอร์ใหม่
                     </Button>
                   </div>
                 </TableCell>
@@ -503,7 +545,7 @@ export function AdminMarketingCoupons() {
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer"
-                          title="คัดลอกรหัสคูปอง"
+                          title="คัดลอกรหัสวอยเชอร์"
                           onClick={() => handleCopyCouponCode(coupon)}
                         >
                           {copiedCouponId === coupon.id ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
@@ -526,7 +568,7 @@ export function AdminMarketingCoupons() {
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
-                            title="ยกเลิกคูปอง (Void)"
+                            title="ยกเลิกวอยเชอร์ (Void)"
                             onClick={() => handleVoidCoupon(coupon)}
                           >
                             <Ban size={13} />
@@ -539,7 +581,7 @@ export function AdminMarketingCoupons() {
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-slate-400 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer"
-                            title="ลบคูปองถาวร"
+                            title="ลบวอยเชอร์ถาวร"
                             onClick={() => handleDeleteCoupon(coupon)}
                           >
                             <Trash2 size={13} />
@@ -584,6 +626,8 @@ export function AdminMarketingCoupons() {
             </Button>
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* Issue Coupon Modal */}

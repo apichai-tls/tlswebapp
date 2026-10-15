@@ -157,14 +157,14 @@ export function AdminCustomerProfileModal({
   };
 
   const handleVoidCoupon = async (coupon: CustomerCoupon) => {
-    if (!confirm(`คุณต้องการยกเลิกคูปอง "${coupon.code}" (${coupon.name}) ใช่หรือไม่?`)) return;
+    if (!confirm(`คุณต้องการยกเลิกวอยเชอร์ "${coupon.code}" (${coupon.name}) ใช่หรือไม่?`)) return;
     try {
       const res = await updateCustomerCouponStatusAction(coupon.id, "VOID");
       if (res.success) {
-        toast.success("ยกเลิกคูปองเรียบร้อย");
+        toast.success("ยกเลิกวอยเชอร์เรียบร้อย");
         fetchCoupons();
       } else {
-        toast.error(res.error || "เกิดข้อผิดพลาดในการยกเลิกคูปอง");
+        toast.error(res.error || "เกิดข้อผิดพลาดในการยกเลิกวอยเชอร์");
       }
     } catch (err: any) {
       toast.error(err.message || "เกิดข้อผิดพลาด");
@@ -1229,7 +1229,7 @@ export function AdminCustomerProfileModal({
                         }`}
                       >
                         <Ticket size={13} />
-                        Coupons (คูปองลูกค้า) ({coupons.length})
+                        Vouchers (วอยเชอร์ลูกค้า) ({coupons.length})
                       </button>
                     )}
                   </div>
@@ -1248,7 +1248,7 @@ export function AdminCustomerProfileModal({
                       className="h-8 px-3 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 cursor-pointer shadow-2xs"
                     >
                       <Plus size={14} />
-                      + Issue Coupon (แจกคูปอง)
+                      + Issue Voucher (แจกวอยเชอร์)
                     </Button>
                   )}
                 </div>
@@ -1503,7 +1503,7 @@ export function AdminCustomerProfileModal({
                       <div className="text-xs text-slate-500 font-medium">
                         {isLoadingCoupons && (
                           <span className="flex items-center gap-1.5 text-indigo-600">
-                            <Loader2 size={13} className="animate-spin" /> Loading coupons (กำลังโหลดคูปอง)...
+                            <Loader2 size={13} className="animate-spin" /> Loading vouchers (กำลังโหลดวอยเชอร์)...
                           </span>
                         )}
                       </div>
@@ -1608,7 +1608,7 @@ export function AdminCustomerProfileModal({
                                       type="button"
                                       onClick={() => handleCopyCouponCode(coupon)}
                                       className="text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer p-0.5"
-                                      title="Copy Code (คัดลอกรหัสคูปอง)"
+                                      title="Copy Code (คัดลอกรหัสวอยเชอร์)"
                                     >
                                       {copiedCouponId === coupon.id ? (
                                         <Check size={13} className="text-emerald-600" />
@@ -1666,7 +1666,7 @@ export function AdminCustomerProfileModal({
                                       className="h-6 px-2 text-[11px] text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-md font-bold cursor-pointer"
                                     >
                                       <Ban size={12} className="mr-1" />
-                                      Void (ยกเลิกคูปอง)
+                                      Void (ยกเลิกวอยเชอร์)
                                     </Button>
                                   </div>
                                 )}
@@ -1682,10 +1682,10 @@ export function AdminCustomerProfileModal({
                         </div>
                         <div>
                           <h4 className="font-bold text-slate-700 text-sm">
-                            {couponStatusFilter === "all" ? "No coupons for this customer yet (ยังไม่มีคูปองสำหรับลูกค้ารายนี้)" : "No coupons found in this status (ไม่พบคูปองในสถานะนี้)"}
+                            {couponStatusFilter === "all" ? "No vouchers for this customer yet (ยังไม่มีวอยเชอร์สำหรับลูกค้ารายนี้)" : "No vouchers found in this status (ไม่พบวอยเชอร์ในสถานะนี้)"}
                           </h4>
                           <p className="text-xs text-slate-400 mt-1">
-                            Issue discount coupons, vouchers, or free delivery to this customer (มอบคูปองส่วนลด วอยเชอร์ หรือฟรีค่าจัดส่งให้ลูกค้ารายนี้)
+                            Issue discount vouchers or free delivery to this customer (มอบวอยเชอร์ส่วนลด หรือฟรีค่าจัดส่งให้ลูกค้ารายนี้)
                           </p>
                         </div>
                         <Button
@@ -1694,7 +1694,7 @@ export function AdminCustomerProfileModal({
                           className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl h-8 px-4 cursor-pointer gap-1.5"
                         >
                           <Plus size={14} />
-                          + Issue Coupon (แจกคูปอง)
+                          + Issue Voucher (แจกวอยเชอร์)
                         </Button>
                       </div>
                     )}
