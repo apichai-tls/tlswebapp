@@ -1168,11 +1168,15 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
     if (customerId) {
       orConditions.push({ customerId });
     }
-    if (customerPhone && customerPhone.trim()) {
-      orConditions.push({ customerPhone: customerPhone.trim() });
-    }
-    if (last9 && last9.length >= 8) {
-      orConditions.push({ customerPhone: { contains: last9 } });
+    // Only search by customerPhone if it contains valid phone digits (at least 8 digits).
+    // Placeholders like "--", "-", "N/A" must NEVER match other jobs!
+    if (rawDigits.length >= 8) {
+      if (customerPhone && customerPhone.trim()) {
+        orConditions.push({ customerPhone: customerPhone.trim() });
+      }
+      if (last9 && last9.length >= 8) {
+        orConditions.push({ customerPhone: { contains: last9 } });
+      }
     }
 
     const jobsRaw = await prisma.job.findMany({

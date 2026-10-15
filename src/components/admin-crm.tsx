@@ -1102,7 +1102,7 @@ export function AdminCRM({
     });
     jobs.filter(j =>
       (j.customerId && j.customerId === custId) || 
-      (j.customerPhone && custPhoneNorm && normPhone(j.customerPhone) === custPhoneNorm)
+      (j.customerPhone && custPhoneNorm && custPhoneNorm.length >= 8 && normPhone(j.customerPhone) === custPhoneNorm)
     ).forEach(j => {
       if (!jobMap.has(j.id)) {
         jobMap.set(j.id, { ...j, isTopup: false });
@@ -1114,7 +1114,7 @@ export function AdminCRM({
     const customerTopups = allTopUpTxs.filter(tx => {
       const matchId = (tx.memberId && tx.memberId === custId) ||
                       (tx.Customer?.id && tx.Customer.id === custId);
-      const matchPhone = tx.Customer?.phone && custPhoneNorm && 
+      const matchPhone = tx.Customer?.phone && custPhoneNorm && custPhoneNorm.length >= 8 && 
                          normPhone(tx.Customer.phone) === custPhoneNorm;
       return matchId || matchPhone;
     }).map(tx => {
