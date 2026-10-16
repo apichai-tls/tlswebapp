@@ -37,6 +37,7 @@ import {
   resetCouponTemplatesAction,
 } from "@/actions/db";
 import { type CouponTemplate } from "@/lib/store";
+import { PROMO_SERVICE_CATEGORIES } from "@/lib/promotions";
 
 interface AdminCouponTemplateModalProps {
   open: boolean;
@@ -69,6 +70,7 @@ export function AdminCouponTemplateModal({
   const [days, setDays] = useState<number | string>(30);
   const [reason, setReason] = useState("");
   const [brand, setBrand] = useState("all");
+  const [applicableCategory, setApplicableCategory] = useState<string>("ALL");
 
   const loadTemplates = async () => {
     setIsLoading(true);
@@ -106,6 +108,7 @@ export function AdminCouponTemplateModal({
     setDays(30);
     setReason("");
     setBrand("all");
+    setApplicableCategory("ALL");
   };
 
   const handleStartEdit = (tpl: CouponTemplate) => {
@@ -122,6 +125,7 @@ export function AdminCouponTemplateModal({
     setDays(tpl.days);
     setReason(tpl.reason || "");
     setBrand(tpl.brand || "all");
+    setApplicableCategory(tpl.applicableCategory || "ALL");
   };
 
   const handleStartCreate = () => {
@@ -133,6 +137,7 @@ export function AdminCouponTemplateModal({
     setDiscountType("FIXED");
     setDiscountValue(100);
     setDays(30);
+    setApplicableCategory("ALL");
   };
 
   const handleSaveTemplate = async (e: React.FormEvent) => {
@@ -154,6 +159,7 @@ export function AdminCouponTemplateModal({
         discountValue: Number(discountValue) || 0,
         minOrderAmount: minOrderAmount !== "" ? Number(minOrderAmount) : null,
         maxDiscount: maxDiscount !== "" ? Number(maxDiscount) : null,
+        applicableCategory: applicableCategory && applicableCategory !== "ALL" ? applicableCategory : null,
         days: days !== "" ? Number(days) : 30,
         reason: reason.trim() || undefined,
         brand,
@@ -277,7 +283,7 @@ export function AdminCouponTemplateModal({
                   className="h-8 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-1.5 shadow-xs cursor-pointer"
                 >
                   <Plus size={14} />
-                  <span>+ Create Template (สร้างเทมเพลต)</span>
+                  <span>Create Template (สร้างเทมเพลต)</span>
                 </Button>
               )}
             </div>
@@ -356,7 +362,7 @@ export function AdminCouponTemplateModal({
               {/* Discount Type Buttons */}
               <div className="space-y-1.5">
                 <Label className="font-bold text-slate-700">Discount Type (ประเภทส่วนลด)</Label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => setDiscountType("FIXED")}
@@ -394,19 +400,6 @@ export function AdminCouponTemplateModal({
                   >
                     <Truck size={14} />
                     <span className="text-[11px]">Free Delivery (ฟรีค่าส่ง)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setDiscountType("CASH_VOUCHER")}
-                    className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
-                      discountType === "CASH_VOUCHER"
-                        ? "border-amber-600 bg-amber-600 text-white font-black shadow-xs"
-                        : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold"
-                    }`}
-                  >
-                    <Coins size={14} />
-                    <span className="text-[11px]">Cash Voucher (วอยเชอร์)</span>
                   </button>
                 </div>
               </div>
@@ -474,8 +467,23 @@ export function AdminCouponTemplateModal({
                 </div>
               </div>
 
-              {/* Reason & Brand */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Category, Reason & Brand */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label className="font-bold text-slate-700">Target Category (หมวดบริการที่ใช้ได้)</Label>
+                  <select
+                    value={applicableCategory}
+                    onChange={e => setApplicableCategory(e.target.value)}
+                    className="w-full h-9 px-2 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 shadow-2xs cursor-pointer"
+                  >
+                    {PROMO_SERVICE_CATEGORIES.map(cat => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.icon} {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="space-y-1">
                   <Label className="font-bold text-slate-700">Default Reason / Note (เหตุผลในการแจก)</Label>
                   <Input

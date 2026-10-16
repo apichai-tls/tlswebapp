@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
@@ -59,6 +59,7 @@ export function AdminSettings() {
   const [cashDrawerAutoOpenOnPay, setCashDrawerAutoOpenOnPay] = useState(true);
   const [cashDrawerAutoOpenOnPrint, setCashDrawerAutoOpenOnPrint] = useState(true);
   const [cashDrawerShowManualButton, setCashDrawerShowManualButton] = useState(true);
+  const [posAutoApplyVoucher, setPosAutoApplyVoucher] = useState(false);
   const [drawerStatus, setDrawerStatus] = useState<CashDrawerStatus>({ supported: true, isPaired: false });
   const [isPairingDrawer, setIsPairingDrawer] = useState(false);
   const [isTestingDrawer, setIsTestingDrawer] = useState(false);
@@ -199,6 +200,7 @@ export function AdminSettings() {
       setCashDrawerAutoOpenOnPay(systemSettings.cashDrawerAutoOpenOnPay !== "false");
       setCashDrawerAutoOpenOnPrint(systemSettings.cashDrawerAutoOpenOnPrint !== "false");
       setCashDrawerShowManualButton(systemSettings.cashDrawerShowManualButton !== "false");
+      setPosAutoApplyVoucher(systemSettings.posAutoApplyVoucher === "true");
       
       const pp: Record<string, string> = {};
       pp["global_id"] = systemSettings.promptpayId_global || "";
@@ -963,6 +965,44 @@ export function AdminSettings() {
                 </div>
               </label>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Promotion & Voucher Policy Section */}
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-amber-100 text-amber-700 rounded-xl">
+            <Ticket size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">Promotion & Voucher Policy (นโยบายส่วนลดและคูปอง)</h3>
+            <p className="text-xs text-slate-500 font-medium">Configure automated discount rules and redemption policies for POS checkout.</p>
+          </div>
+        </div>
+
+        <div className="bg-slate-50/50 rounded-2xl p-6 border border-slate-200/80">
+          <div className="max-w-2xl space-y-4">
+            <label className="flex items-start gap-3 p-4 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/50 cursor-pointer transition-colors shadow-2xs">
+              <input
+                type="checkbox"
+                checked={posAutoApplyVoucher}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setPosAutoApplyVoucher(checked);
+                  handleUpdateReceiptSetting("posAutoApplyVoucher", checked ? "true" : "false");
+                }}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+              />
+              <div className="space-y-1">
+                <span className="text-sm font-bold text-slate-800 block">
+                  Auto-apply Best Voucher at POS (นำคูปองที่ดีที่สุดมาใช้ให้อัตโนมัติที่หน้า POS)
+                </span>
+                <span className="text-xs text-slate-500 block leading-relaxed">
+                  เมื่อเลือกลูกค้าและมีบริการในตะกร้าตรงตามเงื่อนไข ระบบ POS จะค้นหาคูปองส่วนลดที่คุ้มค่าที่สุดของลูกค้ารายนั้น และนำมาคำนวณหักลดให้อัตโนมัติทันที
+                </span>
+              </div>
+            </label>
           </div>
         </div>
       </div>

@@ -696,6 +696,19 @@ export const api = {
     }
     lastUpdatedJobs.set(id, Date.now());
 
+    // Ensure actor details are attached so ActivityLog never records "System" for actions taken by logged-in users
+    if (!(cleanUpdates as any).actorId && !(cleanUpdates as any).actorName && typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('authUser');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed?.id) (cleanUpdates as any).actorId = parsed.id;
+          if (parsed?.name || parsed?.email) (cleanUpdates as any).actorName = parsed.name || parsed.email;
+          if (parsed?.role) (cleanUpdates as any).actorRole = parsed.role;
+        }
+      } catch (e) {}
+    }
+
     await dbActions.updateJobAction(id, cleanUpdates);
     return updatedJob;
   },

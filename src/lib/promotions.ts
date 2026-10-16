@@ -10,16 +10,25 @@ export interface PromotionCampaign {
   enabled: boolean;
   startDate: string; // ISO date string
   endDate: string;   // ISO date string (End of coupon issuance)
-  rewardCouponExpiryDate: string; // ISO date string (End of coupon validity)
+  rewardCouponExpiryDate?: string; // ISO date string (End of coupon validity if FIXED_DATE)
+  rewardCouponExpiryType?: "RELATIVE_DAYS" | "FIXED_DATE"; // default "RELATIVE_DAYS"
+  rewardCouponValidityDays?: number; // e.g. 30 days from issuance
   conditions: {
     minOrderSubtotal: number;       // e.g. 1000 THB
     excludeDeliveryFee: boolean;     // e.g. true
     excludeCorporate: boolean;       // e.g. true
+    excludeMember?: boolean;         // true = member not eligible
+    excludeVIP?: boolean;            // true = VIP not eligible
+    allowGeneral?: boolean;          // true = general walk-in eligible (default true)
+    allowMember?: boolean;           // true = member eligible (default true)
+    allowVIP?: boolean;              // true = VIP eligible (default true)
+    allowCorporate?: boolean;        // true = corporate eligible (default false)
     limitPerCustomer: number;        // e.g. 1 (Max 1 per customer)
     requiredServiceCategories?: string[]; // null or empty = any laundry
     eligibleBrands?: string[];
   };
   reward: {
+    templateId?: string;
     couponName: string;
     codePrefix: string;
     discountType: 'FIXED' | 'PERCENTAGE' | 'FREE_DELIVERY' | 'CASH_VOUCHER';
@@ -38,7 +47,7 @@ export const DEFAULT_PROMOTION_CAMPAIGNS: PromotionCampaign[] = [
     enabled: true,
     startDate: "2026-10-19T00:00:00.000Z",
     endDate: "2026-10-28T23:59:59.999Z",
-    rewardCouponExpiryDate: "2026-12-31T23:59:59.999Z",
+    rewardCouponExpiryDate: "2026-12-31",
     conditions: {
       minOrderSubtotal: 1000,
       excludeDeliveryFee: true,
@@ -57,15 +66,79 @@ export const DEFAULT_PROMOTION_CAMPAIGNS: PromotionCampaign[] = [
   },
 ];
 
+export const PROMO_SERVICE_CATEGORIES = [
+  { id: "ALL", label: "ทุกหมวดบริการซักรีด (All Services)", labelEn: "All Laundry Services", icon: "✨" },
+  { id: "SHOES", label: "ซักรองเท้า (Shoe Cleaning)", labelEn: "Shoe Cleaning", icon: "👟" },
+  { id: "DRY CLEAN", label: "ซักแห้ง (Dry Clean)", labelEn: "Dry Clean", icon: "👔" },
+  { id: "LINENS", label: "เครื่องนอน / ผ้าม่าน (Linens & Curtains)", labelEn: "Linens & Curtains", icon: "🛏️" },
+  { id: "KILO", label: "ซักอบพับ (Wash & Fold)", labelEn: "Wash & Fold", icon: "🧺" },
+  { id: "IRON", label: "รีดผ้า (Ironing)", labelEn: "Ironing", icon: "💨" },
+] as const;
+
+export function getCategoryLabel(category?: string | null, lang: string = "th"): string {
+  if (!category || category.toUpperCase() === "ALL") {
+    return lang === "en" ? "All Services" : "ทุกบริการ";
+  }
+  const upper = category.trim().toUpperCase();
+  const found = PROMO_SERVICE_CATEGORIES.find(c => c.id === upper);
+  if (found) {
+    return lang === "en" ? found.labelEn : found.label;
+  }
+  return category;
+}
+
+export function getCategoryIcon(category?: string | null): string {
+  if (!category || category.toUpperCase() === "ALL") return "✨";
+  const upper = category.trim().toUpperCase();
+  const found = PROMO_SERVICE_CATEGORIES.find(c => c.id === upper);
+  return found?.icon || "🏷️";
+}
+
+/**
+ * Resolves the effective category for a coupon or voucher.
+ * If applicableCategory is explicitly set and not "ALL", returns it.
+ * Otherwise inspects code and name for well-known prefixes or keywords (e.g. SHOE -> "SHOES").
+ */
+export function resolveEffectiveCategory(coupon?: {
+  applicableCategory?: string | null;
+  code?: string | null;
+  name?: string | null;
+} | null): string | null {
+  if (!coupon) return null;
+  if (coupon.applicableCategory && coupon.applicableCategory.toUpperCase() !== "ALL") {
+    return coupon.applicableCategory.toUpperCase().trim();
+  }
+  const code = (coupon.code || "").toUpperCase();
+  const name = (coupon.name || "").toLowerCase();
+
+  if (code.startsWith("SHOE") || name.includes("รองเท้า") || name.includes("shoe")) {
+    return "SHOES";
+  }
+  if (code.startsWith("DRY") || name.includes("ซักแห้ง") || name.includes("dry clean")) {
+    return "DRY CLEAN";
+  }
+  if (code.startsWith("LINEN") || name.includes("เครื่องนอน") || name.includes("ผ้าม่าน")) {
+    return "LINENS";
+  }
+  if (code.startsWith("IRON") || name.includes("รีด")) {
+    return "IRON";
+  }
+  if (code.startsWith("KILO") || name.includes("ซักพับ") || name.includes("wash/fold")) {
+    return "KILO";
+  }
+  return null;
+}
+
 /**
  * Checks if a specific item belongs to a target category (e.g. "SHOES")
  */
 export function isItemMatchingCategory(
   item: { name?: string | null; nameEn?: string | null; category?: string | null; serviceId?: string | null; id?: string | null },
-  targetCategory: string
+  targetCategory?: string | null
 ): boolean {
   if (!targetCategory) return true;
   const upperTarget = targetCategory.trim().toUpperCase();
+  if (upperTarget === "ALL") return true;
 
   const itemCat = (item.category || "").trim().toUpperCase();
   if (itemCat === upperTarget) return true;

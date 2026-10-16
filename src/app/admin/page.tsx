@@ -28,6 +28,7 @@ import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, 
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
+import { isItemMatchingCategory, getCategoryLabel, getCategoryIcon, resolveEffectiveCategory } from "@/lib/promotions";
 
 
 import { Input } from "@/components/ui/input";
@@ -44,6 +45,7 @@ import { AdminServiceMenu } from "@/components/admin-service-menu";
 import { AdminCRM } from "@/components/admin-crm";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
+import { AdminCustomerVouchersDialog } from "@/components/admin-customer-vouchers-dialog";
 import { AdminSettings } from "@/components/admin-settings";
 import { AdminUsers } from "@/components/admin-users";
 import { AdminDispatch } from "@/components/admin-dispatch";
@@ -446,6 +448,7 @@ export default function AdminPage() {
   const [deliveryRoom, setDeliveryRoom] = useState("");
 
   const [profileOpen, setProfileOpen] = useState(false);
+  const [customerVouchersModalOpen, setCustomerVouchersModalOpen] = useState(false);
   const [selectedProfileCustomer, setSelectedProfileCustomer] = useState<Customer | null>(null);
   const [dialogAvailableCoupons, setDialogAvailableCoupons] = useState<CustomerCoupon[]>([]);
   const [loadingDialogCoupons, setLoadingDialogCoupons] = useState(false);
@@ -1039,8 +1042,9 @@ export default function AdminPage() {
   const [promoCodeInput, setPromoCodeInput] = useState<string>("");
   const [appliedPromo, setAppliedPromo] = useState<{
     code: string;
-    discountType: "PERCENTAGE" | "FIXED";
-    discountTarget: "ALL" | "DELIVERY";
+    discountType: string;
+    discountTarget: string;
+    applicableCategory?: string | null;
     discountValue: number;
     discountAmount: number;
     netPayable: number;
@@ -1049,24 +1053,6 @@ export default function AdminPage() {
   } | null>(null);
   const [promoLoading, setPromoLoading] = useState<boolean>(false);
   const [promoError, setPromoError] = useState<string | null>(null);
-
-  // Dynamic promo discount calculation: if discountTarget === "DELIVERY", calculate from current fee
-  const promoDiscountAmount = useMemo(() => {
-    if (!appliedPromo) return 0;
-    if (appliedPromo.discountTarget === "DELIVERY") {
-      let d = 0;
-      if (appliedPromo.discountType === "PERCENTAGE") {
-        d = (fee * appliedPromo.discountValue) / 100;
-      } else {
-        d = Math.min(appliedPromo.discountValue, fee);
-      }
-      if (appliedPromo.maxDiscount != null && appliedPromo.maxDiscount > 0) {
-        d = Math.min(d, appliedPromo.maxDiscount);
-      }
-      return Math.max(0, Math.min(d, fee));
-    }
-    return appliedPromo.discountAmount;
-  }, [appliedPromo, fee]);
 
   const forceMemberPaymentDialog = useMemo(() => {
     if (!selectedProfileCustomer?.isMember) return false;
@@ -1092,6 +1078,45 @@ export default function AdminPage() {
     const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
     return (currentLaundryPrice + surcharge) * (dialogDiscountPercent / 100);
   }, [currentLaundryPrice, dialogDiscountPercent, serviceSpeed]);
+
+  // Dynamic promo discount calculation: supports DELIVERY, category-specific (SHOES, LINENS, etc.), and ALL
+  const promoDiscountAmount = useMemo(() => {
+    if (!appliedPromo) return 0;
+    if (appliedPromo.discountTarget === "DELIVERY" || appliedPromo.discountType === "FREE_DELIVERY") {
+      let d = 0;
+      if (appliedPromo.discountType === "PERCENTAGE") {
+        d = (fee * appliedPromo.discountValue) / 100;
+      } else {
+        d = appliedPromo.discountValue > 0 ? Math.min(appliedPromo.discountValue, fee) : fee;
+      }
+      if (appliedPromo.maxDiscount != null && appliedPromo.maxDiscount > 0) {
+        d = Math.min(d, appliedPromo.maxDiscount);
+      }
+      return Math.max(0, Math.min(d, fee));
+    }
+    const targetCat = appliedPromo.applicableCategory || (appliedPromo.discountTarget !== "ALL" && appliedPromo.discountTarget !== "DELIVERY" ? appliedPromo.discountTarget : null);
+    if (targetCat && targetCat !== "ALL") {
+      const catSubtotal = dialogCart
+        .filter(it => isItemMatchingCategory(it, targetCat))
+        .reduce((sum, it) => sum + ((Number(it.price) || 0) * (Number(it.quantity) || 1)), 0);
+      if (catSubtotal <= 0) return 0;
+      if (appliedPromo.discountType === "PERCENTAGE") {
+        let val = (catSubtotal * appliedPromo.discountValue) / 100;
+        if (appliedPromo.maxDiscount != null && appliedPromo.maxDiscount > 0) val = Math.min(val, appliedPromo.maxDiscount);
+        return Math.max(0, Math.min(val, catSubtotal));
+      }
+      return Math.max(0, Math.min(appliedPromo.discountValue, catSubtotal));
+    }
+    const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
+    const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
+    const base = Math.max(0, currentLaundryPrice + surcharge);
+    if (appliedPromo.discountType === "PERCENTAGE") {
+      let val = (base * appliedPromo.discountValue) / 100;
+      if (appliedPromo.maxDiscount != null && appliedPromo.maxDiscount > 0) val = Math.min(val, appliedPromo.maxDiscount);
+      return Math.max(0, Math.min(val, base));
+    }
+    return Math.max(0, Math.min(appliedPromo.discountValue, base));
+  }, [appliedPromo, fee, dialogCart, currentLaundryPrice, serviceSpeed]);
 
   const dialogVatAmount = useMemo(() => {
     if (dialogVatType === "none" || dialogVatRate <= 0) return 0;
@@ -1527,15 +1552,17 @@ export default function AdminPage() {
         body: JSON.stringify({
           code,
           orderTotal,
+          deliveryFee: fee || 0,
           customerId: custId,
           customerPhone: custPhone,
           customerName: custName,
           currentJobId: editingJobId || undefined,
+          items: dialogCart,
         }),
       });
       const data = await res.json();
       if (res.ok && data.valid) {
-        const isDeliveryOnly = data.discountTarget === "DELIVERY";
+        const isDeliveryOnly = data.discountTarget === "DELIVERY" || data.discountType === "FREE_DELIVERY";
         let calcDiscount = data.discountAmount;
 
         if (isDeliveryOnly) {
@@ -1543,7 +1570,7 @@ export default function AdminPage() {
           if (data.discountType === "PERCENTAGE") {
             calcDiscount = (fee * data.discountValue) / 100;
           } else {
-            calcDiscount = Math.min(data.discountValue, fee);
+            calcDiscount = data.discountValue > 0 ? Math.min(data.discountValue, fee) : fee;
           }
           if (data.maxDiscount != null && data.maxDiscount > 0) {
             calcDiscount = Math.min(calcDiscount, data.maxDiscount);
@@ -1559,10 +1586,12 @@ export default function AdminPage() {
           toast.success(`✅ โค้ด ${data.code} — ลด ฿${calcDiscount.toFixed(2)}`);
         }
 
+        const resolvedTarget = isDeliveryOnly ? "DELIVERY" : (data.applicableCategory || data.discountTarget || "ALL");
         setAppliedPromo({
           code: data.code,
           discountType: data.discountType,
-          discountTarget: isDeliveryOnly ? "DELIVERY" : "ALL",
+          discountTarget: resolvedTarget,
+          applicableCategory: data.applicableCategory ?? (resolvedTarget !== "ALL" && resolvedTarget !== "DELIVERY" ? resolvedTarget : null),
           discountValue: data.discountValue,
           discountAmount: calcDiscount,
           netPayable: Math.max(0, grandTotalBeforePromo - calcDiscount),
@@ -1594,6 +1623,87 @@ export default function AdminPage() {
     }
   };
 
+  // Auto-apply best eligible voucher in admin order dialog when enabled in settings
+  const [userDismissedPromo, setUserDismissedPromo] = useState<boolean>(false);
+
+  // Reset user dismissed state when customer or modal state changes
+  useEffect(() => {
+    setUserDismissedPromo(false);
+  }, [selectedProfileCustomer?.id, dialogOpen]);
+
+  useEffect(() => {
+    const isAutoApply = systemSettings?.posAutoApplyVoucher === "true";
+    if (!isAutoApply) return;
+    if (appliedPromo || promoLoading || userDismissedPromo) return;
+    if (!selectedProfileCustomer?.id || dialogAvailableCoupons.length === 0 || dialogCart.length === 0) return;
+
+    const deliveryFee = fee || 0;
+    const expressRate = serviceSpeed === 'express_50' ? 0.5 : (serviceSpeed === 'express_100' ? 1 : 0);
+    const surcharge = expressRate > 0 ? safeCeil(currentLaundryPrice * expressRate) : 0;
+    const orderSubtotal = Math.max(0, currentLaundryPrice + surcharge - dialogDiscountAmount);
+
+    let bestCoupon: CustomerCoupon | null = null;
+    let highestDiscount = 0;
+
+    for (const coupon of dialogAvailableCoupons) {
+      // 1. Check brand match
+      if (coupon.brand && selectedProfileCustomer.brand && coupon.brand !== selectedProfileCustomer.brand) {
+        continue;
+      }
+
+      // 2. Check category match & applicable subtotal
+      const targetCategory = resolveEffectiveCategory(coupon);
+      let applicableSubtotal = orderSubtotal;
+
+      if (targetCategory) {
+        const matchingItems = dialogCart.filter((it: any) => isItemMatchingCategory(it, targetCategory));
+        if (matchingItems.length === 0) continue;
+        applicableSubtotal = matchingItems.reduce((sum: number, it: any) => sum + ((Number(it.price) || 0) * (Number(it.quantity) || 1)), 0);
+      }
+
+      // 3. Check minimum spend
+      if (coupon.minOrderAmount && applicableSubtotal < coupon.minOrderAmount) {
+        continue;
+      }
+
+      // 4. Calculate discount amount
+      let disc = 0;
+      if (coupon.discountType === "PERCENTAGE") {
+        disc = applicableSubtotal * (coupon.discountValue / 100);
+        if (coupon.maxDiscount && coupon.maxDiscount > 0) {
+          disc = Math.min(disc, coupon.maxDiscount);
+        }
+      } else if (coupon.discountType === "FREE_DELIVERY") {
+        if (deliveryFee <= 0) continue;
+        disc = coupon.maxDiscount && coupon.maxDiscount > 0 ? Math.min(deliveryFee, coupon.maxDiscount) : deliveryFee;
+      } else {
+        // FIXED
+        disc = Math.min(coupon.discountValue, applicableSubtotal);
+      }
+
+      if (disc > highestDiscount) {
+        highestDiscount = disc;
+        bestCoupon = coupon;
+      }
+    }
+
+    if (bestCoupon && highestDiscount > 0) {
+      handleApplyPromo(bestCoupon.code);
+    }
+  }, [
+    systemSettings?.posAutoApplyVoucher,
+    appliedPromo,
+    promoLoading,
+    userDismissedPromo,
+    selectedProfileCustomer?.id,
+    dialogAvailableCoupons,
+    dialogCart,
+    currentLaundryPrice,
+    serviceSpeed,
+    fee,
+    dialogDiscountAmount
+  ]);
+
   const handleEditFullJob = (job: Job) => {
     setSaveError(null);
     originalJobRef.current = JSON.parse(JSON.stringify(job));
@@ -1601,7 +1711,7 @@ export default function AdminPage() {
     setEditingJobId(job.id);
     setDialogDiscountPercent(job.discountPercent || 0);
     const hasDiscountOn = job.remark ? job.remark.includes("Discount: on") : false;
-    const promoMatch = job.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+    const promoMatch = job.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\))?/i);
     const hasValidPromo = Boolean(promoMatch && promoMatch[3] && parseFloat(promoMatch[3]) > 0);
     const hasRawPromo = Boolean(promoMatch && promoMatch[1]);
     setShowDialogDiscount(Boolean(hasDiscountOn || (job.discountPercent && job.discountPercent > 0) || hasValidPromo || hasRawPromo));
@@ -1609,12 +1719,14 @@ export default function AdminPage() {
       const pCode = promoMatch[1].trim().toUpperCase();
       setPromoCodeInput(pCode);
       if (hasValidPromo) {
-        const pTarget = (promoMatch[2] as "ALL" | "DELIVERY") || "ALL";
+        const pTarget = (promoMatch[2] || "ALL").trim().toUpperCase();
+        const isCatSpecific = pTarget !== "ALL" && pTarget !== "DELIVERY";
         const pAmount = parseFloat(promoMatch[3]);
         setAppliedPromo({
           code: pCode,
           discountType: "FIXED",
           discountTarget: pTarget,
+          applicableCategory: isCatSpecific ? pTarget : null,
           discountValue: pAmount,
           discountAmount: pAmount,
           netPayable: Math.max(0, (job.totalAmount || 0)),
@@ -2395,7 +2507,7 @@ export default function AdminPage() {
 
       isStuck,
       createdAt: effectiveCreatedAt,
-      discount: discountVal,
+      discount: discountVal + (appliedPromo ? promoDiscountAmount : 0),
       discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
@@ -2447,8 +2559,8 @@ export default function AdminPage() {
       isPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (isWalkIn ? false : paymentMethod === 'paid')),
       isShopPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
 
-      fee: (isAlreadyPaidJob && existingJob) ? (existingJob.fee ?? 0) : fee,
-      totalAmount: (isAlreadyPaidJob && existingJob) ? (Number(existingJob.totalAmount) || 0) : calculatedTotal,
+      fee: (isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (existingJob.fee ?? 0) : fee,
+      totalAmount: (isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (Number(existingJob.totalAmount) || 0) : calculatedTotal,
       billNo: billNo?.trim() || null,
       serviceType: dialogCart[0]?.id || "wash_fold",
 
@@ -4717,6 +4829,20 @@ export default function AdminPage() {
                                     <span>{formatBaht(selectedProfileCustomer.creditBalance || 0)}</span>
                                   </Badge>
                                 )}
+                                {dialogAvailableCoupons.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setCustomerVouchersModalOpen(true);
+                                    }}
+                                    className="h-4 px-1.5 py-0 rounded bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-300 font-bold text-[9px] flex items-center gap-1 shadow-2xs cursor-pointer transition-colors shrink-0"
+                                    title="คลิกเพื่อดูและเลือก Voucher ทั้งหมดของลูกค้า"
+                                  >
+                                    <Ticket size={9} className="text-amber-600" />
+                                    <span>Voucher ({dialogAvailableCoupons.length})</span>
+                                  </button>
+                                )}
                               </div>
                             </div>
                             <div className="relative flex items-center">
@@ -5939,79 +6065,6 @@ export default function AdminPage() {
                             </div>
                           )}
 
-                          {/* Customer Available Coupons Banner */}
-                          {dialogAvailableCoupons.length > 0 && !isPaidJob && (
-                            <div className="py-2 px-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-white space-y-1.5 my-1">
-                              <div className="flex items-center justify-between text-[11px] font-bold text-amber-400">
-                                <span className="flex items-center gap-1.5">
-                                  <Sparkles size={13} className="text-amber-400 shrink-0" />
-                                  ลูกค้ามีคูปอง ({dialogAvailableCoupons.length} ใบ)
-                                </span>
-                                {appliedPromo && (
-                                  <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
-                                    <Check size={11} /> {appliedPromo.code}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-0.5">
-                                {dialogAvailableCoupons.map((coupon) => {
-                                  const isApplied = appliedPromo?.code?.toUpperCase() === coupon.code.toUpperCase();
-                                  const discountLabel = coupon.discountType === "PERCENTAGE" 
-                                    ? `ลด ${coupon.discountValue}%` 
-                                    : coupon.discountType === "FREE_DELIVERY"
-                                    ? "ฟรีค่าจัดส่ง"
-                                    : `ลด ฿${coupon.discountValue}`;
-                                  const minOrderLabel = coupon.minOrderAmount ? ` • ขั้นต่ำ ฿${coupon.minOrderAmount.toLocaleString()}` : "";
-                                  
-                                  return (
-                                    <div 
-                                      key={coupon.id} 
-                                      className={`flex items-center justify-between gap-1.5 p-1.5 rounded-lg border text-[10px] transition-all ${
-                                        isApplied 
-                                          ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-200 font-bold" 
-                                          : "bg-slate-900/80 border-slate-700/80 hover:border-amber-500/60"
-                                      }`}
-                                    >
-                                      <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-1">
-                                          <span className="font-mono font-black tracking-wide text-white">{coupon.code}</span>
-                                          <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
-                                            {discountLabel}
-                                          </span>
-                                        </div>
-                                        <p className="text-[9px] text-slate-400 truncate">
-                                          {coupon.name}{minOrderLabel}
-                                        </p>
-                                      </div>
-                                      {isApplied ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setAppliedPromo(null);
-                                            setPromoCodeInput("");
-                                            setPromoError(null);
-                                          }}
-                                          className="px-2 py-0.5 rounded text-[9px] font-bold text-rose-400 hover:bg-rose-500/10 cursor-pointer"
-                                        >
-                                          ยกเลิก
-                                        </button>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleApplyPromo(coupon.code)}
-                                          disabled={promoLoading}
-                                          className="px-2 py-1 rounded bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[9px] cursor-pointer shadow-xs disabled:opacity-50 transition-colors whitespace-nowrap"
-                                        >
-                                          {promoLoading ? "..." : "ใช้คูปอง"}
-                                        </button>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-
                           {/* Discount % Input */}
                           {showDialogDiscount && (
                             <div className="flex justify-between items-center text-xs py-1 border-t border-slate-800">
@@ -6064,12 +6117,24 @@ export default function AdminPage() {
                                       className="flex-1 h-6 text-[10px] font-bold bg-slate-800 border border-slate-650 rounded-md outline-none focus:border-amber-400 text-center text-white placeholder:text-slate-600 uppercase"
                                     />
                                     <button
+                                      type="button"
                                       onClick={handleApplyPromo}
                                       disabled={promoLoading || !promoCodeInput.trim()}
-                                      className="h-6 px-2 text-[9px] font-black rounded-md bg-amber-500 hover:bg-amber-400 text-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                                      className="h-6 px-2 text-[9px] font-black rounded-md bg-amber-500 hover:bg-amber-400 text-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap cursor-pointer"
                                     >
                                       {promoLoading ? "..." : "Apply"}
                                     </button>
+                                    {dialogAvailableCoupons.length > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setCustomerVouchersModalOpen(true)}
+                                        className="h-6 px-1.5 text-[9px] font-bold rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 flex items-center gap-1 whitespace-nowrap cursor-pointer transition-colors shadow-2xs"
+                                        title="คลิกเพื่อดูและเลือก Voucher ทั้งหมดของลูกค้า"
+                                      >
+                                        <Ticket size={11} className="text-amber-400" />
+                                        <span>Voucher ({dialogAvailableCoupons.length})</span>
+                                      </button>
+                                    )}
                                     {(appliedPromo || !!promoCodeInput.trim()) && (
                                       <button
                                         type="button"
@@ -7646,6 +7711,24 @@ export default function AdminPage() {
           setProfileOpen(false);
           setCustomerDialogOpen(true);
         }}
+      />
+
+      <AdminCustomerVouchersDialog
+        open={customerVouchersModalOpen}
+        onOpenChange={setCustomerVouchersModalOpen}
+        customer={selectedProfileCustomer}
+        coupons={dialogAvailableCoupons}
+        appliedPromoCode={appliedPromo?.code || null}
+        cartItems={dialogCart}
+        currentLanguage={currentLanguage}
+        onApplyCoupon={(code) => handleApplyPromo(code)}
+        onRemoveCoupon={() => {
+          setAppliedPromo(null);
+          setPromoCodeInput("");
+          setPromoError(null);
+          setUserDismissedPromo(true);
+        }}
+        isLoading={promoLoading}
       />
 
       {receiptPaperSize === "A5" ? (

@@ -102,7 +102,7 @@ export interface ReceiptData {
   discountPercent?: number;
   promoCode?: string | null;        // Promo code applied (e.g. "EXPRESS20")
   promoDiscount?: number | null;    // Promo discount amount in THB
-  promoTarget?: "ALL" | "DELIVERY" | null; // Discount target ("ALL" or "DELIVERY")
+  promoTarget?: "ALL" | "DELIVERY" | "SHOES" | string | null; // Discount target ("ALL", "DELIVERY", "SHOES" etc.)
   total: number;
   isPaid: boolean;
   paymentChannel?: string | null;
@@ -214,14 +214,30 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
       }
     } catch {}
   }
-  const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY|SHOES|[A-Z_]+):([\d.]+)\))?/i);
-  const parsedPromoDiscount = (promoMatch && promoMatch[3]) ? parseFloat(promoMatch[3]) : 0;
+  const promoMatch = job.remark?.match(/Promo:\s*([^\s(]+)(?:\s*\((ALL|DELIVERY|SHOES|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
+  const parsedPromoDiscount = promoMatch ? parseFloat(promoMatch[3] || promoMatch[4] || "0") : 0;
   const parsedPromoCode = promoMatch && parsedPromoDiscount > 0 ? promoMatch[1] : null;
   const parsedPromoTarget = promoMatch && parsedPromoDiscount > 0 ? (promoMatch[2] || "ALL") : null;
 
   const isFreeDelivery = /Free\s*Delivery/i.test(job.remark || "");
   const effectiveFee = isFreeDelivery ? 0 : (rawJob.fee !== undefined ? rawJob.fee : (job.fee || 0));
-  const baseTotal = Math.max(0, jobSubtotal + jobSurcharge + effectiveFee - (job.discount || 0) - parsedPromoDiscount);
+  const grossBeforeDiscount = jobSubtotal + jobSurcharge + effectiveFee;
+  const rawDiscountVal = Number(job.discount) || 0;
+  const rawTotalCheck = job.totalAmount !== undefined ? Number(job.totalAmount) : (Number(rawJob.total) || 0);
+
+  // Determine whether job.discount already includes parsedPromoDiscount (POS/Admin jobs store total discount in job.discount)
+  let nonPromoDiscount = rawDiscountVal;
+  if (parsedPromoDiscount > 0 && rawDiscountVal >= parsedPromoDiscount) {
+    const baseIfIncluded = Math.max(0, grossBeforeDiscount - rawDiscountVal);
+    const baseIfSeparate = Math.max(0, grossBeforeDiscount - rawDiscountVal - parsedPromoDiscount);
+    const totalIfIncluded = jobVatType === "exclusive" && jobVatRate > 0 ? baseIfIncluded * (1 + jobVatRate / 100) : baseIfIncluded;
+    const totalIfSeparate = jobVatType === "exclusive" && jobVatRate > 0 ? baseIfSeparate * (1 + jobVatRate / 100) : baseIfSeparate;
+    if (rawTotalCheck <= 0 || Math.abs(rawTotalCheck - totalIfIncluded) <= Math.abs(rawTotalCheck - totalIfSeparate)) {
+      nonPromoDiscount = Math.max(0, rawDiscountVal - parsedPromoDiscount);
+    }
+  }
+
+  const baseTotal = Math.max(0, grossBeforeDiscount - nonPromoDiscount - parsedPromoDiscount);
   let jobVatAmount = 0;
   if (jobVatType === "inclusive" && jobVatRate > 0) {
     jobVatAmount = baseTotal * (jobVatRate / (100 + jobVatRate));
@@ -342,7 +358,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     subtotal: jobSubtotal,
     expressSurcharge: jobSurcharge,
     serviceSpeed: jobSpeed,
-    discount: job.discount || 0,
+    discount: nonPromoDiscount,
     discountPercent: job.discountPercent || 0,
     promoCode: (job as any).promoCode || parsedPromoCode || null,
     promoDiscount: (job as any).promoDiscount !== undefined ? (job as any).promoDiscount : (parsedPromoDiscount > 0 ? parsedPromoDiscount : null),
@@ -930,9 +946,26 @@ export function ThermalReceiptDialog({
           {receiptData.promoDiscount && receiptData.promoDiscount > 0 && (
             <div className="flex justify-between text-amber-700 font-bold">
               <span>
-                {currentLanguage === "en"
-                  ? (receiptData.promoTarget === "DELIVERY" ? "DELIVERY DISCOUNT:" : (receiptData.promoTarget === "SHOES" ? "SHOE DISCOUNT:" : "PROMO CODE:"))
-                  : (receiptData.promoTarget === "DELIVERY" ? "ส่วนลดค่าจัดส่ง:" : (receiptData.promoTarget === "SHOES" ? "ส่วนลดซักรองเท้า:" : "โค้ดส่วนลด:"))}
+                {(() => {
+                  const t = (receiptData.promoTarget || "ALL").toUpperCase();
+                  if (currentLanguage === "en") {
+                    if (t === "DELIVERY") return "DELIVERY DISCOUNT:";
+                    if (t === "SHOES") return "SHOE DISCOUNT:";
+                    if (t === "DRY CLEAN") return "DRY CLEAN DISCOUNT:";
+                    if (t === "LINENS") return "LINENS DISCOUNT:";
+                    if (t === "IRON") return "IRON DISCOUNT:";
+                    if (t === "KILO") return "WASH & FOLD DISCOUNT:";
+                    return "PROMO CODE:";
+                  } else {
+                    if (t === "DELIVERY") return "ส่วนลดค่าจัดส่ง:";
+                    if (t === "SHOES") return "ส่วนลดซักรองเท้า:";
+                    if (t === "DRY CLEAN") return "ส่วนลดซักแห้ง:";
+                    if (t === "LINENS") return "ส่วนลดเครื่องนอน:";
+                    if (t === "IRON") return "ส่วนลดรีดผ้า:";
+                    if (t === "KILO") return "ส่วนลดซักพับ:";
+                    return "โค้ดส่วนลด:";
+                  }
+                })()}
                 {receiptData.promoCode ? ` (${receiptData.promoCode})` : ""}
               </span>
               <span>-฿{formatCurrency(receiptData.promoDiscount)}</span>

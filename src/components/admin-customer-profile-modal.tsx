@@ -30,6 +30,7 @@ import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isValidPhoneNumber, formatBaht, resolveCustomerPhones, isThaiPhoneNumber } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
+import { getCategoryLabel, getCategoryIcon } from "@/lib/promotions";
 
 // Helper to extract initials for avatar
 const getInitials = (name: string) => {
@@ -1553,6 +1554,11 @@ export function AdminCustomerProfileModal({
                                       {coupon.brand && (
                                         <Badge variant="outline" className="text-[10px] font-bold py-0 h-4 border-slate-300 text-slate-600">
                                           {coupon.brand === "that_laundry_shop" ? "TLS" : "NoName"}
+                                        </Badge>
+                                      )}
+                                      {coupon.applicableCategory && coupon.applicableCategory.toUpperCase() !== "ALL" && (
+                                        <Badge variant="secondary" className="text-[10px] font-bold py-0 h-4 bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                          {getCategoryIcon(coupon.applicableCategory)} {getCategoryLabel(coupon.applicableCategory)}
                                         </Badge>
                                       )}
                                     </div>

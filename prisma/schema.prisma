@@ -65,7 +65,7 @@ model Customer {
   verifiedVia         String?
   sourceSystem        String?           @default("pos_store")
   addresses           CustomerAddress[]
-  coupons             CustomerCoupon[]
+  vouchers            CustomerVoucher[]
 
   @@index([brand])
 }
@@ -606,7 +606,7 @@ model JobRefund {
   @@index([creditNoteNumber])
 }
 
-model CustomerCoupon {
+model CustomerVoucher {
   id             String    @id @default(uuid())
   customerId     String
   customer       Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)

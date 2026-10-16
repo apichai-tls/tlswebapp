@@ -44,6 +44,7 @@ import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { AdminMarketingCalendar } from "@/components/admin-marketing-calendar";
 import { AdminMarketingLinks } from "@/components/admin-marketing-links";
 import { AdminMarketingCoupons } from "@/components/admin-marketing-coupons";
+import { AdminPromotionReport } from "@/components/admin-promotion-report";
 import { getWalletTransactionsAction } from "@/actions/db";
 
 interface AdminMarketingProps {
@@ -75,7 +76,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
   const [selectedJobForView, setSelectedJobForView] = useState<any | null>(null);
 
   // Active Campaign Selector State
-  const [selectedCampaign, setSelectedCampaign] = useState<"topup_4000_1000" | "order_9_9">("topup_4000_1000");
+  const [selectedCampaign, setSelectedCampaign] = useState<"voucher_campaigns" | "topup_4000_1000" | "order_9_9">("voucher_campaigns");
 
   // Wallet Transactions State for Top-Up Campaign
   const [walletTransactions, setWalletTransactions] = useState<any[]>([]);
@@ -193,7 +194,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
       if (!job.remark || !/Promo:/i.test(job.remark)) return false;
 
       // Ensure the job actually received an applied promo discount or legacy free delivery
-      const match = job.remark.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+      const match = job.remark.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\))?/i);
       if (!match) return false;
 
       const code = match[1]?.trim().toUpperCase();
@@ -243,9 +244,10 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
     // Parse jobs
     const allParsedJobs = promoJobs.map(job => {
-      const match = job.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY):([\d.]+)\))?/i);
+      const match = job.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\))?/i);
       const code = (match && match[1]) ? match[1].trim().toUpperCase() : "UNKNOWN";
-      const campaignType = (match && match[2]) ? (match[2].toUpperCase() as "ALL" | "DELIVERY") : "DELIVERY";
+      const rawTarget = (match && match[2]) ? match[2].trim().toUpperCase() : "DELIVERY";
+      const campaignType = (rawTarget === "DELIVERY" ? "DELIVERY" : "ALL") as "ALL" | "DELIVERY";
 
       let discountAmount = match && match[3] ? parseFloat(match[3]) : 0;
       let isEstimated = false;
@@ -720,7 +722,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         </div>
 
         {/* Filter Toolbar Controls */}
-        {subTab === "promo" && (
+        {subTab === "promo" && selectedCampaign !== "voucher_campaigns" && (
           <div className="flex flex-wrap items-center gap-2">
             {/* Branch Select */}
             <div className="flex items-center gap-1.5 bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 shadow-sm">
@@ -889,6 +891,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
                     onChange={(e) => setSelectedCampaign(e.target.value as any)}
                     className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 bg-slate-100/80 dark:bg-slate-800 hover:bg-slate-200/60 dark:hover:bg-slate-750 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 outline-none cursor-pointer transition-colors shadow-xs"
                   >
+                    <option value="voucher_campaigns">🎟️ Voucher Campaigns: แคมเปญแจกวอยเชอร์ (Promotion Engine & Performance)</option>
                     <option value="topup_4000_1000">💳 Topup Promo: แคมเปญเติมเงิน 4,000 แถม 1,000 (05/10 - 09/10/2026)</option>
                     <option value="order_9_9">🏷️ Order Promo: โค้ดส่วนลด 9.9 & วอยเชอร์ออเดอร์ (Order Discounts)</option>
                   </select>
@@ -898,7 +901,12 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
 
             {/* Campaign Quick Actions & Period */}
             <div className="flex flex-wrap items-center gap-2 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100 dark:border-slate-800">
-              {selectedCampaign === "topup_4000_1000" ? (
+              {selectedCampaign === "voucher_campaigns" ? (
+                <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
+                  <Ticket size={13} className="text-indigo-500" />
+                  <span>ระบบแคมเปญโปรโมชั่นอัตโนมัติ & รายงานการใช้วอยเชอร์</span>
+                </div>
+              ) : selectedCampaign === "topup_4000_1000" ? (
                 <>
                   <div className="text-[11px] font-semibold text-slate-500 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 flex items-center gap-1.5">
                     <CalendarDays size={13} className="text-indigo-500" />
@@ -937,7 +945,9 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
           {/* ═══════════════════════════════════════════════════════════════════════════ */}
           {/* CONDITIONAL CAMPAIGN DASHBOARD */}
           {/* ═══════════════════════════════════════════════════════════════════════════ */}
-          {selectedCampaign === "topup_4000_1000" ? (
+          {selectedCampaign === "voucher_campaigns" ? (
+            <AdminPromotionReport />
+          ) : selectedCampaign === "topup_4000_1000" ? (
             <div className="space-y-6">
               {/* Executive KPI Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">

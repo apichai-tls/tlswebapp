@@ -15,7 +15,7 @@ function cleanRemarkForDisplay(raw?: string | null): string {
   return raw
     .split("|")
     .map(p => p.trim())
-    .filter(p => !p.startsWith("Proforma:") && !p.startsWith("Revision:") && !p.startsWith("VAT:") && !p.startsWith("VAT ["))
+    .filter(p => !p.startsWith("Proforma:") && !p.startsWith("Revision:") && !p.startsWith("VAT:") && !p.startsWith("VAT [") && !p.startsWith("Promo:") && !p.startsWith("Express") && !p.startsWith("Discount:"))
     .join(" | ")
     .trim();
 }
@@ -140,6 +140,30 @@ export async function generateThermalReceiptImage(
           <span style="font-family: monospace;">฿${formatCurrency(receiptData.subtotal != null ? receiptData.subtotal : receiptData.total)}</span>
         </div>
         ${deliveryFeeHtml}
+        ${receiptData.expressSurcharge && receiptData.expressSurcharge > 0 ? `
+          <div style="display: flex; justify-content: space-between; font-weight: bold; color: #171717;">
+            <span>EXPRESS SURCHARGE:</span>
+            <span style="font-family: monospace;">+฿${formatCurrency(receiptData.expressSurcharge)}</span>
+          </div>
+        ` : ""}
+        ${receiptData.vatType === "exclusive" && receiptData.vatRate > 0 ? `
+          <div style="display: flex; justify-content: space-between; font-weight: bold; color: #171717;">
+            <span>VAT (${receiptData.vatRate}%):</span>
+            <span style="font-family: monospace;">+฿${formatCurrency(receiptData.vatAmount)}</span>
+          </div>
+        ` : ""}
+        ${receiptData.discount && receiptData.discount > 0 ? `
+          <div style="display: flex; justify-content: space-between; font-weight: bold; color: #171717;">
+            <span>${receiptData.discountPercent && receiptData.discountPercent > 0 ? `DISCOUNT (${receiptData.discountPercent}%):` : "MANUAL ADJUST:"}</span>
+            <span style="font-family: monospace;">-฿${formatCurrency(receiptData.discount)}</span>
+          </div>
+        ` : ""}
+        ${receiptData.promoDiscount && receiptData.promoDiscount > 0 ? `
+          <div style="display: flex; justify-content: space-between; font-weight: bold; color: #b45309;">
+            <span>PROMO${receiptData.promoCode ? ` (${receiptData.promoCode})` : ""}:</span>
+            <span style="font-family: monospace;">-฿${formatCurrency(receiptData.promoDiscount)}</span>
+          </div>
+        ` : ""}
         ${receiptData.vatType === "inclusive" && receiptData.vatRate > 0 ? `
           <div style="display: flex; justify-content: space-between; font-size: 8px; color: #737373;">
             <span>Includes VAT ${receiptData.vatRate}%</span>

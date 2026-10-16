@@ -20,7 +20,12 @@ import {
   ExternalLink,
   Store,
   Check,
-  AlertCircle
+  AlertCircle,
+  Calendar,
+  Power,
+  Percent,
+  Truck,
+  Gift
 } from "lucide-react";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -29,18 +34,15 @@ import { Badge } from "@/components/ui/badge";
 import { 
   getPromotionReportAction, 
   getPromotionCampaignsAction,
-  savePromotionCampaignAction 
+  savePromotionCampaignAction
 } from "@/actions/db";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Calendar, Edit3 } from "lucide-react";
-import { shopStore, type PromotionCampaign } from "@/lib/store";
+import { shopStore } from "@/lib/store";
+import { 
+  type PromotionCampaign, 
+  PROMO_SERVICE_CATEGORIES, 
+  getCategoryLabel, 
+  getCategoryIcon 
+} from "@/lib/promotions";
 import { useSyncExternalStore } from "react";
 
 export function AdminPromotionReport() {
@@ -130,72 +132,18 @@ export function AdminPromotionReport() {
     return campaigns.find(c => c.id === selectedCampaignId);
   }, [campaigns, selectedCampaignId]);
 
-  // Edit Campaign State & Handlers
-  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-  const [isSavingCampaign, setIsSavingCampaign] = useState(false);
-  const [editCampaignForm, setEditCampaignForm] = useState<{
-    id: string;
-    name: string;
-    description: string;
-    enabled: boolean;
-    startDate: string;
-    endDate: string;
-    rewardCouponExpiryDate: string;
-    minOrderSubtotal: number;
-    limitPerCustomer: number;
-  } | null>(null);
-
-  const handleOpenEditDialog = () => {
-    if (!activeCampaign) return;
-    setEditCampaignForm({
-      id: activeCampaign.id,
-      name: activeCampaign.name,
-      description: activeCampaign.description,
-      enabled: activeCampaign.enabled ?? true,
-      startDate: activeCampaign.startDate ? activeCampaign.startDate.slice(0, 10) : "",
-      endDate: activeCampaign.endDate ? activeCampaign.endDate.slice(0, 10) : "",
-      rewardCouponExpiryDate: activeCampaign.rewardCouponExpiryDate ? activeCampaign.rewardCouponExpiryDate.slice(0, 10) : "",
-      minOrderSubtotal: activeCampaign.conditions?.minOrderSubtotal ?? 1000,
-      limitPerCustomer: activeCampaign.conditions?.limitPerCustomer ?? 1,
-    });
-    setIsEditDialogOpen(true);
-  };
-
-  const handleSaveCampaign = async () => {
-    if (!editCampaignForm || !activeCampaign) return;
-    setIsSavingCampaign(true);
+  const handleToggleEnableCampaign = async (campaign: PromotionCampaign) => {
     try {
-      const updatedCampaign = {
-        ...activeCampaign,
-        name: editCampaignForm.name,
-        description: editCampaignForm.description,
-        enabled: editCampaignForm.enabled,
-        startDate: editCampaignForm.startDate ? new Date(editCampaignForm.startDate + "T00:00:00.000Z").toISOString() : activeCampaign.startDate,
-        endDate: editCampaignForm.endDate ? new Date(editCampaignForm.endDate + "T23:59:59.999Z").toISOString() : activeCampaign.endDate,
-        rewardCouponExpiryDate: editCampaignForm.rewardCouponExpiryDate ? new Date(editCampaignForm.rewardCouponExpiryDate + "T23:59:59.999Z").toISOString() : activeCampaign.rewardCouponExpiryDate,
-        conditions: {
-          ...activeCampaign.conditions,
-          minOrderSubtotal: Number(editCampaignForm.minOrderSubtotal) || 1000,
-          limitPerCustomer: Number(editCampaignForm.limitPerCustomer) || 1,
-        },
-      };
-
-      const res = await savePromotionCampaignAction(updatedCampaign);
-      if (res.success) {
-        toast.success("บันทึกการตั้งค่าแคมเปญเรียบร้อยแล้ว");
-        setIsEditDialogOpen(false);
-        const campRes = await getPromotionCampaignsAction();
-        if (campRes.success && campRes.campaigns) {
-          setCampaigns(campRes.campaigns);
-        }
-        fetchReport();
+      const updated = { ...campaign, enabled: !campaign.enabled };
+      const res = await savePromotionCampaignAction(updated);
+      if (res.success && res.campaigns) {
+        setCampaigns(res.campaigns);
+        toast.success(`เปลี่ยนสถานะแคมเปญ "${campaign.name}" เป็น ${updated.enabled ? "เปิดใช้งาน" : "ปิดใช้งาน"} เรียบร้อย`);
       } else {
-        toast.error(res.error || "เกิดข้อผิดพลาดในการบันทึก");
+        toast.error(res.error || "ไม่สามารถเปลี่ยนสถานะแคมเปญได้");
       }
     } catch (e: any) {
-      toast.error(`เกิดข้อผิดพลาด: ${e?.message || e}`);
-    } finally {
-      setIsSavingCampaign(false);
+      toast.error(e?.message || "เกิดข้อผิดพลาด");
     }
   };
 
@@ -294,11 +242,11 @@ export function AdminPromotionReport() {
               <h2 className="text-lg font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
                 Promotion Performance Report
                 <Badge variant="outline" className="bg-amber-100 text-amber-800 border-amber-300 font-bold text-[10px]">
-                  ซักครบ 1,000 รับวอยเชอร์ซักรองเท้า 100.-
+                  {activeCampaign?.name || "Campaign Report"}
                 </Badge>
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                ติดตามสถิติการแจกวอยเชอร์ ยอดการนำมาใช้จริง (Conversion Rate) และรายได้ที่เกิดขึ้น
+                Track voucher issuance, conversion rates, and voucher-driven revenue (ติดตามสถิติการแจกวอยเชอร์ ยอดการนำมาใช้จริง และรายได้ที่เกิดขึ้น)
               </p>
             </div>
           </div>
@@ -325,7 +273,7 @@ export function AdminPromotionReport() {
             onChange={(e) => setSelectedBranch(e.target.value)}
             className="h-9 px-3 text-xs font-bold rounded-xl border border-border bg-background text-foreground shadow-2xs cursor-pointer"
           >
-            <option value="all">ทุกสาขา (All Branches)</option>
+            <option value="all">All Branches (ทุกสาขา)</option>
             {shops.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -342,7 +290,7 @@ export function AdminPromotionReport() {
             className="h-9 px-3 text-xs font-bold rounded-xl gap-1.5"
           >
             <RefreshCw size={13} className={isLoading ? "animate-spin" : ""} />
-            <span>รีเฟรช</span>
+            <span>Refresh <span className="text-[10px] text-muted-foreground font-normal">(รีเฟรช)</span></span>
           </Button>
 
           <Button
@@ -352,43 +300,68 @@ export function AdminPromotionReport() {
             className="h-9 px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl gap-1.5 shadow-2xs"
           >
             <Download size={13} />
-            <span>ส่งออก CSV</span>
+            <span>Export CSV <span className="text-[10px] text-emerald-100 font-normal">(ส่งออก)</span></span>
           </Button>
         </div>
       </div>
 
       {/* Campaign Details Info Bar */}
       {activeCampaign && (
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border text-xs text-muted-foreground">
-          <div className="flex items-center gap-4 flex-wrap">
-            <span className="font-semibold text-foreground">
-              เงื่อนไข: ยอดซักครบ ฿{activeCampaign.conditions?.minOrderSubtotal?.toLocaleString()} (ไม่รวมค่าส่ง)
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-card border text-xs text-muted-foreground shadow-2xs">
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              type="button"
+              onClick={() => handleToggleEnableCampaign(activeCampaign)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black border transition-all cursor-pointer ${
+                activeCampaign.enabled
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25"
+                  : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-700 hover:bg-slate-200"
+              }`}
+              title="Click to toggle campaign status (คลิกเพื่อเปิด/ปิดแคมเปญนี้)"
+            >
+              <Power size={11} className={activeCampaign.enabled ? "text-emerald-500" : "text-slate-400"} />
+              <span>{activeCampaign.enabled ? "Active (เปิดแจกอยู่)" : "Paused (ปิดชั่วคราว)"}</span>
+            </button>
+
+            <span className="font-bold text-foreground">
+              Min Spend: ฿{activeCampaign.conditions?.minOrderSubtotal?.toLocaleString()} {activeCampaign.conditions?.excludeDeliveryFee !== false ? "(Excl. delivery / ไม่รวมค่าส่ง)" : "(Incl. delivery / รวมค่าส่ง)"}
             </span>
             <span>•</span>
             <span>
-              ระยะเวลาแจก: {activeCampaign.startDate?.slice(0, 10)} ถึง <strong className="text-amber-600 font-bold">{activeCampaign.endDate?.slice(0, 10)}</strong>
+              Period: {activeCampaign.startDate?.slice(0, 10)} to <strong className="text-amber-600 dark:text-amber-400 font-bold">{activeCampaign.endDate?.slice(0, 10)}</strong> <span className="text-[10px] text-muted-foreground">(ระยะเวลาแจก)</span>
             </span>
             <span>•</span>
             <span>
-              วอยเชอร์ใช้ได้ถึง: <strong className="text-emerald-600 font-bold">{activeCampaign.rewardCouponExpiryDate?.slice(0, 10)}</strong>
+              Expiry: <strong className="text-emerald-600 dark:text-emerald-400 font-bold">{activeCampaign.rewardCouponExpiryDate?.slice(0, 10)}</strong> <span className="text-[10px] text-muted-foreground">(หมดอายุ)</span>
             </span>
           </div>
-          <div className="flex items-center gap-2">
+
+          <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="secondary" className="font-bold text-[10px]">
-              {activeCampaign.conditions?.limitPerCustomer ? `จำกัด ${activeCampaign.conditions.limitPerCustomer} สิทธิ์/ท่าน` : "ไม่จำกัดสิทธิ์"}
+              {activeCampaign.conditions?.limitPerCustomer ? `Limit ${activeCampaign.conditions.limitPerCustomer} / Cust (จำกัด 1 สิทธิ์)` : "No Limit (ไม่จำกัด)"}
             </Badge>
-            <Badge variant="outline" className="font-bold text-[10px] text-blue-600 border-blue-200">
-              เฉพาะหมวดซักรองเท้า (SHOES)
+
+            <Badge variant="outline" className="font-bold text-[10px] text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-950/30">
+              {getCategoryIcon(activeCampaign.reward?.applicableCategory)} {getCategoryLabel(activeCampaign.reward?.applicableCategory, "en")} <span className="opacity-75 ml-1">({getCategoryLabel(activeCampaign.reward?.applicableCategory, "th")})</span>
             </Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleOpenEditDialog}
-              className="h-6 px-2 text-[11px] font-bold gap-1 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer shadow-none"
-            >
-              <Edit3 size={11} />
-              <span>แก้ไขแคมเปญ</span>
-            </Button>
+
+            <Badge variant="outline" className="font-bold text-[10px] text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/30">
+              {activeCampaign.reward?.discountType === "PERCENTAGE" 
+                ? `${activeCampaign.reward?.discountValue}% OFF (ลด ${activeCampaign.reward?.discountValue}%)` 
+                : activeCampaign.reward?.discountType === "FREE_DELIVERY"
+                  ? "Free Delivery (ส่งฟรี)"
+                  : `฿${activeCampaign.reward?.discountValue} OFF (ลด ฿${activeCampaign.reward?.discountValue})`}
+            </Badge>
+            {activeCampaign.conditions?.excludeMember && (
+              <Badge variant="outline" className="font-bold text-[10px] text-rose-600 border-rose-200 bg-rose-50/50">
+                Excl. Member (ยกเว้นสมาชิก)
+              </Badge>
+            )}
+            {activeCampaign.conditions?.excludeVIP && (
+              <Badge variant="outline" className="font-bold text-[10px] text-rose-600 border-rose-200 bg-rose-50/50">
+                Excl. VIP (ยกเว้น VIP)
+              </Badge>
+            )}
           </div>
         </div>
       )}
@@ -398,87 +371,105 @@ export function AdminPromotionReport() {
         {/* Total Issued */}
         <div className="bg-card border rounded-2xl p-3.5 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-[11px] font-bold uppercase tracking-wider">แจกไปทั้งหมด</span>
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider block">Total Issued</span>
+              <span className="text-[9px] text-muted-foreground font-normal">แจกไปทั้งหมด</span>
+            </div>
             <Ticket size={16} className="text-indigo-500" />
           </div>
-          <div className="text-2xl font-black text-foreground">
+          <div className="text-2xl font-black text-foreground pt-0.5">
             {reportData.stats.totalIssued}
-            <span className="text-xs font-medium text-muted-foreground ml-1">ใบ</span>
+            <span className="text-xs font-medium text-muted-foreground ml-1">Vouchers (ใบ)</span>
           </div>
           <p className="text-[10px] text-muted-foreground">
-            แจกให้ลูกค้า <strong className="text-foreground">{reportData.stats.totalCustomers}</strong> ท่าน
+            Issued to <strong className="text-foreground">{reportData.stats.totalCustomers}</strong> customers <span className="opacity-80">({reportData.stats.totalCustomers} ท่าน)</span>
           </p>
         </div>
 
         {/* Total Redeemed */}
         <div className="bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/50 rounded-2xl p-3.5 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-emerald-700 dark:text-emerald-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">นำมาใช้แล้ว</span>
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider block">Redeemed</span>
+              <span className="text-[9px] text-emerald-600/80 font-normal">นำมาใช้แล้ว</span>
+            </div>
             <CheckCircle2 size={16} className="text-emerald-500" />
           </div>
-          <div className="text-2xl font-black text-emerald-700 dark:text-emerald-400">
+          <div className="text-2xl font-black text-emerald-700 dark:text-emerald-400 pt-0.5">
             {reportData.stats.totalRedeemed}
-            <span className="text-xs font-medium text-emerald-600/70 ml-1">ใบ</span>
+            <span className="text-xs font-medium text-emerald-600/70 ml-1">Vouchers (ใบ)</span>
           </div>
           <p className="text-[10px] text-emerald-600 dark:text-emerald-400">
-            มีลูกค้ากลับมาใช้จริง
+            Returned customers (ลูกค้ากลับมาใช้จริง)
           </p>
         </div>
 
         {/* Conversion Rate */}
         <div className="bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/50 rounded-2xl p-3.5 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-blue-700 dark:text-blue-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Conversion Rate</span>
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider block">Conversion Rate</span>
+              <span className="text-[9px] text-blue-600/80 font-normal">อัตราการใช้</span>
+            </div>
             <TrendingUp size={16} className="text-blue-500" />
           </div>
-          <div className="text-2xl font-black text-blue-700 dark:text-blue-400">
+          <div className="text-2xl font-black text-blue-700 dark:text-blue-400 pt-0.5">
             {reportData.stats.redemptionRate.toFixed(1)}%
           </div>
           <p className="text-[10px] text-blue-600/80">
-            อัตราการนำวอยเชอร์มาใช้
+            Redemption rate (อัตราการนำมาใช้จริง)
           </p>
         </div>
 
         {/* Active Remaining */}
         <div className="bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 rounded-2xl p-3.5 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-amber-700 dark:text-amber-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">คงเหลือยังไม่ใช้</span>
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider block">Outstanding</span>
+              <span className="text-[9px] text-amber-600/80 font-normal">คงเหลือยังไม่ใช้</span>
+            </div>
             <Clock size={16} className="text-amber-500" />
           </div>
-          <div className="text-2xl font-black text-amber-700 dark:text-amber-400">
+          <div className="text-2xl font-black text-amber-700 dark:text-amber-400 pt-0.5">
             {reportData.stats.activeRemaining}
-            <span className="text-xs font-medium text-amber-600/70 ml-1">ใบ</span>
+            <span className="text-xs font-medium text-amber-600/70 ml-1">Vouchers (ใบ)</span>
           </div>
           <p className="text-[10px] text-amber-600/80">
-            ใช้ได้ถึง 31 ธ.ค. 2026
+            Valid until {activeCampaign?.rewardCouponExpiryDate ? activeCampaign.rewardCouponExpiryDate.slice(0, 10) : "31 Dec 2026"} (ใช้ได้ถึง)
           </p>
         </div>
 
         {/* Total Discount Given */}
         <div className="bg-card border rounded-2xl p-3.5 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-[11px] font-bold uppercase tracking-wider">ส่วนลดที่ให้ไป</span>
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider block">Total Discount Given</span>
+              <span className="text-[9px] text-muted-foreground font-normal">ส่วนลดที่ให้ไป</span>
+            </div>
             <Tag size={16} className="text-rose-500" />
           </div>
-          <div className="text-2xl font-black text-rose-600 dark:text-rose-400">
+          <div className="text-2xl font-black text-rose-600 dark:text-rose-400 pt-0.5">
             ฿{reportData.stats.totalDiscountGiven.toLocaleString()}
           </div>
           <p className="text-[10px] text-muted-foreground">
-            งบส่วนลดที่ใช้จริง
+            Budget spent (งบส่วนลดที่ใช้จริง)
           </p>
         </div>
 
         {/* Total Sales Generated */}
         <div className="bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-900/50 rounded-2xl p-3.5 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-purple-700 dark:text-purple-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">ยอดขายที่เกิดจากวอยเชอร์</span>
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider block">Voucher Revenue</span>
+              <span className="text-[9px] text-purple-600/80 font-normal">ยอดขายจากวอยเชอร์</span>
+            </div>
             <DollarSign size={16} className="text-purple-500" />
           </div>
-          <div className="text-2xl font-black text-purple-700 dark:text-purple-400">
+          <div className="text-2xl font-black text-purple-700 dark:text-purple-400 pt-0.5">
             ฿{reportData.stats.totalSalesGenerated.toLocaleString()}
           </div>
           <p className="text-[10px] text-purple-600/80">
-            รายได้รวมจากบิลที่ใช้วอยเชอร์
+            Total sales generated (รายได้รวมจากบิล)
           </p>
         </div>
       </div>
@@ -497,7 +488,7 @@ export function AdminPromotionReport() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              รายการที่นำมาใช้แล้ว ({reportData.redeemedList.length})
+              Redeemed Vouchers ({reportData.redeemedList.length}) <span className="font-normal text-[10px] opacity-80">• นำมาใช้แล้ว</span>
             </button>
             <button
               type="button"
@@ -508,7 +499,7 @@ export function AdminPromotionReport() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              วอยเชอร์ที่แจกทั้งหมด ({reportData.issuedList.length})
+              All Issued Vouchers ({reportData.issuedList.length}) <span className="font-normal text-[10px] opacity-80">• แจกทั้งหมด</span>
             </button>
           </div>
 
@@ -517,7 +508,7 @@ export function AdminPromotionReport() {
             <div className="relative flex-1">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="ค้นหารหัสวอยเชอร์, ชื่อลูกค้า, เบอร์โทร, เลขบิล..."
+                placeholder="Search voucher code, customer, phone, bill no... (ค้นหา)"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-8 h-8 text-xs rounded-xl"
@@ -539,7 +530,7 @@ export function AdminPromotionReport() {
                 onChange={(e) => setStatusFilter(e.target.value)}
                 className="h-8 px-2 text-xs font-bold rounded-xl border border-border bg-background text-foreground cursor-pointer shrink-0"
               >
-                <option value="all">สถานะทั้งหมด</option>
+                <option value="all">All Statuses (สถานะทั้งหมด)</option>
                 <option value="ACTIVE">Active (พร้อมใช้)</option>
                 <option value="USED">Used (ใช้แล้ว)</option>
                 <option value="EXPIRED">Expired (หมดอายุ)</option>
@@ -555,22 +546,49 @@ export function AdminPromotionReport() {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="text-[11px] font-bold">วันที่ใช้งาน</TableHead>
-                  <TableHead className="text-[11px] font-bold">รหัสวอยเชอร์</TableHead>
-                  <TableHead className="text-[11px] font-bold">ลูกค้า</TableHead>
-                  <TableHead className="text-[11px] font-bold">เลขที่บิล</TableHead>
-                  <TableHead className="text-[11px] font-bold">บริการซักรองเท้า</TableHead>
-                  <TableHead className="text-[11px] font-bold text-right">ยอดรวมบิล</TableHead>
-                  <TableHead className="text-[11px] font-bold text-right">ส่วนลด</TableHead>
-                  <TableHead className="text-[11px] font-bold">สาขา</TableHead>
-                  <TableHead className="text-[11px] font-bold">แคชเชียร์</TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Used Date</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">วันที่ใช้งาน</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Voucher Code</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">รหัสวอยเชอร์</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Customer</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">ลูกค้า</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Bill No.</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">เลขที่บิล</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Service Items</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">รายการบริการ</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold text-right">
+                    <span>Order Total</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">ยอดรวมบิล</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold text-right">
+                    <span>Discount</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">ส่วนลด</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Branch</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">สาขา</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Cashier</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">แคชเชียร์</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredRedeemed.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={9} className="text-center py-10 text-muted-foreground text-xs">
-                      {isLoading ? "กำลังโหลดข้อมูล..." : "ยังไม่มีรายการนำวอยเชอร์มาใช้"}
+                      {isLoading ? "Loading report data... (กำลังโหลดข้อมูล)" : "No redeemed vouchers found (ยังไม่มีรายการนำวอยเชอร์มาใช้)"}
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -624,20 +642,41 @@ export function AdminPromotionReport() {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="text-[11px] font-bold">วันที่แจก</TableHead>
-                  <TableHead className="text-[11px] font-bold">รหัสวอยเชอร์</TableHead>
-                  <TableHead className="text-[11px] font-bold">ลูกค้า</TableHead>
-                  <TableHead className="text-[11px] font-bold">บิลต้นทางที่ได้สิทธิ์</TableHead>
-                  <TableHead className="text-[11px] font-bold">วันหมดอายุ</TableHead>
-                  <TableHead className="text-[11px] font-bold">สถานะ</TableHead>
-                  <TableHead className="text-[11px] font-bold">การนำไปใช้</TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Issued Date</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">วันที่แจก</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Voucher Code</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">รหัสวอยเชอร์</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Customer</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">ลูกค้า</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Source Bill</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">บิลต้นทางที่ได้สิทธิ์</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Expiry Date</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">วันหมดอายุ</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Status</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">สถานะ</span>
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold">
+                    <span>Usage</span>
+                    <span className="block text-[9px] text-muted-foreground font-normal">การนำไปใช้</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredIssued.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-10 text-muted-foreground text-xs">
-                      {isLoading ? "กำลังโหลดข้อมูล..." : "ไม่พบวอยเชอร์ที่ตรงกับเงื่อนไขการค้นหา"}
+                      {isLoading ? "Loading report data... (กำลังโหลดข้อมูล)" : "No vouchers matching your search (ไม่พบวอยเชอร์ที่ตรงกับเงื่อนไขการค้นหา)"}
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -682,31 +721,31 @@ export function AdminPromotionReport() {
                         <TableCell>
                           {isUsed ? (
                             <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
-                              ใช้งานแล้ว
+                              Used (ใช้แล้ว)
                             </Badge>
                           ) : isExpired ? (
                             <Badge variant="outline" className="text-muted-foreground border-border text-[10px]">
-                              หมดอายุ
+                              Expired (หมดอายุ)
                             </Badge>
                           ) : isVoid ? (
                             <Badge variant="outline" className="text-rose-600 border-rose-300 text-[10px]">
-                              ยกเลิก
+                              Void (ยกเลิก)
                             </Badge>
                           ) : (
                             <Badge className="bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[10px] font-bold">
-                              พร้อมใช้งาน
+                              Active (พร้อมใช้)
                             </Badge>
                           )}
                         </TableCell>
                         <TableCell>
                           {isUsed ? (
                             <div className="text-[11px]">
-                              <span className="text-muted-foreground">ใช้ที่บิล </span>
+                              <span className="text-muted-foreground">Used in </span>
                               <strong className="text-indigo-600 dark:text-indigo-400 font-mono">#{c.usedBillNo}</strong>
                               <span className="text-rose-600 font-bold ml-1">(-฿{c.discountAmountUsed ?? c.discountValue})</span>
                             </div>
                           ) : (
-                            <span className="text-muted-foreground text-[11px]">ยังไม่ได้ใช้</span>
+                            <span className="text-muted-foreground text-[11px]">Not used yet (ยังไม่ได้ใช้)</span>
                           )}
                         </TableCell>
                       </TableRow>
@@ -718,118 +757,6 @@ export function AdminPromotionReport() {
           </div>
         )}
       </div>
-
-      {/* Edit Campaign Modal */}
-      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="max-w-md p-6 bg-card border border-border shadow-2xl rounded-2xl">
-          <DialogHeader className="border-b pb-3 mb-4">
-            <DialogTitle className="text-base font-black flex items-center gap-2">
-              <Calendar className="text-primary" size={18} />
-              แก้ไขเงื่อนไข & ระยะเวลาแคมเปญ
-            </DialogTitle>
-          </DialogHeader>
-
-          {editCampaignForm && (
-            <div className="space-y-4">
-              <div>
-                <Label className="text-xs font-bold mb-1.5 block">ชื่อแคมเปญ</Label>
-                <Input
-                  value={editCampaignForm.name}
-                  onChange={(e) => setEditCampaignForm({ ...editCampaignForm, name: e.target.value })}
-                  className="h-9 text-xs"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label className="text-xs font-bold mb-1.5 block">
-                    📅 วันที่เริ่มแจก
-                  </Label>
-                  <Input
-                    type="date"
-                    value={editCampaignForm.startDate}
-                    onChange={(e) => setEditCampaignForm({ ...editCampaignForm, startDate: e.target.value })}
-                    className="h-9 text-xs"
-                  />
-                  <p className="text-[10px] text-muted-foreground mt-1">เริ่มแจกวอยเชอร์ตั้งแต่ 00:00 น.</p>
-                </div>
-                <div>
-                  <Label className="text-xs font-bold mb-1.5 block">
-                    🏁 วันสุดท้ายที่แจก
-                  </Label>
-                  <Input
-                    type="date"
-                    value={editCampaignForm.endDate}
-                    onChange={(e) => setEditCampaignForm({ ...editCampaignForm, endDate: e.target.value })}
-                    className="h-9 text-xs"
-                  />
-                  <p className="text-[10px] text-muted-foreground mt-1">แจกถึง 23:59 น. ของวันนั้น</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label className="text-xs font-bold mb-1.5 block">
-                    ⏳ วอยเชอร์ใช้ได้ถึงวันที่
-                  </Label>
-                  <Input
-                    type="date"
-                    value={editCampaignForm.rewardCouponExpiryDate}
-                    onChange={(e) => setEditCampaignForm({ ...editCampaignForm, rewardCouponExpiryDate: e.target.value })}
-                    className="h-9 text-xs"
-                  />
-                  <p className="text-[10px] text-muted-foreground mt-1">วันหมดอายุของวอยเชอร์ที่ลูกค้าได้</p>
-                </div>
-                <div>
-                  <Label className="text-xs font-bold mb-1.5 block">
-                    💰 ยอดซักขั้นต่ำ (฿)
-                  </Label>
-                  <Input
-                    type="number"
-                    value={editCampaignForm.minOrderSubtotal}
-                    onChange={(e) => setEditCampaignForm({ ...editCampaignForm, minOrderSubtotal: Number(e.target.value) || 0 })}
-                    className="h-9 text-xs"
-                  />
-                  <p className="text-[10px] text-muted-foreground mt-1">ไม่รวมค่าจัดส่ง</p>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between p-3 rounded-xl border bg-muted/30">
-                <div>
-                  <span className="text-xs font-bold block">สถานะแคมเปญ</span>
-                  <span className="text-[11px] text-muted-foreground">เปิดหรือปิดการแจกวอยเชอร์</span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={editCampaignForm.enabled}
-                  onChange={(e) => setEditCampaignForm({ ...editCampaignForm, enabled: e.target.checked })}
-                  className="w-4 h-4 accent-primary cursor-pointer"
-                />
-              </div>
-            </div>
-          )}
-
-          <DialogFooter className="mt-5 pt-3 border-t flex justify-end gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsEditDialogOpen(false)}
-              className="text-xs font-bold"
-            >
-              ยกเลิก
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={handleSaveCampaign}
-              disabled={isSavingCampaign}
-              className="text-xs font-bold bg-primary text-primary-foreground gap-1.5"
-            >
-              {isSavingCampaign ? "กำลังบันทึก..." : "บันทึกการตั้งค่า"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

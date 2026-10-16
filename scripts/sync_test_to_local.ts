@@ -19,7 +19,7 @@ const TABLES_ORDER = [
   // People
   'Customer',
   'CustomerAddress',
-  'CustomerCoupon',
+  'CustomerVoucher',
   'Rider',
   'CashierShift',
   // Operations & Financials

@@ -26,7 +26,6 @@ import {
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
 import { AdminLegacyMembers } from "@/components/admin-legacy-members";
-import { AdminMarketingCoupons } from "@/components/admin-marketing-coupons";
 import rawLegacyMembers from "@/data/legacy-members.json";
 import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
@@ -178,7 +177,6 @@ export function AdminCRM({
   // Role check: Strictly admin or superadmin
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
-  const canSeeCoupons = isAdmin || isCSO;
   // Adjust Balance permission: granted via 'adjust-wallet' permission in Manage Users, or default for admin role
   const canAdjustBalance = Boolean(user?.permissions?.includes('adjust-wallet') || isAdmin);
   // Everyone except Rider can see Top Up button
@@ -191,16 +189,15 @@ export function AdminCRM({
     walletApprovalStore.refreshPendingMap();
     const handleOpenTab = (e: any) => {
       if (e.detail?.tab) {
-        if (e.detail.tab === "coupons" && !canSeeCoupons) return;
         setActiveTab(e.detail.tab);
       }
     };
     window.addEventListener("open-crm-tab", handleOpenTab);
     return () => window.removeEventListener("open-crm-tab", handleOpenTab);
-  }, [canSeeCoupons]);
+  }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "legacy_members" | "coupons">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "legacy_members">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -1731,24 +1728,10 @@ export function AdminCRM({
                 {rawLegacyMembers.length}
               </span>
             </button>
-            {canSeeCoupons && (
-              <button
-                type="button"
-                onClick={() => { setActiveTab("coupons"); setCurrentPage(1); }}
-                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  activeTab === "coupons"
-                    ? "bg-indigo-600 text-white shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                <Ticket size={14} className={activeTab === "coupons" ? "text-white" : "text-indigo-600"} />
-                <span>Customer Vouchers (วอยเชอร์ลูกค้า)</span>
-              </button>
-            )}
           </div>
 
-          {/* Search bar inside the bar (shown when not on customer report, wallet approvals, legacy members, or coupons) */}
-          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "legacy_members" && activeTab !== "coupons" && (
+          {/* Search bar inside the bar (shown when not on customer report, wallet approvals, or legacy members) */}
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "legacy_members" && (
             <div className="relative w-full lg:w-80">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <Input 
@@ -2804,10 +2787,6 @@ export function AdminCRM({
               )}
             </div>
           )
-        ) : activeTab === "coupons" && canSeeCoupons ? (
-          <div className="p-6">
-            <AdminMarketingCoupons />
-          </div>
         ) : activeTab === "legacy_members" ? (
           <AdminLegacyMembers />
         ) : (
@@ -3127,7 +3106,7 @@ export function AdminCRM({
         )}
 
         {/* Pagination Controls */}
-        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "legacy_members" && activeTab !== "coupons" && totalItems > 0 && (
+        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "legacy_members" && totalItems > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>

@@ -5,7 +5,7 @@ import { listFilesForJob } from '@/lib/gcs';
 import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumber, generateProformaBaseNumber, computeCartHash, formatJobDisplayId, isPaidTodayOrYesterday, getJobPaymentDate, normalizePhone, findDuplicateCustomerByPhone, computeMembershipExpiryDate } from '@/lib/utils';
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
-import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode } from '@/lib/promotions';
+import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel } from '@/lib/promotions';
 import { invalidateDbCache } from '@/lib/db-cache';
 
 // CUSTOMERS
@@ -1147,8 +1147,71 @@ export async function addJobAction(data: any) {
     console.error("Failed to write ActivityLog on create:", err.message);
   }
 
+  // Evaluate promotion coupon issuance when job is created with paid status
+  let issuedCoupons: any[] = [];
+  if ((createdJob.isPaid || createdJob.isShopPaid) && createdJob.customerId) {
+    try {
+      const promoRes = await evaluateAndIssuePromotionCouponsAction({
+        jobId: createdJob.id,
+        customerId: createdJob.customerId,
+        actor: { id: data.actorId, name: data.actorName },
+      });
+      if (promoRes.success && promoRes.couponsIssued) {
+        issuedCoupons = promoRes.couponsIssued;
+      }
+    } catch (err: any) {
+      console.warn("[addJobAction] Promo coupon evaluation failed:", err);
+    }
+  }
+
+  // Auto-redeem applied CustomerVoucher on backend
+  if (data.remark) {
+    try {
+      const promoMatch = data.remark.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
+      const promoCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
+      const parsedPromoDiscount = promoMatch ? parseFloat(promoMatch[2] || promoMatch[3] || "0") : 0;
+      if (promoCode) {
+        const localCoupon = await prisma.customerVoucher.findFirst({
+          where: { code: { equals: promoCode, mode: "insensitive" }, status: "ACTIVE" },
+        });
+        if (localCoupon) {
+          const usedDiscount = parsedPromoDiscount > 0
+            ? parsedPromoDiscount
+            : (data.discount ? Math.max(0, Number(data.discount)) : localCoupon.discountValue);
+          await prisma.customerVoucher.update({
+            where: { id: localCoupon.id },
+            data: {
+              status: "USED",
+              usedAt: new Date(),
+              usedJobId: createdJob.id,
+              discountAmountUsed: usedDiscount,
+            },
+          });
+          await prisma.activityLog.create({
+            data: {
+              entityId: localCoupon.customerId,
+              entityType: "customer",
+              action: "COUPON_USED",
+              details: JSON.stringify({
+                couponId: localCoupon.id,
+                code: localCoupon.code,
+                usedJobId: createdJob.id,
+                discountAmountUsed: usedDiscount,
+              }),
+              userId: data.actorId || null,
+              userName: data.actorName || null,
+            },
+          });
+          console.log(`[CustomerVoucher] Auto-marked ${promoCode} as USED for job ${createdJob.id}`);
+        }
+      }
+    } catch (err) {
+      console.warn("[addJobAction] Promo auto-redeem failed:", err);
+    }
+  }
+
   invalidateDbCache();
-  return createdJob;
+  return { ...createdJob, issuedCoupons };
 }
 
 export async function getJobsByIdsAction(ids: string[]) {
@@ -1547,6 +1610,14 @@ export async function updateJobAction(id: string, updates: any) {
       data.csoPaidAt = null;
     }
   }
+  if (updates.isShopPaid !== undefined) {
+    data.isShopPaid = updates.isShopPaid;
+    if (updates.isShopPaid === true && existingJob?.isShopPaid !== true) {
+      data.shopPaidAt = new Date();
+    } else if (updates.isShopPaid === false) {
+      data.shopPaidAt = null;
+    }
+  }
   if (updates.fee !== undefined) {
     const newFee = Math.max(0, Number(updates.fee) || 0);
     if (isPaidLockedJob && existingJob && (existingJob.fee ?? 0) !== newFee) {
@@ -1713,40 +1784,136 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
 
-  // If job is cancelled, restore any CustomerCoupon that was marked USED
+  // If job is cancelled, restore any CustomerVoucher that was marked USED
   if (updates.status === 'cancel') {
     try {
       const promoMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
       const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
-      await prisma.customerCoupon.updateMany({
+      await prisma.customerVoucher.updateMany({
         where: {
           OR: [
             { usedJobId: id, status: "USED" },
             ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED" }] : []),
           ],
         },
-        data: { status: "ACTIVE", usedAt: null, usedJobId: null },
+        data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
       });
-      console.log(`[CustomerCoupon] Restored coupon to ACTIVE on cancel for job ${id}`);
+      console.log(`[CustomerVoucher] Restored voucher to ACTIVE on cancel for job ${id}`);
+
+      // VOID unspent reward vouchers that were issued because of this cancelled job
+      const voidedRewardVouchers = await prisma.customerVoucher.updateMany({
+        where: {
+          sourceJobId: id,
+          status: "ACTIVE",
+        },
+        data: {
+          status: "VOID",
+        },
+      });
+      if (voidedRewardVouchers.count > 0) {
+        console.log(`[CustomerVoucher] Voided ${voidedRewardVouchers.count} unused reward voucher(s) issued from cancelled job ${id}`);
+        await prisma.activityLog.create({
+          data: {
+            entityId: existingJob?.customerId || id,
+            entityType: "customer",
+            action: "COUPON_VOID_ON_CANCEL",
+            details: JSON.stringify({
+              sourceJobId: id,
+              voidedCount: voidedRewardVouchers.count,
+              reason: `Job ${id} was cancelled`,
+            }),
+            userId: updates.actorId || null,
+            userName: updates.actorName || null,
+          },
+        });
+      }
     } catch (err) {
-      console.warn("[CustomerCoupon] Void/restore on cancel failed:", err);
+      console.warn("[CustomerVoucher] Void/restore on cancel failed:", err);
+    }
+  } else if (updates.remark !== undefined) {
+    // If job is NOT cancelled and remark was updated, sync CustomerVoucher status (restore removed voucher or redeem new voucher)
+    try {
+      const oldMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+      const oldCode = oldMatch ? oldMatch[1].trim().toUpperCase() : null;
+      const newMatch = updatedJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
+      const newCode = newMatch ? newMatch[1].trim().toUpperCase() : null;
+      const parsedPromoDiscount = newMatch ? parseFloat(newMatch[2] || newMatch[3] || "0") : 0;
+
+      if (oldCode && oldCode !== newCode) {
+        await prisma.customerVoucher.updateMany({
+          where: {
+            OR: [
+              { usedJobId: id, status: "USED" },
+              { code: { equals: oldCode, mode: "insensitive" }, usedJobId: id, status: "USED" },
+            ],
+          },
+          data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
+        });
+        console.log(`[CustomerVoucher] Restored removed voucher ${oldCode} to ACTIVE on job update ${id}`);
+      }
+
+      if (newCode) {
+        const localCoupon = await prisma.customerVoucher.findFirst({
+          where: { code: { equals: newCode, mode: "insensitive" } },
+        });
+        if (localCoupon && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
+          const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
+          const wasActive = localCoupon.status === "ACTIVE";
+          await prisma.customerVoucher.update({
+            where: { id: localCoupon.id },
+            data: {
+              status: "USED",
+              usedAt: localCoupon.usedAt || new Date(),
+              usedJobId: id,
+              discountAmountUsed: usedDiscount,
+            },
+          });
+          if (wasActive) {
+            await prisma.activityLog.create({
+              data: {
+                entityId: localCoupon.customerId,
+                entityType: "customer",
+                action: "COUPON_USED",
+                details: JSON.stringify({
+                  couponId: localCoupon.id,
+                  code: localCoupon.code,
+                  usedJobId: id,
+                  discountAmountUsed: usedDiscount,
+                }),
+                userId: updates.actorId || null,
+                userName: updates.actorName || null,
+              },
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[updateJobAction] Promo voucher sync failed:", err);
     }
   }
 
   // Evaluate promotion coupon issuance when job is marked paid
+  let issuedCoupons: any[] = [];
   if (
     (data.isPaid === true || data.isShopPaid === true) &&
     (!existingJob?.isPaid && !existingJob?.isShopPaid)
   ) {
-    evaluateAndIssuePromotionCouponsAction({
-      jobId: id,
-      customerId: updatedJob.customerId,
-      actor: { id: updates.actorId, name: updates.actorName },
-    }).catch(err => console.warn("[updateJobAction] Promo coupon evaluation failed:", err));
+    try {
+      const promoEval = await evaluateAndIssuePromotionCouponsAction({
+        jobId: id,
+        customerId: updatedJob.customerId,
+        actor: { id: updates.actorId, name: updates.actorName },
+      });
+      if (promoEval.couponsIssued?.length) {
+        issuedCoupons = promoEval.couponsIssued;
+      }
+    } catch (err) {
+      console.warn("[updateJobAction] Promo coupon evaluation failed:", err);
+    }
   }
 
   invalidateDbCache();
-  return updatedJob;
+  return { ...updatedJob, issuedCoupons };
 }
 
 // SERVICES
@@ -4143,18 +4310,18 @@ export async function processRefundAndCorrectAction(data: {
       if (promoMatch && promoMatch[1]) {
         const pCode = promoMatch[1].trim().toUpperCase();
         try {
-          await prisma.customerCoupon.updateMany({
+          await prisma.customerVoucher.updateMany({
             where: {
               OR: [
                 { usedJobId: data.jobId, status: "USED" },
                 { code: { equals: pCode, mode: "insensitive" as const }, status: "USED" },
               ],
             },
-            data: { status: "ACTIVE", usedAt: null, usedJobId: null },
+            data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
           });
-          console.log(`[CustomerCoupon] Restored coupon to ACTIVE on refund for job ${data.jobId}`);
+          console.log(`[CustomerVoucher] Restored voucher to ACTIVE on refund for job ${data.jobId}`);
         } catch (err) {
-          console.warn("[CustomerCoupon] Void/restore in job refund failed:", err);
+          console.warn("[CustomerVoucher] Void/restore in job refund failed:", err);
         }
 
         const promoBase = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
@@ -4451,6 +4618,7 @@ export async function recordJobPaymentAction(data: {
   updatedJob?: any;
   paymentEntry?: any;
   newBalance?: number;
+  couponsIssued?: any[];
 }> {
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -4919,7 +5087,7 @@ export async function createCustomerCouponAction(data: {
     const cleanCode = (data.code || "").trim().toUpperCase();
     if (!cleanCode) throw new Error("กรุณาระบุรหัสวอยเชอร์ (Voucher Code)");
 
-    const coupon = await prisma.customerCoupon.create({
+    const coupon = await prisma.customerVoucher.create({
       data: {
         customerId: customer.id,
         customerName: customer.name,
@@ -4999,7 +5167,7 @@ export async function getCustomerCouponsAction(filters?: {
       ];
     }
 
-    const coupons = await prisma.customerCoupon.findMany({
+    const coupons = await prisma.customerVoucher.findMany({
       where,
       orderBy: { createdAt: "desc" },
     });
@@ -5008,14 +5176,20 @@ export async function getCustomerCouponsAction(filters?: {
     const now = new Date();
     const updatedCoupons = await Promise.all(
       coupons.map(async (c) => {
-        if (c.status === "ACTIVE" && c.expiryDate && new Date(c.expiryDate) < now) {
-          try {
-            return await prisma.customerCoupon.update({
-              where: { id: c.id },
-              data: { status: "EXPIRED" },
-            });
-          } catch {
-            return { ...c, status: "EXPIRED" };
+        if (c.status === "ACTIVE" && c.expiryDate) {
+          const expDate = new Date(c.expiryDate);
+          if (expDate.getHours() === 0 && expDate.getMinutes() === 0) {
+            expDate.setHours(23, 59, 59, 999);
+          }
+          if (expDate < now) {
+            try {
+              return await prisma.customerVoucher.update({
+                where: { id: c.id },
+                data: { status: "EXPIRED" },
+              });
+            } catch {
+              return { ...c, status: "EXPIRED" };
+            }
           }
         }
         return c;
@@ -5044,7 +5218,7 @@ export async function updateCustomerCouponStatusAction(
       data.usedJobId = null;
     }
 
-    const updated = await prisma.customerCoupon.update({
+    const updated = await prisma.customerVoucher.update({
       where: { id },
       data,
     });
@@ -5075,10 +5249,10 @@ export async function updateCustomerCouponStatusAction(
 
 export async function deleteCustomerCouponAction(id: string, actor?: { id?: string; name?: string }) {
   try {
-    const coupon = await prisma.customerCoupon.findUnique({ where: { id } });
+    const coupon = await prisma.customerVoucher.findUnique({ where: { id } });
     if (!coupon) throw new Error("ไม่พบวอยเชอร์");
 
-    await prisma.customerCoupon.delete({ where: { id } });
+    await prisma.customerVoucher.delete({ where: { id } });
 
     await prisma.activityLog.create({
       data: {
@@ -5328,7 +5502,11 @@ export async function savePromotionCampaignAction(
 ): Promise<{ success: boolean; campaigns?: PromotionCampaign[]; error?: string }> {
   try {
     const res = await getPromotionCampaignsAction();
-    let campaigns = res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS;
+    let campaigns = [...(res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS)];
+
+    if (!campaign.id) {
+      campaign.id = `promo_${Date.now().toString(36)}`;
+    }
 
     const existingIdx = campaigns.findIndex(c => c.id === campaign.id);
     if (existingIdx >= 0) {
@@ -5350,9 +5528,43 @@ export async function savePromotionCampaignAction(
   }
 }
 
+export async function deletePromotionCampaignAction(
+  campaignId: string
+): Promise<{ success: boolean; campaigns?: PromotionCampaign[]; error?: string }> {
+  try {
+    const res = await getPromotionCampaignsAction();
+    let campaigns = [...(res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS)];
+
+    // Check if any coupons were issued under this campaignId
+    const issuedCount = await prisma.customerVoucher.count({
+      where: { campaignId },
+    });
+
+    if (issuedCount > 0) {
+      return {
+        success: false,
+        error: `ไม่สามารถลบแคมเปญนี้ได้ เนื่องจากมีการแจกวอยเชอร์ไปแล้ว (${issuedCount} ใบ) แนะนำให้กดปิดใช้งานแคมเปญแทนเพื่อรักษาประวัติรายงาน`,
+      };
+    }
+
+    campaigns = campaigns.filter(c => c.id !== campaignId);
+
+    await prisma.setting.upsert({
+      where: { key: "promotion_campaigns" },
+      update: { value: JSON.stringify(campaigns) },
+      create: { key: "promotion_campaigns", value: JSON.stringify(campaigns) },
+    });
+
+    return { success: true, campaigns };
+  } catch (err: any) {
+    console.error("[deletePromotionCampaignAction] Error:", err);
+    return { success: false, error: err?.message };
+  }
+}
+
 export async function evaluateAndIssuePromotionCouponsAction(data: {
   jobId: string;
-  customerId?: string;
+  customerId?: string | null;
   actor?: { id?: string; name?: string };
 }): Promise<{
   success: boolean;
@@ -5388,55 +5600,138 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
     const couponsIssued: any[] = [];
     const reasons: string[] = [];
 
-    // Calculate qualifying subtotal (STRICTLY excluding delivery/transport fee)
-    // Subtotal = totalAmount + discount - fee
-    let qualifyingSubtotal = 0;
+    if (job.status === "topup") {
+      return { success: true, qualified: false, couponsIssued: [], reasons: ["รายการเติมเงินแพ็กเกจ (Top-up) ไม่นับรวมเป็นยอดซัก"] };
+    }
+
+    // Calculate subtotals (with and without delivery, excluding PACKAGE/Top-up items)
+    let subtotalWithoutDelivery = 0;
+    let subtotalWithDelivery = 0;
+    let hasDeliveryItemInJson = false;
     if (job.itemsJson) {
       try {
         const items = JSON.parse(job.itemsJson);
         if (Array.isArray(items)) {
-          qualifyingSubtotal = items.reduce((sum: number, it: any) => {
+          items.forEach((it: any) => {
             const sid = (it.serviceId || it.id || "").toLowerCase();
             const cat = (it.category || "").toUpperCase();
-            if (sid.includes("delivery") || cat === "DELIVERY") return sum;
-            return sum + ((Number(it.price) || 0) * (Number(it.quantity) || 1));
-          }, 0);
+            if (cat === "PACKAGE" || sid.includes("topup") || (it.name || "").toUpperCase() === "PACKAGE") {
+              return;
+            }
+            const lineTotal = Math.ceil((Number(it.price) || 0) * (Number(it.quantity) || 1));
+            subtotalWithDelivery += lineTotal;
+            if (sid.includes("delivery") || cat === "DELIVERY") {
+              hasDeliveryItemInJson = true;
+            } else {
+              subtotalWithoutDelivery += lineTotal;
+            }
+          });
         }
       } catch {}
     }
-    if (qualifyingSubtotal <= 0) {
-      qualifyingSubtotal = Math.max(0, (Number(job.totalAmount) || 0) + (Number(job.discount) || 0) - (Number(job.fee) || 0));
+
+    // Include Express surcharge if applicable
+    const expressMatch = job.remark?.match(/Express\s*(\d+)%/i);
+    const expressPercent = expressMatch ? parseInt(expressMatch[1], 10) : 0;
+    if (expressPercent > 0 && subtotalWithoutDelivery > 0) {
+      const surcharge = Math.ceil(subtotalWithoutDelivery * (expressPercent / 100));
+      subtotalWithoutDelivery += surcharge;
+      subtotalWithDelivery += surcharge;
+    }
+
+    // If delivery fee is stored on job.fee and not already in itemsJson, add to subtotalWithDelivery
+    const isFreeDelivery = /Free\s*Delivery/i.test(job.remark || "");
+    const effectiveFee = isFreeDelivery ? 0 : (Number(job.fee) || 0);
+    if (!hasDeliveryItemInJson && effectiveFee > 0) {
+      subtotalWithDelivery += effectiveFee;
+    }
+
+    if (subtotalWithoutDelivery <= 0 && !job.itemsJson) {
+      subtotalWithoutDelivery = Math.max(0, (Number(job.totalAmount) || 0) + (Number(job.discount) || 0) - effectiveFee);
+    }
+    if (subtotalWithDelivery <= 0 && !job.itemsJson) {
+      subtotalWithDelivery = Math.max(0, (Number(job.totalAmount) || 0) + (Number(job.discount) || 0));
     }
 
     for (const campaign of activeCampaigns) {
-      const start = new Date(campaign.startDate);
-      const end = new Date(campaign.endDate);
-      if (now < start || now > end) {
-        reasons.push(`แคมเปญ "${campaign.name}" อยู่นอกช่วงเวลาการแจก (${campaign.startDate.slice(0, 10)} - ${campaign.endDate.slice(0, 10)})`);
+      // Robust date comparison: compare calendar days (YYYY-MM-DD) in Thai timezone (UTC+7)
+      const startDayStr = (campaign.startDate || "").slice(0, 10);
+      const endDayStr = (campaign.endDate || "").slice(0, 10);
+      const localThaiNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+      const todayStr = localThaiNow.toISOString().slice(0, 10);
+
+      if (startDayStr && todayStr < startDayStr) {
+        reasons.push(`แคมเปญ "${campaign.name}" ยังไม่เริ่มแจก (เริ่ม ${startDayStr}, วันนี้ ${todayStr})`);
+        continue;
+      }
+      if (endDayStr && todayStr > endDayStr) {
+        reasons.push(`แคมเปญ "${campaign.name}" สิ้นสุดการแจกแล้ว (สิ้นสุด ${endDayStr}, วันนี้ ${todayStr})`);
         continue;
       }
 
-      // Check Corporate exclusion
+      // Check Eligible Brands
+      if (campaign.conditions.eligibleBrands && campaign.conditions.eligibleBrands.length > 0) {
+        const custBrand = customer.brand || "that_laundry_shop";
+        if (!campaign.conditions.eligibleBrands.includes(custBrand)) {
+          reasons.push(`แบรนด์ ${custBrand} ไม่ร่วมรายการในแคมเปญ "${campaign.name}"`);
+          continue;
+        }
+      }
+
+      // Check Customer Type Eligibility
       const isCorp = Boolean(
         customer.isCorporate || 
         (customer as any).customerType === "corporate" || 
-        customer.priceType === "corporate"
+        (customer as any).priceType === "corporate" ||
+        (customer as any).tier === "corporate"
       );
-      if (campaign.conditions.excludeCorporate && isCorp) {
+      const isVIP = Boolean(customer.isVIP || (customer as any).tier === "vip");
+      const isMember = Boolean(customer.isMember || customer.memberId || (customer as any).tier === "member");
+      const isGeneral = !isCorp && !isVIP && !isMember;
+
+      // 1. Corporate
+      const allowCorp = campaign.conditions.allowCorporate ?? !campaign.conditions.excludeCorporate;
+      if (isCorp && !allowCorp) {
         reasons.push(`ลูกค้านิติบุคคล (Corporate) ไม่ร่วมโปรโมชั่น "${campaign.name}"`);
         continue;
       }
 
-      // Check Min Subtotal
-      if (qualifyingSubtotal < campaign.conditions.minOrderSubtotal) {
-        reasons.push(`ยอดซัก ฿${qualifyingSubtotal.toLocaleString()} ไม่ถึงเกณฑ์ขั้นต่ำ ฿${campaign.conditions.minOrderSubtotal.toLocaleString()}`);
+      // 2. VIP
+      const allowVIP = campaign.conditions.allowVIP ?? !campaign.conditions.excludeVIP;
+      if (isVIP && !allowVIP) {
+        reasons.push(`ลูกค้า VIP ไม่ร่วมโปรโมชั่น "${campaign.name}"`);
         continue;
       }
 
-      // Check limit per customer (Option B: max 1 per customer across campaign)
+      // 3. Member
+      const allowMember = campaign.conditions.allowMember ?? !campaign.conditions.excludeMember;
+      if (isMember && !isVIP && !allowMember) {
+        reasons.push(`ลูกค้าสมาชิก (Member) ไม่ร่วมโปรโมชั่น "${campaign.name}"`);
+        continue;
+      }
+
+      // 4. General
+      const allowGeneral = campaign.conditions.allowGeneral ?? true;
+      if (isGeneral && !allowGeneral) {
+        reasons.push(`ลูกค้าทั่วไปไม่ร่วมโปรโมชั่น "${campaign.name}" (เฉพาะสมาชิก/VIP)`);
+        continue;
+      }
+
+      // Check Min Subtotal
+      const qualifyingSubtotal = campaign.conditions.excludeDeliveryFee !== false 
+        ? subtotalWithoutDelivery 
+        : subtotalWithDelivery;
+
+      if (qualifyingSubtotal < campaign.conditions.minOrderSubtotal) {
+        const feeNote = campaign.conditions.excludeDeliveryFee !== false ? " (ไม่รวมค่าส่ง)" : "";
+        reasons.push(`ยอดซัก ฿${qualifyingSubtotal.toLocaleString()}${feeNote} ไม่ถึงเกณฑ์ขั้นต่ำ ฿${campaign.conditions.minOrderSubtotal.toLocaleString()}`);
+        continue;
+      }
+
+      // Check limit per customer (max per customer across campaign)
       if (campaign.conditions.limitPerCustomer > 0) {
         const phoneDigits = (customer.phone || "").replace(/\D/g, "");
-        const existingCount = await prisma.customerCoupon.count({
+        const existingCount = await prisma.customerVoucher.count({
           where: {
             campaignId: campaign.id,
             status: { not: "VOID" },
@@ -5454,7 +5749,7 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
       }
 
       // Prevent duplicate issuance for the exact same source job
-      const duplicateJobCoupon = await prisma.customerCoupon.findFirst({
+      const duplicateJobCoupon = await prisma.customerVoucher.findFirst({
         where: {
           campaignId: campaign.id,
           sourceJobId: job.id,
@@ -5472,8 +5767,8 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
       let attempts = 0;
       while (!isCodeUnique && attempts < 10) {
         attempts++;
-        const testCode = generateCouponCode(campaign.reward.codePrefix || "SHOE");
-        const existing = await prisma.customerCoupon.findFirst({ where: { code: testCode } });
+        const testCode = generateCouponCode(campaign.reward.codePrefix || "PROMO");
+        const existing = await prisma.customerVoucher.findFirst({ where: { code: testCode } });
         if (!existing) {
           uniqueCode = testCode;
           isCodeUnique = true;
@@ -5481,10 +5776,42 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
       }
 
       if (!uniqueCode) {
-        uniqueCode = `${campaign.reward.codePrefix || "SHOE"}-${Date.now().toString().slice(-4)}`;
+        uniqueCode = `${campaign.reward.codePrefix || "PROMO"}-${Date.now().toString().slice(-4)}`;
       }
 
-      const coupon = await prisma.customerCoupon.create({
+      const targetCategory = campaign.reward.applicableCategory && campaign.reward.applicableCategory.toUpperCase() !== "ALL"
+        ? campaign.reward.applicableCategory.toUpperCase().trim()
+        : null;
+
+      let resolvedExpiryDate: Date;
+      if (campaign.rewardCouponExpiryType === "FIXED_DATE" && campaign.rewardCouponExpiryDate) {
+        const dateMatch = campaign.rewardCouponExpiryDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (dateMatch) {
+          const [, y, m, d] = dateMatch;
+          resolvedExpiryDate = new Date(Number(y), Number(m) - 1, Number(d), 23, 59, 59, 999);
+        } else {
+          resolvedExpiryDate = new Date(campaign.rewardCouponExpiryDate);
+          resolvedExpiryDate.setHours(23, 59, 59, 999);
+        }
+      } else if (campaign.rewardCouponValidityDays && Number(campaign.rewardCouponValidityDays) > 0) {
+        const days = Number(campaign.rewardCouponValidityDays);
+        resolvedExpiryDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+        resolvedExpiryDate.setHours(23, 59, 59, 999);
+      } else if (campaign.rewardCouponExpiryDate) {
+        const dateMatch = campaign.rewardCouponExpiryDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (dateMatch) {
+          const [, y, m, d] = dateMatch;
+          resolvedExpiryDate = new Date(Number(y), Number(m) - 1, Number(d), 23, 59, 59, 999);
+        } else {
+          resolvedExpiryDate = new Date(campaign.rewardCouponExpiryDate);
+          resolvedExpiryDate.setHours(23, 59, 59, 999);
+        }
+      } else {
+        resolvedExpiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        resolvedExpiryDate.setHours(23, 59, 59, 999);
+      }
+
+      const coupon = await prisma.customerVoucher.create({
         data: {
           customerId: customer.id,
           customerName: customer.name,
@@ -5494,14 +5821,14 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
           description: campaign.description,
           discountType: campaign.reward.discountType,
           discountValue: Number(campaign.reward.discountValue) || 100,
-          applicableCategory: campaign.reward.applicableCategory || "SHOES",
+          applicableCategory: targetCategory,
           campaignId: campaign.id,
           sourceJobId: job.id,
           minOrderAmount: campaign.reward.minOrderAmount ?? null,
           maxDiscount: campaign.reward.maxDiscount ?? null,
           status: "ACTIVE",
           issuedAt: new Date(),
-          expiryDate: new Date(campaign.rewardCouponExpiryDate),
+          expiryDate: resolvedExpiryDate,
           issuedById: data.actor?.id || null,
           issuedByName: data.actor?.name || null,
           issuedReason: `Promotion: ${campaign.name} (บิล #${job.billNo || job.id})`,
@@ -5552,7 +5879,7 @@ export async function getPromotionReportAction(filters?: {
     const campaignId = filters?.campaignId || "promo_shoe100_oct26";
 
     // Query all coupons belonging to this campaign
-    const coupons = await prisma.customerCoupon.findMany({
+    const coupons = await prisma.customerVoucher.findMany({
       where: {
         campaignId,
       },
@@ -5656,21 +5983,20 @@ export async function getPromotionReportAction(filters?: {
 
     const redeemedList = usedCoupons.map(c => {
       const usedJob = c.usedJobId ? jobMap.get(c.usedJobId) : null;
-      let shoeItemsSummary = "";
+      let itemsSummary = "";
       if (usedJob?.itemsJson) {
         try {
           const items = JSON.parse(usedJob.itemsJson);
           if (Array.isArray(items)) {
-            const shoeItems = items.filter((it: any) => {
-              const name = (it.name || "").toLowerCase();
-              const sid = (it.serviceId || it.id || "").toUpperCase();
-              const cat = (it.category || "").toUpperCase();
-              return cat === "SHOES" || sid.startsWith("SHO-") || name.includes("รองเท้า") || name.includes("shoe");
-            });
-            shoeItemsSummary = shoeItems.map((it: any) => `${it.name} x${it.quantity}`).join(", ");
+            const matchedItems = items.filter((it: any) => isItemMatchingCategory(it, c.applicableCategory));
+            itemsSummary = matchedItems.map((it: any) => `${it.name} x${it.quantity}`).join(", ");
           }
         } catch {}
       }
+
+      const defaultCategoryText = c.applicableCategory 
+        ? `บริการหมวด ${getCategoryLabel(c.applicableCategory)}` 
+        : "บริการซักรีด";
 
       return {
         id: c.id,
@@ -5685,7 +6011,8 @@ export async function getPromotionReportAction(filters?: {
         usedJobTotal: usedJob?.totalAmount,
         usedBranchId: usedJob?.branchId,
         cashier: usedJob?.createdBy || "-",
-        shoeItemsSummary: shoeItemsSummary || "บริการซักรองเท้า",
+        shoeItemsSummary: itemsSummary || defaultCategoryText,
+        itemsSummary: itemsSummary || defaultCategoryText,
       };
     });
 

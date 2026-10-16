@@ -19,7 +19,7 @@ import {
   Eye, 
   Ban, 
   Trash2,
-  TrendingUp
+  Megaphone
 } from "lucide-react";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -35,17 +35,14 @@ import {
 } from "@/actions/db";
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
 import { AdminCouponTemplateModal } from "@/components/admin-coupon-template-modal";
+import { AdminCampaignModal } from "@/components/admin-campaign-modal";
 import { AdminCustomerProfileModal } from "@/components/admin-customer-profile-modal";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
-import { AdminPromotionReport } from "@/components/admin-promotion-report";
 
 export function AdminMarketingCoupons() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
   const customers = useCustomers();
-
-  // Navigation tab: Report vs All Coupons
-  const [viewTab, setViewTab] = useState<"report" | "coupons">("report");
 
   // Data states
   const [allCoupons, setAllCoupons] = useState<CustomerCoupon[]>([]);
@@ -55,6 +52,7 @@ export function AdminMarketingCoupons() {
   const [couponBrandFilter, setCouponBrandFilter] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [issueCouponModalOpen, setIssueCouponModalOpen] = useState(false);
   const [couponTemplateModalOpen, setCouponTemplateModalOpen] = useState(false);
+  const [campaignModalOpen, setCampaignModalOpen] = useState(false);
   const [copiedCouponId, setCopiedCouponId] = useState<string | null>(null);
   const [couponPage, setCouponPage] = useState(1);
   const couponPageSize = 20;
@@ -189,43 +187,8 @@ export function AdminMarketingCoupons() {
 
   return (
     <div className="space-y-6">
-      {/* Top Tab Bar: Report vs Coupon List */}
-      <div className="flex items-center gap-2 p-1.5 bg-slate-100 dark:bg-slate-800 rounded-2xl w-fit">
-        <button
-          type="button"
-          onClick={() => setViewTab("report")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-            viewTab === "report"
-              ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs"
-              : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
-          }`}
-        >
-          <TrendingUp size={15} />
-          <span>Promotion Report (รายงานแคมเปญ & การใช้วอยเชอร์)</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setViewTab("coupons")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-            viewTab === "coupons"
-              ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs"
-              : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
-          }`}
-        >
-          <Ticket size={15} />
-          <span>All Vouchers (วอยเชอร์ทั้งหมด & รายชื่อลูกค้า)</span>
-          <span className="px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-[10px]">
-            {allCoupons.length}
-          </span>
-        </button>
-      </div>
-
-      {viewTab === "report" ? (
-        <AdminPromotionReport />
-      ) : (
-        <>
-          {/* 1. Quick Stat Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 1. Quick Stat Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Vouchers (วอยเชอร์ทั้งหมด)</p>
@@ -324,8 +287,19 @@ export function AdminMarketingCoupons() {
           </select>
         </div>
 
-        {/* Action: + Issue Coupon & Templates Buttons */}
+        {/* Action: + Issue Coupon, Templates & Campaigns Buttons */}
         <div className="flex items-center gap-2 shrink-0">
+          {isAdmin && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCampaignModalOpen(true)}
+              className="h-9 px-3.5 border-amber-200/80 bg-amber-50/40 hover:bg-amber-100/60 hover:border-amber-300 text-amber-800 dark:text-amber-300 font-bold text-xs rounded-xl gap-1.5 shadow-2xs cursor-pointer"
+            >
+              <Megaphone size={14} className="text-amber-600" />
+              <span>Campaigns (แคมเปญโปรโมชั่น)</span>
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -341,7 +315,7 @@ export function AdminMarketingCoupons() {
             className="h-9 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl gap-1.5 shadow-sm cursor-pointer"
           >
             <Plus size={15} />
-            <span>+ Issue Voucher (แจกวอยเชอร์)</span>
+            <span>Issue Voucher (แจกวอยเชอร์)</span>
           </Button>
         </div>
       </div>
@@ -383,7 +357,7 @@ export function AdminMarketingCoupons() {
                       onClick={() => setIssueCouponModalOpen(true)}
                       className="mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl h-8 px-3.5 gap-1.5 cursor-pointer"
                     >
-                      <Plus size={13} /> + แจกวอยเชอร์ใหม่
+                      <Plus size={13} /> แจกวอยเชอร์ใหม่
                     </Button>
                   </div>
                 </TableCell>
@@ -430,22 +404,26 @@ export function AdminMarketingCoupons() {
 
                     {/* Name & Details */}
                     <TableCell className="py-4">
-                      <div className="space-y-0.5 max-w-[220px]">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-slate-800 text-xs truncate">
+                      <div className="space-y-1 min-w-[220px] max-w-[360px]">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-slate-800 text-xs leading-snug" title={coupon.name}>
                             {coupon.name}
                           </span>
                           {coupon.brand && (
-                            <Badge variant="outline" className="text-[9px] font-bold py-0 h-4 border-slate-200 text-slate-500">
+                            <Badge variant="outline" className="text-[9px] font-bold py-0 h-4 border-slate-200 text-slate-500 shrink-0">
                               {coupon.brand === "that_laundry_shop" ? "TLS" : "NoName"}
                             </Badge>
                           )}
                         </div>
                         {coupon.description && (
-                          <p className="text-[11px] text-slate-400 line-clamp-1">{coupon.description}</p>
+                          <p className="text-[11px] text-slate-500 leading-snug line-clamp-2" title={coupon.description}>
+                            {coupon.description}
+                          </p>
                         )}
                         {coupon.issuedReason && (
-                          <p className="text-[10px] text-slate-400 italic">Reason (เหตุผล): {coupon.issuedReason}</p>
+                          <p className="text-[10px] text-slate-400 italic leading-snug" title={coupon.issuedReason}>
+                            Reason (เหตุผล): {coupon.issuedReason}
+                          </p>
                         )}
                       </div>
                     </TableCell>
@@ -627,8 +605,6 @@ export function AdminMarketingCoupons() {
           </div>
         </div>
       )}
-        </>
-      )}
 
       {/* Issue Coupon Modal */}
       {issueCouponModalOpen && (
@@ -644,6 +620,14 @@ export function AdminMarketingCoupons() {
         <AdminCouponTemplateModal
           open={couponTemplateModalOpen}
           onOpenChange={setCouponTemplateModalOpen}
+        />
+      )}
+
+      {/* Campaign Management Modal */}
+      {campaignModalOpen && (
+        <AdminCampaignModal
+          open={campaignModalOpen}
+          onOpenChange={setCampaignModalOpen}
         />
       )}
 

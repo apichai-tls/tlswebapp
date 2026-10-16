@@ -14,8 +14,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ valid: false, error: "กรุณาระบุรหัสส่วนลด" }, { status: 400 });
     }
 
-    // 1. Check if this is a CustomerCoupon in the local database
-    const localCoupon = await prisma.customerCoupon.findFirst({
+    // 1. Check if this is a CustomerVoucher in the local database
+    const localCoupon = await prisma.customerVoucher.findFirst({
       where: {
         code: { equals: promoCode, mode: "insensitive" },
       },
@@ -26,22 +26,32 @@ export async function POST(req: NextRequest) {
 
     if (localCoupon) {
       const now = new Date();
-      if (localCoupon.status === "USED") {
+      if (localCoupon.status === "USED" && (!currentJobId || localCoupon.usedJobId !== currentJobId)) {
         return NextResponse.json({
           valid: false,
-          error: `คูปองนี้ถูกใช้งานไปแล้ว${localCoupon.usedJobId ? ` (บิล #${localCoupon.usedJobId})` : ""}`,
+          error: `วอยเชอร์นี้ถูกใช้งานไปแล้ว${localCoupon.usedJobId ? ` (บิล #${localCoupon.usedJobId})` : ""}`,
         }, { status: 200 });
       }
 
       if (localCoupon.status === "VOID") {
-        return NextResponse.json({ valid: false, error: "คูปองนี้ถูกยกเลิกการใช้งานแล้ว (VOID)" }, { status: 200 });
+        return NextResponse.json({ valid: false, error: "วอยเชอร์นี้ถูกยกเลิกการใช้งานแล้ว (VOID)" }, { status: 200 });
       }
 
-      if (localCoupon.status === "EXPIRED" || (localCoupon.expiryDate && new Date(localCoupon.expiryDate) < now)) {
-        if (localCoupon.status !== "EXPIRED") {
-          await prisma.customerCoupon.update({ where: { id: localCoupon.id }, data: { status: "EXPIRED" } }).catch(() => {});
+      let isExpired = localCoupon.status === "EXPIRED";
+      if (!isExpired && localCoupon.expiryDate) {
+        const expDate = new Date(localCoupon.expiryDate);
+        // Ensure expiry check includes full day if only date was saved
+        if (expDate.getHours() === 0 && expDate.getMinutes() === 0) {
+          expDate.setHours(23, 59, 59, 999);
         }
-        return NextResponse.json({ valid: false, error: "คูปองนี้หมดอายุการใช้งานแล้ว" }, { status: 200 });
+        if (expDate < now) {
+          isExpired = true;
+          await prisma.customerVoucher.update({ where: { id: localCoupon.id }, data: { status: "EXPIRED" } }).catch(() => {});
+        }
+      }
+
+      if (isExpired) {
+        return NextResponse.json({ valid: false, error: "วอยเชอร์นี้หมดอายุการใช้งานแล้ว" }, { status: 200 });
       }
 
       // Check customer matching if coupon was issued to a specific customer
@@ -52,11 +62,11 @@ export async function POST(req: NextRequest) {
         const matchesId = Boolean(customerId && localCoupon.customerId === customerId);
         const matchesPhone = Boolean(phoneDigits.length >= 8 && localCustPhoneDigits.length >= 8 && phoneDigits.slice(-8) === localCustPhoneDigits.slice(-8));
 
-        if (customerId && !matchesId && !matchesPhone) {
+        if (!matchesId && !matchesPhone) {
           const ownerName = localCoupon.customerName || localCoupon.customer?.name || "ลูกค้าท่านอื่น";
           return NextResponse.json({
             valid: false,
-            error: `คูปองนี้เป็นของลูกค้า "${ownerName}" เท่านั้น`,
+            error: `วอยเชอร์นี้เป็นของลูกค้า "${ownerName}" เท่านั้น กรุณาเลือกลูกค้าในระบบก่อนใช้`,
           }, { status: 200 });
         }
       }
@@ -66,24 +76,26 @@ export async function POST(req: NextRequest) {
         if ((orderTotal || 0) < localCoupon.minOrderAmount) {
           return NextResponse.json({
             valid: false,
-            error: `ยอดสั่งซื้อขั้นต่ำสำหรับคูปองนี้คือ ฿${localCoupon.minOrderAmount.toLocaleString()} (ยอดปัจจุบัน ฿${(orderTotal || 0).toLocaleString()})`,
+            error: `ยอดสั่งซื้อขั้นต่ำสำหรับวอยเชอร์นี้คือ ฿${localCoupon.minOrderAmount.toLocaleString()} (ยอดปัจจุบัน ฿${(orderTotal || 0).toLocaleString()})`,
           }, { status: 200 });
         }
       }
 
-      // Category restriction validation (e.g. SHOES)
+      // Category restriction validation (e.g. SHOES, DRY CLEAN, LINENS, etc.)
       let categorySubtotal: number | null = null;
-      if (localCoupon.applicableCategory) {
-        const { isItemMatchingCategory } = await import("@/lib/promotions");
-        const catTarget = localCoupon.applicableCategory.toUpperCase().trim();
+      const { isItemMatchingCategory, getCategoryLabel, resolveEffectiveCategory } = await import("@/lib/promotions");
+      const effectiveCategory = resolveEffectiveCategory(localCoupon);
+
+      if (effectiveCategory) {
+        const catTarget = effectiveCategory.toUpperCase().trim();
         const cartItems = Array.isArray(items) ? items : [];
         const matchingItems = cartItems.filter((it: any) => isItemMatchingCategory(it, catTarget));
 
         if (matchingItems.length === 0) {
-          const catNameThai = catTarget === "SHOES" ? "ซักรองเท้า (Shoe Cleaning)" : catTarget;
+          const catNameThai = getCategoryLabel(catTarget, "th");
           return NextResponse.json({
             valid: false,
-            error: `คูปองนี้ใช้ได้เฉพาะบริการ "${catNameThai}" เท่านั้น กรุณาเพิ่มรายการในหมวดนี้ในบิล`,
+            error: `วอยเชอร์นี้ใช้ได้เฉพาะบริการ "${catNameThai}" เท่านั้น กรุณาเพิ่มรายการในหมวดนี้ในบิล`,
           }, { status: 200 });
         }
 
@@ -94,9 +106,10 @@ export async function POST(req: NextRequest) {
         }, 0);
 
         if (categorySubtotal <= 0) {
+          const catNameThai = getCategoryLabel(catTarget, "th");
           return NextResponse.json({
             valid: false,
-            error: `ยอดบริการสำหรับหมวด ${localCoupon.applicableCategory} ต้องมากกว่า 0 บาท`,
+            error: `ยอดบริการสำหรับหมวด ${catNameThai} ต้องมากกว่า 0 บาท`,
           }, { status: 200 });
         }
       }
@@ -104,10 +117,12 @@ export async function POST(req: NextRequest) {
       // Calculate discount amount
       let calcDiscount = 0;
       const isDeliveryOnly = localCoupon.discountType === "FREE_DELIVERY";
-      const discountType = localCoupon.discountType === "PERCENTAGE" ? "PERCENTAGE" : "FIXED";
-      const discountTarget = isDeliveryOnly ? "DELIVERY" : (localCoupon.applicableCategory ? localCoupon.applicableCategory : "ALL");
+      const discountType = localCoupon.discountType === "PERCENTAGE" 
+        ? "PERCENTAGE" 
+        : (isDeliveryOnly ? "FREE_DELIVERY" : "FIXED");
+      const discountTarget = isDeliveryOnly ? "DELIVERY" : (effectiveCategory ? effectiveCategory : "ALL");
 
-      if (localCoupon.applicableCategory && categorySubtotal != null) {
+      if (effectiveCategory && categorySubtotal != null) {
         if (localCoupon.discountType === "PERCENTAGE") {
           calcDiscount = (categorySubtotal * localCoupon.discountValue) / 100;
           if (localCoupon.maxDiscount != null && localCoupon.maxDiscount > 0) {
@@ -119,7 +134,10 @@ export async function POST(req: NextRequest) {
         }
       } else if (isDeliveryOnly) {
         const feeVal = Number(body.deliveryFee) || 0;
-        calcDiscount = feeVal > 0 ? (localCoupon.discountValue ? Math.min(localCoupon.discountValue, feeVal) : feeVal) : 0;
+        calcDiscount = feeVal > 0 ? (localCoupon.discountValue > 0 ? Math.min(localCoupon.discountValue, feeVal) : feeVal) : 0;
+        if (localCoupon.maxDiscount != null && localCoupon.maxDiscount > 0) {
+          calcDiscount = Math.min(calcDiscount, localCoupon.maxDiscount);
+        }
       } else if (localCoupon.discountType === "PERCENTAGE") {
         calcDiscount = ((orderTotal || 0) * localCoupon.discountValue) / 100;
         if (localCoupon.maxDiscount != null && localCoupon.maxDiscount > 0) {
@@ -140,7 +158,7 @@ export async function POST(req: NextRequest) {
         description: localCoupon.description || localCoupon.name,
         discountType,
         discountTarget,
-        applicableCategory: localCoupon.applicableCategory ?? null,
+        applicableCategory: effectiveCategory ?? null,
         discountValue: localCoupon.discountValue,
         discountAmount: calcDiscount,
         maxDiscount: localCoupon.maxDiscount ?? null,

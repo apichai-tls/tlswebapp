@@ -127,7 +127,8 @@ export function AdminTaskTracker({ job, readOnly = false }: { job: Job, readOnly
       date.setDate(date.getDate() + 1);
     }
 
-    jobStore.assignDeliveryRider(job.id, deliveryRiderId, date);
+    const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+    jobStore.assignDeliveryRider(job.id, deliveryRiderId, date, actorDetails);
   };
 
   const getRiderName = (id?: string) => {

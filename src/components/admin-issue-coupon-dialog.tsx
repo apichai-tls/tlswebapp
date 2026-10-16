@@ -13,7 +13,6 @@ import {
   Percent, 
   DollarSign, 
   Truck, 
-  Coins, 
   AlertCircle,
   Settings,
   BookmarkPlus,
@@ -31,6 +30,7 @@ import { useCustomers } from "@/lib/use-customers";
 import { matchCustomerSearch, formatBaht } from "@/lib/utils";
 import { createCustomerCouponAction, getCouponTemplatesAction, saveCouponTemplateAction } from "@/actions/db";
 import { type Customer, type CustomerCoupon, type CouponTemplate } from "@/lib/store";
+import { PROMO_SERVICE_CATEGORIES } from "@/lib/promotions";
 import { AdminCouponTemplateModal } from "./admin-coupon-template-modal";
 
 interface AdminIssueCouponDialogProps {
@@ -42,7 +42,7 @@ interface AdminIssueCouponDialogProps {
 
 const PRESET_TEMPLATES = [
   {
-    label: "🎁 ต้อนรับสมาชิก (ลด ฿100)",
+    label: "🎁 Welcome Member (ลด ฿100)",
     codePrefix: "WELCOME100",
     name: "วอยเชอร์ต้อนรับสมาชิกใหม่ ลด ฿100",
     discountType: "FIXED" as const,
@@ -53,7 +53,7 @@ const PRESET_TEMPLATES = [
     reason: "ต้อนรับสมาชิกใหม่ (Welcome Member)",
   },
   {
-    label: "🎂 วันเกิด (ลด 20%)",
+    label: "🎂 Birthday Perk (ลด 20%)",
     codePrefix: "BDAY20",
     name: "วอยเชอร์วันเกิดพิเศษ ลด 20%",
     discountType: "PERCENTAGE" as const,
@@ -64,7 +64,7 @@ const PRESET_TEMPLATES = [
     reason: "สิทธิพิเศษเดือนเกิดลูกค้า (Birthday Perk)",
   },
   {
-    label: "🚚 ฟรีค่าส่ง Delivery",
+    label: "🚚 Free Delivery (ฟรีค่าส่ง)",
     codePrefix: "FREEDELIVERY",
     name: "วอยเชอร์ฟรีค่าจัดส่ง Delivery",
     discountType: "FREE_DELIVERY" as const,
@@ -75,7 +75,7 @@ const PRESET_TEMPLATES = [
     reason: "โปรโมชั่นฟรีค่าจัดส่ง",
   },
   {
-    label: "🛠️ ชดเชยบริการ (ลด ฿200)",
+    label: "🛠️ Service Recovery (ลด ฿200)",
     codePrefix: "SRV200",
     name: "วอยเชอร์ชดเชยบริการ Service Recovery ฿200",
     discountType: "FIXED" as const,
@@ -86,7 +86,7 @@ const PRESET_TEMPLATES = [
     reason: "ชดเชยบริการล่าช้า / ปัญหาการจัดส่ง",
   },
   {
-    label: "💖 ส่วนลดแทนใจ (ลด ฿50)",
+    label: "💖 Special Loyalty (ลด ฿50)",
     codePrefix: "TLS50",
     name: "วอยเชอร์ส่วนลดพิเศษ ฿50",
     discountType: "FIXED" as const,
@@ -116,10 +116,11 @@ export function AdminIssueCouponDialog({
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [discountType, setDiscountType] = useState<"FIXED" | "PERCENTAGE" | "FREE_DELIVERY" | "CASH_VOUCHER">("FIXED");
+  const [discountType, setDiscountType] = useState<"FIXED" | "PERCENTAGE" | "FREE_DELIVERY">("FIXED");
   const [discountValue, setDiscountValue] = useState<number | string>(100);
   const [minOrderAmount, setMinOrderAmount] = useState<number | string>("");
   const [maxDiscount, setMaxDiscount] = useState<number | string>("");
+  const [applicableCategory, setApplicableCategory] = useState<string>("ALL");
   const [expiryDate, setExpiryDate] = useState<string>("");
   const [issuedReason, setIssuedReason] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -160,7 +161,7 @@ export function AdminIssueCouponDialog({
       setShowCustomerDropdown(false);
       
       // Default expiry date: 30 days from today
-      const defaultExp = addDays(new Date(), 30).toISOString().split("T")[0];
+      const defaultExp = format(addDays(new Date(), 30), "yyyy-MM-dd");
       setExpiryDate(defaultExp);
       
       // Reset other fields if opening fresh
@@ -189,13 +190,18 @@ export function AdminIssueCouponDialog({
     if ("description" in tpl && tpl.description) {
       setDescription(tpl.description);
     }
-    setDiscountType(tpl.discountType);
+    setDiscountType(tpl.discountType === "CASH_VOUCHER" ? "FIXED" : tpl.discountType);
     setDiscountValue(tpl.discountValue);
     setMinOrderAmount(tpl.minOrderAmount != null ? tpl.minOrderAmount : "");
     setMaxDiscount(tpl.maxDiscount != null ? tpl.maxDiscount : "");
+    if ("applicableCategory" in tpl && tpl.applicableCategory) {
+      setApplicableCategory(tpl.applicableCategory);
+    } else {
+      setApplicableCategory("ALL");
+    }
     setIssuedReason(tpl.reason || "");
     if (tpl.days) {
-      setExpiryDate(addDays(new Date(), tpl.days).toISOString().split("T")[0]);
+      setExpiryDate(format(addDays(new Date(), tpl.days), "yyyy-MM-dd"));
     } else {
       setExpiryDate("");
     }
@@ -220,7 +226,8 @@ export function AdminIssueCouponDialog({
         discountValue: Number(discountValue) || 0,
         minOrderAmount: minOrderAmount !== "" ? Number(minOrderAmount) : null,
         maxDiscount: maxDiscount !== "" ? Number(maxDiscount) : null,
-        days: expiryDate ? Math.max(1, Math.ceil((new Date(expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24))) : 30,
+        applicableCategory: applicableCategory && applicableCategory !== "ALL" ? applicableCategory : null,
+        days: expiryDate ? Math.max(1, Math.ceil((new Date(`${expiryDate}T23:59:59.999+07:00`).getTime() - Date.now()) / (1000 * 60 * 60 * 24))) : 30,
         reason: issuedReason.trim() || undefined,
         brand: selectedCustomer?.brand || "all",
       });
@@ -259,6 +266,7 @@ export function AdminIssueCouponDialog({
 
     setIsSubmitting(true);
     try {
+      const targetCategory = applicableCategory && applicableCategory !== "ALL" ? applicableCategory : null;
       const res = await createCustomerCouponAction({
         customerId: selectedCustomer.id,
         code: cleanCode,
@@ -268,7 +276,8 @@ export function AdminIssueCouponDialog({
         discountValue: numValue,
         minOrderAmount: minOrderAmount ? Number(minOrderAmount) : null,
         maxDiscount: maxDiscount ? Number(maxDiscount) : null,
-        expiryDate: expiryDate ? new Date(`${expiryDate}T23:59:59`) : null,
+        applicableCategory: targetCategory,
+        expiryDate: expiryDate ? new Date(`${expiryDate}T23:59:59.999+07:00`) : null,
         issuedReason: issuedReason.trim() || undefined,
         issuedById: user?.id,
         issuedByName: user?.name || user?.email || "Admin",
@@ -458,11 +467,11 @@ export function AdminIssueCouponDialog({
             {/* Discount Type Buttons */}
             <div className="space-y-1.5">
               <Label className="font-bold text-slate-700">Discount Type (ประเภทส่วนลด)</Label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setDiscountType("FIXED")}
-                  className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 ${
+                  className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
                     discountType === "FIXED"
                       ? "border-indigo-600 bg-indigo-50 text-indigo-900 font-black shadow-xs ring-1 ring-indigo-600"
                       : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold"
@@ -475,7 +484,7 @@ export function AdminIssueCouponDialog({
                 <button
                   type="button"
                   onClick={() => setDiscountType("PERCENTAGE")}
-                  className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 ${
+                  className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
                     discountType === "PERCENTAGE"
                       ? "border-indigo-600 bg-indigo-50 text-indigo-900 font-black shadow-xs ring-1 ring-indigo-600"
                       : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold"
@@ -488,7 +497,7 @@ export function AdminIssueCouponDialog({
                 <button
                   type="button"
                   onClick={() => setDiscountType("FREE_DELIVERY")}
-                  className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 ${
+                  className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
                     discountType === "FREE_DELIVERY"
                       ? "border-emerald-600 bg-emerald-50 text-emerald-900 font-black shadow-xs ring-1 ring-emerald-600"
                       : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold"
@@ -496,19 +505,6 @@ export function AdminIssueCouponDialog({
                 >
                   <Truck size={14} className="text-emerald-600" />
                   <span className="text-[11px]">Free Delivery (ฟรีค่าส่ง)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setDiscountType("CASH_VOUCHER")}
-                  className={`p-2 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 ${
-                    discountType === "CASH_VOUCHER"
-                      ? "border-amber-600 bg-amber-50 text-amber-900 font-black shadow-xs ring-1 ring-amber-600"
-                      : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold"
-                  }`}
-                >
-                  <Coins size={14} className="text-amber-600" />
-                  <span className="text-[11px]">Cash Voucher (วอยเชอร์)</span>
                 </button>
               </div>
             </div>
@@ -542,6 +538,21 @@ export function AdminIssueCouponDialog({
                   onChange={e => setMinOrderAmount(e.target.value)}
                   className="h-9 text-xs rounded-xl border-slate-200"
                 />
+              </div>
+
+              <div className="space-y-1">
+                <Label className="font-bold text-slate-700">Target Category (หมวดหมู่บริการที่ใช้ได้)</Label>
+                <select
+                  value={applicableCategory}
+                  onChange={e => setApplicableCategory(e.target.value)}
+                  className="w-full h-9 px-2 text-xs font-bold rounded-xl border border-slate-200 bg-white cursor-pointer"
+                >
+                  {PROMO_SERVICE_CATEGORIES.map(cat => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.icon} {cat.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {discountType === "PERCENTAGE" && (

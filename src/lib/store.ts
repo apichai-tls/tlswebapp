@@ -95,7 +95,7 @@ export interface CustomerAddress {
   updatedAt?: Date | string;
 }
 
-export interface CustomerCoupon {
+export interface CustomerVoucher {
   id: string;
   customerId: string;
   customerName?: string | null;
@@ -123,6 +123,10 @@ export interface CustomerCoupon {
   createdAt?: string | Date;
   updatedAt?: string | Date;
 }
+
+export type CustomerCoupon = CustomerVoucher;
+
+export type { PromotionCampaign } from './promotions';
 
 export interface CouponTemplate {
   id: string;
@@ -660,7 +664,7 @@ export const jobStore = {
     return await api.fetchHistoricalJobs(startDate, endDate, riderId);
   },
 
-  async assignPickupRider(id: string, riderId: string, scheduledAt?: Date) {
+  async assignPickupRider(id: string, riderId: string, scheduledAt?: Date, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
     if (!job || !job.legs) return;
@@ -673,11 +677,10 @@ export const jobStore = {
       pickupInbound: { ...job.legs.pickupInbound, riderId, scheduledAt: sched }
     };
 
-    await api.updateJob(id, { legs: updatedLegs, pickupRiderId: riderId, pickupScheduledAt: sched });
-    emitJobChange();
+    await this.updateJobDetails(id, { legs: updatedLegs, pickupRiderId: riderId, pickupScheduledAt: sched }, actorDetails);
   },
 
-  async assignDeliveryRider(id: string, riderId: string, scheduledAt: Date) {
+  async assignDeliveryRider(id: string, riderId: string, scheduledAt: Date, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
     if (!job || !job.legs) return;
@@ -688,8 +691,7 @@ export const jobStore = {
       deliveryInbound: { ...job.legs.deliveryInbound, riderId, scheduledAt }
     };
 
-    await api.updateJob(id, { legs: updatedLegs, deliveryRiderId: riderId, deliveryScheduledAt: scheduledAt });
-    emitJobChange();
+    await this.updateJobDetails(id, { legs: updatedLegs, deliveryRiderId: riderId, deliveryScheduledAt: scheduledAt }, actorDetails);
   },
 
   async completeJob(id: string, proofImageUrl?: string, legType?: "pickup" | "delivery", actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {

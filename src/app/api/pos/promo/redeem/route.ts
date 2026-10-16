@@ -10,9 +10,9 @@ export async function POST(req: NextRequest) {
     const { code, receiptNo, discountAmount } = body;
     const promoCode = (code || "").trim().toUpperCase();
 
-    // 1. Mark local CustomerCoupon as USED if it exists
+    // 1. Mark local CustomerVoucher as USED if it exists
     if (promoCode) {
-      const localCoupon = await prisma.customerCoupon.findFirst({
+      const localCoupon = await prisma.customerVoucher.findFirst({
         where: {
           code: { equals: promoCode, mode: "insensitive" },
           status: "ACTIVE",
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
       if (localCoupon) {
         const usedDiscount = discountAmount != null ? Math.max(0, Number(discountAmount)) : localCoupon.discountValue;
-        await prisma.customerCoupon.update({
+        await prisma.customerVoucher.update({
           where: { id: localCoupon.id },
           data: {
             status: "USED",
@@ -30,7 +30,24 @@ export async function POST(req: NextRequest) {
             discountAmountUsed: usedDiscount,
           },
         });
-        console.log(`[CustomerCoupon/redeem] Successfully marked ${promoCode} as USED for job ${receiptNo} (discount: ฿${usedDiscount})`);
+
+        await prisma.activityLog.create({
+          data: {
+            entityId: localCoupon.customerId,
+            entityType: "customer",
+            action: "COUPON_USED",
+            details: JSON.stringify({
+              couponId: localCoupon.id,
+              code: localCoupon.code,
+              usedJobId: receiptNo ? String(receiptNo) : null,
+              discountAmountUsed: usedDiscount,
+            }),
+            userId: null,
+            userName: "POS System",
+          },
+        }).catch(() => {});
+
+        console.log(`[CustomerVoucher/redeem] Successfully marked ${promoCode} as USED for job ${receiptNo} (discount: ฿${usedDiscount})`);
         return NextResponse.json({ success: true, isCustomerCoupon: true });
       }
     }

@@ -10,9 +10,9 @@ export async function POST(req: NextRequest) {
     const { code, receiptNo } = body;
     const promoCode = (code || "").trim().toUpperCase();
 
-    // 1. Restore local CustomerCoupon to ACTIVE if it was marked as USED
+    // 1. Restore local CustomerVoucher to ACTIVE if it was marked as USED
     if (promoCode) {
-      const localCoupon = await prisma.customerCoupon.findFirst({
+      const localCoupon = await prisma.customerVoucher.findFirst({
         where: {
           code: { equals: promoCode, mode: "insensitive" },
           status: "USED",
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
       });
 
       if (localCoupon) {
-        await prisma.customerCoupon.update({
+        await prisma.customerVoucher.update({
           where: { id: localCoupon.id },
           data: {
             status: "ACTIVE",
@@ -29,7 +29,23 @@ export async function POST(req: NextRequest) {
             discountAmountUsed: null,
           },
         });
-        console.log(`[CustomerCoupon/void] Successfully restored ${promoCode} to ACTIVE`);
+
+        await prisma.activityLog.create({
+          data: {
+            entityId: localCoupon.customerId,
+            entityType: "customer",
+            action: "COUPON_RESTORED",
+            details: JSON.stringify({
+              couponId: localCoupon.id,
+              code: localCoupon.code,
+              reason: `Restored to ACTIVE on POS void/cancel (receiptNo: ${receiptNo || "N/A"})`,
+            }),
+            userId: null,
+            userName: "POS System",
+          },
+        }).catch(() => {});
+
+        console.log(`[CustomerVoucher/void] Successfully restored ${promoCode} to ACTIVE`);
         return NextResponse.json({ success: true, isCustomerCoupon: true });
       }
     }
