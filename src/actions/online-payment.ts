@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { invalidateDbCache } from '@/lib/db-cache';
-import { processTopUpAction } from '@/actions/db';
+import { processTopUpAction, evaluateAndIssuePromotionCouponsAction } from '@/actions/db';
 import {
   createBeamPaymentLink,
   getBeamPaymentLink,
@@ -101,6 +101,18 @@ async function markJobAsPaidInDb(params: {
     invalidateDbCache();
   } catch (err) {
     console.warn('[Online Payment] Failed to invalidate DB cache:', err);
+  }
+
+  if (isFullyPaidNow && !job.isShopPaid && updated.customerId) {
+    try {
+      await evaluateAndIssuePromotionCouponsAction({
+        jobId: updated.id,
+        customerId: updated.customerId,
+        actor: { name: "System (Online Payment)" },
+      });
+    } catch (e) {
+      console.warn("[recordOnlinePaymentSuccess] Promo evaluation failed:", e);
+    }
   }
 
   return updated;

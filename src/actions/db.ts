@@ -1147,9 +1147,9 @@ export async function addJobAction(data: any) {
     console.error("Failed to write ActivityLog on create:", err.message);
   }
 
-  // Evaluate promotion coupon issuance when job is created with paid status
+  // Evaluate promotion coupon issuance only when job is created with shop-paid status
   let issuedCoupons: any[] = [];
-  if ((createdJob.isPaid || createdJob.isShopPaid) && createdJob.customerId) {
+  if (createdJob.isShopPaid && createdJob.customerId) {
     try {
       const promoRes = await evaluateAndIssuePromotionCouponsAction({
         jobId: createdJob.id,
@@ -1616,6 +1616,27 @@ export async function updateJobAction(id: string, updates: any) {
       data.shopPaidAt = new Date();
     } else if (updates.isShopPaid === false) {
       data.shopPaidAt = null;
+      if (existingJob?.isShopPaid === true) {
+        try {
+          prisma.customerVoucher.updateMany({
+            where: {
+              sourceJobId: id,
+              status: "ACTIVE",
+            },
+            data: {
+              status: "VOID",
+            },
+          }).then((res) => {
+            if (res.count > 0) {
+              console.log(`[CustomerVoucher] Voided ${res.count} active reward voucher(s) because job ${id} was unmarked as shop paid`);
+            }
+          }).catch((err) => {
+            console.warn("[CustomerVoucher] Void on unmark shop paid failed:", err);
+          });
+        } catch (vErr) {
+          console.warn("[CustomerVoucher] Void on unmark shop paid failed:", vErr);
+        }
+      }
     }
   }
   if (updates.fee !== undefined) {
@@ -1892,12 +1913,13 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
 
-  // Evaluate promotion coupon issuance when job is marked paid
+  // Evaluate promotion coupon issuance when job is confirmed shop paid:
+  // 1) Job just transitioned to isShopPaid === true, OR
+  // 2) Job is shop paid and items were updated/added
   let issuedCoupons: any[] = [];
-  if (
-    (data.isPaid === true || data.isShopPaid === true) &&
-    (!existingJob?.isPaid && !existingJob?.isShopPaid)
-  ) {
+  const justBecameShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
+  const alreadyShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid === true;
+  if ((justBecameShopPaid || (alreadyShopPaid && updates.items !== undefined)) && updatedJob.customerId) {
     try {
       const promoEval = await evaluateAndIssuePromotionCouponsAction({
         jobId: id,
@@ -4814,9 +4836,9 @@ export async function recordJobPaymentAction(data: {
       };
     });
 
-    // Evaluate promotion coupon issuance when job payment completes
+    // Evaluate promotion coupon issuance when job payment completes and marks shop paid
     let couponsIssued: any[] = [];
-    if (result.success && result.updatedJob && (result.updatedJob.isPaid || result.updatedJob.isShopPaid)) {
+    if (result.success && result.updatedJob && result.updatedJob.isShopPaid) {
       try {
         const promoRes = await evaluateAndIssuePromotionCouponsAction({
           jobId: result.updatedJob.id,
@@ -5579,6 +5601,26 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
       include: { customer: true },
     });
     if (!job) return { success: false, qualified: false, couponsIssued: [], error: "ไม่พบข้อมูลบิลงาน" };
+
+    // STRICT GUARD 1: Job MUST be confirmed as SHOP PAID (isShopPaid === true)
+    if (!job.isShopPaid) {
+      return {
+        success: true,
+        qualified: false,
+        couponsIssued: [],
+        reasons: ["บิลนี้ยังไม่ได้ยืนยันการชำระเงินของร้าน (ยังไม่ได้กด SHOP PAID)"],
+      };
+    }
+
+    // STRICT GUARD 2: Voided, cancelled, or refunded jobs never earn promotion vouchers
+    if (job.status === "cancel" || job.refundId) {
+      return {
+        success: true,
+        qualified: false,
+        couponsIssued: [],
+        reasons: ["บิลนี้ถูกยกเลิกหรือขอคืนเงินแล้ว"],
+      };
+    }
 
     const custId = data.customerId || job.customerId;
     if (!custId) {

@@ -2737,6 +2737,10 @@ export default function AdminPage() {
         // Strictly trigger on explicit Pay button click (isPayment === true) — never deduct on simple Save
         const isShopPaidNow_update = isPayment;
         const wasShopPaidBefore_update = existingJob ? !!(existingJob as any).isShopPaid : false;
+        // Capture customer wallet balance BEFORE any deduction occurs in this update cycle
+        const walletBalanceBeforePay = selectedProfileCustomer
+          ? (selectedProfileCustomer.creditBalance ?? 0)
+          : undefined;
         if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
           const deductAmt = isSplitPayment ? splitMemberDeductAmt : remainingToPay;
           if (paymentChannel === "Deduct Member" || (isSplitPayment && splitMemberDeductAmt > 0)) {
@@ -2924,6 +2928,18 @@ export default function AdminPage() {
           const alreadyHasThisRev = existingBillUrls.some(u => u.includes(proformaFilename));
 
           if (!alreadyHasThisRev || (isPayment && isCartChangedFromLastProforma) || (isCartChangedFromLastProforma && !isAlreadyPaidJob)) {
+            const proformaAdminNotesJson = (() => {
+              try {
+                const raw = existingJob?.adminNotesJson || newJobData.adminNotesJson;
+                if (!raw) return undefined;
+                const parsed = JSON.parse(raw);
+                delete parsed.payments;
+                return JSON.stringify(parsed);
+              } catch {
+                return undefined;
+              }
+            })();
+
             const proformaCapData = {
               ...formatJobToReceiptData({
                 ...existingJob,
@@ -2938,15 +2954,23 @@ export default function AdminPage() {
                 proformaRevision: finalRevision,
                 remark: (newJobData.remark !== undefined ? newJobData.remark : existingJob?.remark),
                 totalAmount: calculatedTotal,
+                isShopPaid: false,
+                isPaid: false,
+                adminNotesJson: proformaAdminNotesJson,
+                walletBalance: walletBalanceBeforePay,
                 walletBalanceAfter: undefined,
                 isDraft: true,
               } as any),
               items: itemsPayload,
               isDraft: true,
+              isPaid: false,
+              isShopPaid: false,
+              adminNotesJson: proformaAdminNotesJson,
               proformaRevision: finalRevision,
               proformaId: finalProformaNum,
               jobId: targetEditingJobId,
               autoCapture: false,
+              walletBalance: walletBalanceBeforePay,
               walletBalanceAfter: undefined,
             };
             const baseBillsForCapture = [...safeBillUrls];
@@ -3105,6 +3129,9 @@ export default function AdminPage() {
           paymentChannel === "Deduct Member" || (isSplitPayment && splitMemberDeductAmt > 0)
         );
         const memberDeductAmt_new = isSplitPayment ? splitMemberDeductAmt : calculatedTotal;
+        const walletBalanceBeforePay_new = selectedProfileCustomer
+          ? (selectedProfileCustomer.creditBalance ?? 0)
+          : undefined;
 
         if (isMemberDeductNeeded_new) {
           // Validate balance is sufficient before proceeding
@@ -3168,6 +3195,18 @@ export default function AdminPage() {
             lastPaidProformaInfoRef.current = { id: autoProformaNum, rev: 0 };
           }
 
+          const newJobProformaAdminNotesJson = (() => {
+            try {
+              const raw = job.adminNotesJson;
+              if (!raw) return undefined;
+              const parsed = JSON.parse(raw);
+              delete parsed.payments;
+              return JSON.stringify(parsed);
+            } catch {
+              return undefined;
+            }
+          })();
+
           // Fire background proforma image capture for new jobs (fire-and-forget)
           const newJobReceiptBase = formatJobToReceiptData({
             ...job,
@@ -3177,6 +3216,10 @@ export default function AdminPage() {
             proformaRevision: 0,
             remark: updatedRemark,
             totalAmount: calculatedTotal,
+            isShopPaid: false,
+            isPaid: false,
+            adminNotesJson: newJobProformaAdminNotesJson,
+            walletBalance: walletBalanceBeforePay_new,
             walletBalanceAfter: undefined,
             isDraft: true,
           } as any);
@@ -3184,10 +3227,14 @@ export default function AdminPage() {
             ...newJobReceiptBase,
             items: itemsPayload,
             isDraft: true,
+            isPaid: false,
+            isShopPaid: false,
+            adminNotesJson: newJobProformaAdminNotesJson,
             proformaRevision: 0,
             proformaId: autoProformaNum,
             jobId: savedJobId,
             autoCapture: false,
+            walletBalance: walletBalanceBeforePay_new,
             walletBalanceAfter: undefined,
           };
           const capturedSavedJobId = savedJobId;
@@ -3395,6 +3442,28 @@ export default function AdminPage() {
         ) : "",
       ].filter(Boolean);
       
+      const existingJobForProforma = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+      const existingJobWalletPaid = (() => {
+        try {
+          if (!existingJobForProforma?.adminNotesJson) return 0;
+          const parsed = JSON.parse(existingJobForProforma.adminNotesJson);
+          if (!Array.isArray(parsed?.payments)) return 0;
+          return parsed.payments
+            .filter((p: any) => {
+              const m = (p.method || "").toLowerCase();
+              const ch = (p.channel || "").toLowerCase();
+              return m.includes("wallet") || m.includes("credit") || m === "member_wallet" || ch.includes("deduct");
+            })
+            .reduce((s: number, p: any) => s + (p.amount || 0), 0);
+        } catch {
+          return 0;
+        }
+      })();
+
+      const effectiveWalletBalanceForProforma = (isPaidJob && (existingJobForProforma as any)?.walletBalanceAfter != null)
+        ? (Number((existingJobForProforma as any).walletBalanceAfter) + (existingJobWalletPaid > 0 ? existingJobWalletPaid : (Number(existingJobForProforma?.totalAmount) || 0)))
+        : (selectedProfileCustomer?.creditBalance !== undefined ? selectedProfileCustomer.creditBalance : undefined);
+
       const mockJob: any = {
         id: editingJobId || "DRAFT",
         customerId: selectedProfileCustomer?.id || (editingJobId ? jobs.find(j => j.id === editingJobId)?.customerId : undefined),
@@ -3403,7 +3472,7 @@ export default function AdminPage() {
         customerPhone: customerPhone || selectedProfileCustomer?.phone || selectedProfileCustomer?.secondaryPhone || "-",
         isMember: selectedProfileCustomer?.isMember !== undefined ? selectedProfileCustomer.isMember : (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.isMember : undefined),
         memberId: selectedProfileCustomer?.memberId || (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.memberId : undefined) || null,
-        walletBalance: selectedProfileCustomer?.creditBalance !== undefined ? selectedProfileCustomer.creditBalance : undefined,
+        walletBalance: effectiveWalletBalanceForProforma,
         deliveryAddress: isDelivery ? (() => {
           const cleanRoom = (deliveryRoom || "").replace(/^Room\s*/i, '').trim();
           return cleanRoom ? `${deliveryLoc} (Room ${cleanRoom})` : deliveryLoc;

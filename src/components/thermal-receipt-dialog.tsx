@@ -275,11 +275,19 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
 
   let totalPayments = 0;
   let paymentTime: Date | null = null;
+  let walletPaidTotal = 0;
   try {
     if (rawJob.adminNotesJson) {
       const parsed = JSON.parse(rawJob.adminNotesJson);
       if (parsed && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
         totalPayments = parsed.payments.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+        walletPaidTotal = parsed.payments
+          .filter((p: any) => {
+            const m = (p.method || "").toLowerCase();
+            const ch = (p.channel || "").toLowerCase();
+            return m.includes("wallet") || m.includes("credit") || m === "member_wallet" || ch.includes("deduct");
+          })
+          .reduce((s: number, p: any) => s + (p.amount || 0), 0);
         const lastPay = parsed.payments[parsed.payments.length - 1];
         if (lastPay && lastPay.timestamp) {
           paymentTime = new Date(lastPay.timestamp);
@@ -306,14 +314,23 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ? Boolean((job as any).isMember) 
     : Boolean(cust?.isMember || cust?.memberId || cust?.tier === "member" || cust?.tier === "vip");
   const memberId = (job as any).memberId || (job as any).customerMemberId || cust?.memberId || null;
+
+  const effectiveWalletPaid = walletPaidTotal > 0
+    ? walletPaidTotal
+    : (((job as any).paymentChannel || rawJob.paymentChannel || "").toLowerCase().includes("deduct") || ((job as any).paymentChannel || rawJob.paymentChannel || "").toLowerCase().includes("wallet")
+        ? (jobTotal || 0)
+        : 0);
+
   const preDeductWalletBalance = (job as any).walletBalance !== undefined && (job as any).walletBalance !== null
-    ? (job as any).walletBalance
-    : ((job as any).creditBalance !== undefined 
-      ? (job as any).creditBalance 
-      : (cust?.creditBalance || 0));
+    ? Number((job as any).walletBalance)
+    : (((job as any).walletBalanceAfter !== undefined && (job as any).walletBalanceAfter !== null && effectiveWalletPaid > 0)
+      ? Number((job as any).walletBalanceAfter) + effectiveWalletPaid
+      : ((job as any).creditBalance !== undefined 
+        ? Number((job as any).creditBalance)
+        : (cust?.creditBalance || 0)));
 
   const postDeductWalletBalance = (job as any).walletBalanceAfter !== undefined && (job as any).walletBalanceAfter !== null
-    ? (job as any).walletBalanceAfter
+    ? Number((job as any).walletBalanceAfter)
     : preDeductWalletBalance;
 
   const isJobPaid = Boolean(

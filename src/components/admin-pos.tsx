@@ -3278,17 +3278,35 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             ? Number(finalJob.walletBalanceAfter)
             : (selectedCustomer?.creditBalance || 0)) + (finalCreditAlloc > 0 ? finalCreditAlloc : 0);
 
+          const posProformaAdminNotes = (() => {
+            try {
+              if (!finalJob.adminNotesJson) return undefined;
+              const parsed = JSON.parse(finalJob.adminNotesJson);
+              delete parsed.payments;
+              return JSON.stringify(parsed);
+            } catch {
+              return undefined;
+            }
+          })();
+
           const proformaCapData: any = {
             ...formatJobToReceiptData({
               ...finalJob,
               items: resolvedItems,
               proformaNumber: targetProformaNum,
               proformaRevision: effectiveRev,
+              isShopPaid: false,
+              isPaid: false,
+              adminNotesJson: posProformaAdminNotes,
+              walletBalance: preDeductBalance,
               walletBalanceAfter: undefined,
               isDraft: true,
             } as any),
             items: resolvedItems,
             isDraft: true,
+            isPaid: false,
+            isShopPaid: false,
+            adminNotesJson: posProformaAdminNotes,
             proformaRevision: effectiveRev,
             proformaId: cleanBaseProforma,
             jobId: targetJobId,
@@ -3364,7 +3382,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               }
             }).catch(() => {});
         }
-      } else if (finalJob?.id && selectedCustomer?.id && directIssuedCoupons === undefined) {
+      } else if (finalJob?.id && selectedCustomer?.id && directIssuedCoupons === undefined && finalJob.isShopPaid) {
         evaluateAndIssuePromotionCouponsAction({
           jobId: finalJob.id,
           customerId: selectedCustomer.id,
