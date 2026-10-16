@@ -17,7 +17,8 @@ export default async function ReceiptPreviewPage({
 
   if (data) {
     try {
-      const parsed = JSON.parse(Buffer.from(data, "base64").toString("utf-8"));
+      const cleanData = data.replace(/ /g, "+");
+      const parsed = JSON.parse(Buffer.from(cleanData, "base64").toString("utf-8"));
       job = parsed.job || parsed;
       customer = parsed.customer || job?.customer;
       branch = parsed.branch || job?.branch;
