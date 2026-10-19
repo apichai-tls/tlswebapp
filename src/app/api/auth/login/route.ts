@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/crypto";
+import { signStaffSessionToken } from "@/lib/server-auth";
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,6 +19,10 @@ export async function POST(req: NextRequest) {
 
     if (!user) {
       return NextResponse.json({ success: false, error: "Invalid email or password" }, { status: 401 });
+    }
+
+    if (user.isActive === false) {
+      return NextResponse.json({ success: false, error: "This account has been deactivated (Resigned)" }, { status: 403 });
     }
 
     if (!password) {
@@ -48,7 +53,15 @@ export async function POST(req: NextRequest) {
       permissionsArray = [];
     }
 
-    return NextResponse.json({
+    const sessionToken = signStaffSessionToken({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      branchId: user.branchId || null,
+      area: user.area || null,
+    });
+
+    const res = NextResponse.json({
       success: true,
       user: {
         id: user.id,
@@ -59,9 +72,19 @@ export async function POST(req: NextRequest) {
         isDepartmentHead: user.isDepartmentHead ?? false,
         permissions: permissionsArray,
         area: user.area || undefined,
-        branchId: user.branchId || null
+        branchId: user.branchId || null,
+        sessionToken,
       },
     });
+
+    res.cookies.set("tls_session", sessionToken, {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 18, // 18 hours
+    });
+
+    return res;
   } catch (error: any) {
     console.error("Login API error:", error);
     return NextResponse.json(

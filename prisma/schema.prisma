@@ -69,6 +69,8 @@ model Customer {
   vouchers            CustomerVoucher[]
 
   @@index([brand])
+  @@index([phone])
+  @@index([updatedAt(sort: Desc)])
 }
 
 model CustomerAddress {
@@ -179,6 +181,13 @@ model Job {
   @@index([brand])
   @@index([customerId])
   @@index([status])
+  @@index([branchId])
+  @@index([branchId, status, updatedAt(sort: Desc)])
+  @@index([billNo])
+  @@index([customerPhone])
+  @@index([customerName])
+  @@index([pickupRiderId])
+  @@index([deliveryRiderId])
   @@index([updatedAt(sort: Desc)])
   @@index([createdAt(sort: Desc)])
   @@index([completedAt(sort: Desc)])

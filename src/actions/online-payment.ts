@@ -2,6 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { invalidateDbCache } from '@/lib/db-cache';
+import { publishOrderEvent } from '@/lib/realtime-bus';
 import { processTopUpAction, evaluateAndIssuePromotionCouponsAction } from '@/actions/db';
 import {
   createBeamPaymentLink,
@@ -119,9 +120,15 @@ async function markJobAsPaidInDb(params: {
       });
 
   try {
-    invalidateDbCache();
+    await publishOrderEvent({
+      type: 'job.updated',
+      job: updated,
+      action: 'online_payment_paid',
+      changedFields: ['isPaid', 'isShopPaid', 'paymentMethod', 'paymentChannel', 'adminNotesJson'],
+      actorName: 'Beam Online Payment',
+    });
   } catch (err) {
-    console.warn('[Online Payment] Failed to invalidate DB cache:', err);
+    console.warn('[Online Payment] Failed to publish order event:', err);
   }
 
   if (transitionedToShopPaid && updated.customerId) {
@@ -277,12 +284,19 @@ export async function createJobOnlinePaymentAction(
         createdAt: new Date().toISOString(),
       };
 
-      await prisma.job.update({
+      const updatedWithLink = await prisma.job.update({
         where: { id: job.id },
         data: {
           adminNotesJson: JSON.stringify(adminNotesObj),
           ...(alreadyPaid === 0 && amount > (job.totalAmount || 0) ? { totalAmount: amount } : {}),
         },
+      });
+      await publishOrderEvent({
+        type: 'job.updated',
+        job: updatedWithLink,
+        action: 'payment_link_created',
+        changedFields: ['adminNotesJson'],
+        actorName: 'Beam Payment Link',
       });
     } catch (dbErr) {
       console.warn('[Beam Action] Failed to save payment link meta to job:', dbErr);

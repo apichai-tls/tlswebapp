@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
-import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, type CustomerCoupon, type WalletTransactionItem, shiftStore } from "@/lib/store";
+import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, realtimeStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, type CustomerCoupon, type WalletTransactionItem, shiftStore } from "@/lib/store";
 import { refreshDb, api } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
@@ -221,6 +221,26 @@ export default function AdminPage() {
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
   const pois = useSyncExternalStore(poiStore.subscribe, poiStore.getSnapshot, poiStore.getSnapshot);
   const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
+  const realtimeState = useSyncExternalStore(realtimeStore.subscribe, realtimeStore.getSnapshot, realtimeStore.getSnapshot);
+  const [liveConflictFields, setLiveConflictFields] = useState<string[]>([]);
+
+  // Re-bind SSE stream when authenticated user identity changes
+  useEffect(() => {
+    if (user?.id) {
+      realtimeStore.reconnect();
+    }
+  }, [user?.id]);
+
+  // Surface any background job save errors / conflicts via toast
+  useEffect(() => {
+    const onJobSaveError = (evt: Event) => {
+      const detail = (evt as CustomEvent)?.detail;
+      if (!detail) return;
+      toast.error(`บันทึกออเดอร์ #${formatJobDisplayId(detail.jobId || '')} ไม่สำเร็จ: ${detail.error}`);
+    };
+    window.addEventListener('tls:job-save-error', onJobSaveError);
+    return () => window.removeEventListener('tls:job-save-error', onJobSaveError);
+  }, []);
 
   const localDataForSearch = useMemo(() => {
     return pois.map(p => ({
@@ -317,81 +337,39 @@ export default function AdminPage() {
     if (firstTab) setActiveTab(firstTab);
   }, [user]);
 
-  // User Activity Tracking Ref for Smart Polling (Idle Detection)
-  const lastActiveTime = useRef(Date.now());
-
-  // Periodic data refresh based on active tab + Smart Polling (Visibility & Idle Detection)
+  // Real-time SSE handles live order updates in <1s.
+  // Only poll /api/db when viewing Live Rider GPS Map (15s), and run a lightweight delta + version check every 30s.
   useEffect(() => {
-    // 1. Listen for user activity to detect idle state
-    const handleUserActivity = () => {
-      lastActiveTime.current = Date.now();
-    };
-
-    window.addEventListener("mousemove", handleUserActivity, { passive: true });
-    window.addEventListener("keydown", handleUserActivity, { passive: true });
-    window.addEventListener("mousedown", handleUserActivity, { passive: true });
-    window.addEventListener("scroll", handleUserActivity, { passive: true });
-    window.addEventListener("touchstart", handleUserActivity, { passive: true });
-
-    let intervalTime: number | null = 8000; // Smart Polling active rate: 8 seconds (optimized for responsive UI & reduced server load)
-
-    if (activeTab === "map") {
-      intervalTime = 15000; // Live Map: 15 seconds (GPS-heavy, keep slower)
-    } else if (activeTab === "riders") {
-      intervalTime = null; // Rider Report: No auto-refresh
-      refreshDb(); // Refresh once when opened
-    }
-
-    let interval: ReturnType<typeof setInterval> | null = null;
     let tickCount = 0;
+    const intervalMs = activeTab === "map" ? 15000 : 30000;
 
-    if (intervalTime !== null) {
-      interval = setInterval(() => {
-        // Paused Mode: Skip fetching if the browser tab is hidden/minimized
-        if (document.visibilityState === "hidden") {
-          return;
-        }
+    const interval = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      tickCount++;
 
-        const timeSinceLastActive = Date.now() - lastActiveTime.current;
-        const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
-        tickCount++;
-
-        // Periodic check against server build version to detect new deploys (throttled to ~64s)
-        if (tickCount % 8 === 0) {
-          fetch('/api/version', { cache: 'no-store' })
-            .then(res => res.ok ? res.json() : null)
-            .then(data => {
-              if (data?.buildTime && clientBuildTime && data.buildTime !== clientBuildTime) {
-                setIsVersionOutdated(true);
-                if (!dialogOpenRef.current && !isSubmittingRef.current) {
-                  window.location.reload();
-                }
+      // Check server build version every ~60s
+      if (tickCount % 2 === 0) {
+        fetch('/api/version', { cache: 'no-store' })
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data?.buildTime && clientBuildTime && data.buildTime !== clientBuildTime) {
+              setIsVersionOutdated(true);
+              if (!dialogOpenRef.current && !isSubmittingRef.current) {
+                window.location.reload();
               }
-            })
-            .catch(() => {});
-        }
+            }
+          })
+          .catch(() => {});
+      }
 
-        if (timeSinceLastActive > IDLE_TIMEOUT_MS) {
-          // Monitor Mode (Idle): Slow down polling to every 4th tick (e.g. 12s for 3s interval, 60s for 15s interval)
-          if (tickCount % 4 === 0) {
-            refreshDb();
-          }
-        } else {
-          // Active Mode: Poll at regular interval rate
-          refreshDb();
-        }
-      }, intervalTime);
-    }
+      if (activeTab === "map") {
+        refreshDb();
+      } else {
+        api.reconcileDelta().catch(() => {});
+      }
+    }, intervalMs);
 
-    return () => {
-      window.removeEventListener("mousemove", handleUserActivity);
-      window.removeEventListener("keydown", handleUserActivity);
-      window.removeEventListener("mousedown", handleUserActivity);
-      window.removeEventListener("scroll", handleUserActivity);
-      window.removeEventListener("touchstart", handleUserActivity);
-      if (interval) clearInterval(interval);
-    };
+    return () => clearInterval(interval);
   }, [activeTab]);
 
   const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks") => {
@@ -615,13 +593,14 @@ export default function AdminPage() {
 
   const prevJobIdForNotesRef = useRef<string | null>(null);
 
-  // Sync adminLogs with database updates in the background (real-time chat/notes sync)
+  // Sync adminLogs and non-conflicting fields with real-time updates in the background without disrupting unsaved edits
   useEffect(() => {
     if (!editingJobId) {
       if (prevJobIdForNotesRef.current !== null) {
         prevJobIdForNotesRef.current = null;
         setAdminLogs(prev => prev.length > 0 ? [] : prev);
         setAdminNoteInput(prev => prev ? "" : prev);
+        setLiveConflictFields(prev => prev.length > 0 ? [] : prev);
       }
       return;
     }
@@ -646,6 +625,7 @@ export default function AdminPage() {
       prevJobIdForNotesRef.current = editingJobId;
       setAdminLogs(freshNotes.map((log: any) => ({ ...log, isNew: false })));
       setAdminNoteInput("");
+      setLiveConflictFields([]);
       return;
     }
 
@@ -687,8 +667,7 @@ export default function AdminPage() {
     if (editingJobId) {
       try {
         await addJobLogAction(editingJobId, newLog, user?.id, user?.name || user?.email);
-        // Sync local store so other parts of the app update immediately
-        refreshDb();
+        api.fetchAndApplyJob(editingJobId).catch(() => {});
       } catch (err) {
         console.error("Failed to instantly save admin log:", err);
       }
@@ -725,7 +704,6 @@ export default function AdminPage() {
           actorName: user?.name || user?.email,
           actorRole: user?.role
         });
-        refreshDb();
       } catch (err) {
         console.error("Failed to delete admin log:", err);
         toast.error("Failed to delete admin log");
@@ -907,6 +885,103 @@ export default function AdminPage() {
 
   // --- POS/Cashier Shift Enhancements ---
   const [dialogCart, setDialogCart] = useState<any[]>([]);
+
+  // Reconcile external server changes safely without overwriting unsaved user edits
+  useEffect(() => {
+    if (!editingJobId) return;
+    const freshJob = jobs.find(j => j.id === editingJobId);
+    if (!freshJob) return;
+    const orig = originalJobRef.current as any;
+    if (orig && orig.id === editingJobId && !isSubmittingRef.current) {
+      const freshTime = freshJob.updatedAt ? new Date(freshJob.updatedAt).getTime() : 0;
+      const origTime = orig.updatedAt ? new Date(orig.updatedAt).getTime() : 0;
+      if (freshTime > origTime + 50) {
+        const conflicts: string[] = [];
+
+        // 1. Always adopt confirmed payment state from server (e.g. webhook or cashier payment)
+        if (Boolean(freshJob.isPaid) !== Boolean(orig.isPaid) || Boolean(freshJob.isShopPaid) !== Boolean(orig.isShopPaid)) {
+          const nowPaid = Boolean(freshJob.isPaid || freshJob.isShopPaid);
+          setPaymentMethod(nowPaid ? "paid" : "unpaid");
+          setShopPaymentMethod(freshJob.isShopPaid ? "paid" : "unpaid");
+          if (freshJob.paymentChannel) setPaymentChannel(freshJob.paymentChannel);
+          orig.isPaid = freshJob.isPaid;
+          orig.isShopPaid = freshJob.isShopPaid;
+          orig.paymentChannel = freshJob.paymentChannel;
+          orig.adminNotesJson = freshJob.adminNotesJson;
+        }
+
+        // 2. Pickup Rider
+        if ((freshJob.pickupRiderId || "") !== (orig.pickupRiderId || "")) {
+          if ((pickupRiderId || "") === (orig.pickupRiderId || "")) {
+            setPickupRiderId(freshJob.pickupRiderId || "");
+            orig.pickupRiderId = freshJob.pickupRiderId;
+          } else if ((pickupRiderId || "") !== (freshJob.pickupRiderId || "")) {
+            conflicts.push("Pickup Rider");
+          }
+        }
+
+        // 3. Delivery Rider
+        if ((freshJob.deliveryRiderId || "") !== (orig.deliveryRiderId || "")) {
+          if ((deliveryRiderId || "") === (orig.deliveryRiderId || "")) {
+            setDeliveryRiderId(freshJob.deliveryRiderId || "");
+            orig.deliveryRiderId = freshJob.deliveryRiderId;
+          } else if ((deliveryRiderId || "") !== (freshJob.deliveryRiderId || "")) {
+            conflicts.push("Delivery Rider");
+          }
+        }
+
+        // 4. Bill No
+        if ((freshJob.billNo || "") !== (orig.billNo || "")) {
+          if ((billNo || "") === (orig.billNo || "")) {
+            setBillNo(freshJob.billNo || "");
+            orig.billNo = freshJob.billNo;
+          } else if ((billNo || "") !== (freshJob.billNo || "")) {
+            conflicts.push("Bill No.");
+          }
+        }
+
+        // 5. SubStatus
+        if ((freshJob.subStatus || null) !== (orig.subStatus || null)) {
+          if ((editingSubStatus || null) === (orig.subStatus || null)) {
+            setEditingSubStatus((freshJob.subStatus as any) || null);
+            orig.subStatus = freshJob.subStatus;
+          } else if ((editingSubStatus || null) !== (freshJob.subStatus || null)) {
+            conflicts.push("Process Stage");
+          }
+        }
+
+        // 6. Customer Phone
+        if ((freshJob.customerPhone || "") !== (orig.customerPhone || "")) {
+          if ((customerPhone || "") === (orig.customerPhone || "")) {
+            setCustomerPhone(freshJob.customerPhone || "");
+            orig.customerPhone = freshJob.customerPhone;
+          } else if ((customerPhone || "") !== (freshJob.customerPhone || "")) {
+            conflicts.push("Phone");
+          }
+        }
+
+        // 7. Items / Cart
+        if (JSON.stringify(freshJob.items || []) !== JSON.stringify(orig.items || [])) {
+          const currentCartSimple = dialogCart.map(i => ({ name: i.name, quantity: i.quantity, price: i.price }));
+          const origCartSimple = (orig.items || []).map((i: any) => ({ name: i.name, quantity: i.quantity, price: i.price }));
+          if (JSON.stringify(currentCartSimple) !== JSON.stringify(origCartSimple)) {
+            conflicts.push("Order Items");
+          } else {
+            orig.items = freshJob.items;
+            orig.totalAmount = freshJob.totalAmount;
+          }
+        }
+
+        if (conflicts.length > 0) {
+          setLiveConflictFields(prev => Array.from(new Set([...prev, ...conflicts])));
+        } else {
+          orig.updatedAt = freshJob.updatedAt;
+          orig.status = freshJob.status;
+        }
+      }
+    }
+  }, [jobs, editingJobId, pickupRiderId, deliveryRiderId, billNo, editingSubStatus, customerPhone, dialogCart]);
+
   const hasPackage = dialogCart.some(item => item.category === "PACKAGE");
   const activeIsFreeDelivery = (isPaidJob && activeJob)
     ? (activeJob.fee === 0 && activeJob.type !== "in_store")
@@ -2099,24 +2174,28 @@ export default function AdminPage() {
 
     editingJobIdRef.current = job.id;
     setEditingJobId(job.id);
+    setLiveConflictFields([]);
+    realtimeStore.clearExternalJobUpdate(job.id);
 
-    // Silent background fetch to ensure perfect consistency with the server DB
-    fetch(`/api/jobs/${job.id}/details`)
-      .then(r => r.json())
-      .then(data => {
-        if (editingJobIdRef.current !== job.id) return;
-        const remoteBagUrls = parseUrls(data.bagImageUrl);
-        const remoteBillUrls = parseUrls(data.billImageUrl);
-        const remotePickupUrls = parseUrls(data.pickupProofImageUrl);
-        const remoteDeliveryUrls = parseUrls(data.deliveryProofImageUrl || data.proofImageUrl);
+    // Image URLs are already included in JOB_SELECT_FIELDS and synced via SSE/delta.
+    // Only fetch /details as a fallback if the job record was partially loaded.
+    if (job.bagImageUrl === undefined && job.billImageUrl === undefined) {
+      fetch(`/api/jobs/${job.id}/details`)
+        .then(r => r.json())
+        .then(data => {
+          if (editingJobIdRef.current !== job.id) return;
+          const remoteBagUrls = parseUrls(data.bagImageUrl);
+          const remoteBillUrls = parseUrls(data.billImageUrl);
+          const remotePickupUrls = parseUrls(data.pickupProofImageUrl);
+          const remoteDeliveryUrls = parseUrls(data.deliveryProofImageUrl || data.proofImageUrl);
 
-        // Only update states if they actually changed on the server to prevent flashing or overriding local changes
-        if (JSON.stringify(remoteBagUrls) !== JSON.stringify(localBagUrls)) { setBagImageUrls(remoteBagUrls); setOrigBagImageUrls(remoteBagUrls); }
-        if (JSON.stringify(remoteBillUrls) !== JSON.stringify(localBillUrls)) { setBillImageUrls(remoteBillUrls); setOrigBillImageUrls(remoteBillUrls); }
-        if (JSON.stringify(remotePickupUrls) !== JSON.stringify(localPickupUrls)) { setPickupProofImageUrls(remotePickupUrls); setOrigPickupProofImageUrls(remotePickupUrls); }
-        if (JSON.stringify(remoteDeliveryUrls) !== JSON.stringify(localDeliveryUrls)) { setDeliveryProofImageUrls(remoteDeliveryUrls); setOrigDeliveryProofImageUrls(remoteDeliveryUrls); }
-      })
-      .catch(e => console.error("Failed to fetch job details images in background", e));
+          if (JSON.stringify(remoteBagUrls) !== JSON.stringify(localBagUrls)) { setBagImageUrls(remoteBagUrls); setOrigBagImageUrls(remoteBagUrls); }
+          if (JSON.stringify(remoteBillUrls) !== JSON.stringify(localBillUrls)) { setBillImageUrls(remoteBillUrls); setOrigBillImageUrls(remoteBillUrls); }
+          if (JSON.stringify(remotePickupUrls) !== JSON.stringify(localPickupUrls)) { setPickupProofImageUrls(remotePickupUrls); setOrigPickupProofImageUrls(remotePickupUrls); }
+          if (JSON.stringify(remoteDeliveryUrls) !== JSON.stringify(localDeliveryUrls)) { setDeliveryProofImageUrls(remoteDeliveryUrls); setOrigDeliveryProofImageUrls(remoteDeliveryUrls); }
+        })
+        .catch(e => console.error("Failed to fetch job details images in background", e));
+    }
     
     setAdminNote(job.remark || "");
     try {
@@ -2728,6 +2807,7 @@ export default function AdminPage() {
             (payload as any).actorName = user?.name || user?.email;
             (payload as any).actorRole = user?.role;
             (payload as any).updatedAt = orig.updatedAt;
+            (payload as any).expectedUpdatedAt = orig.updatedAt;
           }
         } else {
           Object.assign(payload, newJobData);
@@ -2869,6 +2949,7 @@ export default function AdminPage() {
           (payload as any).actorRole = user?.role;
           if ((originalJobRef.current as any)?.updatedAt) {
             (payload as any).updatedAt = (originalJobRef.current as any).updatedAt;
+            (payload as any).expectedUpdatedAt = (originalJobRef.current as any).updatedAt;
           }
           await api.updateJob(targetEditingJobId, payload);
         }
@@ -3397,6 +3478,9 @@ export default function AdminPage() {
       console.error("Job Save Error:", err);
       const errMsg = err?.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล';
       setSaveError(errMsg);
+      if (targetEditingJobId && (err?.isConflict || String(errMsg).includes('CONFLICT_ERROR'))) {
+        api.fetchAndApplyJob(targetEditingJobId).catch(() => {});
+      }
       toast.error(`บันทึกไม่สำเร็จ: ${errMsg}`);
     } finally {
       isSubmittingLockRef.current = false;
@@ -4413,6 +4497,89 @@ export default function AdminPage() {
             </h1>
             
             <div className="flex items-center gap-3">
+              {/* Real-time Connection & Save Status Indicator */}
+              {(() => {
+                const saveEntries = Object.entries(realtimeState.jobSaveStates || {});
+                const savingCount = saveEntries.filter(([, s]) => s.status === 'saving').length;
+                const failedEntry = saveEntries.find(([, s]) => s.status === 'failed' || s.status === 'conflict');
+                const conn = realtimeState.connectionStatus;
+
+                if (savingCount > 0) {
+                  return (
+                    <div
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-sky-50 text-sky-700 border border-sky-200 shadow-2xs"
+                      title="Saving changes to server..."
+                    >
+                      <span className="w-2 h-2 rounded-full bg-sky-500 animate-ping" />
+                      <span>Saving{savingCount > 1 ? ` (${savingCount})` : '...'}</span>
+                    </div>
+                  );
+                }
+                if (failedEntry) {
+                  const [failedJobId, failedState] = failedEntry;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetJob = jobs.find(j => j.id === failedJobId);
+                        if (targetJob) {
+                          handleEditFullJob(targetJob);
+                          setDialogOpen(true);
+                        } else {
+                          realtimeStore.clearJobSaveState(failedJobId);
+                        }
+                      }}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 cursor-pointer shadow-2xs"
+                      title={failedState.message || "Save failed"}
+                    >
+                      <AlertTriangle size={12} className="text-rose-600 shrink-0" />
+                      <span>{failedState.status === 'conflict' ? 'Save Conflict' : 'Save Failed'} (#{failedJobId})</span>
+                    </button>
+                  );
+                }
+                if (conn === 'connected') {
+                  return (
+                    <div
+                      className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-50/80 text-emerald-700 border border-emerald-200/70"
+                      title="Real-time order updates active (SSE)"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                      <span>Live</span>
+                    </div>
+                  );
+                }
+                if (conn === 'reconnecting' || conn === 'connecting') {
+                  return (
+                    <div
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200"
+                      title="Reconnecting to real-time stream..."
+                    >
+                      <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                      <span className="hidden sm:inline">Reconnecting...</span>
+                    </div>
+                  );
+                }
+                if (conn === 'fallback_polling') {
+                  return (
+                    <div
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-300"
+                      title="Live stream unavailable — syncing automatically via lightweight fallback polling"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-amber-500" />
+                      <span className="hidden sm:inline">Fallback Sync</span>
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200"
+                    title="Offline — changes will not save until connection is restored"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-rose-500" />
+                    <span>Disconnected</span>
+                  </div>
+                );
+              })()}
               {canApproveWallet && pendingWalletMap.total > 0 && (
                 <Button
                   variant="outline"
@@ -4491,9 +4658,43 @@ export default function AdminPage() {
                 <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 items-start lg:items-center">
                   <div className="col-span-6 lg:col-span-6 flex flex-row items-center gap-4 w-full">
                     <DialogTitle className="flex flex-col items-start gap-1 text-lg shrink-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Package size={18} />
                         <span>{editingJobId ? "Edit Job" : "Create New Job"}</span>
+                        {editingJobId && (() => {
+                          const js = realtimeState.jobSaveStates?.[editingJobId];
+                          if (!js) return null;
+                          if (js.status === 'saving') {
+                            return (
+                              <Badge className="bg-sky-50 text-sky-700 border border-sky-200 py-0 px-2 h-5 text-[10px] font-bold rounded-full flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" />
+                                Saving...
+                              </Badge>
+                            );
+                          }
+                          if (js.status === 'saved') {
+                            return (
+                              <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
+                                ✓ Saved
+                              </Badge>
+                            );
+                          }
+                          if (js.status === 'conflict') {
+                            return (
+                              <Badge className="bg-amber-100 text-amber-900 border border-amber-300 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
+                                ⚠ Conflict
+                              </Badge>
+                            );
+                          }
+                          if (js.status === 'failed') {
+                            return (
+                              <Badge className="bg-rose-100 text-rose-800 border border-rose-300 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
+                                ✕ Save Failed
+                              </Badge>
+                            );
+                          }
+                          return null;
+                        })()}
                         {isNewCustomer && (
                           <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-2xs py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded ml-1">
                             NEW
@@ -4812,6 +5013,97 @@ export default function AdminPage() {
                     )}
                   </div>
                 </DialogHeader>
+
+                {/* Live External Update & Conflict Resolution Banner */}
+                {editingJobId && (() => {
+                  const extUpdate = realtimeState.externalJobUpdates?.[editingJobId];
+                  const saveState = realtimeState.jobSaveStates?.[editingJobId];
+                  const hasConflict = liveConflictFields.length > 0 || saveState?.status === 'conflict';
+                  const hasSaveFailure = saveState?.status === 'failed';
+
+                  if (!extUpdate && !hasConflict && !hasSaveFailure) return null;
+
+                  if (hasConflict || hasSaveFailure) {
+                    return (
+                      <div className="mx-3 mt-2 px-4 py-2.5 bg-amber-50 border border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs rounded-xl shrink-0">
+                        <div className="flex items-start sm:items-center gap-2 text-xs min-w-0">
+                          <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5 sm:mt-0" />
+                          <div className="min-w-0">
+                            <p className="font-bold">
+                              {hasConflict
+                                ? `ตรวจพบการแก้ไขพร้อมกันจาก ${extUpdate?.actorName || "พนักงานท่านอื่น"}`
+                                : `บันทึกไม่สำเร็จ: ${saveState?.message || "กรุณาลองใหม่อีกครั้ง"}`}
+                            </p>
+                            {liveConflictFields.length > 0 && (
+                              <p className="text-[11px] text-amber-800">
+                                ข้อมูลที่คุณกำลังพิมพ์ชนกับการอัปเดตล่าสุด ({liveConflictFields.join(", ")}) — ระบบเก็บข้อความที่คุณพิมพ์ไว้ให้แล้ว
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 bg-white hover:bg-amber-100 text-amber-900 border-amber-300 font-bold text-[11px] cursor-pointer rounded-lg"
+                            onClick={async () => {
+                              const freshJob = await api.fetchAndApplyJob(editingJobId);
+                              const target = freshJob || jobs.find(j => j.id === editingJobId);
+                              if (target) {
+                                handleEditFullJob(target);
+                              }
+                              setLiveConflictFields([]);
+                              setSaveError(null);
+                              realtimeStore.clearExternalJobUpdate(editingJobId);
+                              realtimeStore.clearJobSaveState(editingJobId);
+                            }}
+                          >
+                            โหลดข้อมูลล่าสุด (Reload Server Data)
+                          </Button>
+                          {hasConflict && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="h-7 px-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] cursor-pointer rounded-lg"
+                              onClick={() => {
+                                const latestServerJob = jobs.find(j => j.id === editingJobId);
+                                if (latestServerJob && originalJobRef.current) {
+                                  (originalJobRef.current as any).updatedAt = latestServerJob.updatedAt;
+                                }
+                                setLiveConflictFields([]);
+                                setSaveError(null);
+                                realtimeStore.clearExternalJobUpdate(editingJobId);
+                                realtimeStore.clearJobSaveState(editingJobId);
+                                toast.info("ปลดล็อกแล้ว สามารถกด Save เพื่อบันทึกข้อมูลชุดของคุณทับได้ทันที");
+                              }}
+                            >
+                              เก็บข้อมูลที่ฉันพิมพ์ต่อ (Keep My Edits)
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="mx-3 mt-2 px-3.5 py-2 bg-emerald-50 border border-emerald-200 text-emerald-900 flex items-center justify-between gap-3 rounded-xl shrink-0 text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 animate-pulse" />
+                        <span className="truncate font-medium">
+                          ซิงก์ข้อมูลล่าสุดอัตโนมัติจาก <strong>{extUpdate?.actorName || "ระบบ"}</strong> แล้ว (โดยไม่กระทบช่องที่คุณกำลังแก้ไข)
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => realtimeStore.clearExternalJobUpdate(editingJobId)}
+                        className="text-emerald-700 hover:text-emerald-950 text-[11px] font-bold shrink-0 cursor-pointer px-1.5 py-0.5 rounded hover:bg-emerald-100"
+                      >
+                        รับทราบ
+                      </button>
+                    </div>
+                  );
+                })()}
 
                 {/* Wallet Approval Review Banner */}
                 {reviewingWalletTx && (

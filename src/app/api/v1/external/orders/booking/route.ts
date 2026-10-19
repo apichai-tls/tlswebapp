@@ -143,6 +143,14 @@ export async function POST(req: Request) {
       }
     })
 
+    const { publishOrderEvent } = await import('@/lib/realtime-bus')
+    await publishOrderEvent({
+      type: 'job.created',
+      job,
+      action: 'external_booking',
+      actorName: customer.name || 'External Booking',
+    })
+
     return NextResponse.json({
       success: true,
       message: 'Booking confirmed successfully',

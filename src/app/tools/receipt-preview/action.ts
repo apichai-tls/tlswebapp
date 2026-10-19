@@ -33,11 +33,20 @@ export async function updateJobReceiptUrlAction(jobId: string, newReceiptUrl: st
     );
     const updatedUrls = [...filteredUrls, newReceiptUrl];
 
-    await prisma.job.update({
+    const updatedJob = await prisma.job.update({
       where: { id: jobId },
       data: {
         billImageUrl: JSON.stringify(updatedUrls),
       },
+    });
+
+    const { publishOrderEvent } = await import("@/lib/realtime-bus");
+    await publishOrderEvent({
+      type: "job.updated",
+      job: updatedJob,
+      action: "receipt_url",
+      changedFields: ["billImageUrl"],
+      actorName: "Receipt Generator",
     });
 
     return {

@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/crypto";
+import { signStaffSessionToken } from "@/lib/server-auth";
 
 export async function loginUser(email: string, password?: string) {
   try {
@@ -47,6 +48,14 @@ export async function loginUser(email: string, password?: string) {
       permissionsArray = [];
     }
 
+    const sessionToken = signStaffSessionToken({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      branchId: user.branchId || null,
+      area: user.area || null,
+    });
+
     return {
       success: true,
       user: {
@@ -58,7 +67,8 @@ export async function loginUser(email: string, password?: string) {
         isDepartmentHead: user.isDepartmentHead ?? false,
         permissions: permissionsArray,
         area: user.area || undefined,
-        branchId: user.branchId || null
+        branchId: user.branchId || null,
+        sessionToken,
       }
     };
   } catch (error: any) {
