@@ -5703,20 +5703,33 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
       subtotalWithDelivery = Math.max(0, (Number(job.totalAmount) || 0) + (Number(job.discount) || 0));
     }
 
+    // Determine job order date in Thailand timezone (UTC+7)
+    const jobCreatedAt = job.createdAt ? new Date(job.createdAt) : now;
+    const jobOrderDateStr = new Date(jobCreatedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const todayStr = new Date(now.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
     for (const campaign of activeCampaigns) {
-      // Robust date comparison: compare calendar days (YYYY-MM-DD) in Thai timezone (UTC+7)
+      // Rule: Order must be opened/created from campaign start date to end date in Thai timezone (UTC+7)
+      // (Payment can happen anytime after the order is opened)
       const startDayStr = (campaign.startDate || "").slice(0, 10);
       const endDayStr = (campaign.endDate || "").slice(0, 10);
-      const localThaiNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-      const todayStr = localThaiNow.toISOString().slice(0, 10);
 
-      if (startDayStr && todayStr < startDayStr) {
-        reasons.push(`แคมเปญ "${campaign.name}" ยังไม่เริ่มแจก (เริ่ม ${startDayStr}, วันนี้ ${todayStr})`);
+      if (startDayStr && jobOrderDateStr < startDayStr) {
+        reasons.push(`บิล #${job.billNo || job.id} เปิดรับผ้าวันที่ ${jobOrderDateStr} ก่อนเริ่มแคมเปญ "${campaign.name}" (เริ่ม ${startDayStr})`);
         continue;
       }
-      if (endDayStr && todayStr > endDayStr) {
-        reasons.push(`แคมเปญ "${campaign.name}" สิ้นสุดการแจกแล้ว (สิ้นสุด ${endDayStr}, วันนี้ ${todayStr})`);
+      if (endDayStr && jobOrderDateStr > endDayStr) {
+        reasons.push(`บิล #${job.billNo || job.id} เปิดรับผ้าวันที่ ${jobOrderDateStr} หลังสิ้นสุดแคมเปญ "${campaign.name}" (สิ้นสุด ${endDayStr})`);
         continue;
+      }
+
+      // Check if fixed-date voucher has already expired in case payment happens after voucher expiry
+      if (campaign.rewardCouponExpiryType === "FIXED_DATE" && campaign.rewardCouponExpiryDate) {
+        const expDayStr = campaign.rewardCouponExpiryDate.slice(0, 10);
+        if (expDayStr && todayStr > expDayStr) {
+          reasons.push(`วอยเชอร์ของแคมเปญ "${campaign.name}" หมดอายุการใช้งานแล้ว (${expDayStr})`);
+          continue;
+        }
       }
 
       // Check Eligible Brands
