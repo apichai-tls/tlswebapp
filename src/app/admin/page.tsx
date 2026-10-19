@@ -2342,7 +2342,7 @@ export default function AdminPage() {
       ? splitPayments.filter(s => s.channel === "Deduct Member").reduce((sum, s) => sum + (Number(s.amount) || 0), 0)
       : 0;
 
-    const isAlreadyPaidJob = isPaidJob || Boolean(existingJob?.isShopPaid) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0);
+    const isAlreadyPaidJob = (isPaidJob || Boolean(existingJob?.isShopPaid)) && remainingToPay <= 0;
     const isNewDeduction = (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && isPayment && !isAlreadyPaidJob;
     const effectiveMemberDeduct = isSplitPayment ? splitMemberDeductAmt : remainingToPay;
 
@@ -2741,9 +2741,9 @@ export default function AdminPage() {
         const walletBalanceBeforePay = selectedProfileCustomer
           ? (selectedProfileCustomer.creditBalance ?? 0)
           : undefined;
-        if (isShopPaidNow_update && !wasShopPaidBefore_update && selectedProfileCustomer) {
+        if (isShopPaidNow_update && (!wasShopPaidBefore_update || remainingToPay > 0) && selectedProfileCustomer) {
           const deductAmt = isSplitPayment ? splitMemberDeductAmt : remainingToPay;
-          if (paymentChannel === "Deduct Member" || (isSplitPayment && splitMemberDeductAmt > 0)) {
+          if ((paymentChannel === "Deduct Member" || (isSplitPayment && splitMemberDeductAmt > 0)) && deductAmt > 0) {
             const currentBalance = selectedProfileCustomer.creditBalance || 0;
             if (currentBalance < deductAmt) {
               toast.error(`ยอดเงิน Wallet ไม่เพียงพอ (มี ${formatBaht(currentBalance)}, ต้องการ ${formatBaht(deductAmt)})`);
@@ -2757,7 +2757,7 @@ export default function AdminPage() {
           } else if (paymentChannel === "Deduct Member") {
             balAdj -= remainingToPay;
           }
-          const packageItems_u = dialogCart.filter(item => item.category === "PACKAGE");
+          const packageItems_u = !wasShopPaidBefore_update ? dialogCart.filter(item => item.category === "PACKAGE") : [];
           if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
           if (balAdj !== 0) {
             const isDeduct = balAdj < 0;
@@ -2871,6 +2871,7 @@ export default function AdminPage() {
             (payload as any).updatedAt = (originalJobRef.current as any).updatedAt;
           }
           await api.updateJob(targetEditingJobId, payload);
+          jobStore.notify();
         }
 
         // [AUTO-PROFORMA] Capture proforma ONLY IF:
@@ -2906,6 +2907,7 @@ export default function AdminPage() {
             proformaRevision: finalRevision,
             proformaCartHash: finalCartHash,
           } as any);
+          jobStore.notify();
           setProformaReceiptNumber(finalProformaNum);
           setProformaRevision(finalRevision);
           setLastProformaCartHash(finalCartHash);
@@ -2977,8 +2979,9 @@ export default function AdminPage() {
             // Offload to microtask so it doesn't block dialog close
             Promise.resolve().then(async () => {
               try {
-                const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
-                const proformaBlob = await generateA5ReceiptImage(proformaCapData, activeShop);
+                const proformaBlob = systemSettings?.receiptPaperSize === "A5"
+                  ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
+                  : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaCapData, activeShop);
                 if (proformaBlob) {
                   const proformaFilename = `proforma-${finalProformaNum}-rev${finalRevision}.png`;
                   let proformaUrl: string | null = null;
@@ -3054,7 +3057,7 @@ export default function AdminPage() {
                       .filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
                     const nextTargetBills = sortBills(Array.from(new Set([capturedUrl, ...filteredTargetBills])));
 
-                    api.updateJob(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any).catch(() => {});
+                    await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
 
                     // ONLY update React state if the dialog is still editing this exact same job!
                     if (editingJobIdRef.current === targetEditingJobId) {
@@ -3070,6 +3073,75 @@ export default function AdminPage() {
               }
             });
           }
+        }
+
+        // [AUTO-RECEIPT for EXISTING JOB] Guarantee REC image is generated in background when paid with laundry items,
+        // even if the cashier closes the Receipt Dialog immediately.
+        if (isPayment && isShopPaidNow && hasActualItems) {
+          const receiptFilename = `receipt-${targetEditingJobId}.png`;
+          const baseBillsForRec = [...safeBillUrls];
+          Promise.resolve().then(async () => {
+            try {
+              const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
+              const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              if (!markReceiptCaptureStarted(receiptFilename)) return;
+
+              const currentTargetJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId) || existingJob;
+              if (!currentTargetJob) {
+                clearReceiptCaptureLock(receiptFilename);
+                return;
+              }
+              const recData = formatJobToReceiptData({
+                ...currentTargetJob,
+                id: targetEditingJobId,
+                items: itemsPayload,
+                itemsJson: JSON.stringify(itemsPayload),
+                totalAmount: calculatedTotal,
+                isPaid: true,
+                isShopPaid: true,
+              } as any);
+              recData.isDraft = false;
+              recData.isPaid = true;
+              recData.autoCapture = true;
+              if (appliedPromo) {
+                recData.promoCode = appliedPromo.code;
+                recData.promoDiscount = promoDiscountAmount;
+                recData.promoTarget = appliedPromo.discountTarget;
+              }
+
+              const recBlob = systemSettings?.receiptPaperSize === "A5"
+                ? await generateA5ReceiptImage(recData, activeShop)
+                : await generateThermalReceiptImage(recData, activeShop);
+              if (!recBlob) {
+                clearReceiptCaptureLock(receiptFilename);
+                return;
+              }
+              const recUrl = await uploadReceiptImage(recBlob, targetEditingJobId, receiptFilename);
+              if (!recUrl) {
+                clearReceiptCaptureLock(receiptFilename);
+                return;
+              }
+
+              const latestTargetJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId);
+              let targetCurrentBills = baseBillsForRec;
+              try {
+                if (latestTargetJob?.billImageUrl) {
+                  const parsed = JSON.parse(latestTargetJob.billImageUrl);
+                  if (Array.isArray(parsed)) targetCurrentBills = parsed;
+                }
+              } catch {}
+              const filteredTargetBills = targetCurrentBills
+                .filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(receiptFilename) && !u.includes("/receipt-"));
+              const nextTargetBills = Array.from(new Set([recUrl, ...filteredTargetBills]));
+              await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+
+              if (editingJobIdRef.current === targetEditingJobId) {
+                setBillImageUrls(prev => prev.includes(recUrl) ? prev : [...prev, recUrl]);
+              }
+            } catch (e) {
+              console.warn("[AutoReceipt] Background existing-job receipt capture failed:", e);
+            }
+          });
         }
 
         // 4. Close dialog ONLY AFTER DB save succeeds!
@@ -3240,8 +3312,9 @@ export default function AdminPage() {
           const capturedSavedJobId = savedJobId;
           Promise.resolve().then(async () => {
             try {
-              const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
-              const proformaBlob = await generateA5ReceiptImage(proformaCapData, activeShop);
+              const proformaBlob = systemSettings?.receiptPaperSize === "A5"
+                ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
+                : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaCapData, activeShop);
               if (proformaBlob) {
                 const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
                 let proformaUrl: string | null = null;
@@ -3305,6 +3378,109 @@ export default function AdminPage() {
           });
         }
 
+        // Update local customer state if wallet was pre-deducted
+        if (preDeductedBalance !== null && selectedProfileCustomer) {
+          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: preDeductedBalance! } : null);
+          toast.success(`Customer wallet updated. New balance: ฿${preDeductedBalance!.toLocaleString()}`);
+        }
+
+        // Handle topup package wallet top-up BEFORE opening receipt dialog so REC captures updated walletBalanceAfter!
+        if (isShopPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
+          const refDisplay = (job as any)?.billNo || savedJobId;
+          const upd: Partial<Customer> & Record<string, any> = { 
+            creditBalanceDelta: packageTotal,
+            walletTxType: 'ADJUST_ADD',
+            walletRefId: savedJobId,
+            walletRefType: 'job',
+            actorId: user?.id || null,
+            actorName: user?.name || user?.email || 'Staff',
+            branchId: (job as any)?.branchId || activeShop?.id || null,
+            reason: `Package Top-Up #${refDisplay}`,
+          };
+          if (!selectedProfileCustomer.isMember) {
+            upd.isMember = true;
+            const pls = priceListStore.getSnapshot();
+            const ml = pls.find(p => p.name.toLowerCase().includes("member"));
+            if (ml) upd.priceListId = ml.id;
+          }
+          const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
+          const currentBal = preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0);
+          const confirmedBal = updatedCust?.creditBalance ?? (currentBal + packageTotal);
+          await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: confirmedBal });
+          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+          toast.success(`Member wallet topped up. New balance: ฿${confirmedBal.toLocaleString()}`);
+        }
+
+        // [AUTO-RECEIPT for NEW JOB] Guarantee REC image is generated in background when paid with laundry items,
+        // even if the cashier closes the Receipt Dialog immediately.
+        if (savedJobId && isNewJobShopPaid && hasActualItems) {
+          const capturedNewJobId = savedJobId;
+          const receiptFilename = `receipt-${capturedNewJobId}.png`;
+          const baseNewBills = [...safeNewBillUrls];
+          Promise.resolve().then(async () => {
+            try {
+              const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
+              const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              if (!markReceiptCaptureStarted(receiptFilename)) return;
+
+              const currentTargetJob = jobStore.getSnapshot().find(j => j.id === capturedNewJobId) || job;
+              if (!currentTargetJob) {
+                clearReceiptCaptureLock(receiptFilename);
+                return;
+              }
+              const recData = formatJobToReceiptData({
+                ...currentTargetJob,
+                id: capturedNewJobId,
+                items: itemsPayload,
+                itemsJson: JSON.stringify(itemsPayload),
+                totalAmount: calculatedTotal,
+                isPaid: true,
+                isShopPaid: true,
+              } as any);
+              recData.isDraft = false;
+              recData.isPaid = true;
+              recData.autoCapture = true;
+              if (appliedPromo) {
+                recData.promoCode = appliedPromo.code;
+                recData.promoDiscount = promoDiscountAmount;
+                recData.promoTarget = appliedPromo.discountTarget;
+              }
+
+              const recBlob = systemSettings?.receiptPaperSize === "A5"
+                ? await generateA5ReceiptImage(recData, activeShop)
+                : await generateThermalReceiptImage(recData, activeShop);
+              if (!recBlob) {
+                clearReceiptCaptureLock(receiptFilename);
+                return;
+              }
+              const recUrl = await uploadReceiptImage(recBlob, capturedNewJobId, receiptFilename);
+              if (!recUrl) {
+                clearReceiptCaptureLock(receiptFilename);
+                return;
+              }
+
+              const latestTargetJob = jobStore.getSnapshot().find(j => j.id === capturedNewJobId);
+              let targetCurrentBills = baseNewBills;
+              try {
+                if (latestTargetJob?.billImageUrl) {
+                  const parsed = JSON.parse(latestTargetJob.billImageUrl);
+                  if (Array.isArray(parsed)) targetCurrentBills = parsed;
+                }
+              } catch {}
+              const filteredTargetBills = targetCurrentBills
+                .filter(u => !u.includes(receiptFilename) && !u.includes("/receipt-"));
+              const nextTargetBills = Array.from(new Set([recUrl, ...filteredTargetBills]));
+              await jobStore.updateJobDetails(capturedNewJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+
+              if (editingJobIdRef.current === capturedNewJobId) {
+                setBillImageUrls(prev => prev.includes(recUrl) ? prev : [...prev, recUrl]);
+              }
+            } catch (e) {
+              console.warn("[AutoReceipt] Background new-job receipt capture failed:", e);
+            }
+          });
+        }
+
         // Close dialog immediately — UI updates in 0ms!
         setAdminNoteInput("");
         setSaveError(null);
@@ -3338,39 +3514,6 @@ export default function AdminPage() {
 
 
         toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
-
-        // Update local customer state if wallet was pre-deducted
-        if (preDeductedBalance !== null && selectedProfileCustomer) {
-          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: preDeductedBalance! } : null);
-          toast.success(`Customer wallet updated. New balance: ฿${preDeductedBalance!.toLocaleString()}`);
-        }
-
-        // Handle topup package wallet top-up (after job creation — low risk, topup adds money)
-        if (isShopPaidNow_new && selectedProfileCustomer && packageTotal > 0) {
-          const refDisplay = (job as any)?.billNo || savedJobId;
-          const upd: Partial<Customer> & Record<string, any> = { 
-            creditBalanceDelta: packageTotal,
-            walletTxType: 'ADJUST_ADD',
-            walletRefId: savedJobId,
-            walletRefType: 'job',
-            actorId: user?.id || null,
-            actorName: user?.name || user?.email || 'Staff',
-            branchId: (job as any)?.branchId || activeShop?.id || null,
-            reason: `Package Top-Up #${refDisplay}`,
-          };
-          if (!selectedProfileCustomer.isMember) {
-            upd.isMember = true;
-            const pls = priceListStore.getSnapshot();
-            const ml = pls.find(p => p.name.toLowerCase().includes("member"));
-            if (ml) upd.priceListId = ml.id;
-          }
-          const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
-          const currentBal = preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0);
-          const confirmedBal = updatedCust?.creditBalance ?? (currentBal + packageTotal);
-          await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: confirmedBal });
-          setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
-          toast.success(`Member wallet topped up. New balance: ฿${confirmedBal.toLocaleString()}`);
-        }
       }
 
       // Auto-create Tax Invoice Task for Accounting Team if requested

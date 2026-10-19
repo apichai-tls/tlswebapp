@@ -365,8 +365,10 @@ export function getJobPaymentBreakdown(job?: {
   
   let totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
   
+  const isShopOrPosPaid = Boolean(job?.isShopPaid === true || ((job as any)?.source === "pos" && job?.isPaid === true));
+
   // Fallback for legacy jobs marked paid without payments array
-  if (payments.length === 0 && (job?.isShopPaid || job?.isPaid) && total > 0) {
+  if (payments.length === 0 && isShopOrPosPaid && total > 0) {
     totalPaid = total;
     payments = [{
       amount: total,
@@ -378,7 +380,7 @@ export function getJobPaymentBreakdown(job?: {
   }
 
   const remaining = Math.max(0, Math.round((total - totalPaid) * 100) / 100);
-  const isFullyPaid = (job?.isShopPaid === true) || (job?.isPaid === true) || (total <= 0) || (totalPaid >= total - 0.01);
+  const isFullyPaid = isShopOrPosPaid || (total > 0 && totalPaid >= total - 0.01);
   const isPartial = !isFullyPaid && totalPaid > 0 && remaining > 0;
   
   const channels = Array.from(new Set(payments.map(p => p.channel || p.method || "Unspecified").filter(Boolean)));
@@ -399,13 +401,14 @@ export function getJobPaymentBreakdown(job?: {
 export function isJobFullyPaid(job?: {
   isPaid?: boolean | null;
   isShopPaid?: boolean | null;
+  source?: string | null;
   totalAmount?: number | null;
   adminNotesJson?: string | null;
 } | null): boolean {
   if (!job) return false;
-  if (job.isShopPaid === true || job.isPaid === true) return true;
+  if (job.isShopPaid === true || ((job as any).source === "pos" && job.isPaid === true)) return true;
   const jobTotal = Number(job.totalAmount) || 0;
-  if (jobTotal <= 0) return true;
+  if (jobTotal <= 0) return false;
   if (job.adminNotesJson) {
     try {
       const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;

@@ -86,13 +86,16 @@ export default function ReceiptPreviewClient({
     // For proforma draft, walletBalance is current pre-deduction balance, walletBalanceAfter is undefined
     receiptData.walletBalance = preDeductBalance;
     receiptData.walletBalanceAfter = undefined;
-  } else {
-    // For paid receipt, walletBalanceAfter is the remaining balance
+  } else if (receiptData.isMember || (initialJob.walletBalanceAfter !== null && initialJob.walletBalanceAfter !== undefined)) {
+    // For paid member receipt, walletBalanceAfter is the remaining balance
     receiptData.walletBalanceAfter =
       initialJob.walletBalanceAfter !== null && initialJob.walletBalanceAfter !== undefined
         ? Number(initialJob.walletBalanceAfter)
         : (receiptData.walletBalanceAfter ?? preDeductBalance);
     receiptData.walletBalance = receiptData.walletBalanceAfter;
+  } else {
+    receiptData.walletBalance = undefined;
+    receiptData.walletBalanceAfter = undefined;
   }
 
   const handleRegenerate = async () => {

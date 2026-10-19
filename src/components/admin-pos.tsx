@@ -2545,6 +2545,32 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             : roundGrandTotal(rawJobTotal, jobVatType))
         : safeCeil(rawJobTotal);
 
+      let jobWalletPaid = 0;
+      try {
+        if (latestJob.adminNotesJson) {
+          const parsed = JSON.parse(latestJob.adminNotesJson);
+          if (parsed && Array.isArray(parsed.payments)) {
+            jobWalletPaid = parsed.payments
+              .filter((p: any) => {
+                const m = (p.method || "").toLowerCase();
+                const c = (p.channel || "").toLowerCase();
+                return m.includes("wallet") || m.includes("credit") || m === "member_wallet" || c.includes("wallet") || c.includes("member") || c.includes("deduct");
+              })
+              .reduce((s: number, p: any) => s + (Number(p.amount) || 0), 0);
+          }
+        }
+      } catch {}
+      if (
+        jobWalletPaid === 0 &&
+        isJobPaid &&
+        (((latestJob.paymentChannel || "").toLowerCase().includes("wallet")) ||
+          ((latestJob.paymentChannel || "").toLowerCase().includes("member")) ||
+          ((latestJob.paymentChannel || "").toLowerCase().includes("deduct")) ||
+          latestJob.paymentMethod === "credit")
+      ) {
+        jobWalletPaid = effectiveJobTotal || 0;
+      }
+
       return {
         id: displayId,
         receiptNumber: isJobPaid ? ((latestJob as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined)) : undefined,
@@ -2578,7 +2604,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         adminNotesJson: latestJob.adminNotesJson,
         deliveryFee: /Free\s*Delivery/i.test(latestJob.remark || "") ? 0 : (latestJob.fee || 0),
         walletBalance: latestJob.walletBalanceAfter != null
-          ? (Number(latestJob.walletBalanceAfter) + (isJobPaid ? (effectiveJobTotal || 0) : 0))
+          ? (isDraftDoc ? (Number(latestJob.walletBalanceAfter) + jobWalletPaid) : Number(latestJob.walletBalanceAfter))
           : (latestJob.walletBalance != null
             ? latestJob.walletBalance
             : (selectedCustomer?.creditBalance || 0)),
@@ -2587,7 +2613,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           : undefined,
         isMember: latestJob.isMember !== undefined
           ? Boolean(latestJob.isMember)
-          : Boolean(selectedCustomer?.isMember),
+          : Boolean(selectedCustomer?.isMember || selectedCustomer?.memberId),
         memberId: (latestJob as any).memberId || (latestJob as any).customerMemberId || selectedCustomer?.memberId || null,
         autoCapture: true
       };
@@ -2626,7 +2652,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       customerId: selectedCustomer?.id,
       customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
       deliveryAddress: resolvedDraftAddress,
-      isMember: Boolean(selectedCustomer?.isMember),
+      isMember: Boolean(selectedCustomer?.isMember || selectedCustomer?.memberId),
       memberId: selectedCustomer?.memberId || null,
       walletBalance: selectedCustomer?.creditBalance,
       items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
@@ -2693,10 +2719,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     // Save order first as billing order with Gateway channel, then open OnlinePaymentDialog
     setIsPaid(false);
     setPosPaymentChannel("Gateway");
-    await handleCheckout();
+    await handleCheckout({ forceUnpaid: true, channelOverride: "Gateway" });
   };
 
-  const handleCheckout = async () => {
+  const handleCheckout = async (checkoutOptions?: { forceUnpaid?: boolean; channelOverride?: string } | unknown) => {
+    const opts = (checkoutOptions && typeof checkoutOptions === "object" && ("forceUnpaid" in checkoutOptions || "channelOverride" in checkoutOptions))
+      ? (checkoutOptions as { forceUnpaid?: boolean; channelOverride?: string })
+      : undefined;
     if (isSpectatorMode) {
       toast.error(currentLanguage === "en" ? "Spectator Mode - Actions are disabled" : "โหมดผู้เฝ้าดู - ไม่สามารถทำรายการได้");
       return;
@@ -2706,10 +2735,34 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       return;
     }
 
+    const loadedJobForPay = loadedJobId ? jobs.find(j => j.id === loadedJobId) : null;
+    const wasAlreadyShopPaid = Boolean(loadedJobForPay?.isShopPaid || (loadedJobForPay?.source === "pos" && loadedJobForPay?.isPaid));
+    let existingPaymentsPre: any[] = [];
+    if (loadedJobForPay?.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(loadedJobForPay.adminNotesJson);
+        if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments)) {
+          existingPaymentsPre = parsed.payments;
+        }
+      } catch {}
+    }
+    const alreadyPaidPre = existingPaymentsPre.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    const remainingToPayPre = loadedJobForPay ? Math.max(0, total - alreadyPaidPre) : total;
+
+    const effectiveChannelPre = opts?.channelOverride || effectivePaymentChannel;
+    const isBeamOnlinePre = Boolean(
+      opts?.forceUnpaid ||
+      effectiveChannelPre?.toLowerCase().includes("beam") ||
+      effectiveChannelPre?.toLowerCase().includes("gateway") ||
+      posPaymentChannel?.toLowerCase().includes("beam") ||
+      posPaymentChannel?.toLowerCase().includes("gateway")
+    );
+    const willBeShopPaid = !isBeamOnlinePre && Boolean(isPaid);
+
     // Cash Validation Check
-    if (isPaid && paymentMethod === "cash") {
+    if (willBeShopPaid && paymentMethod === "cash" && remainingToPayPre > 0) {
       const received = parseFloat(receivedCash);
-      if (isNaN(received) || received < total) {
+      if (isNaN(received) || received < remainingToPayPre) {
         toast.error(
           currentLanguage === "en"
             ? "Invalid or insufficient cash amount"
@@ -2719,8 +2772,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
     }
 
-    // Wallet Balance Check
-    const finalCreditAlloc = paymentMethod === "credit" ? total : 0;
+    // Wallet Balance Check — STRICT RULE: Only deduct wallet when Shop Paid = true (willBeShopPaid) and for remaining unpaid amount
+    const finalCreditAlloc = (willBeShopPaid && paymentMethod === "credit" && (!wasAlreadyShopPaid || remainingToPayPre > 0))
+      ? remainingToPayPre
+      : 0;
 
     if (finalCreditAlloc > 0) {
       if (!selectedCustomer) {
@@ -2751,7 +2806,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         toast.error("Please select a customer for Member Top-up");
         return;
       }
-      if ((isPaid && paymentMethod === "credit") || finalCreditAlloc > 0) {
+      if ((willBeShopPaid && paymentMethod === "credit") || finalCreditAlloc > 0) {
         toast.error("Cannot pay for Top-up using Member wallet");
         return;
       }
@@ -2932,19 +2987,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       const timestamp = new Date().toISOString();
       const shiftId = CASHIER_SHIFT_ENABLED ? activeShift?.id : undefined;
 
-      const isBeamOnlineChannel = Boolean(
-        effectivePaymentChannel?.toLowerCase().includes("beam") ||
-        effectivePaymentChannel?.toLowerCase().includes("gateway") ||
-        posPaymentChannel?.toLowerCase().includes("beam") ||
-        posPaymentChannel?.toLowerCase().includes("gateway")
-      );
+      const isBeamOnlineChannel = isBeamOnlinePre;
 
-      const payAmt = loadedJob ? (total - existingPayments.reduce((s, p) => s + p.amount, 0)) : total;
-      if (!isBeamOnlineChannel && isPaid && payAmt > 0) {
+      const payAmt = loadedJob ? Math.max(0, total - existingPayments.reduce((s, p) => s + p.amount, 0)) : total;
+      if (willBeShopPaid && payAmt > 0) {
         const paymentRecord: any = { 
           amount: payAmt, 
           method: paymentMethod, 
-          channel: effectivePaymentChannel || undefined,
+          channel: effectiveChannelPre || undefined,
           timestamp, 
           shiftId,
           paidBy: user?.name || user?.email || "POS Counter"
@@ -2961,7 +3011,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
       const finalPayments = [...existingPayments, ...newPayments];
       const totalPaid = finalPayments.reduce((s, p) => s + p.amount, 0);
-      const isPaidFlag = isBeamOnlineChannel ? false : (isPaid || totalPaid >= total);
+      const isPaidFlag = isBeamOnlineChannel ? false : (willBeShopPaid || (total > 0 && totalPaid >= total));
 
       // Determine backward-compatible payment method & channel
       let finalMethod: any = paymentMethod;
@@ -2975,8 +3025,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         return m ? m.toUpperCase() : undefined;
       };
 
-      if (effectivePaymentChannel) {
-        finalChannel = effectivePaymentChannel;
+      if (effectiveChannelPre) {
+        finalChannel = effectiveChannelPre;
         finalMethod = paymentMethod;
       } else if (newPayments.length > 0) {
         const lastPay = newPayments[newPayments.length - 1];
@@ -2987,7 +3037,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         finalMethod = lastPay.method;
         finalChannel = lastPay.channel || getStandardChannelName(lastPay.method);
       } else {
-        finalChannel = effectivePaymentChannel || getStandardChannelName(paymentMethod);
+        finalChannel = effectiveChannelPre || getStandardChannelName(paymentMethod);
       }
 
 
@@ -3015,14 +3065,14 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
       const resolvedDeliveryFee = isDelivery ? (parseFloat(localDeliveryPrice) || 0) : 0;
 
-      // Calculate initial member wallet balance after this transaction
-      let initialWalletBalanceAfter: number | null = null;
-      if (selectedCustomer) {
+      // Calculate initial member wallet balance after this transaction (ONLY when Shop Paid = true)
+      let initialWalletBalanceAfter: number | null = loadedJob?.walletBalanceAfter ?? null;
+      if (selectedCustomer && isPaidFlag) {
         if (finalCreditAlloc > 0) {
           initialWalletBalanceAfter = Math.round(((selectedCustomer.creditBalance || 0) - finalCreditAlloc) * 100) / 100;
-        } else if (topUpTotal > 0) {
+        } else if (topUpTotal > 0 && !wasAlreadyShopPaid) {
           initialWalletBalanceAfter = Math.round(((selectedCustomer.creditBalance || 0) + topUpTotal) * 100) / 100;
-        } else {
+        } else if (initialWalletBalanceAfter === null) {
           initialWalletBalanceAfter = selectedCustomer.creditBalance ?? null;
         }
       }
@@ -3169,17 +3219,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         }
       }
 
-      // Member balance adjustment
+      // Member balance adjustment — STRICT RULE: ONLY when Shop Paid = true (isPaidFlag)
       let balanceAdjustment = 0;
-      if (selectedCustomer) {
+      if (selectedCustomer && isPaidFlag) {
         if (finalCreditAlloc > 0) {
           balanceAdjustment = -finalCreditAlloc;
-        } else {
+        } else if (topUpTotal > 0 && !wasAlreadyShopPaid) {
           balanceAdjustment = topUpTotal;
         }
       }
 
-      if (balanceAdjustment !== 0 && selectedCustomer) {
+      if (balanceAdjustment !== 0 && selectedCustomer && isPaidFlag) {
         const isDeduct = balanceAdjustment < 0;
         const updates: Partial<Customer> & Record<string, any> = { 
           creditBalanceDelta: balanceAdjustment,
@@ -3229,7 +3279,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       } else if (finalJob && selectedCustomer) {
         finalJob = {
           ...finalJob,
-          walletBalanceAfter: selectedCustomer.creditBalance ?? null,
+          walletBalanceAfter: isPaidFlag ? (selectedCustomer.creditBalance ?? null) : (loadedJob?.walletBalanceAfter ?? null),
           customerId: selectedCustomer.id,
           isMember: selectedCustomer.isMember ?? false,
         };
@@ -3358,6 +3408,73 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           });
         }
       }
+
+      // [AUTO-RECEIPT for POS] Guarantee REC image is generated in background when paid with laundry items,
+      // even if the cashier closes the Receipt Dialog immediately.
+      if (finalJob && isPaidFlag && hasPosActualItems) {
+        const targetJobId = finalJob.id;
+        const receiptFilename = `receipt-${targetJobId}.png`;
+        const isA5 = settings?.receiptPaperSize === "A5";
+        const capturedFinalJob = finalJob;
+
+        Promise.resolve().then(async () => {
+          try {
+            const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
+            const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+            if (!markReceiptCaptureStarted(receiptFilename)) return;
+
+            const currentDbJob = jobStore.getSnapshot().find(j => j.id === targetJobId) || capturedFinalJob;
+            const recData = formatJobToReceiptData({
+              ...currentDbJob,
+              isPaid: true,
+              isShopPaid: true,
+            } as any);
+            recData.isDraft = false;
+            recData.isPaid = true;
+            recData.autoCapture = true;
+            if (appliedPromo) {
+              recData.promoCode = appliedPromo.code;
+              recData.promoDiscount = effectivePromoDiscount;
+              recData.promoTarget = appliedPromo.discountTarget;
+            }
+
+            const blob = isA5
+              ? await generateA5ReceiptImage(recData, activeShop)
+              : await generateThermalReceiptImage(recData, activeShop);
+            if (!blob) {
+              clearReceiptCaptureLock(receiptFilename);
+              return;
+            }
+            const receiptUrl = await uploadReceiptImage(blob, targetJobId, receiptFilename);
+            if (!receiptUrl) {
+              clearReceiptCaptureLock(receiptFilename);
+              return;
+            }
+            if (!capturedReceiptUrlsRef.current.includes(receiptUrl)) {
+              capturedReceiptUrlsRef.current.push(receiptUrl);
+            }
+            setSessionCapturedReceiptUrls(prev => prev.includes(receiptUrl) ? prev : [...prev, receiptUrl]);
+
+            const latestDbJobs = jobStore.getSnapshot();
+            const targetDbJob = latestDbJobs.find(j => j.id === targetJobId);
+            let currentBills: string[] = [];
+            try {
+              if (targetDbJob?.billImageUrl) {
+                const parsed = JSON.parse(targetDbJob.billImageUrl);
+                currentBills = Array.isArray(parsed) ? parsed : [parsed];
+              }
+            } catch {}
+            const filtered = currentBills.filter(u => !u.includes(receiptFilename) && !u.includes("/receipt-"));
+            const merged = [receiptUrl, ...filtered];
+            await jobStore.updateJobDetails(targetJobId, {
+              billImageUrl: JSON.stringify(merged),
+            } as any);
+          } catch (err) {
+            console.warn("[AutoReceipt POS] Background receipt capture failed:", err);
+          }
+        });
+      }
+
       if (appliedPromo && effectivePromoDiscount > 0 && finalJob?.id) {
         handleRedeemPromo(
           appliedPromo.code,

@@ -5,7 +5,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, settingsStore, customerStore, type Job } from "@/lib/store";
 import { formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { generateThermalReceiptImage, uploadReceiptImage } from "@/lib/thermal-canvas-generator";
-import { generateA5ReceiptImage } from "@/lib/a5-canvas-generator";
+import { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } from "@/lib/a5-canvas-generator";
 import { isJobFullyPaid, cleanProformaNumber, computeCartHash } from "@/lib/utils";
 import { checkJobOnlinePaymentStatusAction } from "@/actions/online-payment";
 
@@ -111,14 +111,16 @@ export function AutoReceiptWorker() {
         const isPaid = isJobFullyPaid(job);
         if (!isPaid || !job.isShopPaid) return false;
 
-        // Only use background worker for Online Gateway / Beam webhook payments where no staff
-        // machine clicked [Pay] directly. Normal staff payments generate and save receipts on the machine that clicked.
+        // Online Gateway / Beam webhook payments are processed immediately (0s delay).
+        // For normal staff payments (Deduct Member, Cash, PromptPay, Transfer, etc.), wait a 20-second
+        // grace period so the cashier machine's own background capture finishes first; if the receipt is
+        // still missing after 20s (e.g. dialog/tab closed early), AutoReceiptWorker steps in as a safety net.
         const channel = (job.paymentChannel || "").toLowerCase();
         const isOnlineGateway = channel.includes("beam") || channel.includes("gateway");
-        if (!isOnlineGateway) return false;
+        if (!isOnlineGateway && (now - jobPaidTime) < 20000) return false;
 
-        // Guard: Job must have actual laundry items to auto-generate receipt!
-        // Delivery booking fees alone without clothes must NOT generate a receipt!
+        // Guard: Job must have actual laundry items (excluding PACKAGE top-ups) to auto-generate receipt!
+        // Delivery booking fees alone or package top-ups without clothes must NOT generate a receipt!
         let itemsArr: any[] = [];
         try {
           if (Array.isArray(job.items)) {
@@ -129,7 +131,10 @@ export function AutoReceiptWorker() {
             itemsArr = JSON.parse((job as any).itemsJson);
           }
         } catch {}
-        if (itemsArr.length === 0) {
+        const hasLaundryItems = itemsArr.some(
+          (item: any) => item.category !== "PACKAGE" && !String(item.name || "").toLowerCase().includes("package")
+        );
+        if (!hasLaundryItems) {
           return false;
         }
 
@@ -156,6 +161,9 @@ export function AutoReceiptWorker() {
 
       if (pendingPaidJob) {
         const jobId = pendingPaidJob.id;
+        const filename = `receipt-${jobId}.png`;
+        if (!markReceiptCaptureStarted(filename)) return;
+
         isWorkingRef.current = true;
         processingRef.current.add(jobId);
 
@@ -171,7 +179,6 @@ export function AutoReceiptWorker() {
             : await generateThermalReceiptImage(receiptData, activeShop);
 
           if (blob) {
-            const filename = `receipt-${jobId}.png`;
             const publicUrl = await uploadReceiptImage(blob, jobId, filename);
 
             if (publicUrl) {
@@ -190,12 +197,17 @@ export function AutoReceiptWorker() {
                 billImageUrl: JSON.stringify(mergedBills),
               } as any);
 
-              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached receipt image for Online Job #${jobId}`);
+              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached receipt image for Job #${jobId}`);
+            } else {
+              clearReceiptCaptureLock(filename);
             }
+          } else {
+            clearReceiptCaptureLock(filename);
           }
 
           completedRef.current.add(`receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`);
         } catch (err) {
+          clearReceiptCaptureLock(filename);
           console.warn(`[AutoReceiptWorker] Failed to auto-generate receipt for Job #${jobId}:`, err);
         } finally {
           processingRef.current.delete(jobId);
