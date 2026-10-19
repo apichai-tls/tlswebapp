@@ -83,19 +83,40 @@ async function markJobAsPaidInDb(params: {
     delete adminNotesObj.lastBeamPaymentLink;
   }
 
-  const updated = await prisma.job.update({
-    where: { id: job.id },
-    data: {
-      isPaid: isFullyPaidNow,
-      isShopPaid: isFullyPaidNow,
-      paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
-      paymentChannel: channelName,
-      totalAmount: effectiveTotalAmount,
-      ...(isFullyPaidNow ? { csoPaidAt: now, shopPaidAt: now } : {}),
-      subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
-      adminNotesJson: JSON.stringify(adminNotesObj),
-    },
-  });
+  let transitionedToShopPaid = false;
+  if (isFullyPaidNow) {
+    const atomicRes = await prisma.job.updateMany({
+      where: { id: job.id, isShopPaid: false },
+      data: {
+        isPaid: true,
+        isShopPaid: true,
+        paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
+        paymentChannel: channelName,
+        totalAmount: effectiveTotalAmount,
+        csoPaidAt: now,
+        shopPaidAt: now,
+        subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus,
+        adminNotesJson: JSON.stringify(adminNotesObj),
+      },
+    });
+    transitionedToShopPaid = atomicRes.count > 0;
+  }
+
+  const updated = transitionedToShopPaid
+    ? ((await prisma.job.findUnique({ where: { id: job.id } })) || job)
+    : await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          isPaid: isFullyPaidNow,
+          isShopPaid: isFullyPaidNow,
+          paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
+          paymentChannel: channelName,
+          totalAmount: effectiveTotalAmount,
+          ...(isFullyPaidNow && !job.shopPaidAt ? { csoPaidAt: now, shopPaidAt: now } : {}),
+          subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
+          adminNotesJson: JSON.stringify(adminNotesObj),
+        },
+      });
 
   try {
     invalidateDbCache();
@@ -103,7 +124,7 @@ async function markJobAsPaidInDb(params: {
     console.warn('[Online Payment] Failed to invalidate DB cache:', err);
   }
 
-  if (isFullyPaidNow && !job.isShopPaid && updated.customerId) {
+  if (transitionedToShopPaid && updated.customerId) {
     try {
       await evaluateAndIssuePromotionCouponsAction({
         jobId: updated.id,

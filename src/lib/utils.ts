@@ -378,7 +378,7 @@ export function getJobPaymentBreakdown(job?: {
   }
 
   const remaining = Math.max(0, Math.round((total - totalPaid) * 100) / 100);
-  const isFullyPaid = (job?.isShopPaid === true) || (total > 0 && totalPaid >= total - 0.01);
+  const isFullyPaid = (job?.isShopPaid === true) || (job?.isPaid === true) || (total <= 0) || (totalPaid >= total - 0.01);
   const isPartial = !isFullyPaid && totalPaid > 0 && remaining > 0;
   
   const channels = Array.from(new Set(payments.map(p => p.channel || p.method || "Unspecified").filter(Boolean)));
@@ -403,14 +403,15 @@ export function isJobFullyPaid(job?: {
   adminNotesJson?: string | null;
 } | null): boolean {
   if (!job) return false;
-  if (job.isShopPaid === true) return true;
+  if (job.isShopPaid === true || job.isPaid === true) return true;
+  const jobTotal = Number(job.totalAmount) || 0;
+  if (jobTotal <= 0) return true;
   if (job.adminNotesJson) {
     try {
-      const parsed = JSON.parse(job.adminNotesJson);
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
       if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
         const totalPaid = parsed.payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
-        const jobTotal = Number(job.totalAmount) || 0;
-        if (totalPaid >= jobTotal && jobTotal > 0) {
+        if (totalPaid >= jobTotal - 0.01) {
           return true;
         }
       }
@@ -569,6 +570,8 @@ export function resolveCustomerPhones(params: {
     phone?: string | null;
     secondaryPhone?: string | null;
     isSecondaryWhatsapp?: boolean;
+    whatsappId?: string | null;
+    lineId?: string | null;
     addresses?: Array<{ contactPhone?: string | null }>;
   } | null;
 }): {
@@ -613,7 +616,15 @@ export function resolveCustomerPhones(params: {
 
   // If customer has NO Thai phone:
   if (!thaiPhone) {
-    const fallback = intlPhone || addrPhone || rawPhone || profilePhone || "";
+    const rawStr = String(customerPhone || "").trim();
+    const rawNonPhone = rawStr && !isValidPhoneNumber(rawStr) && rawStr !== "-" && rawStr !== "--" ? rawStr : "";
+    const waFallback = customer?.whatsappId?.trim()
+      ? (customer.whatsappId.trim().toUpperCase().startsWith("WA:") ? customer.whatsappId.trim() : `WA: ${customer.whatsappId.trim()}`)
+      : "";
+    const lineFallback = customer?.lineId?.trim()
+      ? (customer.lineId.trim().toUpperCase().startsWith("LINE:") ? customer.lineId.trim() : `LINE: ${customer.lineId.trim()}`)
+      : "";
+    const fallback = intlPhone || addrPhone || rawPhone || profilePhone || waFallback || rawNonPhone || lineFallback || "";
     return {
       primaryPhone: fallback,
       secondaryPhone: (alternatePhone && alternatePhone !== fallback) ? alternatePhone : null,
@@ -777,6 +788,7 @@ export function matchCustomerSearch(
     memberId?: string | null;
     email?: string | null;
     lineId?: string | null;
+    whatsappId?: string | null;
     companyName?: string | null;
     taxId?: string | null;
     addresses?: Array<{ contactPhone?: string | null }> | null;
@@ -827,9 +839,15 @@ export function matchCustomerSearch(
     if (qDigits && tId.includes(qDigits)) return true;
   }
 
-  // 4. Email & Line ID match
+  // 4. Email, Line ID & WhatsApp ID match
   if (customer.email && customer.email.toLowerCase().includes(q)) return true;
   if (customer.lineId && customer.lineId.toLowerCase().includes(q)) return true;
+  if (customer.whatsappId) {
+    const waLower = customer.whatsappId.toLowerCase().trim();
+    const cleanQ = q.replace(/^(@|wa:\s*)/i, "").trim();
+    const cleanWa = waLower.replace(/^(@|wa:\s*)/i, "").trim();
+    if (waLower.includes(q) || (cleanQ && cleanWa.includes(cleanQ))) return true;
+  }
 
   // 5. Phone Numbers Matching (Thai & International)
   const phonesToCheck: string[] = [];

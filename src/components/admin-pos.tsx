@@ -92,7 +92,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, roundGrandTotal, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht, formatCustomerFullAddress } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, roundGrandTotal, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht, formatCustomerFullAddress, isJobFullyPaid, getJobPaymentBreakdown } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -2578,10 +2578,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         adminNotesJson: latestJob.adminNotesJson,
         deliveryFee: /Free\s*Delivery/i.test(latestJob.remark || "") ? 0 : (latestJob.fee || 0),
         walletBalance: latestJob.walletBalanceAfter != null
-          ? latestJob.walletBalanceAfter
+          ? (Number(latestJob.walletBalanceAfter) + (isJobPaid ? (effectiveJobTotal || 0) : 0))
           : (latestJob.walletBalance != null
             ? latestJob.walletBalance
             : (selectedCustomer?.creditBalance || 0)),
+        walletBalanceAfter: latestJob.walletBalanceAfter != null
+          ? Number(latestJob.walletBalanceAfter)
+          : undefined,
         isMember: latestJob.isMember !== undefined
           ? Boolean(latestJob.isMember)
           : Boolean(selectedCustomer?.isMember),
@@ -2810,7 +2813,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
               proformaRevision: effectiveRevision ?? 0,
               createdAt: new Date(),
               customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
-              customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
+              customerPhone: selectedCustomer ? (selectedCustomer.phone && selectedCustomer.phone !== "-" ? selectedCustomer.phone : (selectedCustomer.secondaryPhone || (selectedCustomer.whatsappId ? `WA: ${selectedCustomer.whatsappId}` : "-"))) : "-",
               deliveryAddress: resolvedTempAddress,
               items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
               subtotal: subtotal,
@@ -3111,7 +3114,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           type: targetType,
           customerId: selectedCustomer?.id,
           customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
-          customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
+          customerPhone: selectedCustomer ? (selectedCustomer.phone && selectedCustomer.phone !== "-" ? selectedCustomer.phone : (selectedCustomer.secondaryPhone || (selectedCustomer.whatsappId ? `WA: ${selectedCustomer.whatsappId}` : "-"))) : "-",
           pickupLocation: targetPickupLoc,
           dropoffLocation: resolvedDropoff,
           deliveryAddress: isDelivery ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined) : undefined,
@@ -4384,7 +4387,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   <div className="min-w-0 flex-1">
                     <p className="text-[11px] font-bold text-accent-foreground truncate">{selectedCustomer.name}</p>
                     <p className="text-[9px] text-primary font-semibold truncate flex items-center flex-wrap gap-1">
-                      <span>{selectedCustomer.phone}</span>
+                      <span>
+                        {selectedCustomer.phone && selectedCustomer.phone !== "-"
+                          ? selectedCustomer.phone
+                          : selectedCustomer.secondaryPhone || (selectedCustomer.whatsappId ? `WA: ${selectedCustomer.whatsappId}` : "-")}
+                      </span>
+                      {selectedCustomer.whatsappId && selectedCustomer.phone && selectedCustomer.phone !== "-" && (
+                        <span className="text-[8px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0 rounded border border-emerald-200">
+                          WA: {selectedCustomer.whatsappId}
+                        </span>
+                      )}
                       <span className={`font-bold ${(selectedCustomer.creditBalance || 0) < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
                         ({formatBaht(selectedCustomer.creditBalance || 0)})
                       </span>
@@ -4415,7 +4427,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={14} />
                   <input 
                     type="text"
-                    placeholder={currentLanguage === "en" ? "Search name, phone, member ID..." : "ค้นหาชื่อ, เบอร์โทร, เลขสมาชิก..."}
+                    placeholder={currentLanguage === "en" ? "Search name, phone, WA ID, member ID..." : "ค้นหาชื่อ, เบอร์โทร, WA ID, เลขสมาชิก..."}
                     className="w-full pl-9 pr-4 h-9 rounded-xl border border-border bg-card text-foreground text-xs font-semibold focus:ring-2 focus:ring-primary outline-none transition-all placeholder:text-muted-foreground"
                     value={customerSearch}
                     onChange={(e) => {
@@ -4454,12 +4466,19 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                             >
                               <div className="min-w-0 flex-1">
                                 <p className="font-bold text-foreground truncate">{c.name}</p>
-                                <p className="text-[10px] text-muted-foreground font-medium">
-                                  {c.phone}
-                                  {c.secondaryPhone && c.secondaryPhone !== c.phone && (
-                                    <span className="ml-1 text-[9px] text-sky-600 font-sans">({c.secondaryPhone})</span>
+                                <p className="text-[10px] text-muted-foreground font-medium flex items-center flex-wrap gap-1">
+                                  <span>
+                                    {c.phone && c.phone !== "-" ? c.phone : (c.secondaryPhone || (c.whatsappId ? `WA: ${c.whatsappId}` : "-"))}
+                                  </span>
+                                  {c.secondaryPhone && c.phone && c.phone !== "-" && c.secondaryPhone !== c.phone && (
+                                    <span className="text-[9px] text-sky-600 font-sans">({c.secondaryPhone})</span>
                                   )}
-                                  <span className={`font-bold ml-1.5 ${(c.creditBalance || 0) < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                                  {c.whatsappId && c.phone && c.phone !== "-" && (
+                                    <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0 rounded border border-emerald-200 font-sans">
+                                      WA: {c.whatsappId}
+                                    </span>
+                                  )}
+                                  <span className={`font-bold ml-1 ${(c.creditBalance || 0) < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
                                     ({formatBaht(c.creditBalance || 0)})
                                   </span>
                                 </p>
@@ -6086,19 +6105,38 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           </Button>
                         ) : (
                           <>
-                            {((job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service')) && (job.status === "delivery" || job.subStatus === "ready") && job.status !== "completed" && job.status !== "cancel" && !isSpectatorMode && (
-                              <Button
-                                size="sm"
-                                type="button"
-                                onClick={() => {
-                                  setConfirmReturnJob(job);
-                                }}
-                                className="h-8 font-bold text-xs bg-indigo-650 hover:bg-indigo-700 text-white rounded-lg px-3 cursor-pointer shrink-0 flex items-center gap-1 shadow-sm"
-                              >
-                                <Check size={12} />
-                                <span>Customer Picked Up</span>
-                              </Button>
-                            )}
+                            {((job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service')) && (job.status === "delivery" || job.subStatus === "ready") && job.status !== "completed" && job.status !== "cancel" && !isSpectatorMode && (() => {
+                              const isPaid = isJobFullyPaid(job);
+                              return (
+                                <Button
+                                  size="sm"
+                                  type="button"
+                                  onClick={() => {
+                                    if (!isPaid) {
+                                      const breakdown = getJobPaymentBreakdown(job);
+                                      const remainingStr = breakdown.isPartial ? ` (คงเหลือ ฿${breakdown.remaining.toLocaleString()})` : '';
+                                      toast.error(
+                                        currentLanguage === "en"
+                                          ? `Cannot complete: Order #${formatJobDisplayId(job.id)} is unpaid${remainingStr}. Please collect payment first.`
+                                          : `ไม่สามารถปิดงานได้: Order #${formatJobDisplayId(job.id)} ยังไม่ได้ชำระเงิน${remainingStr} กรุณาชำระเงินก่อน`
+                                      );
+                                      return;
+                                    }
+                                    setConfirmReturnJob(job);
+                                  }}
+                                  className={`h-8 font-bold text-xs rounded-lg px-3 cursor-pointer shrink-0 flex items-center gap-1 shadow-sm transition-all ${
+                                    isPaid
+                                      ? "bg-indigo-650 hover:bg-indigo-700 text-white"
+                                      : "bg-slate-200 hover:bg-slate-300 text-slate-700 border border-slate-300"
+                                  }`}
+                                  title={isPaid ? "Customer Picked Up (ลูกค้ารับผ้าแล้ว)" : "ยังไม่ได้ชำระเงิน - กรุณาชำระเงินก่อนส่งมอบผ้า"}
+                                >
+                                  <Check size={12} className={isPaid ? "text-white" : "text-slate-500"} />
+                                  <span>Customer Picked Up</span>
+                                  {!isPaid && <span className="text-[10px] font-extrabold text-rose-600 ml-0.5">{currentLanguage === "en" ? "(Unpaid)" : "(ยังไม่ชำระ)"}</span>}
+                                </Button>
+                              );
+                            })()}
                           </>
                         )}
 
@@ -6378,6 +6416,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 type="button"
                 onClick={async () => {
                   if (!confirmReturnJob) return;
+                  if (!isJobFullyPaid(confirmReturnJob)) {
+                    const breakdown = getJobPaymentBreakdown(confirmReturnJob);
+                    const remainingStr = breakdown.isPartial ? ` (คงเหลือ ฿${breakdown.remaining.toLocaleString()})` : '';
+                    toast.error(
+                      currentLanguage === "en"
+                        ? `Cannot complete: Order #${formatJobDisplayId(confirmReturnJob.id)} is unpaid${remainingStr}. Please collect payment first.`
+                        : `ไม่สามารถปิดงานได้: Order #${formatJobDisplayId(confirmReturnJob.id)} ยังไม่ได้ชำระเงิน${remainingStr} กรุณาชำระเงินก่อน`
+                    );
+                    setConfirmReturnJob(null);
+                    return;
+                  }
                   try {
                     const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
                     await jobStore.completeJob(confirmReturnJob.id, undefined, 'delivery', actorDetails);
@@ -6387,8 +6436,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                         : `บันทึกรายการ Order #${formatJobDisplayId(confirmReturnJob.id)}: Customer Picked Up เรียบร้อย`
                     );
                     setConfirmReturnJob(null);
-                  } catch (e) {
-                    toast.error(currentLanguage === "en" ? "Failed to complete return" : "ไม่สามารถบันทึกรายการคืนผ้าได้");
+                  } catch (e: any) {
+                    toast.error(e?.message || (currentLanguage === "en" ? "Failed to complete return" : "ไม่สามารถบันทึกรายการคืนผ้าได้"));
                   }
                 }}
                 className="h-9 bg-indigo-650 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-indigo-650/15 border-none"

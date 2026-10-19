@@ -2872,8 +2872,18 @@ export function AdminCRM({
                                 <div className="flex flex-col gap-0.5 text-slate-500 text-[11px] font-medium">
                                   <div className="flex items-center gap-1">
                                     <Phone size={10} className="text-slate-400" />
-                                    <span>{customer.phone}</span>
+                                    <span>
+                                      {customer.phone && customer.phone !== "-"
+                                        ? customer.phone
+                                        : customer.secondaryPhone || (customer.whatsappId ? `WA: ${customer.whatsappId}` : "-")}
+                                    </span>
                                   </div>
+                                  {customer.whatsappId && customer.phone && customer.phone !== "-" && (
+                                    <div className="flex items-center gap-1">
+                                      <MessageCircle size={10} className="text-emerald-500" />
+                                      <span>WA: <span className="text-emerald-700 font-semibold">{customer.whatsappId}</span></span>
+                                    </div>
+                                  )}
                                   {customer.email && (
                                     <div className="flex items-center gap-1">
                                       <Mail size={10} className="text-slate-400" />

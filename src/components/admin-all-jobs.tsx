@@ -935,7 +935,27 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             );
                           })()}
                         </div>
-                        <div className="text-[10px] text-slate-500 mt-0.5">{job.customerPhone || "No Phone"}</div>
+                        <div className="text-[10px] text-slate-500 mt-0.5 flex items-center gap-1 flex-wrap">
+                          {(() => {
+                            const c = findMatchingCustomer(customers, {
+                              customerId: job.customerId,
+                              customerName: job.customerName,
+                              customerPhone: job.customerPhone,
+                            });
+                            const rawPhone = job.customerPhone && job.customerPhone !== "-" ? job.customerPhone : "";
+                            const displayContact = rawPhone || (c?.whatsappId ? `WA: ${c.whatsappId}` : (c?.lineId ? `LINE: ${c.lineId}` : "No Phone"));
+                            return (
+                              <>
+                                <span>{displayContact}</span>
+                                {c?.whatsappId && rawPhone && !rawPhone.toLowerCase().includes(c.whatsappId.toLowerCase()) && (
+                                  <span className="text-[9px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0 rounded border border-emerald-200">
+                                    WA: {c.whatsappId}
+                                  </span>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
                       </TableCell>
 
                       <TableCell className="align-middle py-2">
@@ -1561,29 +1581,43 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               </div>
                             </div>
 
-                            {status === 'delivery' && ((job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service')) && (
-                              <div className="pt-2 border-t border-slate-100 mt-2">
-                                <Button
-                                  size="sm"
-                                  type="button"
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    try {
-                                      const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
-                                      await jobStore.completeJob(job.id, undefined, "delivery", actorDetails);
-                                      toast.success(`Order #${formatJobDisplayId(job.id)}: Customer Picked Up (Completed)`);
-                                    } catch (err: any) {
-                                      toast.error(`ไม่สามารถปิดงานได้: ${err.message}`);
-                                    }
-                                  }}
-                                  className="w-full h-7 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center justify-center gap-1.5 shadow-xs cursor-pointer border-none"
-                                  title="Customer Picked Up (ลูกค้ารับผ้าแล้ว)"
-                                >
-                                  <CheckCircle2 size={13} />
-                                  <span>Customer Picked Up</span>
-                                </Button>
-                              </div>
-                            )}
+                            {status === 'delivery' && ((job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service')) && (() => {
+                              const isPaid = isJobFullyPaid(job);
+                              return (
+                                <div className="pt-2 border-t border-slate-100 mt-2">
+                                  <Button
+                                    size="sm"
+                                    type="button"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      if (!isPaid) {
+                                        const breakdown = getJobPaymentBreakdown(job);
+                                        const remainingStr = breakdown.isPartial ? ` (คงเหลือ ฿${breakdown.remaining.toLocaleString()})` : '';
+                                        toast.error(`ไม่สามารถปิดงานได้: Order #${formatJobDisplayId(job.id)} ยังไม่ได้ชำระเงิน${remainingStr} กรุณาบันทึกการชำระเงินก่อน`);
+                                        return;
+                                      }
+                                      try {
+                                        const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                                        await jobStore.completeJob(job.id, undefined, "delivery", actorDetails);
+                                        toast.success(`Order #${formatJobDisplayId(job.id)}: Customer Picked Up (Completed)`);
+                                      } catch (err: any) {
+                                        toast.error(`ไม่สามารถปิดงานได้: ${err.message}`);
+                                      }
+                                    }}
+                                    className={`w-full h-7 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 shadow-xs cursor-pointer border transition-all ${
+                                      isPaid
+                                        ? "bg-emerald-600 hover:bg-emerald-700 text-white border-transparent"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300"
+                                    }`}
+                                    title={isPaid ? "Customer Picked Up (ลูกค้ารับผ้าแล้ว)" : "ยังไม่ได้ชำระเงิน - กรุณาบันทึกการชำระเงินก่อนส่งมอบผ้า"}
+                                  >
+                                    <CheckCircle2 size={13} className={isPaid ? "text-white" : "text-slate-400"} />
+                                    <span>Customer Picked Up</span>
+                                    {!isPaid && <span className="text-[9px] font-extrabold text-rose-600 ml-0.5">(ยังไม่ชำระ)</span>}
+                                  </Button>
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })}

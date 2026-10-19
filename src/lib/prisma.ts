@@ -2,7 +2,10 @@ import { PrismaClient } from '@prisma/client';
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
+  prismaSchemaRev?: string;
 };
+
+const CURRENT_SCHEMA_REV = 'whatsappId-v2';
 
 const getPrismaUrl = () => {
   let url = process.env.DATABASE_URL || '';
@@ -19,15 +22,18 @@ const getPrismaUrl = () => {
 };
 
 export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    datasources: {
-      db: {
-        url: getPrismaUrl(),
-      },
-    },
-  });
+  globalForPrisma.prisma && globalForPrisma.prismaSchemaRev === CURRENT_SCHEMA_REV
+    ? globalForPrisma.prisma
+    : new PrismaClient({
+        datasources: {
+          db: {
+            url: getPrismaUrl(),
+          },
+        },
+      });
 
 globalForPrisma.prisma = prisma;
+globalForPrisma.prismaSchemaRev = CURRENT_SCHEMA_REV;
+
 
 

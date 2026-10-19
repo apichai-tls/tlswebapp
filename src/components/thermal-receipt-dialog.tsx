@@ -339,6 +339,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     ((job as any).source === "pos" && job.isPaid) ||
     (totalPayments >= jobTotal && jobTotal > 0)
   );
+
   const isDraftJob = (job as any).isDraft !== undefined ? Boolean((job as any).isDraft) : !isJobPaid;
   const walletBalance = isDraftJob ? preDeductWalletBalance : postDeductWalletBalance;
   const receiptDate = (isJobPaid && paymentTime && !isNaN(paymentTime.getTime()))
@@ -361,7 +362,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     receiptNumber: isJobPaid ? ((job as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined)) : undefined,
     createdAt: receiptDate,
     customerName: job.customerName || "Walk-In",
-    customerPhone: job.customerPhone || "-",
+    customerPhone: (job.customerPhone && job.customerPhone !== "-") ? job.customerPhone : (cust?.whatsappId ? `WA: ${cust.whatsappId}` : "-"),
     deliveryAddress: effectiveDeliveryAddress,
     items: jobItems.map((item: any) => ({
       name: item.name,

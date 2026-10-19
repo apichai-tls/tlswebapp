@@ -147,6 +147,7 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
             isWhatsapp: data.isWhatsapp || false,
             email: data.email,
             lineId: data.lineId,
+            whatsappId: data.whatsappId || null,
             language: data.language,
             remark: data.remark,
             secondaryAddress: data.secondaryAddress,
@@ -345,6 +346,7 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
   if (updates.isNew !== undefined) data.isNew = updates.isNew;
   if (updates.email !== undefined) data.email = updates.email;
   if (updates.lineId !== undefined) data.lineId = updates.lineId;
+  if (updates.whatsappId !== undefined) data.whatsappId = updates.whatsappId;
   if (updates.language !== undefined) data.language = updates.language;
   if (updates.remark !== undefined) data.remark = updates.remark;
   if (updates.secondaryAddress !== undefined) data.secondaryAddress = updates.secondaryAddress;
@@ -809,6 +811,12 @@ export async function mergeCustomerAction(data: {
       // If primary phone is dummy/empty and duplicate has a valid phone
       if ((!primary.phone || primary.phone === "-" || primary.phone === "0000000000") && duplicate.phone && duplicate.phone !== "-") {
         updateData.phone = duplicate.phone;
+      }
+      if (!primary.whatsappId && duplicate.whatsappId) {
+        updateData.whatsappId = duplicate.whatsappId;
+      }
+      if (!primary.lineId && duplicate.lineId) {
+        updateData.lineId = duplicate.lineId;
       }
 
       // Upgrade member status if duplicate has higher tier
@@ -4842,7 +4850,7 @@ export async function recordJobPaymentAction(data: {
       try {
         const promoRes = await evaluateAndIssuePromotionCouponsAction({
           jobId: result.updatedJob.id,
-          customerId: result.updatedJob.customerId,
+          customerId: result.updatedJob.customerId ?? undefined,
           actor: { id: data.actorId, name: data.actorName },
         });
         if (promoRes.success && promoRes.couponsIssued) {
@@ -5770,133 +5778,152 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
         continue;
       }
 
-      // Check limit per customer (max per customer across campaign)
-      if (campaign.conditions.limitPerCustomer > 0) {
-        const phoneDigits = (customer.phone || "").replace(/\D/g, "");
-        const existingCount = await prisma.customerVoucher.count({
+      // Serialize check + creation per (campaign, customer) using PostgreSQL transaction advisory lock
+      // to prevent concurrent requests (e.g. simultaneous Beam online payment pollers) from issuing duplicate vouchers
+      const txResult = await prisma.$transaction(async (tx) => {
+        const lockKey = `promo_voucher_${campaign.id}_${customer.id}`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+
+        // Check limit per customer (max per customer across campaign)
+        if (campaign.conditions.limitPerCustomer > 0) {
+          const phoneDigits = (customer.phone || "").replace(/\D/g, "");
+          const existingCount = await tx.customerVoucher.count({
+            where: {
+              campaignId: campaign.id,
+              status: { not: "VOID" },
+              OR: [
+                { customerId: customer.id },
+                ...(phoneDigits.length >= 8 ? [{ customerPhone: customer.phone }] : []),
+              ],
+            },
+          });
+
+          if (existingCount >= campaign.conditions.limitPerCustomer) {
+            return {
+              coupon: null,
+              reason: `ลูกค้าท่านนี้ได้รับสิทธิ์วอยเชอร์แคมเปญ "${campaign.name}" ครบ ${campaign.conditions.limitPerCustomer} สิทธิ์แล้ว`,
+            };
+          }
+        }
+
+        // Prevent duplicate issuance for the exact same source job
+        const duplicateJobCoupon = await tx.customerVoucher.findFirst({
           where: {
             campaignId: campaign.id,
+            sourceJobId: job.id,
             status: { not: "VOID" },
-            OR: [
-              { customerId: customer.id },
-              ...(phoneDigits.length >= 8 ? [{ customerPhone: customer.phone }] : []),
-            ],
+          },
+        });
+        if (duplicateJobCoupon) {
+          return {
+            coupon: null,
+            reason: `บิล #${job.billNo || job.id} เคยได้รับวอยเชอร์ไปแล้ว (${duplicateJobCoupon.code})`,
+          };
+        }
+
+        // Eligible! Generate unique code and create coupon
+        let uniqueCode = "";
+        let isCodeUnique = false;
+        let attempts = 0;
+        while (!isCodeUnique && attempts < 10) {
+          attempts++;
+          const testCode = generateCouponCode(campaign.reward.codePrefix || "PROMO");
+          const existing = await tx.customerVoucher.findFirst({ where: { code: testCode } });
+          if (!existing) {
+            uniqueCode = testCode;
+            isCodeUnique = true;
+          }
+        }
+
+        if (!uniqueCode) {
+          uniqueCode = `${campaign.reward.codePrefix || "PROMO"}-${Date.now().toString().slice(-4)}`;
+        }
+
+        const targetCategory = campaign.reward.applicableCategory && campaign.reward.applicableCategory.toUpperCase() !== "ALL"
+          ? campaign.reward.applicableCategory.toUpperCase().trim()
+          : null;
+
+        let resolvedExpiryDate: Date;
+        if (campaign.rewardCouponExpiryType === "FIXED_DATE" && campaign.rewardCouponExpiryDate) {
+          const dateMatch = campaign.rewardCouponExpiryDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+          if (dateMatch) {
+            const [, y, m, d] = dateMatch;
+            resolvedExpiryDate = new Date(Number(y), Number(m) - 1, Number(d), 23, 59, 59, 999);
+          } else {
+            resolvedExpiryDate = new Date(campaign.rewardCouponExpiryDate);
+            resolvedExpiryDate.setHours(23, 59, 59, 999);
+          }
+        } else if (campaign.rewardCouponValidityDays && Number(campaign.rewardCouponValidityDays) > 0) {
+          const days = Number(campaign.rewardCouponValidityDays);
+          resolvedExpiryDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+          resolvedExpiryDate.setHours(23, 59, 59, 999);
+        } else if (campaign.rewardCouponExpiryDate) {
+          const dateMatch = campaign.rewardCouponExpiryDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+          if (dateMatch) {
+            const [, y, m, d] = dateMatch;
+            resolvedExpiryDate = new Date(Number(y), Number(m) - 1, Number(d), 23, 59, 59, 999);
+          } else {
+            resolvedExpiryDate = new Date(campaign.rewardCouponExpiryDate);
+            resolvedExpiryDate.setHours(23, 59, 59, 999);
+          }
+        } else {
+          resolvedExpiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+          resolvedExpiryDate.setHours(23, 59, 59, 999);
+        }
+
+        const coupon = await tx.customerVoucher.create({
+          data: {
+            customerId: customer.id,
+            customerName: customer.name,
+            customerPhone: customer.phone,
+            code: uniqueCode,
+            name: campaign.reward.couponName,
+            description: campaign.description,
+            discountType: campaign.reward.discountType,
+            discountValue: Number(campaign.reward.discountValue) || 100,
+            applicableCategory: targetCategory,
+            campaignId: campaign.id,
+            sourceJobId: job.id,
+            minOrderAmount: campaign.reward.minOrderAmount ?? null,
+            maxDiscount: campaign.reward.maxDiscount ?? null,
+            status: "ACTIVE",
+            issuedAt: new Date(),
+            expiryDate: resolvedExpiryDate,
+            issuedById: data.actor?.id || null,
+            issuedByName: data.actor?.name || null,
+            issuedReason: `Promotion: ${campaign.name} (บิล #${job.billNo || job.id})`,
+            brand: customer.brand || "that_laundry_shop",
           },
         });
 
-        if (existingCount >= campaign.conditions.limitPerCustomer) {
-          reasons.push(`ลูกค้าท่านนี้ได้รับสิทธิ์วอยเชอร์แคมเปญ "${campaign.name}" ครบ ${campaign.conditions.limitPerCustomer} สิทธิ์แล้ว`);
-          continue;
-        }
-      }
+        await tx.activityLog.create({
+          data: {
+            entityId: customer.id,
+            entityType: "customer",
+            action: "ISSUE_PROMO_COUPON",
+            details: JSON.stringify({
+              couponId: coupon.id,
+              code: coupon.code,
+              campaignId: campaign.id,
+              sourceJobId: job.id,
+              discountValue: coupon.discountValue,
+              expiryDate: coupon.expiryDate,
+            }),
+            userId: data.actor?.id || null,
+            userName: data.actor?.name || null,
+          },
+        });
 
-      // Prevent duplicate issuance for the exact same source job
-      const duplicateJobCoupon = await prisma.customerVoucher.findFirst({
-        where: {
-          campaignId: campaign.id,
-          sourceJobId: job.id,
-          status: { not: "VOID" },
-        },
+        return { coupon, reason: null };
       });
-      if (duplicateJobCoupon) {
-        reasons.push(`บิล #${job.billNo || job.id} เคยได้รับวอยเชอร์ไปแล้ว (${duplicateJobCoupon.code})`);
+
+      if (txResult.reason) {
+        reasons.push(txResult.reason);
         continue;
       }
-
-      // Eligible! Generate unique code and create coupon
-      let uniqueCode = "";
-      let isCodeUnique = false;
-      let attempts = 0;
-      while (!isCodeUnique && attempts < 10) {
-        attempts++;
-        const testCode = generateCouponCode(campaign.reward.codePrefix || "PROMO");
-        const existing = await prisma.customerVoucher.findFirst({ where: { code: testCode } });
-        if (!existing) {
-          uniqueCode = testCode;
-          isCodeUnique = true;
-        }
+      if (txResult.coupon) {
+        couponsIssued.push(txResult.coupon);
       }
-
-      if (!uniqueCode) {
-        uniqueCode = `${campaign.reward.codePrefix || "PROMO"}-${Date.now().toString().slice(-4)}`;
-      }
-
-      const targetCategory = campaign.reward.applicableCategory && campaign.reward.applicableCategory.toUpperCase() !== "ALL"
-        ? campaign.reward.applicableCategory.toUpperCase().trim()
-        : null;
-
-      let resolvedExpiryDate: Date;
-      if (campaign.rewardCouponExpiryType === "FIXED_DATE" && campaign.rewardCouponExpiryDate) {
-        const dateMatch = campaign.rewardCouponExpiryDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
-        if (dateMatch) {
-          const [, y, m, d] = dateMatch;
-          resolvedExpiryDate = new Date(Number(y), Number(m) - 1, Number(d), 23, 59, 59, 999);
-        } else {
-          resolvedExpiryDate = new Date(campaign.rewardCouponExpiryDate);
-          resolvedExpiryDate.setHours(23, 59, 59, 999);
-        }
-      } else if (campaign.rewardCouponValidityDays && Number(campaign.rewardCouponValidityDays) > 0) {
-        const days = Number(campaign.rewardCouponValidityDays);
-        resolvedExpiryDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-        resolvedExpiryDate.setHours(23, 59, 59, 999);
-      } else if (campaign.rewardCouponExpiryDate) {
-        const dateMatch = campaign.rewardCouponExpiryDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
-        if (dateMatch) {
-          const [, y, m, d] = dateMatch;
-          resolvedExpiryDate = new Date(Number(y), Number(m) - 1, Number(d), 23, 59, 59, 999);
-        } else {
-          resolvedExpiryDate = new Date(campaign.rewardCouponExpiryDate);
-          resolvedExpiryDate.setHours(23, 59, 59, 999);
-        }
-      } else {
-        resolvedExpiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-        resolvedExpiryDate.setHours(23, 59, 59, 999);
-      }
-
-      const coupon = await prisma.customerVoucher.create({
-        data: {
-          customerId: customer.id,
-          customerName: customer.name,
-          customerPhone: customer.phone,
-          code: uniqueCode,
-          name: campaign.reward.couponName,
-          description: campaign.description,
-          discountType: campaign.reward.discountType,
-          discountValue: Number(campaign.reward.discountValue) || 100,
-          applicableCategory: targetCategory,
-          campaignId: campaign.id,
-          sourceJobId: job.id,
-          minOrderAmount: campaign.reward.minOrderAmount ?? null,
-          maxDiscount: campaign.reward.maxDiscount ?? null,
-          status: "ACTIVE",
-          issuedAt: new Date(),
-          expiryDate: resolvedExpiryDate,
-          issuedById: data.actor?.id || null,
-          issuedByName: data.actor?.name || null,
-          issuedReason: `Promotion: ${campaign.name} (บิล #${job.billNo || job.id})`,
-          brand: customer.brand || "that_laundry_shop",
-        },
-      });
-
-      await prisma.activityLog.create({
-        data: {
-          entityId: customer.id,
-          entityType: "customer",
-          action: "ISSUE_PROMO_COUPON",
-          details: JSON.stringify({
-            couponId: coupon.id,
-            code: coupon.code,
-            campaignId: campaign.id,
-            sourceJobId: job.id,
-            discountValue: coupon.discountValue,
-            expiryDate: coupon.expiryDate,
-          }),
-          userId: data.actor?.id || null,
-          userName: data.actor?.name || null,
-        },
-      });
-
-      couponsIssued.push(coupon);
     }
 
     return {

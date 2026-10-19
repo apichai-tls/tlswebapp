@@ -26,6 +26,7 @@ model Customer {
   isNew            Boolean   @default(true)
   email            String?
   lineId           String?
+  whatsappId       String?
   language         String?
   remark           String?
   secondaryAddress String?

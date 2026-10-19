@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
@@ -4541,7 +4541,7 @@ export default function AdminPage() {
                           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                           <Input
                             id="customer-search"
-                            placeholder="Search name, phone, member ID..."
+                            placeholder="Search name, phone, WA ID, member ID..."
                             value={customerSearchQuery}
                             disabled={!!editingJobId}
                             onChange={(e) => {
@@ -4633,10 +4633,17 @@ export default function AdminPage() {
                               >
                                 <div>
                                   <p className="font-semibold text-slate-800">{c.name}</p>
-                                  <p className="text-xs text-slate-500 font-mono">
-                                    {c.phone || c.secondaryPhone || "-"}
-                                    {c.secondaryPhone && c.phone && c.secondaryPhone !== c.phone && (
-                                      <span className="ml-1 text-[11px] text-sky-600 font-sans">({c.secondaryPhone})</span>
+                                  <p className="text-xs text-slate-500 font-mono flex items-center flex-wrap gap-1">
+                                    <span>
+                                      {c.phone && c.phone !== "-" ? c.phone : (c.secondaryPhone || (c.whatsappId ? `WA: ${c.whatsappId}` : "-"))}
+                                    </span>
+                                    {c.secondaryPhone && c.phone && c.phone !== "-" && c.secondaryPhone !== c.phone && (
+                                      <span className="text-[11px] text-sky-600 font-sans">({c.secondaryPhone})</span>
+                                    )}
+                                    {c.whatsappId && (c.phone && c.phone !== "-") && (
+                                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0 rounded border border-emerald-200 font-sans">
+                                        WA: {c.whatsappId}
+                                      </span>
                                     )}
                                   </p>
                                 </div>
@@ -4957,7 +4964,7 @@ export default function AdminPage() {
                             <div className="relative flex items-center">
                               <Input
                                 id="custPhone"
-                                placeholder="08x-xxx-xxxx หรือ เบอร์ต่างชาติ"
+                                placeholder="08x-xxx-xxxx, เบอร์ต่างชาติ หรือ WA ID"
                                 value={customerPhone}
                                 onChange={(e) => setCustomerPhone(e.target.value)}
                                 className="h-8 text-xs bg-white text-slate-700 font-mono border-slate-200"
@@ -4981,7 +4988,7 @@ export default function AdminPage() {
                                       setCustomerPhone(targetSwapPhone);
                                     }}
                                     className="flex items-center gap-1 text-slate-600 hover:text-sky-700 font-mono transition-colors text-left truncate cursor-pointer group"
-                                    title={`คลิกเพื่อสลับไปใช้เบอร์ ${targetSwapPhone}`}
+                                    title={`คลิกเพื่อสลิกไปใช้เบอร์ ${targetSwapPhone}`}
                                   >
                                     {isTargetIntl ? <Globe size={10} className="text-sky-600 shrink-0" /> : <span className="text-[10px]">🇹🇭</span>}
                                     <span className="truncate group-hover:underline">{targetSwapPhone}</span>
@@ -4995,6 +5002,25 @@ export default function AdminPage() {
                                 </div>
                               );
                             })()}
+                            {selectedProfileCustomer?.whatsappId && (
+                              <div className="flex items-center justify-between gap-1 text-[10px] pt-0.5 text-emerald-700 overflow-hidden">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    const waVal = selectedProfileCustomer.whatsappId!.trim().toUpperCase().startsWith("WA:")
+                                      ? selectedProfileCustomer.whatsappId!.trim()
+                                      : `WA: ${selectedProfileCustomer.whatsappId!.trim()}`;
+                                    setCustomerPhone(waVal);
+                                  }}
+                                  className="flex items-center gap-1 text-emerald-700 hover:text-emerald-800 font-mono font-semibold transition-colors text-left truncate cursor-pointer group"
+                                  title="คลิกเพื่อใช้ WhatsApp ID เป็นช่องทางติดต่อของงานนี้"
+                                >
+                                  <span className="text-[9px] font-bold bg-emerald-50 px-1 py-0 rounded border border-emerald-200 shrink-0">WA ID</span>
+                                  <span className="truncate group-hover:underline">{selectedProfileCustomer.whatsappId}</span>
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -7240,29 +7266,43 @@ export default function AdminPage() {
                       <div className="flex items-center justify-between gap-3 w-full flex-wrap">
                         {/* Left: Complete Handover, Unlock Paid & Refund Action Buttons */}
                         <div className="flex items-center gap-2">
-                          {editingJobId && activeJob?.status === 'delivery' && (isWalkIn && !isDelivery) && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800 h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs"
-                              onClick={async () => {
-                                try {
-                                  const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
-                                  await jobStore.completeJob(editingJobId, undefined, "delivery", actorDetails);
-                                  toast.success(`Order #${formatJobDisplayId(editingJobId)}: Customer Picked Up (Completed)`);
-                                  setDialogOpen(false);
-                                  resetDialogForm();
-                                } catch (e: any) {
-                                  toast.error(`ไม่สามารถปิดงานได้: ${e.message}`);
-                                }
-                              }}
-                              title="Customer Picked Up - ลูกค้ามารับผ้าแล้ว และเปลี่ยนสถานะเป็น Completed"
-                            >
-                              <CheckCircle2 size={14} className="text-emerald-600" />
-                              <span>Customer Picked Up</span>
-                            </Button>
-                          )}
+                          {editingJobId && activeJob?.status === 'delivery' && (isWalkIn && !isDelivery) && (() => {
+                            const isPaid = isJobFullyPaid(activeJob);
+                            return (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className={`h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs border ${
+                                  isPaid
+                                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800"
+                                    : "border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                }`}
+                                onClick={async () => {
+                                  if (!isPaid) {
+                                    const breakdown = getJobPaymentBreakdown(activeJob);
+                                    const remainingStr = breakdown.isPartial ? ` (คงเหลือ ฿${breakdown.remaining.toLocaleString()})` : '';
+                                    toast.error(`ไม่สามารถปิดงานได้: Order #${formatJobDisplayId(editingJobId)} ยังไม่ได้ชำระเงิน${remainingStr} กรุณาบันทึกการชำระเงินก่อน`);
+                                    return;
+                                  }
+                                  try {
+                                    const actorDetails = user ? { actorId: user.id, actorName: user.name || user.email, actorRole: user.role } : undefined;
+                                    await jobStore.completeJob(editingJobId, undefined, "delivery", actorDetails);
+                                    toast.success(`Order #${formatJobDisplayId(editingJobId)}: Customer Picked Up (Completed)`);
+                                    setDialogOpen(false);
+                                    resetDialogForm();
+                                  } catch (e: any) {
+                                    toast.error(`ไม่สามารถปิดงานได้: ${e.message}`);
+                                  }
+                                }}
+                                title={isPaid ? "Customer Picked Up - ลูกค้ามารับผ้าแล้ว และเปลี่ยนสถานะเป็น Completed" : "ยังไม่ได้ชำระเงิน - กรุณาบันทึกการชำระเงินก่อนส่งมอบผ้า"}
+                              >
+                                <CheckCircle2 size={14} className={isPaid ? "text-emerald-600" : "text-slate-400"} />
+                                <span>Customer Picked Up</span>
+                                {!isPaid && <span className="text-[10px] font-extrabold text-rose-600 ml-0.5">(ยังไม่ชำระ)</span>}
+                              </Button>
+                            );
+                          })()}
                           {canUnlockPaid && (
                             <Button
                               type="button"

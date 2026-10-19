@@ -1,4 +1,5 @@
 import { api, registerOpenShiftsSyncCallback } from './api';
+import { isJobFullyPaid, getJobPaymentBreakdown, formatJobDisplayId } from './utils';
 
 export type JobStatus = "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return" | "topup";
 export type JobType = "pickup" | "delivery" | "full_service" | "in_store";
@@ -173,6 +174,7 @@ export interface Customer {
   isNew?: boolean;
   email?: string | null;
   lineId?: string | null;
+  whatsappId?: string | null;
   language?: string | null;
   remark?: string | null;
   secondaryAddress?: string | null;
@@ -737,6 +739,13 @@ export const jobStore = {
         ...actorDetails
       });
     } else {
+      const isWalkIn = (job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service');
+      if (isWalkIn && !isJobFullyPaid(job)) {
+        const breakdown = getJobPaymentBreakdown(job);
+        const remainingStr = breakdown.isPartial ? ` (คงเหลือ ฿${breakdown.remaining.toLocaleString()})` : '';
+        throw new Error(`Order #${formatJobDisplayId(job.id)} ยังไม่ได้ชำระเงิน${remainingStr} กรุณาชำระเงินก่อนส่งมอบผ้า`);
+      }
+
       const updatedLegs = job.legs ? {
         ...job.legs,
         deliveryOutbound: { ...job.legs.deliveryOutbound, status: "completed" as const, completedAt: new Date() },

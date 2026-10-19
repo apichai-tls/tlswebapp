@@ -599,26 +599,35 @@ export function A5ReceiptContent({
   const walletPaidTotal = payments
     .filter(p => {
       const m = (p.method || "").toLowerCase();
-      return m.includes("wallet") || m.includes("credit") || m === "member_wallet";
+      const c = (p.channel || "").toLowerCase();
+      return m.includes("wallet") || m.includes("credit") || m === "member_wallet" || c.includes("wallet") || c.includes("member");
     })
     .reduce((s, p) => s + (p.amount || 0), 0);
 
   const effectiveWalletPaid = walletPaidTotal > 0
     ? walletPaidTotal
-    : (receiptData.isPaid && (receiptData.paymentChannel || "").toLowerCase().includes("wallet")
+    : (receiptData.isPaid && ((receiptData.paymentChannel || "").toLowerCase().includes("wallet") || (receiptData.paymentChannel || "").toLowerCase().includes("member"))
         ? (receiptData.total || 0)
         : 0);
+
+  const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
+  const isPaidEffective = receiptData.isDraft
+    ? Boolean(payments.length > 0 && totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0)
+    : Boolean(receiptData.isPaid || (totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0));
 
   // Proforma Invoice (Draft) displays wallet balance BEFORE deduction
   // Official Receipt displays remaining balance AFTER deduction
   let walletBalance: number;
   if (receiptData.isDraft) {
-    if (receiptData.walletBalance !== undefined && receiptData.walletBalance !== null) {
-      walletBalance = Number(receiptData.walletBalance);
-    } else if ((receiptData as any).walletBalanceAfter !== undefined && (receiptData as any).walletBalanceAfter !== null) {
+    if ((receiptData as any).walletBalanceAfter !== undefined && (receiptData as any).walletBalanceAfter !== null) {
       walletBalance = Number((receiptData as any).walletBalanceAfter) + effectiveWalletPaid;
+    } else if (receiptData.walletBalance !== undefined && receiptData.walletBalance !== null) {
+      walletBalance = Number(receiptData.walletBalance);
+      if (effectiveWalletPaid > 0 && targetCustomer?.creditBalance != null && Math.abs(walletBalance - targetCustomer.creditBalance) < 0.01) {
+        walletBalance += effectiveWalletPaid;
+      }
     } else {
-      walletBalance = targetCustomer?.creditBalance || 0;
+      walletBalance = (targetCustomer?.creditBalance || 0) + (isPaidEffective ? effectiveWalletPaid : 0);
     }
   } else {
     if ((receiptData as any).walletBalanceAfter !== undefined && (receiptData as any).walletBalanceAfter !== null) {
@@ -631,11 +640,6 @@ export function A5ReceiptContent({
   }
 
   const isWalletSufficient = isMember && walletBalance >= (receiptData.total || 0);
-
-  const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
-  const isPaidEffective = receiptData.isDraft
-    ? Boolean(payments.length > 0 && totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0)
-    : Boolean(receiptData.isPaid || (totalPaid >= (receiptData.total || 0) && (receiptData.total || 0) > 0));
 
   const safeDate = receiptData.createdAt
     ? receiptData.createdAt instanceof Date

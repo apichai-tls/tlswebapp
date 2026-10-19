@@ -99,6 +99,7 @@ export function AdminCustomerDialog({
   const [secondaryPhone, setSecondaryPhone] = useState("");
   const [intlCountryCode, setIntlCountryCode] = useState("+1");
   const [isSecondaryWhatsapp, setIsSecondaryWhatsapp] = useState(false);
+  const [whatsappId, setWhatsappId] = useState("");
   const [lineId, setLineId] = useState("");
   const [email, setEmail] = useState("");
   const [initialPin, setInitialPin] = useState("");
@@ -230,8 +231,8 @@ export function AdminCustomerDialog({
         );
 
         // Dual Phone resolution on Dialog Open:
-        const rawP = (customer.phone || "").trim();
-        const rawSec = (customer.secondaryPhone || "").trim();
+        const rawP = customer.phone && customer.phone.trim() !== "-" && customer.phone.trim() !== "--" ? customer.phone.trim() : "";
+        const rawSec = customer.secondaryPhone && customer.secondaryPhone.trim() !== "-" && customer.secondaryPhone.trim() !== "--" ? customer.secondaryPhone.trim() : "";
 
         let resolvedThai = "";
         let resolvedIntl = "";
@@ -269,6 +270,7 @@ export function AdminCustomerDialog({
           setSecondaryPhone("");
         }
         setIsSecondaryWhatsapp(resolvedIsSecWhatsapp);
+        setWhatsappId(customer.whatsappId || "");
         setLineId(customer.lineId || "");
         setEmail(customer.email || "");
         setInitialPin(customer.passwordHash || "");
@@ -316,6 +318,7 @@ export function AdminCustomerDialog({
         setSecondaryPhone("");
         setIntlCountryCode("+1");
         setIsSecondaryWhatsapp(false);
+        setWhatsappId("");
         setLineId("");
         setEmail("");
         setInitialPin("");
@@ -444,8 +447,9 @@ export function AdminCustomerDialog({
       finalSecondaryPhone = `${code} ${finalSecondaryPhone}`;
     }
 
-    if (!cleanPhone && !finalSecondaryPhone) {
-      toast.error("กรุณาระบุเบอร์โทรศัพท์ (ระบุเบอร์ไทย หรือเบอร์ต่างประเทศอย่างน้อย 1 เบอร์)");
+    const hasSocialContact = Boolean(whatsappId.trim() || lineId.trim());
+    if (!cleanPhone && !finalSecondaryPhone && !hasSocialContact) {
+      toast.error("กรุณาระบุช่องทางติดต่ออย่างน้อย 1 ช่องทาง (เบอร์โทรศัพท์, WhatsApp ID หรือ LINE ID)");
       return;
     }
     if (!address.trim()) {
@@ -537,6 +541,7 @@ export function AdminCustomerDialog({
         vatType: customerVatType,
         email: email.trim() || null,
         lineId: lineId.trim() || null,
+        whatsappId: whatsappId.trim() || null,
         language: "th",
         remark: remark.trim() || null,
         secondaryAddress: roomNo.trim() ? `Room ${roomNo.trim()}` : null,
@@ -1158,7 +1163,7 @@ export function AdminCustomerDialog({
                     <span className="font-bold text-slate-800 flex items-center gap-1">
                       <span>🇹🇭</span> Default Thai Mobile <span className="text-rose-500 font-bold">*</span>
                     </span>
-                    {!phone.trim() && !secondaryPhone.trim() ? (
+                    {!phone.trim() && !secondaryPhone.trim() && !whatsappId.trim() && !lineId.trim() ? (
                       <span className="text-[10px] text-rose-500 font-medium">บังคับระบุ (Required)</span>
                     ) : (
                       <span className="text-[10px] text-slate-400">Local +66</span>
@@ -1167,7 +1172,7 @@ export function AdminCustomerDialog({
 
                   <div className="flex items-center gap-2">
                     <span className={`h-9 px-2.5 rounded-xl text-xs font-bold flex items-center shrink-0 border transition-all ${
-                      !phone.trim() && !secondaryPhone.trim()
+                      !phone.trim() && !secondaryPhone.trim() && !whatsappId.trim() && !lineId.trim()
                         ? "bg-rose-50 border-rose-300 text-rose-800"
                         : "bg-white border-slate-300 text-slate-700"
                     }`}>
@@ -1181,14 +1186,14 @@ export function AdminCustomerDialog({
                       className={`h-9 text-xs rounded-xl font-mono font-bold transition-all border ${
                         duplicatePhoneCheck?.matchedOn === "primary" 
                           ? "border-rose-500 ring-1 ring-rose-500 bg-rose-50/20" 
-                          : !phone.trim() && !secondaryPhone.trim()
+                          : !phone.trim() && !secondaryPhone.trim() && !whatsappId.trim() && !lineId.trim()
                           ? "border-rose-400 focus:border-rose-500 text-rose-950 focus-visible:ring-1 focus-visible:ring-rose-400 bg-white"
                           : "border-slate-300 bg-white text-slate-800 focus-visible:ring-sky-500"
                       }`} 
                     />
                   </div>
-                  {!phone.trim() && !secondaryPhone.trim() && (
-                    <p className="text-[10px] text-rose-500 mt-1 font-medium">* ระบุเบอร์โทรศัพท์อย่างน้อย 1 เบอร์ (ไทย หรือ ต่างประเทศ)</p>
+                  {!phone.trim() && !secondaryPhone.trim() && !whatsappId.trim() && !lineId.trim() && (
+                    <p className="text-[10px] text-rose-500 mt-1 font-medium">* ระบุช่องทางติดต่ออย่างน้อย 1 ช่องทาง (เบอร์โทร, WhatsApp ID หรือ LINE ID)</p>
                   )}
 
                   <label className="flex items-center gap-2 pt-1 cursor-pointer">
@@ -1264,8 +1269,21 @@ export function AdminCustomerDialog({
                 )}
               </div>
 
-              {/* Sub-row 3 inputs: LINE ID, Email, Initial 6-Digit PIN */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-1">
+              {/* Sub-row 3 inputs: WhatsApp ID, LINE ID, Email, Initial 6-Digit PIN */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 pt-1">
+                <div>
+                  <Label className="text-xs font-bold text-emerald-700 flex items-center justify-between mb-1">
+                    <span>WhatsApp ID</span>
+                    <span className="text-[10px] font-normal text-slate-400">กรณีลูกค้าซ่อนเบอร์</span>
+                  </Label>
+                  <Input 
+                    placeholder="e.g. @john_bkk" 
+                    value={whatsappId} 
+                    onChange={e => setWhatsappId(e.target.value)} 
+                    className="h-9 text-xs border-emerald-300/80 focus-visible:ring-emerald-500 rounded-xl font-medium" 
+                  />
+                </div>
+
                 <div>
                   <Label className="text-xs font-bold text-slate-700 block mb-1">LINE ID</Label>
                   <Input 
