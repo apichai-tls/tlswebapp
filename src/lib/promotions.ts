@@ -57,7 +57,7 @@ export const DEFAULT_PROMOTION_CAMPAIGNS: PromotionCampaign[] = [
     },
     reward: {
       couponName: "ส่วนลดซักรองเท้า 100 บาท (โปรซักครบ 1,000)",
-      codePrefix: "SHOE",
+      codePrefix: "SHOE100",
       discountType: "FIXED",
       discountValue: 100,
       applicableCategory: "SHOES",
