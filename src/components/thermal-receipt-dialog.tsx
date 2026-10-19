@@ -448,7 +448,7 @@ export function ThermalReceiptDialog({
   }, [open]);
 
   useEffect(() => {
-    if (!receiptData) return;
+    if (!receiptData || !open) return;
     const snapshotData = JSON.parse(JSON.stringify(receiptData));
     
     // For proforma drafts: prefer jobId (real job id) then proformaId, skip "DRAFT" string
@@ -623,7 +623,8 @@ export function ThermalReceiptDialog({
                 let newBills: string[];
                 if (isProforma) {
                   const cleanBase = snapshotData.proformaId && snapshotData.proformaId !== "DRAFT" ? snapshotData.proformaId : targetJob.id;
-                  const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-`) && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
+                  const curRev = snapshotData.proformaRevision || 0;
+                  const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBase}-rev${curRev}.png`) && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
                   newBills = [uploadResult.publicUrl, ...filtered];
                 } else {
                   const filtered = existingBills.filter((u: string) => !u.includes(`receipt-${targetJob.id}`) && !u.includes("/receipt-") && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/"));
@@ -645,7 +646,7 @@ export function ThermalReceiptDialog({
 
     setTimeout(runCapture, 10);
 
-  }, [receiptData, activeShop, onBillImageUploaded]);
+  }, [receiptData, open, activeShop, onBillImageUploaded]);
 
   if (!receiptData) return null;
 

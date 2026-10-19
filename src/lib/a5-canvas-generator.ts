@@ -2,16 +2,49 @@ import React from "react";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
 import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
 
+let a5RenderQueue: Promise<unknown> = Promise.resolve();
+const recentOrInFlightCaptures = new Map<string, number>();
+
+export function markReceiptCaptureStarted(filename: string): boolean {
+  if (!filename) return true;
+  const now = Date.now();
+  const last = recentOrInFlightCaptures.get(filename);
+  if (last && now - last < 15000) {
+    return false;
+  }
+  recentOrInFlightCaptures.set(filename, now);
+  return true;
+}
+
+export function clearReceiptCaptureLock(filename: string): void {
+  if (!filename) return;
+  recentOrInFlightCaptures.delete(filename);
+}
+
 /**
- * Generate A5 Receipt Image — optimized for speed.
+ * Generate A5 Receipt Image — optimized for speed & serialized via render queue
+ * so concurrent Proforma (INV) + Receipt (REC) captures never collide on document.body.
  *
  * Key optimizations:
  *  1. All 3 heavy imports (react-dom, component, html2canvas) run in parallel
  *  2. Font check uses module-level fast-path (near-instant on 2nd+ calls)
  *  3. React render + font loading run concurrently
  *  4. Uses double-rAF instead of setTimeout(100) for tighter layout sync
+ *  5. Mutex queue prevents concurrent html2canvas DOM cloning collisions
  */
-export async function generateA5ReceiptImage(
+export function generateA5ReceiptImage(
+  receiptData: ReceiptData,
+  activeShop?: ShopInfo | null
+): Promise<Blob | null> {
+  const next = a5RenderQueue.then(
+    () => generateA5ReceiptImageInternal(receiptData, activeShop),
+    () => generateA5ReceiptImageInternal(receiptData, activeShop)
+  );
+  a5RenderQueue = next.catch(() => {});
+  return next;
+}
+
+async function generateA5ReceiptImageInternal(
   receiptData: ReceiptData,
   activeShop?: ShopInfo | null
 ): Promise<Blob | null> {

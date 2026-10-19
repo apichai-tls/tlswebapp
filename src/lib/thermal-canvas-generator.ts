@@ -20,11 +20,26 @@ function cleanRemarkForDisplay(raw?: string | null): string {
     .trim();
 }
 
+let thermalRenderQueue: Promise<unknown> = Promise.resolve();
+
 /**
  * Generate Thermal Receipt Image using Method 1 (HTML DOM + html2canvas-pro)
  * Guarantees 100% identical styling, logo, fonts, and layout.
+ * Serialized via render queue so concurrent captures never collide on document.body.
  */
-export async function generateThermalReceiptImage(
+export function generateThermalReceiptImage(
+  receiptData: ReceiptData,
+  activeShop?: ShopInfo | null
+): Promise<Blob | null> {
+  const next = thermalRenderQueue.then(
+    () => generateThermalReceiptImageInternal(receiptData, activeShop),
+    () => generateThermalReceiptImageInternal(receiptData, activeShop)
+  );
+  thermalRenderQueue = next.catch(() => {});
+  return next;
+}
+
+async function generateThermalReceiptImageInternal(
   receiptData: ReceiptData,
   activeShop?: ShopInfo | null
 ): Promise<Blob | null> {
@@ -174,6 +189,22 @@ export async function generateThermalReceiptImage(
           <span>GRAND TOTAL</span>
           <span style="font-family: monospace;">฿${formatCurrency(roundGrandTotal(receiptData.total, receiptData.vatType))}</span>
         </div>
+      </div>
+
+      <div style="text-align: center; margin-bottom: 8px; padding-top: 4px; border-top: 1px dashed #a3a3a3;">
+        <div style="font-size: 11px; font-weight: 900; color: #000000; text-transform: uppercase;">
+          ${receiptData.status === "cancel"
+            ? "VOIDED / REFUNDED"
+            : (receiptData.isPaid && !receiptData.isDraft
+                ? `PAID (${receiptData.paymentChannel || "CASH"})`
+                : "UNPAID - PAY ON PICKUP")}
+        </div>
+        ${receiptData.isMember && (receiptData.walletBalanceAfter != null || receiptData.walletBalance !== undefined) ? `
+          <div style="display: flex; justify-content: space-between; font-weight: bold; color: #171717; border-top: 1px dashed #a3a3a3; border-bottom: 1px dashed #a3a3a3; padding: 4px 0; margin-top: 4px; font-size: 9px;">
+            <span>MEMBER BALANCE:</span>
+            <span style="font-family: monospace;">฿${formatCurrency(Number((!receiptData.isDraft && receiptData.walletBalanceAfter != null) ? receiptData.walletBalanceAfter : (receiptData.walletBalance ?? 0)))}</span>
+          </div>
+        ` : ""}
       </div>
 
       ${cleanRemark ? `

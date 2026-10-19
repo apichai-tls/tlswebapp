@@ -1057,7 +1057,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         {(() => {
                           const breakdown = getJobPaymentBreakdown(job);
                           const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
-                          if (breakdown.isFullyPaid) {
+                          const isCsoOrPosPaid = isPos ? breakdown.isFullyPaid : Boolean(job.isPaid);
+                          if (isCsoOrPosPaid) {
                             return (
                               <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-none font-bold justify-center w-fit mx-auto bg-emerald-100 text-emerald-700">
                                 {isPos ? 'SHOP PAID' : 'PAID'}

@@ -62,6 +62,8 @@ export function A5ReceiptDialog({
   const [mounted, setMounted] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
   const capturedKeysRef = React.useRef<Set<string>>(new Set());
+  const onBillImageUploadedRef = React.useRef(onBillImageUploaded);
+  onBillImageUploadedRef.current = onBillImageUploaded;
 
   useEffect(() => {
     setMounted(true);
@@ -122,6 +124,7 @@ export function A5ReceiptDialog({
     if (!shouldCapture) return;
 
     if (capturedKeysRef.current.has(captureKey)) return;
+    capturedKeysRef.current.add(captureKey); // Lock immediately to prevent duplicate runs on re-render
 
     const uploadAndSave = async (blob: Blob) => {
       const { jobStore } = await import("@/lib/store");
@@ -167,7 +170,7 @@ export function A5ReceiptDialog({
 
       if (uploadResult.success && uploadResult.publicUrl) {
         capturedKeysRef.current.add(captureKey);
-        if (onBillImageUploaded) onBillImageUploaded(uploadResult.publicUrl);
+        if (onBillImageUploadedRef.current) onBillImageUploadedRef.current(uploadResult.publicUrl);
 
         const targetId = rawJobId || targetJobId;
         const targetJob =
@@ -237,15 +240,17 @@ export function A5ReceiptDialog({
         } catch {}
       }
 
-      capturedKeysRef.current.add(captureKey);
-
       try {
-        const { generateA5ReceiptImage } = await import("@/lib/a5-canvas-generator");
+        const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
+        if (!markReceiptCaptureStarted(filename)) return;
         const blob = await generateA5ReceiptImage(snapshotData, activeShop);
         if (blob) {
-          uploadAndSave(blob).catch((err) =>
-            console.error("Background receipt upload failed:", err)
-          );
+          uploadAndSave(blob).catch((err) => {
+            clearReceiptCaptureLock(filename);
+            console.error("Background receipt upload failed:", err);
+          });
+        } else {
+          clearReceiptCaptureLock(filename);
         }
       } catch (err) {
         console.error("Failed to capture and upload receipt image:", err);
@@ -255,7 +260,7 @@ export function A5ReceiptDialog({
     setTimeout(() => {
       runCapture();
     }, 50);
-  }, [open, receiptData, activeShop, onBillImageUploaded]);
+  }, [open, receiptData, activeShop]);
 
   // Reset captured keys on close
   useEffect(() => {
@@ -565,8 +570,13 @@ export function A5ReceiptContent({
   });
 
 
-  const isMember =
-    receiptData.isMember !== undefined ? receiptData.isMember : Boolean(targetCustomer?.isMember || targetCustomer?.memberId);
+  const isMember = Boolean(
+    receiptData.isMember ||
+    targetCustomer?.isMember ||
+    targetCustomer?.memberId ||
+    receiptData.memberId ||
+    ((receiptData as any).walletBalanceAfter != null && Number((receiptData as any).walletBalanceAfter) > 0)
+  );
   const effectiveMemberId =
     receiptData.memberId || targetCustomer?.memberId || (isMember && targetCustomer?.id && !targetCustomer.id.includes("-") ? targetCustomer.id : null);
   // Extract Payments History
