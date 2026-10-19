@@ -2083,6 +2083,16 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     return cart.some(item => item.category === "PACKAGE");
   }, [cart]);
 
+  const hasPosActualItems = useMemo(() => {
+    return cart.some(item =>
+      item.category !== "PACKAGE" &&
+      item.name !== "PACKAGE" &&
+      item.id !== "topup-member-item" &&
+      item.id !== "delivery-pickup-service-item" &&
+      item.id !== "delivery-only-service-item"
+    );
+  }, [cart]);
+
   const subtotal = useMemo(() => {
     return cart.reduce((sum, item) => {
       if (hasPosPackage && (item.id === "delivery-pickup-service-item" || item.id === "delivery-only-service-item")) {
