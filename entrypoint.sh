@@ -1,7 +1,7 @@
 #!/bin/sh
 
 echo "Applying database schema changes..."
-if npx prisma db push --skip-generate --accept-data-loss; then
+if npx prisma db push --skip-generate; then
   echo "Database schema updated successfully."
   echo "Running migration script..."
   npx tsx scripts/migrate_statuses.ts || echo "WARNING: Migration script failed."

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { verifyBeamWebhookSignature } from '@/lib/external-api-auth'
 import { invalidateDbCache } from '@/lib/db-cache'
+import { publishOrderEvent } from '@/lib/realtime-bus'
 import { processTopUpAction } from '@/actions/db'
 
 export const dynamic = 'force-dynamic'
@@ -196,9 +197,16 @@ export async function POST(req: Request) {
       })
 
       try {
-        invalidateDbCache()
+        invalidateDbCache('customers')
+        await publishOrderEvent({
+          type: 'customer.updated',
+          customerId: pendingTopUp.memberId,
+          updatedAt: new Date(),
+          action: 'webhook_topup',
+          actorName: 'Beam Webhook',
+        })
       } catch (e) {
-        console.warn('[Beam Webhook] Failed to invalidate cache after topup:', e)
+        console.warn('[Beam Webhook] Failed to publish customer topup event:', e)
       }
 
       console.log(`✔ [Beam Webhook] Top-Up for Customer ${pendingTopUp.memberId} successfully fulfilled (Amount: ${paidAmount} THB, Credit: ${finalTotalCredit})`)
@@ -405,9 +413,15 @@ export async function POST(req: Request) {
     })
 
     try {
-      invalidateDbCache()
+      await publishOrderEvent({
+        type: 'job.updated',
+        job: updatedJob,
+        action: 'webhook_payment',
+        changedFields: ['isPaid', 'isShopPaid', 'paymentMethod', 'paymentChannel', 'adminNotesJson'],
+        actorName: 'Beam Webhook',
+      })
     } catch (cacheErr) {
-      console.warn('[Beam Webhook] Failed to invalidate cache:', cacheErr)
+      console.warn('[Beam Webhook] Failed to publish order event:', cacheErr)
     }
 
     console.log(`✔ [Beam Webhook] Job ${job.id} successfully marked as PAID (Amount: ${paidAmount} THB, Channel: ${paymentChannel})`)

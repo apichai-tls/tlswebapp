@@ -94,7 +94,8 @@ const cardVariants = {
 };
 
 import { useRiders } from "@/lib/use-riders";
-import { riderStore, shopStore } from "@/lib/store";
+import { riderStore, shopStore, realtimeStore } from "@/lib/store";
+import { api } from "@/lib/api";
 import { useCustomers } from "@/lib/use-customers";
 import { useSyncExternalStore } from "react";
 
@@ -169,12 +170,20 @@ const RiderJobImages = ({
   };
 
   const [images, setImages] = useState<string[]>(() => parseUrls(initialValue));
-  const [loading, setLoading] = useState(() => !initialValue); // only show loading if no initial value exists
+  const [loading, setLoading] = useState(() => initialValue === undefined);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Image URLs are included in JOB_SELECT_FIELDS and synced via SSE/delta.
+    if (initialValue !== undefined) {
+      const parsed = parseUrls(initialValue);
+      setImages(prev => (JSON.stringify(parsed) !== JSON.stringify(prev) ? parsed : prev));
+      setLoading(false);
+      return;
+    }
+
     fetch(`/api/jobs/${jobId}/details`)
       .then(r => r.json())
       .then(data => {
@@ -183,11 +192,7 @@ const RiderJobImages = ({
           urlData = data.proofImageUrl;
         }
         const remoteUrls = parseUrls(urlData);
-        
-        // Only update if it actually changed to prevent flickering or losing newly uploaded ones
-        if (JSON.stringify(remoteUrls) !== JSON.stringify(images)) {
-          setImages(remoteUrls);
-        }
+        setImages(prev => (JSON.stringify(remoteUrls) !== JSON.stringify(prev) ? remoteUrls : prev));
       })
       .catch(e => console.error(`Failed to load ${imageType}`, e))
       .finally(() => setLoading(false));
@@ -788,10 +793,17 @@ export default function RiderPage() {
     }
   }, [activeRider?.status]);
 
-  // User Activity Tracking Ref for Smart Polling (Mobile Touch Detection)
+  const realtimeState = useSyncExternalStore(
+    realtimeStore.subscribe,
+    realtimeStore.getSnapshot,
+    realtimeStore.getSnapshot
+  );
+
+  // User Activity Tracking Ref for Smart Reconciliation (Mobile Touch Detection)
   const lastActiveTime = useRef(Date.now());
 
-  // Periodic data refresh — 5s so Rider sees newly assigned jobs quickly + Smart Polling (Visibility & Touch Idle Detection)
+  // Live updates are delivered via SSE (/api/events/stream) in <1s.
+  // Keep a lightweight 30s delta check (GET /api/jobs/delta?since=...) as a safety net.
   useEffect(() => {
     const handleUserActivity = () => {
       lastActiveTime.current = Date.now();
@@ -801,28 +813,12 @@ export default function RiderPage() {
     window.addEventListener("scroll", handleUserActivity, { passive: true });
     window.addEventListener("click", handleUserActivity, { passive: true });
 
-    let tickCount = 0;
     const interval = setInterval(() => {
-      // Paused Mode: Skip fetching entirely if screen is locked or app is in background
       if (document.visibilityState === "hidden") {
         return;
       }
-
-      const timeSinceLastActive = Date.now() - lastActiveTime.current;
-      const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
-      tickCount++;
-
-      if (timeSinceLastActive > IDLE_TIMEOUT_MS) {
-        // Idle Monitor Mode: Slow down polling to every 4th tick (e.g. 20s for 5s interval)
-        if (tickCount % 4 === 0) {
-          import("@/lib/api").then(m => m.refreshDb());
-        }
-      } else {
-        // Active Mode: 5 seconds polling
-        import("@/lib/api").then(m => m.refreshDb());
-      }
-    }, 5000); // 5 seconds
+      api.reconcileDelta().catch(() => {});
+    }, 30000);
 
     return () => {
       window.removeEventListener("touchstart", handleUserActivity);
@@ -1411,9 +1407,48 @@ export default function RiderPage() {
                     <span className="uppercase text-xs font-bold tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{activeRider?.vehiclePlate || "1กข 1234"}</span>
                     <span className="text-xs text-amber-500 font-bold">★ {activeRider?.rating.toFixed(1) || "5.0"}</span>
                   </div>
-                  <div className="flex items-center gap-1.5 mt-1.5 justify-end">
+                  <div className="flex items-center gap-1.5 mt-1.5 justify-end flex-wrap">
+                    {(() => {
+                      const saveEntries = Object.values(realtimeState.jobSaveStates || {});
+                      const isSavingAny = saveEntries.some(s => s.status === 'saving');
+                      const isFailedAny = saveEntries.some(s => s.status === 'failed' || s.status === 'conflict');
+                      const conn = realtimeState.connectionStatus;
+                      if (isSavingAny) {
+                        return (
+                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-sky-700 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded">
+                            <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" /> Saving...
+                          </span>
+                        );
+                      }
+                      if (isFailedAny) {
+                        return (
+                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                            Save Failed
+                          </span>
+                        );
+                      }
+                      if (conn === 'connected') {
+                        return (
+                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/70 px-1.5 py-0.5 rounded">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Live
+                          </span>
+                        );
+                      }
+                      if (conn === 'reconnecting' || conn === 'connecting' || conn === 'fallback_polling') {
+                        return (
+                          <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" /> Syncing
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="flex items-center gap-1 text-[10px] uppercase font-bold text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                          Offline
+                        </span>
+                      );
+                    })()}
                     {gpsActive && activeRider?.status !== 'offline' && (
-                      <span className="flex items-center gap-1 mr-2 text-[10px] uppercase font-bold text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded">
+                      <span className="flex items-center gap-1 mr-1 text-[10px] uppercase font-bold text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded">
                         <MapPin size={10} className="animate-pulse" /> GPS ON
                       </span>
                     )}

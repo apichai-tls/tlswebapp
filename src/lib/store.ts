@@ -1,5 +1,26 @@
-import { api, registerOpenShiftsSyncCallback } from './api';
+import {
+  api,
+  registerOpenShiftsSyncCallback,
+  subscribeRealtime,
+  getRealtimeSnapshot,
+  clearExternalJobUpdate,
+  clearJobSaveState,
+  startRealtimeConnection,
+  type RealtimeStateSnapshot,
+  type ConnectionStatus,
+  type JobSaveStatus,
+  type JobSaveState,
+  type ExternalJobUpdateNotice,
+} from './api';
 import { isJobFullyPaid, getJobPaymentBreakdown, formatJobDisplayId } from './utils';
+
+export type {
+  RealtimeStateSnapshot,
+  ConnectionStatus,
+  JobSaveStatus,
+  JobSaveState,
+  ExternalJobUpdateNotice,
+};
 
 export type JobStatus = "tba" | "pending" | "pickup" | "billing" | "delivery" | "completed" | "cancel" | "return" | "topup";
 export type JobType = "pickup" | "delivery" | "full_service" | "in_store";
@@ -650,16 +671,39 @@ export const jobStore = {
       }
     }
 
-    // ─── Optimistic Update ───────────────────────────────────────────────────
-    // Update memory store immediately so UI reflects the change without waiting
-    // for the DB round-trip. This prevents jobs from disappearing from All Jobs.
+    // ─── Unconfirmed Local Preview (Saving...) ───────────────────────────────
+    // Update memory store immediately (marked _saveStatus='saving') while awaiting server confirmation.
+    // If the server rejects or detects a 409 Conflict, api.updateJob automatically rolls back to the
+    // last confirmed server state and transitions jobSaveStates[id] to 'failed' or 'conflict'.
     api.optimisticUpdate(id, updates);
     emitJobChange();
 
-    // Persist to DB in background — errors are logged but don't block the UI
-    api.updateJob(id, { ...updates, ...finalActorDetails }).catch((err: any) => {
-      console.error('[store] Background DB save failed for job', id, err);
-    });
+    try {
+      const confirmed = await api.updateJob(id, { ...updates, ...finalActorDetails });
+      emitJobChange();
+      return confirmed;
+    } catch (err: any) {
+      console.error('[store] Server save failed for job', id, err);
+      emitJobChange();
+      if (typeof window !== 'undefined') {
+        const isConflict =
+          String(err?.message || '').includes('409') ||
+          String(err?.message || '').toLowerCase().includes('conflict');
+        window.dispatchEvent(
+          new CustomEvent('tls:job-save-error', {
+            detail: {
+              jobId: id,
+              error: err?.message || 'บันทึกข้อมูลไม่สำเร็จ (Save failed)',
+              isConflict,
+            },
+          })
+        );
+      }
+      if ((updates as any)?.throwOnError) {
+        throw err;
+      }
+      return undefined;
+    }
   },
 
   async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
@@ -763,6 +807,16 @@ export const jobStore = {
     }
     emitJobChange();
   },
+};
+
+// --- REALTIME CONNECTION & SAVE STATE STORE ---
+export const realtimeStore = {
+  subscribe: subscribeRealtime,
+  getSnapshot: getRealtimeSnapshot,
+  clearExternalJobUpdate,
+  clearJobSaveState,
+  reconnect: () => startRealtimeConnection(true),
+  reconcileNow: (sinceMs?: number) => api.reconcileDelta(sinceMs),
 };
 
 // --- PRICE LIST STORE ---
@@ -876,9 +930,37 @@ export const poiStore = {
   }
 };
 
-// Subscribe to synchronous API changes to trigger UI updates automatically
-api.subscribe(() => {
-  emitAllChanges();
+// Subscribe to scoped API changes so single-job updates only re-render jobStore subscribers
+api.subscribe((scope) => {
+  switch (scope) {
+    case 'jobs':
+      emitJobChange();
+      break;
+    case 'customers':
+      emitCustomerChange();
+      break;
+    case 'riders':
+      emitRiderChange();
+      break;
+    case 'services':
+      emitServiceChange();
+      break;
+    case 'priceLists':
+      emitPriceListChange();
+      break;
+    case 'shops':
+      emitShopChange();
+      break;
+    case 'settings':
+      emitSettingsChange();
+      break;
+    case 'pois':
+      emitPoiChange();
+      break;
+    default:
+      emitAllChanges();
+      break;
+  }
 });
 
 // --- CASHIER SHIFT INTERFACE & STORE ---

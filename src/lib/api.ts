@@ -22,15 +22,267 @@ interface Database {
 let memoryDb: Database | null = null;
 let isDbLoaded = false;
 let lastEtag: string | null = null;
+let inFlightDbPromise: Promise<void> | null = null;
 
-// Initialize the database from server
-export const ensureDbLoaded = async () => {
-  if (isDbLoaded) return;
+export type DbChangeScope =
+  | 'all'
+  | 'jobs'
+  | 'customers'
+  | 'riders'
+  | 'services'
+  | 'priceLists'
+  | 'shops'
+  | 'settings'
+  | 'pois';
+
+export type ConnectionStatus =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'fallback_polling'
+  | 'disconnected';
+
+export type JobSaveStatus = 'saving' | 'saved' | 'failed' | 'conflict';
+
+export interface JobSaveState {
+  status: JobSaveStatus;
+  message?: string;
+  updatedAt: number;
+}
+
+export interface ExternalJobUpdateNotice {
+  jobId: string;
+  revision: number;
+  updatedAt: string;
+  action?: string;
+  changedFields?: string[];
+  actorId?: string | null;
+  actorName?: string | null;
+  receivedAt: number;
+}
+
+export interface RealtimeStateSnapshot {
+  connectionStatus: ConnectionStatus;
+  lastSyncAt: number | null;
+  activeSavingCount: number;
+  jobSaveStates: Record<string, JobSaveState>;
+  externalJobUpdates: Record<string, ExternalJobUpdateNotice>;
+}
+
+// Track active in-flight saves per job and pre-edit confirmed snapshots for rollback
+const pendingJobSaves = new Map<string, number>();
+const confirmedJobSnapshots = new Map<string, Job>();
+const lastSeenJobRevision = new Map<string, number>();
+const inFlightClientJobFetches = new Map<string, Promise<Job | null>>();
+let inFlightDeltaPromise: Promise<{ jobsUpdated: number; customersUpdated: number }> | null = null;
+let lastServerSyncMs = 0;
+
+export function getClientAuthUser(): {
+  id?: string;
+  name?: string;
+  email?: string;
+  role?: string;
+  branchId?: string | null;
+  sessionToken?: string;
+} | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('authUser');
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function getClientAuthHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra || {}) };
+  const user = getClientAuthUser();
+  if (user?.id) {
+    headers['x-tls-user-id'] = String(user.id);
+  }
+  if (user?.sessionToken) {
+    headers['Authorization'] = `Bearer ${user.sessionToken}`;
+  }
+  return headers;
+}
+
+// ─── Real-Time State & Listeners ────────────────────────────────────────────
+type RealtimeListener = () => void;
+const realtimeListeners = new Set<RealtimeListener>();
+
+let realtimeState: RealtimeStateSnapshot = {
+  connectionStatus: 'connecting',
+  lastSyncAt: null,
+  activeSavingCount: 0,
+  jobSaveStates: {},
+  externalJobUpdates: {},
+};
+
+function emitRealtimeChange() {
+  realtimeState = {
+    ...realtimeState,
+    jobSaveStates: { ...realtimeState.jobSaveStates },
+    externalJobUpdates: { ...realtimeState.externalJobUpdates },
+  };
+  realtimeListeners.forEach((l) => l());
+}
+
+export function subscribeRealtime(listener: RealtimeListener): () => void {
+  realtimeListeners.add(listener);
+  return () => {
+    realtimeListeners.delete(listener);
+  };
+}
+
+export function getRealtimeSnapshot(): RealtimeStateSnapshot {
+  return realtimeState;
+}
+
+const saveStateCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function setJobSaveState(jobId: string, status: JobSaveStatus, message?: string) {
+  const existingTimer = saveStateCleanupTimers.get(jobId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    saveStateCleanupTimers.delete(jobId);
+  }
+
+  realtimeState.jobSaveStates[jobId] = {
+    status,
+    message,
+    updatedAt: Date.now(),
+  };
+
+  let savingCount = 0;
+  for (const count of pendingJobSaves.values()) {
+    if (count > 0) savingCount += count;
+  }
+  realtimeState.activeSavingCount = savingCount;
+  emitRealtimeChange();
+
+  if (status === 'saved') {
+    const timer = setTimeout(() => {
+      if (realtimeState.jobSaveStates[jobId]?.status === 'saved') {
+        delete realtimeState.jobSaveStates[jobId];
+        emitRealtimeChange();
+      }
+      saveStateCleanupTimers.delete(jobId);
+    }, 3500);
+    saveStateCleanupTimers.set(jobId, timer);
+  }
+}
+
+export function clearExternalJobUpdate(jobId: string) {
+  if (realtimeState.externalJobUpdates[jobId]) {
+    delete realtimeState.externalJobUpdates[jobId];
+    emitRealtimeChange();
+  }
+}
+
+export function clearJobSaveState(jobId: string) {
+  if (realtimeState.jobSaveStates[jobId]) {
+    delete realtimeState.jobSaveStates[jobId];
+    emitRealtimeChange();
+  }
+}
+
+function setConnectionStatus(status: ConnectionStatus) {
+  if (realtimeState.connectionStatus !== status) {
+    realtimeState.connectionStatus = status;
+    emitRealtimeChange();
+  }
+}
+
+// Helper to normalize a server or Prisma job record into client Job structure
+function normalizeServerJob(raw: any, existing?: Job): Job {
+  const parsed = JSON.parse(JSON.stringify(raw), dateReviver);
+  const pickupCoords =
+    parsed.pickupCoords ||
+    (parsed.pickupLat !== undefined && parsed.pickupLng !== undefined
+      ? { lat: Number(parsed.pickupLat) || 0, lng: Number(parsed.pickupLng) || 0 }
+      : existing?.pickupCoords || { lat: 0, lng: 0 });
+  const dropoffCoords =
+    parsed.dropoffCoords ||
+    (parsed.dropoffLat !== undefined && parsed.dropoffLng !== undefined
+      ? { lat: Number(parsed.dropoffLat) || 0, lng: Number(parsed.dropoffLng) || 0 }
+      : existing?.dropoffCoords || { lat: 0, lng: 0 });
+
+  let items = parsed.items;
+  if (!Array.isArray(items)) {
+    if (typeof parsed.itemsJson === 'string' && parsed.itemsJson) {
+      try {
+        items = JSON.parse(parsed.itemsJson);
+      } catch {
+        items = existing?.items || [];
+      }
+    } else {
+      items = existing?.items || [];
+    }
+  }
+
+  let legs = parsed.legs;
+  if (!legs) {
+    if (typeof parsed.legsJson === 'string' && parsed.legsJson) {
+      try {
+        legs = JSON.parse(parsed.legsJson, dateReviver);
+      } catch {
+        legs = existing?.legs;
+      }
+    } else {
+      legs = existing?.legs;
+    }
+  }
+
+  let laundryTypes = parsed.laundryTypes;
+  if (typeof laundryTypes === 'string') {
+    try {
+      laundryTypes = JSON.parse(laundryTypes);
+    } catch {
+      laundryTypes = existing?.laundryTypes;
+    }
+  }
+
+  const merged: Job = {
+    ...(existing || ({} as Job)),
+    ...parsed,
+    pickupCoords,
+    dropoffCoords,
+    items,
+    legs,
+    laundryTypes,
+    isPaid: parsed.isPaid !== undefined ? Boolean(parsed.isPaid) : Boolean(existing?.isPaid),
+    isShopPaid: parsed.isShopPaid !== undefined ? Boolean(parsed.isShopPaid) : Boolean(existing?.isShopPaid),
+  };
+
+  if (existing?.billNo && (!merged.billNo || merged.billNo === '')) {
+    merged.billNo = existing.billNo;
+  }
+  if (
+    existing?.billImageUrl &&
+    existing.billImageUrl !== '[]' &&
+    (!merged.billImageUrl || merged.billImageUrl === '[]')
+  ) {
+    merged.billImageUrl = existing.billImageUrl;
+  }
+
+  return merged;
+}
+
+// Callback registered by shiftStore to receive openShifts from poll — avoids circular import
+let onOpenShiftsSyncCallback: ((shifts: any[]) => void) | null = null;
+export function registerOpenShiftsSyncCallback(cb: (shifts: any[]) => void) {
+  onOpenShiftsSyncCallback = cb;
+}
+
+async function performDbFetch(isInitial: boolean): Promise<void> {
   if (typeof window === 'undefined') return;
 
-  // Optimistic UI: Try to load from Cache Storage first for instant rendering
-  const isTestEnv = typeof window !== 'undefined' && (!!window.navigator.webdriver || !!(window as any).__playwright_test__);
-  if (!isTestEnv) {
+  const isTestEnv =
+    typeof window !== 'undefined' &&
+    (!!window.navigator.webdriver || !!(window as any).__playwright_test__);
+
+  if (isInitial && !isDbLoaded && !isTestEnv) {
     try {
       const cache = await caches.open('tls-cache');
       const cachedRes = await cache.match('/api/db-cache');
@@ -39,28 +291,28 @@ export const ensureDbLoaded = async () => {
         const parsed = JSON.parse(JSON.stringify(cached), dateReviver);
         memoryDb = parseMockDb(parsed);
         isDbLoaded = true;
-        api.notify();
+        api.notify('all');
       }
-    } catch(e) {
+    } catch (e) {
       console.error('Failed to load from Cache API', e);
     }
   }
 
   try {
-    const headers: Record<string, string> = {};
+    const headers = getClientAuthHeaders();
     if (lastEtag) headers['If-None-Match'] = lastEtag;
     const res = await fetch('/api/db', { headers });
     if (res.status === 304) {
       isDbLoaded = true;
+      realtimeState.lastSyncAt = Date.now();
       return;
     }
     if (res.ok) {
       const etag = res.headers.get('ETag');
       if (etag) lastEtag = etag;
       const data = await res.json();
-      
-      // Save to Cache Storage for next refresh
-      if (!isTestEnv) {
+
+      if (isInitial && !isTestEnv) {
         try {
           const cache = await caches.open('tls-cache');
           await cache.put('/api/db-cache', new Response(JSON.stringify(data)));
@@ -70,182 +322,295 @@ export const ensureDbLoaded = async () => {
       }
 
       const parsed = JSON.parse(JSON.stringify(data), dateReviver);
-      memoryDb = parseMockDb(parsed);
-      isDbLoaded = true;
-      
-      // Trigger a re-render for all components using useSyncExternalStore
-      api.notify();
-
-      // Background lazy load POIs
-      fetch('/api/pois')
-        .then(r => r.json())
-        .then(poiData => {
-          if (memoryDb) {
-            const parsedPois = JSON.parse(JSON.stringify(poiData), dateReviver);
-            memoryDb.pois = parsedPois;
-            api.notify();
-          }
-        })
-        .catch(err => console.error("Failed to load POIs in background", err));
-    }
-  } catch (error) {
-    console.error('Failed to load DB from server', error);
-  }
-};
-
-let isRefreshing = false; // Guard against concurrent refreshes
-const lastUpdatedJobs = new Map<string, number>();
-
-// Callback registered by shiftStore to receive openShifts from poll — avoids circular import
-let onOpenShiftsSyncCallback: ((shifts: any[]) => void) | null = null;
-export function registerOpenShiftsSyncCallback(cb: (shifts: any[]) => void) {
-  onOpenShiftsSyncCallback = cb;
-}
-
-export const refreshDb = async () => {
-  if (typeof window === 'undefined') return;
-  if (isRefreshing) return; // Skip if already fetching — prevents race conditions
-  isRefreshing = true;
-  try {
-    const headers: Record<string, string> = {};
-    if (lastEtag) headers['If-None-Match'] = lastEtag;
-    const res = await fetch('/api/db', { headers });
-    if (res.status === 304) {
-      // 304 Not Modified: Data is unchanged on server, exit immediately without parsing or re-rendering
-      return;
-    }
-    if (res.ok) {
-      const etag = res.headers.get('ETag');
-      if (etag) lastEtag = etag;
-      const data = await res.json();
-      const parsed = JSON.parse(JSON.stringify(data), dateReviver);
       if (memoryDb && memoryDb.pois.length > 0) {
-        // Preserve POIs as they are loaded separately and heavily cached
         parsed.pois = memoryDb.pois;
       }
 
-      // ✅ FIX: Preserve in-memory GPS location for active riders
-      // refreshDb() fetches stale server data which may not have the latest GPS fix yet.
-      // We keep the most recent in-memory location so the map doesn't jump backwards.
       if (memoryDb && parsed.riders) {
         parsed.riders = parsed.riders.map((serverRider: any) => {
-          const memRider = memoryDb!.riders.find(r => r.id === serverRider.id);
+          const memRider = memoryDb!.riders.find((r) => r.id === serverRider.id);
           if (
             memRider &&
             memRider.currentLocation &&
             (serverRider.status === 'online' || serverRider.status === 'busy')
           ) {
-            // Keep in-memory location (it's fresher than DB)
             return { ...serverRider, currentLocation: memRider.currentLocation };
           }
           return serverRider;
         });
       }
 
-      // ✅ FIX: Prevent background polling from overwriting recently completed local job status (race condition protection)
-      // When a rider completes a job (pickup -> billing, or delivery -> completed), the client updates locally and performs
-      // GCS uploads + DB Server Actions. In the meantime, concurrent polling fetch('/api/db') could return stale DB states,
-      // reverting the job in UI. We preserve the advanced local status and proof URLs until the server reflects the changes.
+      if (parsed.jobs && Array.isArray(parsed.jobs)) {
+        for (const sj of parsed.jobs) {
+          const rev = sj.updatedAt ? new Date(sj.updatedAt).getTime() : 0;
+          if (rev > 0) {
+            const prev = lastSeenJobRevision.get(sj.id) || 0;
+            if (rev > prev) lastSeenJobRevision.set(sj.id, rev);
+            if (rev > lastServerSyncMs) lastServerSyncMs = rev;
+          }
+        }
+      }
+
       if (memoryDb && parsed.jobs) {
         parsed.jobs = parsed.jobs.map((serverJob: any) => {
-          const memJob = memoryDb!.jobs.find(j => j.id === serverJob.id);
+          const memJob = memoryDb!.jobs.find((j) => j.id === serverJob.id);
           if (memJob) {
-            // ✅ CRITICAL FIX: If server confirmed payment (CSO or Shop/Beam Webhook), adopt exact server paid states immediately!
+            // If server confirmed payment, adopt exact server paid states immediately
             if ((serverJob.isPaid && !memJob.isPaid) || (serverJob.isShopPaid && !memJob.isShopPaid)) {
-              lastUpdatedJobs.delete(serverJob.id);
-              memJob.isPaid = Boolean(serverJob.isPaid);
-              memJob.isShopPaid = Boolean(serverJob.isShopPaid);
-              memJob.paymentMethod = serverJob.paymentMethod ?? memJob.paymentMethod;
-              memJob.paymentChannel = serverJob.paymentChannel ?? memJob.paymentChannel;
-              memJob.csoPaidAt = serverJob.csoPaidAt;
-              memJob.shopPaidAt = serverJob.shopPaidAt;
-              memJob.totalAmount = serverJob.totalAmount ?? memJob.totalAmount;
-              memJob.adminNotesJson = serverJob.adminNotesJson ?? memJob.adminNotesJson;
-              if (memJob.status === 'billing' && serverJob.status && serverJob.status !== 'billing') {
-                memJob.status = serverJob.status;
-              }
-              return {
-                ...memJob,
-                ...serverJob,
-                isPaid: Boolean(serverJob.isPaid),
-                isShopPaid: Boolean(serverJob.isShopPaid),
-              };
+              return normalizeServerJob(serverJob, memJob);
             }
 
-            // Stale polling overwrite protection: Keep the local in-memory job if edited within 30s
-            const lastUpdated = lastUpdatedJobs.get(serverJob.id);
-            if (lastUpdated && (Date.now() - lastUpdated) < 30000) {
+            // Only protect jobs that currently have an active in-flight save to the server
+            if ((pendingJobSaves.get(serverJob.id) || 0) > 0) {
               return memJob;
             }
 
-            const isMemPickupCompleted = ["billing", "active", "ready_to_wash", "washed", "delivery", "completed"].includes(memJob.status);
-            const isServerPickupCompleted = ["billing", "active", "ready_to_wash", "washed", "delivery", "completed"].includes(serverJob.status);
-            
-            const isMemDeliveryCompleted = memJob.status === "completed";
-            const isServerDeliveryCompleted = serverJob.status === "completed";
-
-            const shouldPreservePickup = isMemPickupCompleted && !isServerPickupCompleted;
-            const shouldPreserveDelivery = isMemDeliveryCompleted && !isServerDeliveryCompleted;
-
-            let updatedJob = { ...serverJob };
-
-            if (shouldPreservePickup || shouldPreserveDelivery) {
-              updatedJob = {
-                ...updatedJob,
-                status: memJob.status,
-                completedAt: memJob.completedAt || serverJob.completedAt,
-                pickupProofImageUrl: memJob.pickupProofImageUrl || serverJob.pickupProofImageUrl,
-                deliveryProofImageUrl: memJob.deliveryProofImageUrl || serverJob.deliveryProofImageUrl,
-                proofImageUrl: memJob.proofImageUrl || serverJob.proofImageUrl,
-              };
-            }
-
-            // Always preserve in-memory billImageUrl if client has one but server has stale empty/null data
-            if (memJob.billImageUrl && memJob.billImageUrl !== '[]' && (!serverJob.billImageUrl || serverJob.billImageUrl === '[]')) {
-              updatedJob.billImageUrl = memJob.billImageUrl;
-            }
-
-            // Always preserve billNo across in-memory and server state
-            if (memJob.billNo && (!serverJob.billNo || serverJob.billNo === '')) {
-              updatedJob.billNo = memJob.billNo;
-            } else if (serverJob.billNo && (!memJob.billNo || memJob.billNo === '')) {
-              updatedJob.billNo = serverJob.billNo;
-            }
-
-            return updatedJob;
+            return normalizeServerJob(serverJob, memJob);
           }
-          return serverJob;
+          return normalizeServerJob(serverJob);
         });
-      }
 
-      // ✅ FIX: Preserve all in-memory jobs (e.g. historical jobs loaded via fetchHistoricalJobs)
-      // that are not returned by the server /api/db (which only fetches recent/active jobs).
-      if (memoryDb && parsed.jobs) {
         const serverJobIds = new Set(parsed.jobs.map((j: any) => j.id));
-        const extraMemJobs = memoryDb.jobs.filter(j => !serverJobIds.has(j.id));
+        const extraMemJobs = memoryDb.jobs.filter((j) => !serverJobIds.has(j.id));
         parsed.jobs = [...parsed.jobs, ...extraMemJobs];
       }
 
       memoryDb = parseMockDb(parsed);
-      api.notify();
+      isDbLoaded = true;
+      if (lastServerSyncMs === 0) lastServerSyncMs = Date.now();
+      realtimeState.lastSyncAt = Date.now();
+      api.notify('all');
 
-      // ✅ Sync shift status from polling data — no separate DB call needed
       if (parsed.openShifts && onOpenShiftsSyncCallback) {
         onOpenShiftsSyncCallback(parsed.openShifts);
       }
+
+      if (isInitial && (!memoryDb.pois || memoryDb.pois.length === 0)) {
+        fetch('/api/pois', { headers: getClientAuthHeaders() })
+          .then((r) => r.json())
+          .then((poiData) => {
+            if (memoryDb) {
+              const parsedPois = JSON.parse(JSON.stringify(poiData), dateReviver);
+              memoryDb.pois = parsedPois;
+              api.notify('pois');
+            }
+          })
+          .catch((err) => console.error('Failed to load POIs in background', err));
+      }
     }
   } catch (error) {
-    console.error('Failed to refresh DB', error);
-  } finally {
-    isRefreshing = false;
+    console.error('Failed to load/refresh DB from server', error);
   }
+}
+
+// Initialize the database from server (coalesced with refreshDb)
+export const ensureDbLoaded = async () => {
+  if (isDbLoaded) return;
+  if (typeof window === 'undefined') return;
+  if (!inFlightDbPromise) {
+    inFlightDbPromise = performDbFetch(true).finally(() => {
+      inFlightDbPromise = null;
+    });
+  }
+  return inFlightDbPromise;
 };
 
+export const refreshDb = async () => {
+  if (typeof window === 'undefined') return;
+  if (!inFlightDbPromise) {
+    inFlightDbPromise = performDbFetch(!isDbLoaded).finally(() => {
+      inFlightDbPromise = null;
+    });
+  }
+  return inFlightDbPromise;
+};
 
+// ─── Client SSE & Delta Reconciliation Engine ───────────────────────────────
+let eventSourceInstance: EventSource | null = null;
+let eventSourceUserId: string | null = null;
+let fallbackPollTimer: ReturnType<typeof setInterval> | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let consecutiveFallbackPolls = 0;
+const seenSseEventIds = new Set<string>();
 
-// Start loading the DB immediately if we're on the client
+function startFallbackPolling() {
+  if (fallbackPollTimer) return;
+  consecutiveFallbackPolls = 0;
+  fallbackPollTimer = setInterval(async () => {
+    consecutiveFallbackPolls++;
+    if (consecutiveFallbackPolls >= 2 && realtimeState.connectionStatus !== 'connected') {
+      setConnectionStatus(navigator.onLine === false ? 'disconnected' : 'fallback_polling');
+    }
+    try {
+      await api.reconcileDelta();
+    } catch {
+      if (navigator.onLine === false) {
+        setConnectionStatus('disconnected');
+      }
+    }
+  }, 3000);
+}
+
+function stopFallbackPolling() {
+  if (fallbackPollTimer) {
+    clearInterval(fallbackPollTimer);
+    fallbackPollTimer = null;
+  }
+  consecutiveFallbackPolls = 0;
+}
+
+export function startRealtimeConnection(forceReconnect = false) {
+  if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+
+  const authUser = getClientAuthUser();
+  const currentUid = authUser?.id || null;
+
+  if (
+    !forceReconnect &&
+    eventSourceInstance &&
+    eventSourceInstance.readyState !== EventSource.CLOSED &&
+    eventSourceUserId === currentUid
+  ) {
+    return;
+  }
+
+  if (eventSourceInstance) {
+    try {
+      eventSourceInstance.close();
+    } catch {}
+    eventSourceInstance = null;
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  eventSourceUserId = currentUid;
+  const params = new URLSearchParams();
+  if (currentUid) params.set('userId', currentUid);
+  if (lastServerSyncMs > 0) params.set('since', String(lastServerSyncMs - 2000));
+
+  const streamUrl = `/api/events/stream${params.toString() ? `?${params.toString()}` : ''}`;
+  setConnectionStatus(realtimeState.lastSyncAt ? 'reconnecting' : 'connecting');
+
+  try {
+    const es = new EventSource(streamUrl, { withCredentials: true });
+    eventSourceInstance = es;
+
+    es.onopen = () => {
+      const wasReconnecting =
+        realtimeState.connectionStatus === 'reconnecting' ||
+        realtimeState.connectionStatus === 'fallback_polling' ||
+        realtimeState.connectionStatus === 'disconnected';
+      setConnectionStatus('connected');
+      stopFallbackPolling();
+      if (wasReconnecting) {
+        // Reconcile any missed updates immediately upon reconnection
+        api.reconcileDelta().catch(() => {});
+      }
+    };
+
+    es.addEventListener('connected', () => {
+      setConnectionStatus('connected');
+      stopFallbackPolling();
+    });
+
+    es.addEventListener('order-update', (evt: MessageEvent) => {
+      try {
+        const payload = JSON.parse(evt.data);
+        if (!payload || !payload.jobId) return;
+
+        if (payload.eventId) {
+          if (seenSseEventIds.has(payload.eventId)) return;
+          seenSseEventIds.add(payload.eventId);
+          if (seenSseEventIds.size > 600) {
+            const first = seenSseEventIds.values().next().value;
+            if (first) seenSseEventIds.delete(first);
+          }
+        }
+
+        if (payload.type === 'customer.updated') {
+          api.reconcileDelta().catch(() => {});
+          return;
+        }
+
+        const currentUser = getClientAuthUser();
+        const isFromSelf = Boolean(
+          currentUser?.id && payload.actorId && String(currentUser.id) === String(payload.actorId)
+        );
+        const incomingRev = Number(payload.revision) || 0;
+        const knownRev = lastSeenJobRevision.get(payload.jobId) || 0;
+
+        // Record external update notification if modified by another user or webhook
+        if (!isFromSelf && payload.jobId !== '__CUSTOMER__') {
+          realtimeState.externalJobUpdates[payload.jobId] = {
+            jobId: payload.jobId,
+            revision: incomingRev || Date.now(),
+            updatedAt: payload.updatedAt || new Date().toISOString(),
+            action: payload.action,
+            changedFields: payload.changedFields,
+            actorId: payload.actorId,
+            actorName: payload.actorName,
+            receivedAt: Date.now(),
+          };
+          emitRealtimeChange();
+        }
+
+        // If we already have this exact or newer revision in memory (e.g. from our own awaited save), skip redundant fetch
+        if (incomingRev > 0 && knownRev >= incomingRev && isFromSelf) {
+          return;
+        }
+
+        api.fetchAndApplyJob(payload.jobId, incomingRev || undefined).catch((err) => {
+          console.warn('[SSE] Failed to fetch single job, falling back to delta:', err);
+          api.reconcileDelta().catch(() => {});
+        });
+      } catch (err) {
+        console.error('[SSE] Failed to handle order-update event:', err);
+      }
+    });
+
+    es.onerror = () => {
+      setConnectionStatus(navigator.onLine === false ? 'disconnected' : 'reconnecting');
+      startFallbackPolling();
+      if (es.readyState === EventSource.CLOSED) {
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            startRealtimeConnection(true);
+          }, 2500);
+        }
+      }
+    };
+  } catch (err) {
+    console.error('[SSE] Failed to initialize EventSource:', err);
+    setConnectionStatus('fallback_polling');
+    startFallbackPolling();
+  }
+}
+
+// Start loading the DB and real-time stream immediately if we're on the client
 if (typeof window !== 'undefined') {
   ensureDbLoaded();
+  startRealtimeConnection();
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      api.reconcileDelta().catch(() => {});
+      if (!eventSourceInstance || eventSourceInstance.readyState === EventSource.CLOSED) {
+        startRealtimeConnection(true);
+      }
+    }
+  });
+
+  window.addEventListener('online', () => {
+    startRealtimeConnection(true);
+    api.reconcileDelta().catch(() => {});
+  });
+
+  window.addEventListener('offline', () => {
+    setConnectionStatus('disconnected');
+  });
 }
 
 const emptyDb: Database = {
@@ -256,7 +621,7 @@ const emptyDb: Database = {
   priceLists: [],
   shopLocations: [],
   pois: [],
-  settings: {}
+  settings: {},
 };
 
 let fallbackDb: Database | null = null;
@@ -294,7 +659,7 @@ const parseMockDb = (data: unknown): Database => {
   return db;
 };
 
-type DbChangeListener = () => void;
+type DbChangeListener = (scope: DbChangeScope) => void;
 const dbChangeListeners = new Set<DbChangeListener>();
 
 // --- API METHODS ---
@@ -306,20 +671,273 @@ export const api = {
       dbChangeListeners.delete(listener);
     };
   },
-  notify() {
-    dbChangeListeners.forEach(l => l());
+  notify(scope: DbChangeScope = 'all') {
+    dbChangeListeners.forEach((l) => l(scope));
+  },
+
+  /**
+   * Applies a single authoritative server job into memoryDb with monotonic revision ordering.
+   */
+  applyServerJob(rawJob: any, revisionMs?: number): { changed: boolean; job: Job } {
+    const db = initDb();
+    const existingIdx = db.jobs.findIndex((j) => j.id === rawJob.id);
+    const existingJob = existingIdx >= 0 ? db.jobs[existingIdx] : undefined;
+
+    const incomingRev =
+      revisionMs ||
+      (rawJob.updatedAt ? new Date(rawJob.updatedAt).getTime() : Date.now());
+    const prevRev = lastSeenJobRevision.get(rawJob.id) || 0;
+
+    // Ignore out-of-order older events unless payment state advanced
+    const isPaymentAdvance =
+      existingJob &&
+      ((rawJob.isPaid && !existingJob.isPaid) || (rawJob.isShopPaid && !existingJob.isShopPaid));
+
+    if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance) {
+      return { changed: false, job: existingJob || normalizeServerJob(rawJob) };
+    }
+
+    // Do not clobber an active in-flight save unless payment state advanced
+    if ((pendingJobSaves.get(rawJob.id) || 0) > 0 && !isPaymentAdvance) {
+      return { changed: false, job: existingJob || normalizeServerJob(rawJob) };
+    }
+
+    if (incomingRev > prevRev) {
+      lastSeenJobRevision.set(rawJob.id, incomingRev);
+    }
+    if (incomingRev > lastServerSyncMs) {
+      lastServerSyncMs = incomingRev;
+    }
+
+    const normalized = normalizeServerJob(rawJob, existingJob);
+    (normalized as any)._saveStatus = 'saved';
+
+    if (memoryDb) {
+      if (existingIdx >= 0) {
+        const nextJobs = [...memoryDb.jobs];
+        nextJobs[existingIdx] = normalized;
+        memoryDb.jobs = nextJobs;
+      } else {
+        memoryDb.jobs = [normalized, ...memoryDb.jobs];
+      }
+      realtimeState.lastSyncAt = Date.now();
+      api.notify('jobs');
+    }
+
+    return { changed: true, job: normalized };
+  },
+
+  /**
+   * Fetches a single job by ID from `/api/jobs/[id]` (coalesced on client + server) and updates memoryDb.
+   */
+  async fetchAndApplyJob(jobId: string, revisionMs?: number): Promise<Job | null> {
+    if (typeof window === 'undefined' || !jobId || jobId === '__CUSTOMER__') return null;
+
+    const flightKey = `${jobId}:${revisionMs || 0}`;
+    const existingFlight = inFlightClientJobFetches.get(flightKey);
+    if (existingFlight) return existingFlight;
+
+    const promise = (async (): Promise<Job | null> => {
+      try {
+        const url = `/api/jobs/${encodeURIComponent(jobId)}${
+          revisionMs ? `?rev=${encodeURIComponent(String(revisionMs))}` : ''
+        }`;
+        const res = await fetch(url, { headers: getClientAuthHeaders() });
+        if (res.status === 403 || res.status === 404) {
+          // If job moved out of user's authorized branch/rider scope, remove from local view
+          if (res.status === 403 && memoryDb) {
+            const beforeLen = memoryDb.jobs.length;
+            memoryDb.jobs = memoryDb.jobs.filter((j) => j.id !== jobId);
+            if (memoryDb.jobs.length !== beforeLen) {
+              api.notify('jobs');
+            }
+          }
+          return null;
+        }
+        if (!res.ok) return null;
+        const data = await res.json();
+        const { job } = api.applyServerJob(data, revisionMs);
+        return job;
+      } catch (err) {
+        console.error(`[api.fetchAndApplyJob] Failed for ${jobId}:`, err);
+        return null;
+      } finally {
+        inFlightClientJobFetches.delete(flightKey);
+      }
+    })();
+
+    inFlightClientJobFetches.set(flightKey, promise);
+    return promise;
+  },
+
+  /**
+   * Reconciles local memoryDb against `/api/jobs/delta?since=...` after reconnect, tab focus, or fallback poll.
+   */
+  async reconcileDelta(sinceMs?: number): Promise<{ jobsUpdated: number; customersUpdated: number }> {
+    if (typeof window === 'undefined') return { jobsUpdated: 0, customersUpdated: 0 };
+    if (!memoryDb) {
+      await ensureDbLoaded();
+      return { jobsUpdated: 0, customersUpdated: 0 };
+    }
+    if (inFlightDeltaPromise) return inFlightDeltaPromise;
+
+    inFlightDeltaPromise = (async () => {
+      try {
+        const effectiveSince =
+          sinceMs ?? (lastServerSyncMs > 0 ? Math.max(0, lastServerSyncMs - 3000) : Date.now() - 60_000);
+        const res = await fetch(`/api/jobs/delta?since=${encodeURIComponent(String(effectiveSince))}`, {
+          headers: getClientAuthHeaders(),
+        });
+        if (!res.ok) return { jobsUpdated: 0, customersUpdated: 0 };
+
+        const data = await res.json();
+        let jobsUpdated = 0;
+        let customersUpdated = 0;
+
+        if (Array.isArray(data.jobs) && data.jobs.length > 0 && memoryDb) {
+          const nextJobs = [...memoryDb.jobs];
+          const indexById = new Map<string, number>();
+          nextJobs.forEach((j, idx) => indexById.set(j.id, idx));
+
+          for (const rawJob of data.jobs) {
+            const incomingRev = rawJob.updatedAt ? new Date(rawJob.updatedAt).getTime() : Date.now();
+            const prevRev = lastSeenJobRevision.get(rawJob.id) || 0;
+            const existingIdx = indexById.get(rawJob.id);
+            const existingJob = existingIdx !== undefined ? nextJobs[existingIdx] : undefined;
+
+            const isPaymentAdvance =
+              existingJob &&
+              ((rawJob.isPaid && !existingJob.isPaid) ||
+                (rawJob.isShopPaid && !existingJob.isShopPaid));
+
+            if ((pendingJobSaves.get(rawJob.id) || 0) > 0 && !isPaymentAdvance) {
+              continue;
+            }
+            if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance) {
+              continue;
+            }
+
+            if (incomingRev > prevRev) lastSeenJobRevision.set(rawJob.id, incomingRev);
+            const normalized = normalizeServerJob(rawJob, existingJob);
+            (normalized as any)._saveStatus = 'saved';
+
+            if (existingIdx !== undefined) {
+              nextJobs[existingIdx] = normalized;
+            } else {
+              nextJobs.unshift(normalized);
+              indexById.set(normalized.id, 0);
+            }
+            jobsUpdated++;
+          }
+
+          if (jobsUpdated > 0) {
+            memoryDb.jobs = nextJobs;
+          }
+        }
+
+        if (Array.isArray(data.customers) && data.customers.length > 0 && memoryDb) {
+          const parsedCustomers = JSON.parse(JSON.stringify(data.customers), dateReviver) as Customer[];
+          const nextCustomers = [...memoryDb.customers];
+          const custIndexById = new Map<string, number>();
+          nextCustomers.forEach((c, idx) => custIndexById.set(c.id, idx));
+
+          for (const sc of parsedCustomers) {
+            const idx = custIndexById.get(sc.id);
+            if (idx !== undefined) {
+              nextCustomers[idx] = { ...nextCustomers[idx], ...sc };
+            } else {
+              nextCustomers.unshift(sc);
+              custIndexById.set(sc.id, 0);
+            }
+            customersUpdated++;
+          }
+
+          if (customersUpdated > 0) {
+            memoryDb.customers = nextCustomers;
+          }
+        }
+
+        if (typeof data.serverTime === 'number' && data.serverTime > lastServerSyncMs) {
+          lastServerSyncMs = data.serverTime;
+        }
+        realtimeState.lastSyncAt = Date.now();
+
+        if (data.openShifts && onOpenShiftsSyncCallback) {
+          onOpenShiftsSyncCallback(data.openShifts);
+        }
+
+        if (jobsUpdated > 0) api.notify('jobs');
+        if (customersUpdated > 0) api.notify('customers');
+
+        return { jobsUpdated, customersUpdated };
+      } catch (err) {
+        console.error('[api.reconcileDelta] Error:', err);
+        return { jobsUpdated: 0, customersUpdated: 0 };
+      } finally {
+        inFlightDeltaPromise = null;
+      }
+    })();
+
+    return inFlightDeltaPromise;
+  },
+
+  /**
+   * Targeted server-side search for jobs (merges results into memoryDb so opening any result works immediately).
+   */
+  async searchJobs(params: {
+    q?: string;
+    status?: string;
+    branchId?: string;
+    brand?: string;
+    isPaid?: boolean;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ jobs: Job[]; total: number; hasMore: boolean }> {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set('q', params.q);
+    if (params.status) qs.set('status', params.status);
+    if (params.branchId) qs.set('branchId', params.branchId);
+    if (params.brand) qs.set('brand', params.brand);
+    if (params.isPaid !== undefined) qs.set('isPaid', String(params.isPaid));
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
+
+    const res = await fetch(`/api/jobs/search?${qs.toString()}`, {
+      headers: getClientAuthHeaders(),
+    });
+    if (!res.ok) {
+      return { jobs: [], total: 0, hasMore: false };
+    }
+    const data = await res.json();
+    const jobs = (Array.isArray(data.jobs) ? data.jobs : []).map((raw: any) =>
+      normalizeServerJob(raw)
+    );
+
+    if (memoryDb && jobs.length > 0) {
+      const existingIds = new Set(memoryDb.jobs.map((j) => j.id));
+      const newJobs = jobs.filter((j: Job) => !existingIds.has(j.id));
+      if (newJobs.length > 0) {
+        memoryDb.jobs = [...memoryDb.jobs, ...newJobs];
+        api.notify('jobs');
+      }
+    }
+
+    return {
+      jobs,
+      total: Number(data.total) || jobs.length,
+      hasMore: Boolean(data.hasMore),
+    };
   },
 
   // --- CUSTOMERS ---
   async getCustomers(): Promise<Customer[]> {
-    
     return initDb().customers;
   },
-  
+
   async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
     if (typeof window === 'undefined' || !memoryDb) return [];
     if (!startDate || !endDate || isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      console.warn("Invalid start/end date passed to fetchHistoricalJobs", startDate, endDate);
+      console.warn('Invalid start/end date passed to fetchHistoricalJobs', startDate, endDate);
       return [];
     }
     try {
@@ -327,29 +945,25 @@ export const api = {
       if (riderId) {
         url += `&riderId=${encodeURIComponent(riderId)}`;
       }
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: getClientAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         const parsedJobs = JSON.parse(JSON.stringify(data), dateReviver) as Job[];
-        
-        // Merge: update existing jobs + add new ones
-        // IMPORTANT: Must create a NEW array reference for useSyncExternalStore to detect changes
-        const existingIds = new Set(memoryDb.jobs.map(j => j.id));
-        const historyMap = new Map(parsedJobs.map(j => [j.id, j]));
 
-        // Update existing jobs with fresh data from history
-        const updatedJobs = memoryDb.jobs.map(j => {
+        const existingIds = new Set(memoryDb.jobs.map((j) => j.id));
+        const historyMap = new Map(parsedJobs.map((j) => [j.id, j]));
+
+        const updatedJobs = memoryDb.jobs.map((j) => {
           if (historyMap.has(j.id)) {
             return { ...j, ...historyMap.get(j.id)! };
           }
           return j;
         });
 
-        // Add new jobs that don't exist yet in memory
-        const newJobs = parsedJobs.filter(j => !existingIds.has(j.id));
+        const newJobs = parsedJobs.filter((j) => !existingIds.has(j.id));
 
-        memoryDb.jobs = [...updatedJobs, ...newJobs]; // Always new array reference
-        api.notify();
+        memoryDb.jobs = [...updatedJobs, ...newJobs];
+        api.notify('jobs');
         return parsedJobs;
       }
     } catch (error) {
@@ -602,28 +1216,32 @@ export const api = {
     const savedJobInDb = await dbActions.addJobAction({
       ...newJob,
       actorId: jobDetails.actorId,
-      actorName: jobDetails.actorName
+      actorName: jobDetails.actorName,
     });
-    
-    // Replace the fake ID with the real ID from DB
-    const finalJob = { ...newJob, id: savedJobInDb.id };
-    
-    // Prune old entries
-    for (const [key, value] of lastUpdatedJobs.entries()) {
-      if (Date.now() - value > 60000) {
-        lastUpdatedJobs.delete(key);
-      }
-    }
-    lastUpdatedJobs.set(finalJob.id, Date.now());
 
-    db.jobs = [finalJob, ...db.jobs];
+    const finalJob = normalizeServerJob(savedJobInDb, { ...newJob, id: savedJobInDb.id });
+    (finalJob as any)._saveStatus = 'saved';
+
+    const rev = finalJob.updatedAt ? new Date(finalJob.updatedAt).getTime() : Date.now();
+    lastSeenJobRevision.set(finalJob.id, rev);
+    if (rev > lastServerSyncMs) lastServerSyncMs = rev;
+
+    // Avoid duplicate if SSE already inserted it milliseconds earlier
+    const existingIdx = db.jobs.findIndex((j) => j.id === finalJob.id);
+    if (existingIdx >= 0) {
+      const next = [...db.jobs];
+      next[existingIdx] = finalJob;
+      db.jobs = next;
+    } else {
+      db.jobs = [finalJob, ...db.jobs];
+    }
+    setJobSaveState(finalJob.id, 'saved');
     return finalJob as Job;
   },
 
   async updateJob(id: string, updates: Partial<Job>): Promise<Job> {
-    
     const db = initDb();
-    const jobIndex = db.jobs.findIndex(j => j.id === id);
+    const jobIndex = db.jobs.findIndex((j) => j.id === id);
 
     const cleanUpdates: Partial<Job> = {};
     for (const key of Object.keys(updates) as (keyof Job)[]) {
@@ -632,17 +1250,49 @@ export const api = {
       }
     }
 
-    if (jobIndex === -1) {
-      // Job not in memory store yet (session reload, historical job etc.)
-      // Still persist to DB so the update is not lost
-      await dbActions.updateJobAction(id, cleanUpdates);
-      return { id, ...cleanUpdates } as Job;
+    // Ensure actor details are attached so ActivityLog never records "System" for actions taken by logged-in users
+    if (!(cleanUpdates as any).actorId && !(cleanUpdates as any).actorName && typeof window !== 'undefined') {
+      const parsed = getClientAuthUser();
+      if (parsed?.id) (cleanUpdates as any).actorId = parsed.id;
+      if (parsed?.name || parsed?.email) (cleanUpdates as any).actorName = parsed.name || parsed.email;
+      if (parsed?.role) (cleanUpdates as any).actorRole = parsed.role;
     }
-    
+
+    if (jobIndex === -1) {
+      pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
+      setJobSaveState(id, 'saving');
+      try {
+        const savedInDb = await dbActions.updateJobAction(id, cleanUpdates);
+        pendingJobSaves.set(id, Math.max(0, (pendingJobSaves.get(id) || 1) - 1));
+        const normalized = normalizeServerJob(savedInDb, { id, ...cleanUpdates } as Job);
+        const rev = normalized.updatedAt ? new Date(normalized.updatedAt).getTime() : Date.now();
+        lastSeenJobRevision.set(id, rev);
+        setJobSaveState(id, 'saved');
+        return normalized;
+      } catch (err: any) {
+        pendingJobSaves.set(id, Math.max(0, (pendingJobSaves.get(id) || 1) - 1));
+        const isConflict =
+          String(err?.message || '').includes('409') ||
+          String(err?.message || '').toLowerCase().includes('conflict');
+        setJobSaveState(id, isConflict ? 'conflict' : 'failed', err?.message || 'Save failed');
+        throw err;
+      }
+    }
+
     const existingJob = db.jobs[jobIndex];
-    
+
+    // Snapshot last confirmed state if not already captured by an earlier optimisticUpdate
+    if (!confirmedJobSnapshots.has(id) && (pendingJobSaves.get(id) || 0) === 0) {
+      confirmedJobSnapshots.set(id, { ...existingJob });
+    }
+
     // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
-    if (cleanUpdates.billNo !== undefined && (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
+    if (
+      cleanUpdates.billNo !== undefined &&
+      (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') &&
+      existingJob.billNo &&
+      String(existingJob.billNo).trim() !== ''
+    ) {
       delete cleanUpdates.billNo;
     }
 
@@ -654,17 +1304,17 @@ export const api = {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
           merged.sort((a, b) => {
-            const aIsPf = a.includes("proforma-");
-            const bIsPf = b.includes("proforma-");
+            const aIsPf = a.includes('proforma-');
+            const bIsPf = b.includes('proforma-');
             if (aIsPf && !bIsPf) return -1;
             if (!aIsPf && bIsPf) return 1;
             if (aIsPf && bIsPf) {
-              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
-              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
+              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
               return bRev - aRev;
             }
-            const aIsRc = a.includes("receipt-");
-            const bIsRc = b.includes("receipt-");
+            const aIsRc = a.includes('receipt-');
+            const bIsRc = b.includes('receipt-');
             if (aIsRc && !bIsRc) return 1;
             if (!aIsRc && bIsRc) return -1;
             return 0;
@@ -674,7 +1324,11 @@ export const api = {
       } catch {}
     }
 
-    if (cleanUpdates.status === undefined && existingJob.status === 'tba' && (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)) {
+    if (
+      cleanUpdates.status === undefined &&
+      existingJob.status === 'tba' &&
+      (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)
+    ) {
       cleanUpdates.status = 'pending';
     }
 
@@ -682,48 +1336,97 @@ export const api = {
     if (!(cleanUpdates as any).expectedUpdatedAt && !(cleanUpdates as any).checkConflict) {
       delete cleanUpdates.updatedAt;
     }
-    
-    const updatedJob = { ...existingJob, ...cleanUpdates, updatedAt: new Date() };
+
+    // Mark local state as saving (unconfirmed) until server responds
+    const optimisticJob: Job = {
+      ...existingJob,
+      ...cleanUpdates,
+      updatedAt: existingJob.updatedAt || new Date(),
+    };
+    (optimisticJob as any)._saveStatus = 'saving';
+
     const newJobs = [...db.jobs];
-    newJobs[jobIndex] = updatedJob;
+    newJobs[jobIndex] = optimisticJob;
     db.jobs = newJobs;
-    
-    // Prune old entries
-    for (const [key, value] of lastUpdatedJobs.entries()) {
-      if (Date.now() - value > 60000) {
-        lastUpdatedJobs.delete(key);
+
+    pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
+    setJobSaveState(id, 'saving');
+
+    try {
+      const savedInDb = await dbActions.updateJobAction(id, cleanUpdates);
+      const remainingSaves = Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
+      pendingJobSaves.set(id, remainingSaves);
+
+      const currentIdx = db.jobs.findIndex((j) => j.id === id);
+      const baseJob = currentIdx >= 0 ? db.jobs[currentIdx] : optimisticJob;
+      const confirmedJob = normalizeServerJob(savedInDb, baseJob);
+      (confirmedJob as any)._saveStatus = 'saved';
+      if ((savedInDb as any)?.issuedCoupons) {
+        (confirmedJob as any).issuedCoupons = (savedInDb as any).issuedCoupons;
       }
-    }
-    lastUpdatedJobs.set(id, Date.now());
 
-    // Ensure actor details are attached so ActivityLog never records "System" for actions taken by logged-in users
-    if (!(cleanUpdates as any).actorId && !(cleanUpdates as any).actorName && typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('authUser');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed?.id) (cleanUpdates as any).actorId = parsed.id;
-          if (parsed?.name || parsed?.email) (cleanUpdates as any).actorName = parsed.name || parsed.email;
-          if (parsed?.role) (cleanUpdates as any).actorRole = parsed.role;
+      const rev = confirmedJob.updatedAt ? new Date(confirmedJob.updatedAt).getTime() : Date.now();
+      lastSeenJobRevision.set(id, rev);
+      if (rev > lastServerSyncMs) lastServerSyncMs = rev;
+
+      if (currentIdx >= 0) {
+        const nextJobs = [...db.jobs];
+        nextJobs[currentIdx] = confirmedJob;
+        db.jobs = nextJobs;
+      }
+
+      if (remainingSaves === 0) {
+        confirmedJobSnapshots.delete(id);
+        setJobSaveState(id, 'saved');
+      }
+      api.notify('jobs');
+      return confirmedJob;
+    } catch (err: any) {
+      const remainingSaves = Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
+      pendingJobSaves.set(id, remainingSaves);
+
+      // Roll back unconfirmed local change to last confirmed server snapshot
+      const rollbackSnapshot = confirmedJobSnapshots.get(id);
+      if (rollbackSnapshot && remainingSaves === 0) {
+        const currentIdx = db.jobs.findIndex((j) => j.id === id);
+        if (currentIdx >= 0) {
+          const nextJobs = [...db.jobs];
+          nextJobs[currentIdx] = { ...rollbackSnapshot };
+          db.jobs = nextJobs;
         }
-      } catch (e) {}
-    }
+        confirmedJobSnapshots.delete(id);
+      }
 
-    await dbActions.updateJobAction(id, cleanUpdates);
-    return updatedJob;
+      const isConflict =
+        String(err?.message || '').includes('409') ||
+        String(err?.message || '').toLowerCase().includes('conflict');
+      setJobSaveState(id, isConflict ? 'conflict' : 'failed', err?.message || 'Save failed');
+
+      if (isConflict) {
+        // Immediately fetch the latest server version so UI displays the authoritative state
+        api.fetchAndApplyJob(id).catch(() => {});
+      } else {
+        api.notify('jobs');
+      }
+
+      throw err;
+    }
   },
 
   /**
-   * Update in-memory job state immediately (optimistic update) without
-   * persisting to DB. Used to make UI respond instantly before the DB
-   * round-trip completes.
+   * Update in-memory job state immediately (optimistic update) while marking it as 'saving'
+   * and preserving the confirmed snapshot in case the subsequent server save fails.
    */
   optimisticUpdate(id: string, updates: Partial<Job>) {
     const db = initDb();
-    const jobIndex = db.jobs.findIndex(j => j.id === id);
+    const jobIndex = db.jobs.findIndex((j) => j.id === id);
     if (jobIndex === -1) return;
 
     const existingJob = db.jobs[jobIndex];
+    if (!confirmedJobSnapshots.has(id) && (pendingJobSaves.get(id) || 0) === 0) {
+      confirmedJobSnapshots.set(id, { ...existingJob });
+    }
+
     const cleanUpdates: Partial<Job> = {};
     for (const key of Object.keys(updates) as (keyof Job)[]) {
       if (updates[key] !== undefined) {
@@ -731,12 +1434,15 @@ export const api = {
       }
     }
 
-    // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
-    if (cleanUpdates.billNo !== undefined && (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') && existingJob.billNo && String(existingJob.billNo).trim() !== '') {
+    if (
+      cleanUpdates.billNo !== undefined &&
+      (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') &&
+      existingJob.billNo &&
+      String(existingJob.billNo).trim() !== ''
+    ) {
       delete cleanUpdates.billNo;
     }
 
-    // Safely merge billImageUrl arrays in optimistic update as well
     if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl && existingJob.billImageUrl) {
       try {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
@@ -744,17 +1450,17 @@ export const api = {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
           merged.sort((a, b) => {
-            const aIsPf = a.includes("proforma-");
-            const bIsPf = b.includes("proforma-");
+            const aIsPf = a.includes('proforma-');
+            const bIsPf = b.includes('proforma-');
             if (aIsPf && !bIsPf) return -1;
             if (!aIsPf && bIsPf) return 1;
             if (aIsPf && bIsPf) {
-              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
-              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+              const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
+              const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || '0', 10);
               return bRev - aRev;
             }
-            const aIsRc = a.includes("receipt-");
-            const bIsRc = b.includes("receipt-");
+            const aIsRc = a.includes('receipt-');
+            const bIsRc = b.includes('receipt-');
             if (aIsRc && !bIsRc) return 1;
             if (!aIsRc && bIsRc) return -1;
             return 0;
@@ -764,15 +1470,24 @@ export const api = {
       } catch {}
     }
 
-    if (cleanUpdates.status === undefined && existingJob.status === 'tba' && (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)) {
+    if (
+      cleanUpdates.status === undefined &&
+      existingJob.status === 'tba' &&
+      (cleanUpdates.pickupRiderId || cleanUpdates.deliveryRiderId)
+    ) {
       cleanUpdates.status = 'pending';
     }
 
-    const updatedJob = { ...existingJob, ...cleanUpdates, updatedAt: new Date() };
+    const updatedJob: Job = {
+      ...existingJob,
+      ...cleanUpdates,
+      updatedAt: existingJob.updatedAt || new Date(),
+    };
+    (updatedJob as any)._saveStatus = 'saving';
     const newJobs = [...db.jobs];
     newJobs[jobIndex] = updatedJob;
     db.jobs = newJobs;
-    lastUpdatedJobs.set(id, Date.now());
+    setJobSaveState(id, 'saving');
   },
 
   // --- SERVICES ---
@@ -915,7 +1630,7 @@ export const api = {
     updateRiderLocal: (id: string, updates: Partial<Rider>) => {
       const db = initDb();
       db.riders = db.riders.map(r => r.id === id ? { ...r, ...updates } : r);
-      api.notify();
+      api.notify('riders');
     },
   },
 
@@ -1073,7 +1788,7 @@ export const api = {
         }
         return c;
       });
-      api.notify();
+      api.notify('customers');
     }
     return res;
   },

@@ -17,7 +17,7 @@ import { useRiders } from "@/lib/use-riders";
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
-import { jobStore, shopStore, customerStore, settingsStore, type Job, type JobStatus } from "@/lib/store";
+import { jobStore, shopStore, customerStore, settingsStore, realtimeStore, type Job, type JobStatus } from "@/lib/store";
 import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds, getCleanBranchName } from "@/components/branch-filter-dropdown";
@@ -95,6 +95,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 }) {
   const riders = useRiders();
   const systemSettings = useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot, settingsStore.getSnapshot);
+  const realtimeState = useSyncExternalStore(realtimeStore.subscribe, realtimeStore.getSnapshot, realtimeStore.getSnapshot);
   const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState<FilterDate>("today");
@@ -847,12 +848,33 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             })()}
                           </div>
                           <div className="flex gap-1 items-center flex-wrap">
-                          {savingJobIds?.has(job.id) && (
-                            <span className="inline-flex items-center gap-1 text-[9px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded shadow-xs animate-pulse">
-                              <RefreshCw size={9} className="animate-spin text-blue-600" />
-                              กำลังบันทึก...
-                            </span>
-                          )}
+                          {(() => {
+                            const js = realtimeState.jobSaveStates?.[job.id];
+                            const isSavingRow = savingJobIds?.has(job.id) || js?.status === 'saving';
+                            if (isSavingRow) {
+                              return (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded shadow-xs animate-pulse">
+                                  <RefreshCw size={9} className="animate-spin text-blue-600" />
+                                  กำลังบันทึก...
+                                </span>
+                              );
+                            }
+                            if (js?.status === 'saved') {
+                              return (
+                                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                  ✓ บันทึกแล้ว
+                                </span>
+                              );
+                            }
+                            if (js?.status === 'conflict' || js?.status === 'failed') {
+                              return (
+                                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                                  ⚠ {js.status === 'conflict' ? 'ชนกัน' : 'ไม่สำเร็จ'}
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                           {job.isStuck && (
                             <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-red-100 text-red-700 border-red-200 shrink-0">
                               Stuck
@@ -1336,10 +1358,13 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         }
                         
                         const isPinned = checkIsPinned(job, user);
-                        const isSaving = savingJobIds?.has(job.id);
+                        const jobSaveState = realtimeState.jobSaveStates?.[job.id];
+                        const isSaving = savingJobIds?.has(job.id) || jobSaveState?.status === 'saving';
+                        const isSaveFailed = jobSaveState?.status === 'failed' || jobSaveState?.status === 'conflict';
                         
                         let cardBgClass = 'bg-white border-slate-200';
                         if (isSaving) cardBgClass = 'bg-blue-50/40 border-blue-300 ring-2 ring-blue-400/40 animate-pulse';
+                        else if (isSaveFailed) cardBgClass = 'bg-rose-50/70 border-rose-400 ring-2 ring-rose-400/40';
                         else if (job.isStuck) cardBgClass = 'bg-red-50 border-red-300 text-red-950 hover:bg-red-100/70';
                         else if (isPinned) cardBgClass = 'bg-orange-50 border-orange-300 text-orange-950 hover:bg-orange-100/70';
 
@@ -1388,6 +1413,16 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                   <span className="inline-flex items-center gap-1 text-[9px] font-bold text-blue-700 bg-blue-100/80 border border-blue-300 px-1.5 py-0.5 rounded shadow-xs shrink-0">
                                     <RefreshCw size={9} className="animate-spin text-blue-600" />
                                     กำลังบันทึก...
+                                  </span>
+                                )}
+                                {!isSaving && jobSaveState?.status === 'saved' && (
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded shrink-0">
+                                    ✓ บันทึกแล้ว
+                                  </span>
+                                )}
+                                {isSaveFailed && (
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-rose-700 bg-rose-100 border border-rose-300 px-1.5 py-0.5 rounded shrink-0">
+                                    ⚠ {jobSaveState?.status === 'conflict' ? 'ชนกัน' : 'ไม่สำเร็จ'}
                                   </span>
                                 )}
                                 {job.isStuck && (

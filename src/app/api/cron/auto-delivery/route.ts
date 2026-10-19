@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { publishOrderEvent } from '@/lib/realtime-bus';
 
 export const dynamic = 'force-dynamic';
 
@@ -101,9 +102,27 @@ export async function GET(request: Request) {
               ? JSON.stringify({ payments, notes })
               : JSON.stringify(notes);
 
-            await prisma.job.update({
+            const updatedJob = await prisma.job.update({
               where: { id },
               data: { adminNotesJson: updatedJson }
+            });
+            await publishOrderEvent({
+              type: 'job.updated',
+              job: updatedJob,
+              action: 'cron_auto_delivery',
+              changedFields: ['status', 'adminNotesJson'],
+              actorId: 'system',
+              actorName: 'System Auto-Delivery',
+            });
+          } else {
+            await publishOrderEvent({
+              type: 'job.updated',
+              jobId: id,
+              status: 'delivery',
+              action: 'cron_auto_delivery',
+              changedFields: ['status'],
+              actorId: 'system',
+              actorName: 'System Auto-Delivery',
             });
           }
         } catch (e) {

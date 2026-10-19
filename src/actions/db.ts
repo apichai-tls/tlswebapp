@@ -7,6 +7,7 @@ import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
 import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel } from '@/lib/promotions';
 import { invalidateDbCache } from '@/lib/db-cache';
+import { publishOrderEvent } from '@/lib/realtime-bus';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -443,9 +444,17 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
           }
 
           if (jobNeedsUpdate) {
-            await prisma.job.update({
+            const syncedJob = await prisma.job.update({
               where: { id: aj.id },
               data: jobDataUpdate,
+            });
+            await publishOrderEvent({
+              type: 'job.updated',
+              job: syncedJob,
+              action: 'customer_room_sync',
+              changedFields: Object.keys(jobDataUpdate),
+              actorId: updates.actorId,
+              actorName: updates.actorName,
             });
             console.log(`[Customer Room Update] Synced Room ${cleanNewRoom} to active Job ${aj.id}:`, jobDataUpdate);
           }
@@ -588,14 +597,30 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
         ? JSON.stringify({ payments, notes })
         : JSON.stringify(notes);
 
-      await prisma.job.update({
+      const syncedJob = await prisma.job.update({
         where: { id: job.id },
         data: { adminNotesJson: updatedJson }
+      });
+      await publishOrderEvent({
+        type: 'job.updated',
+        job: syncedJob,
+        action: 'customer_remark_sync',
+        changedFields: ['adminNotesJson'],
+        actorId: updates.actorId,
+        actorName: updates.actorName,
       });
     }
   }
 
-    invalidateDbCache();
+    invalidateDbCache('customers');
+    await publishOrderEvent({
+      type: 'customer.updated',
+      customerId: id,
+      updatedAt: updatedCustomer.updatedAt || new Date(),
+      action: 'customer_update',
+      actorId: updates.actorId,
+      actorName: updates.actorName,
+    });
     return { success: true, customer: updatedCustomer };
   } catch (err: any) {
     console.error("[updateCustomerAction Error]:", err);
@@ -673,7 +698,7 @@ export async function mergeCustomerAction(data: {
       throw new Error("ไม่สามารถรวมบัญชีตัวเองได้");
     }
 
-    return await prisma.$transaction(async (tx) => {
+    const mergeResult = await prisma.$transaction(async (tx) => {
       const [primary, duplicate] = await Promise.all([
         tx.customer.findUnique({
           where: { id: data.primaryCustomerId },
@@ -874,6 +899,16 @@ export async function mergeCustomerAction(data: {
       maxWait: 15000,
       timeout: 60000,
     });
+    invalidateDbCache('all');
+    await publishOrderEvent({
+      type: 'customer.updated',
+      customerId: data.primaryCustomerId,
+      updatedAt: new Date(),
+      action: 'customer_merged',
+      actorId: data.actorId,
+      actorName: data.actorName,
+    });
+    return mergeResult;
   } catch (err: any) {
     console.error("[mergeCustomerAction] Error:", err);
     return {
@@ -1218,7 +1253,13 @@ export async function addJobAction(data: any) {
     }
   }
 
-  invalidateDbCache();
+  await publishOrderEvent({
+    type: 'job.created',
+    job: createdJob,
+    action: 'create',
+    actorId: data.actorId,
+    actorName: data.actorName,
+  });
   return { ...createdJob, issuedCoupons };
 }
 
@@ -1455,7 +1496,7 @@ export async function updateJobAction(id: string, updates: any) {
     const checkTime = updates.expectedUpdatedAt || updates.updatedAt;
     const incomingTime = new Date(checkTime).getTime();
     const dbTime = new Date(existingJob.updatedAt).getTime();
-    if (dbTime > incomingTime + 1000) {
+    if (!isNaN(incomingTime) && dbTime > incomingTime + 50) {
       throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
     }
   }
@@ -1942,7 +1983,14 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
 
-  invalidateDbCache();
+  await publishOrderEvent({
+    type: 'job.updated',
+    job: updatedJob,
+    action: 'update',
+    changedFields: Object.keys(changes),
+    actorId: updates.actorId,
+    actorName: updates.actorName,
+  });
   return { ...updatedJob, issuedCoupons };
 }
 
@@ -2418,6 +2466,15 @@ export async function addJobLogAction(id: string, logEntry: any, actorId?: strin
     console.error("Failed to write ActivityLog on addJobLogAction:", err.message);
   }
 
+  await publishOrderEvent({
+    type: 'job.updated',
+    job: updated,
+    action: 'note_added',
+    changedFields: ['adminNotesJson'],
+    actorId: actorId,
+    actorName: actorName,
+  });
+
   return updated;
 }
 
@@ -2516,7 +2573,7 @@ export async function resolveJobDiscrepancyAction(
     updateData.legsJson = JSON.stringify(updatedLegs);
 
     // Update job
-    await prisma.job.update({
+    const updatedJobRecord = await prisma.job.update({
       where: { id: jobId },
       data: updateData,
     });
@@ -2539,6 +2596,15 @@ export async function resolveJobDiscrepancyAction(
         userId: actorId || 'system-diag',
         userName: actorName || 'Diagnostics Recovery'
       }
+    });
+
+    await publishOrderEvent({
+      type: 'job.updated',
+      job: updatedJobRecord,
+      action: 'resolve_discrepancy',
+      changedFields: ['status', 'legsJson'],
+      actorId: actorId || 'system-diag',
+      actorName: actorName || 'Diagnostics Recovery',
     });
 
     return { success: true };
@@ -4365,6 +4431,28 @@ export async function processRefundAndCorrectAction(data: {
     } catch {}
   }
 
+  if (result?.duplicatedJob) {
+    await publishOrderEvent({
+      type: 'job.updated',
+      jobId: data.jobId,
+      updatedAt: new Date(),
+      branchId: result.duplicatedJob.branchId,
+      brand: result.duplicatedJob.brand,
+      status: 'cancel',
+      action: 'refund_cancel',
+      changedFields: ['status', 'refundId', 'remark'],
+      actorId: data.actorId,
+      actorName: data.actorName,
+    });
+    await publishOrderEvent({
+      type: 'job.created',
+      job: result.duplicatedJob,
+      action: 'refund_reissue',
+      actorId: data.actorId,
+      actorName: data.actorName,
+    });
+  }
+
   return result;
 }
 
@@ -4404,7 +4492,7 @@ export async function unlockPaidJobAction(data: {
   clearedPayments?: any[];
 }> {
   try {
-    return await prisma.$transaction(async (tx) => {
+    const unlockRes = await prisma.$transaction(async (tx) => {
       // ──── 1. Fetch & Validate ────
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
@@ -4618,6 +4706,18 @@ export async function unlockPaidJobAction(data: {
         clearedPayments: existingPayments,
       };
     });
+
+    if (unlockRes.updatedJob) {
+      await publishOrderEvent({
+        type: 'job.updated',
+        job: unlockRes.updatedJob,
+        action: 'unlock_paid',
+        changedFields: ['isPaid', 'isShopPaid', 'adminNotesJson', 'billImageUrl'],
+        actorId: data.actorId,
+        actorName: data.actorName,
+      });
+    }
+    return unlockRes;
   } catch (err: any) {
     console.error("[unlockPaidJobAction] Error:", err);
     return {
@@ -4861,6 +4961,17 @@ export async function recordJobPaymentAction(data: {
       }
     }
 
+    if (result.updatedJob) {
+      await publishOrderEvent({
+        type: 'job.updated',
+        job: result.updatedJob,
+        action: 'record_payment',
+        changedFields: ['isPaid', 'isShopPaid', 'paymentChannel', 'adminNotesJson'],
+        actorId: data.actorId,
+        actorName: data.actorName,
+      });
+    }
+
     return {
       ...result,
       couponsIssued,
@@ -4889,7 +5000,7 @@ export async function voidJobPaymentAction(data: {
   newBalance?: number;
 }> {
   try {
-    return await prisma.$transaction(async (tx) => {
+    const voidRes = await prisma.$transaction(async (tx) => {
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
 
@@ -5075,6 +5186,18 @@ export async function voidJobPaymentAction(data: {
         newBalance,
       };
     });
+
+    if (voidRes.updatedJob) {
+      await publishOrderEvent({
+        type: 'job.updated',
+        job: voidRes.updatedJob,
+        action: 'void_payment',
+        changedFields: ['isPaid', 'isShopPaid', 'paymentChannel', 'adminNotesJson'],
+        actorId: data.actorId,
+        actorName: data.actorName,
+      });
+    }
+    return voidRes;
   } catch (err: any) {
     console.error("[voidJobPaymentAction] Error:", err);
     return {
