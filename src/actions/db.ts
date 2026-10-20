@@ -1786,8 +1786,25 @@ function areJobFieldValuesEqual(field: string, oldVal: any, newVal: any): boolea
 }
 
 export async function updateJobAction(id: string, updates: any) {
+  const returnErrorObject = Boolean(updates && updates.__returnErrorObject);
+  if (updates && '__returnErrorObject' in updates) {
+    delete updates.__returnErrorObject;
+  }
   return withJobUpdateLock(id, async () => {
-    return updateJobActionInternal(id, updates);
+    try {
+      return await updateJobActionInternal(id, updates);
+    } catch (err: any) {
+      if (returnErrorObject) {
+        const msg = err?.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล';
+        const isConflict = Boolean(
+          err?.isConflict ||
+          String(msg).includes('409') ||
+          String(msg).toLowerCase().includes('conflict')
+        );
+        return { __actionError: true, error: msg, isConflict } as any;
+      }
+      throw err;
+    }
   });
 }
 
@@ -1830,16 +1847,24 @@ async function updateJobActionInternal(id: string, updates: any) {
     }
   }
   if (updates.status !== undefined) {
+    let resolvedStatus = updates.status;
     if (existingJob) {
       if (existingJob.status === 'completed' && ['pending', 'tba', 'pickup', 'billing'].includes(updates.status)) {
-        throw new Error("Cannot revert a completed job to an active state (except Delivery for rework/failed delivery).");
+        const nonMetaKeys = Object.keys(updates).filter(k =>
+          !['status', 'subStatus', 'actorId', 'actorName', 'actorRole', 'updatedAt', 'expectedUpdatedAt', 'checkConflict'].includes(k)
+        );
+        if (nonMetaKeys.length === 0) {
+          throw new Error("Cannot revert a completed job to an active state (except Delivery for rework/failed delivery).");
+        } else {
+          resolvedStatus = existingJob.status;
+        }
       }
       if (existingJob.status === 'cancel' && updates.status !== 'cancel') {
         throw new Error("Cannot change the status of a cancelled job.");
       }
     }
-    data.status = updates.status;
-    if (updates.status === 'completed' && !existingJob?.completedAt && updates.completedAt === undefined) {
+    data.status = resolvedStatus;
+    if (resolvedStatus === 'completed' && !existingJob?.completedAt && updates.completedAt === undefined) {
       data.completedAt = new Date();
     }
   } else if (existingJob && existingJob.status === 'tba' && (updates.pickupRiderId || updates.deliveryRiderId)) {
@@ -2210,6 +2235,11 @@ async function updateJobActionInternal(id: string, updates: any) {
       incomingConflictFields.delete('proformaRevision');
       incomingConflictFields.delete('proformaNumber');
       incomingConflictFields.delete('proformaCartHash');
+      if (!isUnlockingPayment && !updates.checkConflict) {
+        // adminNotesJson and billImageUrl are already additively merged above without data loss
+        incomingConflictFields.delete('adminNotesJson');
+        incomingConflictFields.delete('billImageUrl');
+      }
 
       if (incomingConflictFields.size > 0) {
         const recentLogs = await prisma.activityLog.findMany({
@@ -2223,32 +2253,56 @@ async function updateJobActionInternal(id: string, updates: any) {
         });
 
         if (recentLogs.length === 0) {
-          throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
-        }
-
-        const interveningFields = new Set<string>();
-        for (const log of recentLogs) {
-          if (!log.details) continue;
-          try {
-            const parsed = JSON.parse(log.details);
-            for (const k of Object.keys(parsed)) {
-              if (!['pickupRiderName', 'deliveryRiderName', 'riderName'].includes(k)) {
-                interveningFields.add(k);
+          if (updates.checkConflict) {
+            throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
+          }
+        } else {
+          const interveningFields = new Set<string>();
+          for (const log of recentLogs) {
+            if (!log.details) continue;
+            try {
+              const parsed = JSON.parse(log.details);
+              for (const k of Object.keys(parsed)) {
+                if (!['pickupRiderName', 'deliveryRiderName', 'riderName'].includes(k)) {
+                  interveningFields.add(k);
+                }
               }
-            }
-          } catch {}
-        }
+            } catch {}
+          }
 
-        const financialGroup = ['itemsJson', 'fee', 'discount', 'discountPercent', 'totalAmount'];
-        if (financialGroup.some((f) => interveningFields.has(f))) {
-          financialGroup.forEach((f) => interveningFields.add(f));
-        }
+          const financialGroup = ['itemsJson', 'fee', 'discount', 'discountPercent', 'totalAmount'];
+          if (financialGroup.some((f) => interveningFields.has(f))) {
+            financialGroup.forEach((f) => interveningFields.add(f));
+          }
 
-        const conflictingFields = Array.from(incomingConflictFields).filter((f) => interveningFields.has(f));
-        if (conflictingFields.length > 0) {
-          throw new Error(
-            `409 Conflict: This record was modified by another user (${conflictingFields.join(', ')}). Please refresh and try again.`
-          );
+          const conflictingFields = Array.from(incomingConflictFields).filter((f) => interveningFields.has(f));
+          if (conflictingFields.length > 0) {
+            const fieldLabels: Record<string, string> = {
+              status: 'สถานะงาน (Status)',
+              subStatus: 'ขั้นตอนซัก (Process Stage)',
+              pickupRiderId: 'ไรเดอร์รับผ้า (Pickup Rider)',
+              deliveryRiderId: 'ไรเดอร์ส่งผ้า (Delivery Rider)',
+              pickupScheduledAt: 'เวลานัดรับ (Pickup Time)',
+              deliveryScheduledAt: 'เวลานัดส่ง (Delivery Time)',
+              itemsJson: 'รายการสินค้า (Order Items)',
+              totalAmount: 'ยอดรวม (Total Amount)',
+              fee: 'ค่าส่ง (Delivery Fee)',
+              discount: 'ส่วนลด (Discount)',
+              billNo: 'เลขที่บิล (Bill No.)',
+              isPaid: 'สถานะชำระเงิน CSO',
+              isShopPaid: 'สถานะชำระเงินหน้าร้าน',
+              paymentChannel: 'ช่องทางชำระเงิน',
+              customerName: 'ชื่อลูกค้า',
+              customerPhone: 'เบอร์โทรลูกค้า',
+              pickupLocation: 'สถานที่รับผ้า',
+              dropoffLocation: 'สถานที่ส่งผ้า',
+              remark: 'หมายเหตุ',
+            };
+            const readable = conflictingFields.map((f) => fieldLabels[f] || f).join(', ');
+            throw new Error(
+              `409 Conflict: ข้อมูลช่อง [${readable}] ถูกอัปเดตโดยผู้ใช้อื่นไปแล้ว ระบบได้โหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกดบันทึกอีกครั้ง`
+            );
+          }
         }
       }
     }
@@ -2259,7 +2313,7 @@ async function updateJobActionInternal(id: string, updates: any) {
   }
 
   const updatedJob = await prisma.job.update({
-    where: existingJob ? { id, updatedAt: existingJob.updatedAt } : { id },
+    where: { id },
     data,
   });
 

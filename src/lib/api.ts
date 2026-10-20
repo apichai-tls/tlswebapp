@@ -1305,7 +1305,12 @@ export const api = {
       pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
       setJobSaveState(id, 'saving');
       try {
-        const savedInDb = await dbActions.updateJobAction(id, cleanUpdates);
+        const savedInDb = await dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true });
+        if ((savedInDb as any)?.__actionError) {
+          const actionErr: any = new Error((savedInDb as any).error || 'Save failed');
+          actionErr.isConflict = Boolean((savedInDb as any).isConflict);
+          throw actionErr;
+        }
         pendingJobSaves.set(id, Math.max(0, (pendingJobSaves.get(id) || 1) - 1));
         const normalized = normalizeServerJob(savedInDb, { id, ...cleanUpdates } as Job);
         const rev = normalized.updatedAt ? new Date(normalized.updatedAt).getTime() : Date.now();
@@ -1420,7 +1425,12 @@ export const api = {
     setJobSaveState(id, 'saving');
 
     try {
-      const savedInDb = await dbActions.updateJobAction(id, cleanUpdates);
+      const savedInDb = await dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true });
+      if ((savedInDb as any)?.__actionError) {
+        const actionErr: any = new Error((savedInDb as any).error || 'Save failed');
+        actionErr.isConflict = Boolean((savedInDb as any).isConflict);
+        throw actionErr;
+      }
       const remainingSaves = Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
       pendingJobSaves.set(id, remainingSaves);
 

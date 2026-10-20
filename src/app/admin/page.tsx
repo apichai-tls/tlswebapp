@@ -666,7 +666,12 @@ export default function AdminPage() {
     // Save instantly to DB if editing an existing job
     if (editingJobId) {
       try {
-        await addJobLogAction(editingJobId, newLog, user?.id, user?.name || user?.email);
+        const { isNew: _ignoreIsNew, ...cleanNewLog } = newLog as any;
+        const updated = await addJobLogAction(editingJobId, cleanNewLog, user?.id, user?.name || user?.email);
+        if (updated && originalJobRef.current && originalJobRef.current.id === editingJobId) {
+          (originalJobRef.current as any).adminNotesJson = updated.adminNotesJson;
+          (originalJobRef.current as any).updatedAt = updated.updatedAt;
+        }
         api.fetchAndApplyJob(editingJobId).catch(() => {});
       } catch (err) {
         console.error("Failed to instantly save admin log:", err);
@@ -698,12 +703,18 @@ export default function AdminPage() {
           updatedJson = JSON.stringify(filteredLogs);
         }
 
-        await jobStore.updateJobDetails(editingJobId, {
+        const updated = await jobStore.updateJobDetails(editingJobId, {
           adminNotesJson: updatedJson,
           actorId: user?.id,
           actorName: user?.name || user?.email,
           actorRole: user?.role
         });
+        if (updated && originalJobRef.current && originalJobRef.current.id === editingJobId) {
+          (originalJobRef.current as any).adminNotesJson = (updated as any).adminNotesJson ?? updatedJson;
+          if ((updated as any).updatedAt) {
+            (originalJobRef.current as any).updatedAt = (updated as any).updatedAt;
+          }
+        }
       } catch (err) {
         console.error("Failed to delete admin log:", err);
         toast.error("Failed to delete admin log");
@@ -972,15 +983,104 @@ export default function AdminPage() {
           }
         }
 
+        // 8. Pickup & Delivery Scheduled Time
+        const toSchedStr = (val: any) => {
+          if (!val) return "";
+          const d = new Date(val);
+          if (isNaN(d.getTime())) return "";
+          return format(roundToNearest30(d), "yyyy-MM-dd'T'HH:mm");
+        };
+        const freshPickupStr = toSchedStr(freshJob.pickupScheduledAt || freshJob.scheduledAt);
+        const origPickupStr = toSchedStr(orig.pickupScheduledAt || orig.scheduledAt);
+        if (freshPickupStr && freshPickupStr !== origPickupStr) {
+          if (!pickupScheduledTime || pickupScheduledTime === origPickupStr) {
+            setPickupScheduledTime(freshPickupStr);
+            orig.pickupScheduledAt = freshJob.pickupScheduledAt;
+            orig.pickupScheduledEndAt = freshJob.pickupScheduledEndAt;
+            orig.scheduledAt = freshJob.scheduledAt;
+          } else if (pickupScheduledTime !== freshPickupStr) {
+            conflicts.push("Pickup Time");
+          }
+        }
+
+        const freshDeliveryStr = toSchedStr(freshJob.deliveryScheduledAt);
+        const origDeliveryStr = toSchedStr(orig.deliveryScheduledAt);
+        if (freshDeliveryStr && freshDeliveryStr !== origDeliveryStr) {
+          if (!deliveryScheduledTime || deliveryScheduledTime === origDeliveryStr) {
+            setDeliveryScheduledTime(freshDeliveryStr);
+            orig.deliveryScheduledAt = freshJob.deliveryScheduledAt;
+            orig.deliveryScheduledEndAt = freshJob.deliveryScheduledEndAt;
+          } else if (deliveryScheduledTime !== freshDeliveryStr) {
+            conflicts.push("Delivery Time");
+          }
+        }
+
+        // 9. Image Proofs (Bag, Bill, Pickup Proofs, Delivery Proofs)
+        const parseSyncUrls = (raw: any): string[] => {
+          if (!raw) return [];
+          if (Array.isArray(raw)) return raw.filter(Boolean);
+          if (typeof raw === "string") {
+            try {
+              const parsed = JSON.parse(raw);
+              return Array.isArray(parsed) ? parsed.filter(Boolean) : [raw];
+            } catch {
+              return [raw];
+            }
+          }
+          return [];
+        };
+        if (freshJob.bagImageUrl !== orig.bagImageUrl) {
+          const freshArr = parseSyncUrls(freshJob.bagImageUrl);
+          if (JSON.stringify(bagImageUrls) === JSON.stringify(origBagImageUrls)) {
+            setBagImageUrls(freshArr);
+            setOrigBagImageUrls(freshArr);
+            orig.bagImageUrl = freshJob.bagImageUrl;
+          }
+        }
+        if (freshJob.billImageUrl !== orig.billImageUrl) {
+          const freshArr = parseSyncUrls(freshJob.billImageUrl);
+          if (JSON.stringify(billImageUrls) === JSON.stringify(origBillImageUrls)) {
+            setBillImageUrls(freshArr);
+            setOrigBillImageUrls(freshArr);
+            orig.billImageUrl = freshJob.billImageUrl;
+          }
+        }
+        if (freshJob.pickupProofImageUrl !== orig.pickupProofImageUrl) {
+          const freshArr = parseSyncUrls(freshJob.pickupProofImageUrl);
+          if (JSON.stringify(pickupProofImageUrls) === JSON.stringify(origPickupProofImageUrls)) {
+            setPickupProofImageUrls(freshArr);
+            setOrigPickupProofImageUrls(freshArr);
+            orig.pickupProofImageUrl = freshJob.pickupProofImageUrl;
+          }
+        }
+        const freshDelivRaw = freshJob.deliveryProofImageUrl || freshJob.proofImageUrl;
+        const origDelivRaw = orig.deliveryProofImageUrl || orig.proofImageUrl;
+        if (freshDelivRaw !== origDelivRaw) {
+          const freshArr = parseSyncUrls(freshDelivRaw);
+          if (JSON.stringify(deliveryProofImageUrls) === JSON.stringify(origDeliveryProofImageUrls)) {
+            setDeliveryProofImageUrls(freshArr);
+            setOrigDeliveryProofImageUrls(freshArr);
+            orig.deliveryProofImageUrl = freshJob.deliveryProofImageUrl;
+            orig.proofImageUrl = freshJob.proofImageUrl;
+          }
+        }
+
+        // Always keep background status, adminNotesJson, and proforma metadata in sync on orig
+        orig.status = freshJob.status;
+        orig.completedAt = freshJob.completedAt;
+        if (freshJob.adminNotesJson) orig.adminNotesJson = freshJob.adminNotesJson;
+        if ((freshJob as any).proformaNumber !== undefined) orig.proformaNumber = (freshJob as any).proformaNumber;
+        if ((freshJob as any).proformaRevision !== undefined) orig.proformaRevision = (freshJob as any).proformaRevision;
+        if ((freshJob as any).proformaCartHash !== undefined) orig.proformaCartHash = (freshJob as any).proformaCartHash;
+
         if (conflicts.length > 0) {
           setLiveConflictFields(prev => Array.from(new Set([...prev, ...conflicts])));
         } else {
           orig.updatedAt = freshJob.updatedAt;
-          orig.status = freshJob.status;
         }
       }
     }
-  }, [jobs, editingJobId, pickupRiderId, deliveryRiderId, billNo, editingSubStatus, customerPhone, dialogCart]);
+  }, [jobs, editingJobId, pickupRiderId, deliveryRiderId, billNo, editingSubStatus, customerPhone, dialogCart, pickupScheduledTime, deliveryScheduledTime, bagImageUrls, origBagImageUrls, billImageUrls, origBillImageUrls, pickupProofImageUrls, origPickupProofImageUrls, deliveryProofImageUrls, origDeliveryProofImageUrls]);
 
   const hasPackage = dialogCart.some(item => item.category === "PACKAGE");
   const activeIsFreeDelivery = (isPaidJob && activeJob)
@@ -1854,8 +1954,8 @@ export default function AdminPage() {
         quantity: item.quantity || 1,
         price: item.price || 0,
         basePrice,
-        category: matched?.category || "",
-        unit: matched?.unit || "piece"
+        category: item.category || matched?.category || "",
+        unit: item.unit || matched?.unit || "pcs"
       };
     });
     // Populate dummy cart item for legacy jobs that lack cart items
@@ -2764,6 +2864,67 @@ export default function AdminPage() {
         if (originalJobRef.current) {
           const orig = originalJobRef.current as any;
           const data = newJobData as any;
+
+          // Normalize untouched derived fields so true field-level diffing ONLY sends fields the user actually modified
+          const toRoundedMinStr = (val: any) => {
+            if (!val) return '';
+            const d = val instanceof Date ? val : new Date(val);
+            if (isNaN(d.getTime())) return '';
+            return format(roundToNearest30(d), "yyyy-MM-dd'T'HH:mm");
+          };
+          if (pickupScheduledTime === toRoundedMinStr(orig.pickupScheduledAt || orig.scheduledAt)) {
+            data.pickupScheduledAt = orig.pickupScheduledAt;
+            data.pickupScheduledEndAt = orig.pickupScheduledEndAt;
+            data.scheduledAt = orig.scheduledAt;
+          }
+          if (deliveryScheduledTime === toRoundedMinStr(orig.deliveryScheduledAt)) {
+            data.deliveryScheduledAt = orig.deliveryScheduledAt;
+            data.deliveryScheduledEndAt = orig.deliveryScheduledEndAt;
+          }
+
+          const normItems = (arr: any) => {
+            const list = Array.isArray(arr) ? arr : (typeof arr === 'string' && arr ? (() => { try { return JSON.parse(arr); } catch { return []; } })() : []);
+            return JSON.stringify(list.map((i: any) => ({
+              name: i.name || '',
+              quantity: Number(i.quantity) || 0,
+              price: Number(i.price) || 0,
+              serviceId: i.serviceId || i.id || '',
+            })));
+          };
+          if (normItems(orig.items || orig.itemsJson) === normItems(data.items)) {
+            data.items = orig.items;
+            data.serviceType = orig.serviceType;
+          }
+
+          const normLT = (v: any) => (Array.isArray(v) ? v : (typeof v === 'string' && v.trim() ? v.split(',') : [])).map((s: string) => s.trim()).filter(Boolean).sort().join(',');
+          if (normLT(orig.laundryTypes) === normLT(data.laundryTypes)) {
+            data.laundryTypes = orig.laundryTypes;
+          }
+
+          const normAdminNotes = (raw: any) => {
+            if (!raw) return JSON.stringify({ notes: [], payments: [], isTaxInvoiceRequested: false });
+            try {
+              const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
+              const notes = (Array.isArray(p) ? p : (Array.isArray(p?.notes) ? p.notes : [])).map(({ isNew, ...rest }: any) => rest);
+              const payments = Array.isArray(p?.payments) ? p.payments : [];
+              const isTax = Boolean(p?.isTaxInvoiceRequested);
+              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax });
+            } catch {
+              return String(raw);
+            }
+          };
+          if (!adminNoteInput.trim() && !isPayment && normAdminNotes(orig.adminNotesJson) === normAdminNotes(data.adminNotesJson)) {
+            data.adminNotesJson = orig.adminNotesJson;
+          }
+
+          const origPCoord = orig.pickupCoords || { lat: orig.pickupLat || 0, lng: orig.pickupLng || 0 };
+          if (data.pickupCoords && Math.abs(Number(origPCoord.lat || 0) - Number(data.pickupCoords.lat || 0)) < 0.00001 && Math.abs(Number(origPCoord.lng || 0) - Number(data.pickupCoords.lng || 0)) < 0.00001) {
+            data.pickupCoords = orig.pickupCoords;
+          }
+          const origDCoord = orig.dropoffCoords || { lat: orig.dropoffLat || 0, lng: orig.dropoffLng || 0 };
+          if (data.dropoffCoords && Math.abs(Number(origDCoord.lat || 0) - Number(data.dropoffCoords.lat || 0)) < 0.00001 && Math.abs(Number(origDCoord.lng || 0) - Number(data.dropoffCoords.lng || 0)) < 0.00001) {
+            data.dropoffCoords = orig.dropoffCoords;
+          }
           
           const fieldsToCompare = [
             'isStuck', 'customerId', 'type', 'status', 'subStatus', 'source', 'customerName', 'customerPhone',
@@ -2972,10 +3133,17 @@ export default function AdminPage() {
           resolvedFinalRevision = isRfJob ? Math.max(1, effectiveProformaRevision ?? 1) : (effectiveProformaRevision ?? 0);
           resolvedFinalCartHash = effectiveProformaCartHash;
 
-          // Merge proforma metadata into main payload so we only perform a SINGLE DB update!
-          (payload as any).proformaNumber = resolvedFinalProformaNum;
-          (payload as any).proformaRevision = resolvedFinalRevision;
-          (payload as any).proformaCartHash = resolvedFinalCartHash;
+          // Merge proforma metadata into main payload ONLY IF changed so we don't send unchanged fields!
+          const origPf = originalJobRef.current as any;
+          if (!origPf || (origPf.proformaNumber || null) !== (resolvedFinalProformaNum || null)) {
+            (payload as any).proformaNumber = resolvedFinalProformaNum;
+          }
+          if (!origPf || (origPf.proformaRevision ?? null) !== (resolvedFinalRevision ?? null)) {
+            (payload as any).proformaRevision = resolvedFinalRevision;
+          }
+          if (!origPf || (origPf.proformaCartHash || null) !== (resolvedFinalCartHash || null)) {
+            (payload as any).proformaCartHash = resolvedFinalCartHash;
+          }
         }
 
         // 3. Persist to DB and await confirmation (includes walletBalanceAfter and proforma metadata in a single call!)
@@ -3659,7 +3827,13 @@ export default function AdminPage() {
       console.error("Job Save Error:", err);
       const errMsg = err?.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล';
       setSaveError(errMsg);
-      if (targetEditingJobId && (err?.isConflict || String(errMsg).includes('CONFLICT_ERROR'))) {
+      if (
+        targetEditingJobId &&
+        (err?.isConflict ||
+          String(errMsg).includes('409') ||
+          String(errMsg).toLowerCase().includes('conflict') ||
+          String(errMsg).includes('CONFLICT_ERROR'))
+      ) {
         api.fetchAndApplyJob(targetEditingJobId).catch(() => {});
       }
       toast.error(`บันทึกไม่สำเร็จ: ${errMsg}`);

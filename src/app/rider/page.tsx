@@ -236,7 +236,10 @@ const RiderJobImages = ({
         payload.proofImageUrl = updatedImages[0];
       }
 
-      await updateJobAction(jobId, payload);
+      const res = await updateJobAction(jobId, { ...payload, __returnErrorObject: true });
+      if ((res as any)?.__actionError) {
+        throw new Error((res as any).error || "Failed to update job");
+      }
       setImages(updatedImages);
       toast.success("Photo uploaded successfully! 📸");
     } catch (err: any) {

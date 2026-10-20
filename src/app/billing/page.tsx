@@ -59,14 +59,16 @@ function parseBillUrls(raw: string | null | undefined): string[] {
     }
     const urls: string[] = Array.isArray(parsed) ? parsed : [parsed];
     return urls
+      .filter((u): u is string => typeof u === "string" && !u.includes("proforma-") && !u.includes("receipt-"))
       .map((u) => {
-        if (typeof u === "string" && !u.startsWith("http") && !u.startsWith("/")) {
+        if (!u.startsWith("http") && !u.startsWith("/")) {
           return `${GCS_BASE}/${u.replace(/^["'\\]+|["'\\]+$/g, "")}`;
         }
         return u;
       })
       .filter(Boolean);
   } catch {
+    if (typeof raw === "string" && (raw.includes("proforma-") || raw.includes("receipt-"))) return [];
     if (!raw.startsWith("http") && !raw.startsWith("/")) return [`${GCS_BASE}/${raw}`];
     return [raw];
   }
@@ -551,6 +553,31 @@ export default function BillingPage() {
   // Track jobs that the user clicked "Finish" on, to hide them immediately
   const [hiddenJobIds, setHiddenJobIds] = useState<string[]>([]);
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("billing_finished_job_ids");
+      if (saved) {
+        setHiddenJobIds(JSON.parse(saved));
+      }
+    } catch {}
+  }, []);
+
+  const handleFinish = (jobId: string) => {
+    setHiddenJobIds((prev) => {
+      const next = Array.from(new Set([...prev, jobId]));
+      try {
+        localStorage.setItem("billing_finished_job_ids", JSON.stringify(next.slice(-500)));
+      } catch {}
+      return next;
+    });
+    setSessionUploadedJobIds((prev) => {
+      const next = new Set(prev);
+      next.delete(jobId);
+      return next;
+    });
+    toast.success("Saved successfully ✅");
+  };
+
   // Check billing permission
   const hasAccess = (key: string) => {
     if (!user) return false;
@@ -687,6 +714,12 @@ export default function BillingPage() {
 
       // Hide jobs that already have a bill number entered
       if (j.billNo && j.billNo.trim() !== "") {
+        return false;
+      }
+
+      // Hide jobs that already have bill uploaded (unless uploaded in this active session)
+      const hasUploadedBills = parseBillUrls(j.billImageUrl).length > 0;
+      if (hasUploadedBills && !sessionUploadedJobIds.has(j.id)) {
         return false;
       }
 
@@ -882,10 +915,7 @@ export default function BillingPage() {
                     return next;
                   });
                 }}
-                onFinish={() => {
-                  setHiddenJobIds((prev) => [...prev, job.id]);
-                  toast.success("Saved successfully ✅");
-                }}
+                onFinish={() => handleFinish(job.id)}
               />
             ))
           )}
@@ -1213,10 +1243,7 @@ export default function BillingPage() {
                         return next;
                       });
                     }}
-                    onFinish={() => {
-                      setHiddenJobIds((prev) => [...prev, job.id]);
-                      toast.success("Saved successfully ✅");
-                    }}
+                    onFinish={() => handleFinish(job.id)}
                   />
                 ))}
               </div>
