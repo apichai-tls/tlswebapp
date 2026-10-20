@@ -1,11 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveRequestUser } from "@/lib/server-auth";
+import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
 const PROMO_BASE = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
 const PROMO_KEY  = process.env.TLS_PROMO_API_KEY || "";
 
 export async function POST(req: NextRequest) {
   try {
+    const { user } = await resolveRequestUser(req);
+    if (user && !user.isActive) {
+      return NextResponse.json({ valid: false, error: "Forbidden: Account is deactivated" }, { status: 403 });
+    }
+    const authHeader = req.headers.get("authorization");
+    const hasApiKeyHeader = Boolean(req.headers.get("x-api-key") || req.headers.get("X-API-KEY"));
+    const isExternalAuthorized =
+      !user &&
+      ((hasApiKeyHeader && verifyServiceApiKey(req)) ||
+        (authHeader ? Boolean(verifyCustomerToken(authHeader)) : false));
+
+    if (!user && !isExternalAuthorized) {
+      return NextResponse.json({ valid: false, error: "Unauthorized: Valid session required" }, { status: 401 });
+    }
+
     const body = await req.json();
     const { code, orderTotal, customerId, customerPhone, customerName, currentJobId, items } = body;
 
@@ -40,7 +57,6 @@ export async function POST(req: NextRequest) {
       let isExpired = localCoupon.status === "EXPIRED";
       if (!isExpired && localCoupon.expiryDate) {
         const expDate = new Date(localCoupon.expiryDate);
-        // Ensure expiry check includes full day if only date was saved
         if (expDate.getHours() === 0 && expDate.getMinutes() === 0) {
           expDate.setHours(23, 59, 59, 999);
         }
@@ -63,10 +79,12 @@ export async function POST(req: NextRequest) {
         const matchesPhone = Boolean(phoneDigits.length >= 8 && localCustPhoneDigits.length >= 8 && phoneDigits.slice(-8) === localCustPhoneDigits.slice(-8));
 
         if (!matchesId && !matchesPhone) {
-          const ownerName = localCoupon.customerName || localCoupon.customer?.name || "ลูกค้าท่านอื่น";
+          const ownerLabel = user && user.role !== "rider"
+            ? (localCoupon.customerName || localCoupon.customer?.name || "ลูกค้าท่านอื่น")
+            : "ลูกค้าท่านอื่น";
           return NextResponse.json({
             valid: false,
-            error: `วอยเชอร์นี้เป็นของลูกค้า "${ownerName}" เท่านั้น กรุณาเลือกลูกค้าในระบบก่อนใช้`,
+            error: `วอยเชอร์นี้เป็นของ "${ownerLabel}" เท่านั้น กรุณาเลือกลูกค้าในระบบก่อนใช้`,
           }, { status: 200 });
         }
       }
@@ -129,7 +147,6 @@ export async function POST(req: NextRequest) {
             calcDiscount = Math.min(calcDiscount, localCoupon.maxDiscount);
           }
         } else {
-          // FIXED or CASH_VOUCHER: capped at category subtotal
           calcDiscount = Math.min(localCoupon.discountValue, categorySubtotal);
         }
       } else if (isDeliveryOnly) {
@@ -144,7 +161,6 @@ export async function POST(req: NextRequest) {
           calcDiscount = Math.min(calcDiscount, localCoupon.maxDiscount);
         }
       } else {
-        // FIXED or CASH_VOUCHER
         calcDiscount = Math.min(localCoupon.discountValue, orderTotal || 0);
       }
       calcDiscount = Math.round(calcDiscount * 100) / 100;
@@ -166,19 +182,17 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Anti-Reuse Validation for general marketing promo codes: Check if this customer has already used this promo code in any non-canceled job
+    // 2. Anti-Reuse Validation for general marketing promo codes
     const searchConditions: any[] = [];
     if (customerId) {
       searchConditions.push({ customerId });
     }
 
-    // Only match by phone if it contains at least 8 digits (ignoring placeholder/dummy numbers like '+66 --', '--', etc.)
     const phoneDigits = (customerPhone || "").replace(/\D/g, "");
     if (phoneDigits.length >= 8) {
       searchConditions.push({ customerPhone: customerPhone.trim() });
     }
 
-    // Only fallback to customerName if customerId is NOT provided, avoiding collisions across different customers
     if (!customerId && customerName && typeof customerName === "string" && customerName.trim().length >= 3) {
       searchConditions.push({ customerName: { equals: customerName.trim(), mode: "insensitive" } });
     }
@@ -210,7 +224,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2. Forward to upstream promo server for validity & discount calculation
+    // 3. Forward to upstream promo server for validity & discount calculation
     const promoKey = process.env.TLS_PROMO_API_KEY || PROMO_KEY;
     if (!promoKey) {
       return NextResponse.json({ valid: false, error: "ไม่พบรหัสส่วนลดนี้ในระบบ (Missing upstream promo configuration)" }, { status: 503 });

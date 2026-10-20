@@ -8,7 +8,7 @@ import { type CouponTemplate } from '@/lib/store';
 import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel } from '@/lib/promotions';
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
-import { assertServerActionAuthorized, resolveServerActionUser } from '@/lib/server-auth';
+import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, isAdminOrSuperadmin } from '@/lib/server-auth';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -36,6 +36,7 @@ function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string;
 }
 
 export async function getNextMemberIdAction(branchId?: string | null): Promise<string> {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: branchId || null });
   const { prefix, baseStartingNum } = resolveBranchPrefixAndBase(branchId);
   const regex = new RegExp(`^${prefix}-?(\\d+)$`, 'i');
 
@@ -66,6 +67,13 @@ export async function getNextMemberIdAction(branchId?: string | null): Promise<s
 
 export async function addCustomerAction(data: any): Promise<{ success: boolean; customer?: any; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({
+      requireWrite: true,
+      forbidRoles: ['rider'],
+      targetBranchId: data?.branchId || null,
+    });
+    data.actorId = authUser.id;
+    data.actorName = authUser.name || authUser.email;
     let memberId = null;
     const isMember = Boolean(data.isMember || data.tier === "member" || data.tier === "vip");
     if (isMember) {
@@ -233,6 +241,10 @@ async function lockCustomerRowForWallet(tx: any, customerId: string) {
 }
 
 export async function lockJobRowForUpdate(tx: any, jobId: string) {
+  if (!tx || typeof tx.$queryRaw !== 'function') {
+    await assertServerActionAuthorized({ requireWrite: true });
+    throw new Error('Invalid transaction context for lockJobRowForUpdate');
+  }
   await tx.$queryRaw`SELECT id FROM "Job" WHERE id = ${jobId} FOR UPDATE`;
 }
 
@@ -872,6 +884,9 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
 }
 
 export async function deleteCustomerAction(id: string, actorId?: string, actorName?: string) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+  actorId = authUser.id;
+  actorName = authUser.name || authUser.email;
   const jobsCount = await prisma.job.count({ where: { customerId: id } });
   if (jobsCount > 0) {
     throw new Error(`Cannot delete customer: they have ${jobsCount} historical job(s).`);
@@ -915,16 +930,11 @@ export async function mergeCustomerAction(data: {
   updatedCustomer?: any;
 }> {
   try {
-    // 1. Permission check: strictly admin / superadmin only
-    let actorRole = (data.actorRole || "").toLowerCase();
-    if (!actorRole && data.actorId) {
-      const userRec = await prisma.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true } });
-      if (userRec?.role) actorRole = userRec.role.toLowerCase();
-    }
-    const isAdmin = actorRole === "admin" || actorRole === "superadmin";
-    if (!isAdmin) {
-      throw new Error("เฉพาะสิทธิ์ Admin เท่านั้นที่สามารถรวมบัญชีลูกค้าได้");
-    }
+    // 1. Permission check: strictly admin / superadmin only via server-verified session
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+    data.actorId = authUser.id;
+    data.actorName = authUser.name || authUser.email;
+    data.actorRole = authUser.role;
 
     if (!data.primaryCustomerId || !data.duplicateCustomerId) {
       throw new Error("ต้องระบุบัญชีหลักและบัญชีที่จะรวม");
@@ -1168,15 +1178,10 @@ export async function batchMergeObviousDuplicatesAction(data: {
   error?: string;
 }> {
   try {
-    let actorRole = (data.actorRole || "").toLowerCase();
-    if (!actorRole && data.actorId) {
-      const userRec = await prisma.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true } });
-      if (userRec?.role) actorRole = userRec.role.toLowerCase();
-    }
-    const isAdmin = actorRole === "admin" || actorRole === "superadmin";
-    if (!isAdmin) {
-      throw new Error("เฉพาะสิทธิ์ Admin เท่านั้นที่สามารถรวมบัญชีลูกค้าได้");
-    }
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+    data.actorId = authUser.id;
+    data.actorName = authUser.name || authUser.email;
+    data.actorRole = authUser.role;
 
     const allCustomers = await prisma.customer.findMany({
       orderBy: { createdAt: "asc" }
@@ -1263,6 +1268,7 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
   deliveryNote?: string;
   isPrimary?: boolean;
 }) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   const created = await prisma.$transaction(async (tx) => {
     if (addressData.isPrimary) {
       await tx.customerAddress.updateMany({
@@ -1302,6 +1308,7 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
 }
 
 export async function deleteCustomerAddressAction(addressId: string, customerId: string) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   await prisma.customerAddress.delete({
     where: { id: addressId }
   });
@@ -1310,6 +1317,7 @@ export async function deleteCustomerAddressAction(addressId: string, customerId:
 }
 
 export async function setPrimaryCustomerAddressAction(customerId: string, addressId: string) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   const updated = await prisma.$transaction(async (tx) => {
     await tx.customerAddress.updateMany({
       where: { customerId, isPrimary: true },
@@ -1330,6 +1338,13 @@ export async function setPrimaryCustomerAddressAction(customerId: string, addres
 }
 
 export async function addJobAction(data: any) {
+  const authUser = await assertServerActionAuthorized({
+    requireWrite: true,
+    forbidRoles: ['rider'],
+    targetBranchId: data?.branchId || null,
+  });
+  data.actorId = authUser.id;
+  data.actorName = authUser.name || authUser.email;
   const year = new Date().getFullYear().toString(); // 4-digit year, auto-changes each year
   const isTestDb = Boolean(
     process.env.DATABASE_URL?.includes('/tls_test') ||
@@ -1542,12 +1557,15 @@ export async function addJobAction(data: any) {
 }
 
 export async function getJobsByIdsAction(ids: string[]) {
-  return prisma.job.findMany({
+  const authUser = await assertServerActionAuthorized();
+  const jobs = await prisma.job.findMany({
     where: { id: { in: ids } }
   });
+  return jobs.filter(j => canUserAccessJob(authUser, j));
 }
 
 export async function getCustomerJobsAction(customerId: string, customerPhone?: string | null) {
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     if (!customerId && !customerPhone) return [];
 
@@ -1570,8 +1588,12 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
       }
     }
 
+    const whereClause: any = { OR: orConditions };
+    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+      whereClause.branchId = authUser.branchId;
+    }
     const jobsRaw = await prisma.job.findMany({
-      where: { OR: orConditions },
+      where: whereClause,
       orderBy: { createdAt: 'desc' },
     });
 
@@ -1594,6 +1616,7 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
 }
 
 export async function getCustomerWalletAdjustmentsAction(customerId: string) {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     if (!customerId) return [];
 
@@ -1737,6 +1760,7 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
 }
 
 export async function getCustomerJobCountsAction(customerIds: string[]) {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     const validIds = customerIds.filter(Boolean);
     if (!validIds.length) return {};
@@ -1836,11 +1860,14 @@ export async function updateJobAction(id: string, updates: any) {
 
 async function updateJobActionInternal(id: string, updates: any) {
   console.log(`[updateJobAction] id: ${id}`, updates);
-  const existingJob = await prisma.job.findUnique({ where: { id } });
+  const preCheckJob = await prisma.job.findUnique({
+    where: { id },
+    select: { id: true, branchId: true, pickupRiderId: true, deliveryRiderId: true, riderId: true }
+  });
 
   const authUser = await assertServerActionAuthorized({
-        requireWrite: true,
-    targetBranchId: existingJob?.branchId || updates?.branchId || null,
+    requireWrite: true,
+    targetBranchId: preCheckJob?.branchId || updates?.branchId || null,
   });
   if (authUser) {
     updates.actorId = authUser.id;
@@ -1848,30 +1875,49 @@ async function updateJobActionInternal(id: string, updates: any) {
     updates.actorRole = authUser.role;
   }
 
-  if (authUser?.role === 'rider') {
-    if (!existingJob) {
-      throw new Error("404 Not Found: Order not found");
-    }
-    const isAssigned = existingJob.pickupRiderId === authUser.id ||
-                       existingJob.deliveryRiderId === authUser.id ||
-                       existingJob.riderId === authUser.id;
-    if (!isAssigned) {
-      throw new Error("403 Forbidden: Riders can only update their assigned orders.");
-    }
-    const forbiddenRiderKeys = [
-      'fee', 'discount', 'discountPercent', 'totalAmount', 'isPaid', 'isShopPaid',
-      'customerId', 'customerName', 'customerPhone', 'branchId', 'vatType', 'paymentChannel'
-    ];
-    for (const k of forbiddenRiderKeys) {
-      if (updates[k] !== undefined && updates[k] !== (existingJob as any)[k]) {
-        throw new Error(`403 Forbidden: Riders are not permitted to modify order field "${k}".`);
-      }
-    }
-  }
-  
   const isMediaOrProformaOnlyUpdate = Object.keys(updates).every(k => 
     ['billImageUrl', 'bagImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl', 'proformaNumber', 'proformaRevision', 'proformaCartHash', 'adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt', 'expectedUpdatedAt', 'checkConflict'].includes(k)
   );
+
+  // 1. ATOMIC TRANSACTION: Acquire PostgreSQL row-level lock FIRST, then read freshJob,
+  // perform all merges (adminNotesJson, legsJson, billImageUrl, proformaRevision, etc.) against freshJob,
+  // check field-level OCC conflicts, and persist update atomically.
+  let shouldVoidRewardVouchersPostCommit = false;
+  const { updatedJob, effectiveChanges, previousJob } = await prisma.$transaction(async (tx) => {
+    await lockJobRowForUpdate(tx, id);
+    const freshJob = await tx.job.findUnique({ where: { id } });
+    if (!freshJob) {
+      throw new Error(`404 Not Found: Job ${id} does not exist`);
+    }
+    const existingJob = freshJob;
+
+    // Re-validate branch & rider permissions against the locked freshJob row
+    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+      if (existingJob.branchId && existingJob.branchId !== authUser.branchId) {
+        throw new Error('403 Forbidden: Cross-branch access denied');
+      }
+      if (updates.branchId && updates.branchId !== authUser.branchId) {
+        throw new Error('403 Forbidden: Cannot reassign job to another branch');
+      }
+    }
+
+    if (authUser?.role === 'rider') {
+      const isAssigned = existingJob.pickupRiderId === authUser.id ||
+                         existingJob.deliveryRiderId === authUser.id ||
+                         existingJob.riderId === authUser.id;
+      if (!isAssigned) {
+        throw new Error("403 Forbidden: Riders can only update their assigned orders.");
+      }
+      const forbiddenRiderKeys = [
+        'fee', 'discount', 'discountPercent', 'totalAmount', 'isPaid', 'isShopPaid',
+        'customerId', 'customerName', 'customerPhone', 'branchId', 'vatType', 'paymentChannel'
+      ];
+      for (const k of forbiddenRiderKeys) {
+        if (updates[k] !== undefined && updates[k] !== (existingJob as any)[k]) {
+          throw new Error(`403 Forbidden: Riders are not permitted to modify order field "${k}".`);
+        }
+      }
+    }
 
   const data: any = {};
   const isPosJob = existingJob ? (existingJob.source === 'pos' || existingJob.type === 'in_store') : false;
@@ -2231,15 +2277,9 @@ async function updateJobActionInternal(id: string, updates: any) {
   if (updates.cashPlaced !== undefined) data.cashPlaced = updates.cashPlaced;
   if (updates.isStuck !== undefined) data.isStuck = updates.isStuck;
   if (updates.walletBalanceAfter !== undefined) data.walletBalanceAfter = updates.walletBalanceAfter;
-
-  // 1. ATOMIC TRANSACTION: Acquire PostgreSQL row-level lock and execute OCC conflict check + job update
-  const { updatedJob, effectiveChanges } = await prisma.$transaction(async (tx) => {
-    // Acquire row-level FOR UPDATE lock to serialize concurrent updates across all server instances
-    await lockJobRowForUpdate(tx, id);
-    const freshJob = await tx.job.findUnique({ where: { id } });
-    if (!freshJob) {
-      throw new Error(`404 Not Found: Job ${id} does not exist`);
-    }
+  if (updates.isShopPaid === false && existingJob?.isShopPaid === true) {
+    shouldVoidRewardVouchersPostCommit = true;
+  }
 
     // Compare changes against freshJob
     const changes: any = {};
@@ -2397,8 +2437,9 @@ async function updateJobActionInternal(id: string, updates: any) {
       }
     }
 
-    return { updatedJob: saved, effectiveChanges: changes };
-  });
+    return { updatedJob: saved, effectiveChanges: changes, previousJob: freshJob };
+  }, { maxWait: 15000, timeout: 30000 });
+  const existingJob = previousJob;
 
   // 2. SAFE POST-COMMIT FOLLOW-UP TASKS:
   // These tasks execute after PostgreSQL transaction has safely committed.
@@ -2413,115 +2454,115 @@ async function updateJobActionInternal(id: string, updates: any) {
   }
 
   try {
-    // If job is cancelled, restore any CustomerVoucher that was marked USED
-  if (updates.status === 'cancel') {
-    try {
-      const promoMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
-      const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
-      await prisma.customerVoucher.updateMany({
-        where: {
-          OR: [
-            { usedJobId: id, status: "USED" },
-            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: id }, { usedJobId: null }] }] : []),
-          ],
-        },
-        data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
-      });
-      console.log(`[CustomerVoucher] Restored voucher to ACTIVE on cancel for job ${id}`);
-
-      // VOID unspent reward vouchers that were issued because of this cancelled job
-      const voidedRewardVouchers = await prisma.customerVoucher.updateMany({
-        where: {
-          sourceJobId: id,
-          status: "ACTIVE",
-        },
-        data: {
-          status: "VOID",
-        },
-      });
-      if (voidedRewardVouchers.count > 0) {
-        console.log(`[CustomerVoucher] Voided ${voidedRewardVouchers.count} unused reward voucher(s) issued from cancelled job ${id}`);
-        await prisma.activityLog.create({
-          data: {
-            entityId: existingJob?.customerId || id,
-            entityType: "customer",
-            action: "COUPON_VOID_ON_CANCEL",
-            details: JSON.stringify({
-              sourceJobId: id,
-              voidedCount: voidedRewardVouchers.count,
-              reason: `Job ${id} was cancelled`,
-            }),
-            userId: updates.actorId || null,
-            userName: updates.actorName || null,
-          },
-        });
-      }
-    } catch (err) {
-      console.warn("[CustomerVoucher] Void/restore on cancel failed:", err);
-    }
-  } else if (updates.remark !== undefined) {
-    // If job is NOT cancelled and remark was updated, sync CustomerVoucher status (restore removed voucher or redeem new voucher)
-    try {
-      const oldMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
-      const oldCode = oldMatch ? oldMatch[1].trim().toUpperCase() : null;
-      const newMatch = updatedJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
-      const newCode = newMatch ? newMatch[1].trim().toUpperCase() : null;
-      const parsedPromoDiscount = newMatch ? parseFloat(newMatch[2] || newMatch[3] || "0") : 0;
-
-      if (oldCode && oldCode !== newCode) {
-        await prisma.customerVoucher.updateMany({
-          where: {
-            OR: [
-              { usedJobId: id, status: "USED" },
-              { code: { equals: oldCode, mode: "insensitive" }, usedJobId: id, status: "USED" },
-            ],
-          },
-          data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
-        });
-        console.log(`[CustomerVoucher] Restored removed voucher ${oldCode} to ACTIVE on job update ${id}`);
-      }
-
-      if (newCode) {
-        const localCoupon = await prisma.customerVoucher.findFirst({
-          where: { code: { equals: newCode, mode: "insensitive" } },
-        });
-        if (localCoupon && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
-          const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
-          const wasActive = localCoupon.status === "ACTIVE";
-          const claimRes = await prisma.customerVoucher.updateMany({
-            where: {
-              id: localCoupon.id,
-              OR: [{ status: "ACTIVE" }, { status: "USED", usedJobId: id }],
-            },
-            data: {
-              status: "USED",
-              usedAt: localCoupon.usedAt || new Date(),
-              usedJobId: id,
-              discountAmountUsed: usedDiscount,
-            },
-          });
-          if (wasActive && claimRes.count > 0) {
-            await prisma.activityLog.create({
-              data: {
-                entityId: localCoupon.customerId,
-                entityType: "customer",
-                action: "COUPON_USED",
-                details: JSON.stringify({
-                  couponId: localCoupon.id,
-                  code: localCoupon.code,
-                  usedJobId: id,
-                  discountAmountUsed: usedDiscount,
-                }),
-                userId: updates.actorId || null,
-                userName: updates.actorName || null,
-              },
-            });
-          }
-        }
-      }
-    } catch (err) {
-      console.warn("[updateJobAction] Promo voucher sync failed:", err);
-    }
+    // If job is cancelled, restore any CustomerVoucher that was marked USED
+  if (updates.status === 'cancel') {
+    try {
+      const promoMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+      const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
+      await prisma.customerVoucher.updateMany({
+        where: {
+          OR: [
+            { usedJobId: id, status: "USED" },
+            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: id }, { usedJobId: null }] }] : []),
+          ],
+        },
+        data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
+      });
+      console.log(`[CustomerVoucher] Restored voucher to ACTIVE on cancel for job ${id}`);
+
+      // VOID unspent reward vouchers that were issued because of this cancelled job
+      const voidedRewardVouchers = await prisma.customerVoucher.updateMany({
+        where: {
+          sourceJobId: id,
+          status: "ACTIVE",
+        },
+        data: {
+          status: "VOID",
+        },
+      });
+      if (voidedRewardVouchers.count > 0) {
+        console.log(`[CustomerVoucher] Voided ${voidedRewardVouchers.count} unused reward voucher(s) issued from cancelled job ${id}`);
+        await prisma.activityLog.create({
+          data: {
+            entityId: existingJob?.customerId || id,
+            entityType: "customer",
+            action: "COUPON_VOID_ON_CANCEL",
+            details: JSON.stringify({
+              sourceJobId: id,
+              voidedCount: voidedRewardVouchers.count,
+              reason: `Job ${id} was cancelled`,
+            }),
+            userId: updates.actorId || null,
+            userName: updates.actorName || null,
+          },
+        });
+      }
+    } catch (err) {
+      console.warn("[CustomerVoucher] Void/restore on cancel failed:", err);
+    }
+  } else if (updates.remark !== undefined) {
+    // If job is NOT cancelled and remark was updated, sync CustomerVoucher status (restore removed voucher or redeem new voucher)
+    try {
+      const oldMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+      const oldCode = oldMatch ? oldMatch[1].trim().toUpperCase() : null;
+      const newMatch = updatedJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
+      const newCode = newMatch ? newMatch[1].trim().toUpperCase() : null;
+      const parsedPromoDiscount = newMatch ? parseFloat(newMatch[2] || newMatch[3] || "0") : 0;
+
+      if (oldCode && oldCode !== newCode) {
+        await prisma.customerVoucher.updateMany({
+          where: {
+            OR: [
+              { usedJobId: id, status: "USED" },
+              { code: { equals: oldCode, mode: "insensitive" }, usedJobId: id, status: "USED" },
+            ],
+          },
+          data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
+        });
+        console.log(`[CustomerVoucher] Restored removed voucher ${oldCode} to ACTIVE on job update ${id}`);
+      }
+
+      if (newCode) {
+        const localCoupon = await prisma.customerVoucher.findFirst({
+          where: { code: { equals: newCode, mode: "insensitive" } },
+        });
+        if (localCoupon && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
+          const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
+          const wasActive = localCoupon.status === "ACTIVE";
+          const claimRes = await prisma.customerVoucher.updateMany({
+            where: {
+              id: localCoupon.id,
+              OR: [{ status: "ACTIVE" }, { status: "USED", usedJobId: id }],
+            },
+            data: {
+              status: "USED",
+              usedAt: localCoupon.usedAt || new Date(),
+              usedJobId: id,
+              discountAmountUsed: usedDiscount,
+            },
+          });
+          if (wasActive && claimRes.count > 0) {
+            await prisma.activityLog.create({
+              data: {
+                entityId: localCoupon.customerId,
+                entityType: "customer",
+                action: "COUPON_USED",
+                details: JSON.stringify({
+                  couponId: localCoupon.id,
+                  code: localCoupon.code,
+                  usedJobId: id,
+                  discountAmountUsed: usedDiscount,
+                }),
+                userId: updates.actorId || null,
+                userName: updates.actorName || null,
+              },
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[updateJobAction] Promo voucher sync failed:", err);
+    }
   }
   } catch (vErr: any) {
     console.warn("[updateJobAction] Promo voucher sync failed:", vErr?.message || vErr);
@@ -2530,25 +2571,25 @@ async function updateJobActionInternal(id: string, updates: any) {
 
   let issuedCoupons: any[] = [];
   try {
-    // Evaluate promotion coupon issuance when job is confirmed shop paid:
-  // 1) Job just transitioned to isShopPaid === true, OR
-  // 2) Job is shop paid and items were updated/added
-  let issuedCoupons: any[] = [];
-  const justBecameShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
-  const alreadyShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid === true;
-  if ((justBecameShopPaid || (alreadyShopPaid && updates.items !== undefined)) && updatedJob.customerId) {
-    try {
-      const promoEval = await evaluateAndIssuePromotionCouponsAction({
-        jobId: id,
-        customerId: updatedJob.customerId,
-        actor: { id: updates.actorId, name: updates.actorName },
-      });
-      if (promoEval.couponsIssued?.length) {
-        issuedCoupons = promoEval.couponsIssued;
-      }
-    } catch (err) {
-      console.warn("[updateJobAction] Promo coupon evaluation failed:", err);
-    }
+    // Evaluate promotion coupon issuance when job is confirmed shop paid:
+  // 1) Job just transitioned to isShopPaid === true, OR
+  // 2) Job is shop paid and items were updated/added
+  let issuedCoupons: any[] = [];
+  const justBecameShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
+  const alreadyShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid === true;
+  if ((justBecameShopPaid || (alreadyShopPaid && updates.items !== undefined)) && updatedJob.customerId) {
+    try {
+      const promoEval = await evaluateAndIssuePromotionCouponsAction({
+        jobId: id,
+        customerId: updatedJob.customerId,
+        actor: { id: updates.actorId, name: updates.actorName },
+      });
+      if (promoEval.couponsIssued?.length) {
+        issuedCoupons = promoEval.couponsIssued;
+      }
+    } catch (err) {
+      console.warn("[updateJobAction] Promo coupon evaluation failed:", err);
+    }
   }
   } catch (pErr: any) {
     console.warn("[updateJobAction] Promo coupon evaluation failed:", pErr?.message || pErr);
@@ -2574,19 +2615,23 @@ async function updateJobActionInternal(id: string, updates: any) {
 
 // SERVICES
 export async function addServiceAction(data: any) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   return prisma.serviceItem.create({ data });
 }
 
 export async function updateServiceAction(id: string, data: any) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   return prisma.serviceItem.update({ where: { id }, data });
 }
 
 export async function deleteServiceAction(id: string) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   return prisma.serviceItem.delete({ where: { id } });
 }
 
 // RIDERS
 export async function addRiderAction(data: any) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   const rData = { ...data };
   if (data.currentLocation) {
     rData.currentLat = data.currentLocation.lat;
@@ -2597,6 +2642,10 @@ export async function addRiderAction(data: any) {
 }
 
 export async function updateRiderAction(id: string, updates: any) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true });
+  if (authUser.role === 'rider' && authUser.id !== id) {
+    throw new Error('403 Forbidden: Riders can only update their own profile');
+  }
   const data: any = { ...updates };
   if (updates.currentLocation) {
     data.currentLat = updates.currentLocation.lat;
@@ -2618,10 +2667,15 @@ export async function updateRiderAction(id: string, updates: any) {
 }
 
 export async function deleteRiderAction(id: string) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   return prisma.rider.delete({ where: { id } });
 }
 
 export async function getRiderTransactionsAction(riderId: string) {
+  const authUser = await assertServerActionAuthorized();
+  if (authUser.role === 'rider' && authUser.id !== riderId) {
+    throw new Error('403 Forbidden: Riders can only view their own transactions');
+  }
   return prisma.riderTransaction.findMany({
     where: { riderId },
     orderBy: { createdAt: 'desc' }
@@ -2630,6 +2684,7 @@ export async function getRiderTransactionsAction(riderId: string) {
 
 // PRICE LISTS
 export async function addPriceListAction(data: any) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   let sPrices = "{}";
   if (typeof data.servicePrices === "string") {
     sPrices = data.servicePrices;
@@ -2652,6 +2707,7 @@ export async function addPriceListAction(data: any) {
 }
 
 export async function updatePriceListAction(id: string, updates: any) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   const data: any = {};
   if (updates.name !== undefined) data.name = updates.name;
   if (updates.isDefault !== undefined) data.isDefault = updates.isDefault;
@@ -2673,6 +2729,7 @@ export async function updatePriceListAction(id: string, updates: any) {
 }
 
 export async function deletePriceListAction(id: string) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   await prisma.priceList.delete({ where: { id } });
   // Also update customers to default
   await prisma.customer.updateMany({
@@ -2683,6 +2740,7 @@ export async function deletePriceListAction(id: string) {
 
 // SHOP LOCATIONS
 export async function addShopLocationAction(data: any) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   return prisma.shopLocation.create({
     data: {
       id: data.id,
@@ -2703,6 +2761,7 @@ export async function addShopLocationAction(data: any) {
 }
 
 export async function updateShopLocationAction(id: string, updates: any) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   const data: any = {};
   if (updates.name) data.name = updates.name;
   if (updates.address) data.address = updates.address;
@@ -2726,11 +2785,13 @@ export async function updateShopLocationAction(id: string, updates: any) {
 }
 
 export async function deleteShopLocationAction(id: string) {
+  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   return prisma.shopLocation.delete({ where: { id } });
 }
 
 // POIS
 export async function addPOIAction(data: any) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   return prisma.pOI.create({
     data: {
       id: data.id,
@@ -2744,6 +2805,7 @@ export async function addPOIAction(data: any) {
 }
 
 export async function updatePOIAction(id: string, updates: any) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   const data: any = {};
   if (updates.name) data.name = updates.name;
   if (updates.address) data.address = updates.address;
@@ -2756,6 +2818,7 @@ export async function updatePOIAction(id: string, updates: any) {
 }
 
 export async function deletePOIAction(id: string) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   return prisma.pOI.delete({ where: { id } });
 }
 
@@ -2783,6 +2846,7 @@ export async function getDuplicatePOIsAction(): Promise<{
   totalDuplicateGroups: number;
   totalRedundantCount: number;
 }> {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   const pois = await prisma.pOI.findMany({
     orderBy: { name: 'asc' }
   });
@@ -2923,6 +2987,9 @@ export async function getDuplicatePOIsAction(): Promise<{
 }
 
 export async function deletePOIsAction(ids: string[], actorId?: string, actorName?: string) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+  actorId = authUser.id;
+  actorName = authUser.name || authUser.email;
   if (!ids || ids.length === 0) return { success: true, count: 0 };
   const res = await prisma.pOI.deleteMany({
     where: { id: { in: ids } }
@@ -2947,6 +3014,7 @@ export async function deletePOIsAction(ids: string[], actorId?: string, actorNam
 }
 // SETTINGS
 export async function updateSettingAction(key: string, value: string) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   const result = await prisma.setting.upsert({
     where: { key },
     update: { value },
@@ -2990,11 +3058,15 @@ export async function updateSettingAction(key: string, value: string) {
 }
 
 export async function addJobLogAction(id: string, logEntry: any, actorId?: string, actorName?: string) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true });
+  actorId = authUser.id;
+  actorName = authUser.name || authUser.email;
   return withJobUpdateLock(id, async () => {
     const { updated, updatedJson } = await prisma.$transaction(async (tx) => {
       await lockJobRowForUpdate(tx, id);
-      const job = await tx.job.findUnique({ where: { id }, select: { adminNotesJson: true } });
+      const job = await tx.job.findUnique({ where: { id } });
       if (!job) throw new Error('Job not found');
+      if (!canUserAccessJob(authUser, job)) throw new Error('403 Forbidden: Access denied to this job');
       let notes: any[] = [];
       let payments: any[] = [];
       let isStructured = false;
@@ -3065,7 +3137,9 @@ export async function addJobLogAction(id: string, logEntry: any, actorId?: strin
 
 export async function diagnoseJobAction(jobId: string) {
   try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
     const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (job && !canUserAccessJob(authUser, job)) return { success: false, error: '403 Forbidden' };
     if (!job) {
       return { success: false, error: 'Job not found' };
     }
@@ -3102,7 +3176,11 @@ export async function resolveJobDiscrepancyAction(
   actorName?: string
 ) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    actorId = authUser.id;
+    actorName = authUser.name || authUser.email;
     const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (job && !canUserAccessJob(authUser, job)) return { success: false, error: '403 Forbidden' };
     if (!job) return { success: false, error: 'Job not found' };
 
     const proofJson = JSON.stringify(fileUrls);
@@ -3206,6 +3284,7 @@ export async function resolveJobDiscrepancyAction(
  * Does NOT load job stats — use getOpenShiftAction for full stats (POS tab only).
  */
 export async function getShiftStatusAction(userId: string, branchId?: string) {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: branchId || null });
   try {
     const [userShift, branchShift] = await Promise.all([
       prisma.cashierShift.findFirst({ where: { userId, status: 'open' }, orderBy: { openedAt: 'desc' } }),
@@ -3300,6 +3379,7 @@ function calculateShiftSales(
 }
 
 export async function getOpenShiftAction(userId: string) {
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     const shift = await prisma.cashierShift.findFirst({
       where: { userId, status: 'open' },
@@ -3335,6 +3415,7 @@ export async function getOpenShiftAction(userId: string) {
 }
 
 export async function getBranchOpenShiftAction(branchId: string) {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: branchId || null });
   try {
     const shift = await prisma.cashierShift.findFirst({
       where: { branchId, status: 'open' },
@@ -3371,6 +3452,9 @@ export async function getBranchOpenShiftAction(branchId: string) {
 
 export async function openShiftAction(data: { userId: string, userName: string, branchId: string, startingCash: number, notes?: string }) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'], targetBranchId: data?.branchId || null });
+    data.userId = authUser.id;
+    data.userName = authUser.name || authUser.email;
     const startingCashNum = Number(data.startingCash);
     if (!Number.isFinite(startingCashNum) || startingCashNum < 0) {
       throw new Error("Invalid starting cash amount");
@@ -3422,6 +3506,7 @@ export async function openShiftAction(data: { userId: string, userName: string, 
 
 export async function closeShiftAction(data: { shiftId: string, actualCash: number, notes?: string }) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     return await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "CashierShift" WHERE id = ${data.shiftId} FOR UPDATE`;
       const shift = await tx.cashierShift.findUnique({
@@ -3429,6 +3514,9 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
       });
       if (!shift) {
         throw new Error("Shift not found");
+      }
+      if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all' && shift.branchId !== authUser.branchId) {
+        throw new Error("403 Forbidden: Cannot close shift for another branch");
       }
       if (shift.status === 'closed') {
         throw new Error("Shift is already closed");
@@ -3527,6 +3615,10 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
 }
 
 export async function getClosedShiftsAction(branchId?: string) {
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: branchId || null });
+  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    branchId = authUser.branchId;
+  }
   try {
     const shifts = await prisma.cashierShift.findMany({
       where: {
@@ -3544,9 +3636,13 @@ export async function getClosedShiftsAction(branchId?: string) {
 }
 
 export async function getOpenShiftsAction() {
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     const shifts = await prisma.cashierShift.findMany({
-      where: { status: 'open' },
+      where: {
+        status: 'open',
+        ...(!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all' ? { branchId: authUser.branchId } : {}),
+      },
       orderBy: { openedAt: 'desc' }
     });
     return shifts;
@@ -3560,6 +3656,7 @@ export async function getOpenShiftsAction() {
 
 
 export async function checkIsPaymentEligible(job: { source?: string | null; type?: string | null; isPaid?: boolean | null; isShopPaid?: boolean | null }) {
+  await assertServerActionAuthorized();
   const isWalkIn = job.source === 'pos' || job.type === 'in_store';
   if (isWalkIn) {
     return job.isShopPaid === true;
@@ -3568,6 +3665,7 @@ export async function checkIsPaymentEligible(job: { source?: string | null; type
 }
 
 export async function syncRiderCommissionsForJob(jobId: string) {
+  await assertServerActionAuthorized();
   try {
     const job = await prisma.job.findUnique({ where: { id: jobId } });
     if (!job) return;
@@ -3725,6 +3823,11 @@ export async function processTopUpAction(data: {
   paymentLinkId?: string | null;
   idempotencyKey?: string | null;
 }) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'], targetBranchId: data?.branchId || null });
+  if (authUser.id !== '__internal_system__') {
+    data.actorId = authUser.id;
+    data.actorName = authUser.name || authUser.email;
+  }
   const cleanReceiptNumber = String(data.receiptNumber || '').trim();
   if (!cleanReceiptNumber) {
     throw new Error("Receipt number is required for wallet top-up");
@@ -3855,69 +3958,67 @@ export async function processTopUpAction(data: {
       receiptData: rdata,
     });
 
-    // 4. Create Transaction record
-    const transaction = await tx.transaction.create({
-      data: {
-        id: cleanReceiptNumber,
-        memberId: data.customerId,
-        amount: paidAmt,
-        type: 'TOPUP',
-        description: txDescription,
-        status: 'COMPLETED',
-        updatedAt: now,
-      }
-    });
-
-    // 5. Create ActivityLog (TOPUP only, NO erroneous ADJUST log!)
-    await tx.activityLog.create({
-      data: {
-        entityId: data.customerId,
-        entityType: 'customer',
-        action: 'TOPUP',
-        details: JSON.stringify({
-          customerName: currentCust.name,
-          receiptNo: cleanReceiptNumber,
+    // 4, 5, 6. Create Transaction, ActivityLog, and WalletTransaction concurrently
+    const [transaction] = await Promise.all([
+      tx.transaction.create({
+        data: {
+          id: cleanReceiptNumber,
+          memberId: data.customerId,
           amount: paidAmt,
           type: 'TOPUP',
-          bonusAmount: bonusAmt,
-          totalCredit: totalCred,
+          description: txDescription,
+          status: 'COMPLETED',
+          updatedAt: now,
+        }
+      }),
+      tx.activityLog.create({
+        data: {
+          entityId: data.customerId,
+          entityType: 'customer',
+          action: 'TOPUP',
+          details: JSON.stringify({
+            customerName: currentCust.name,
+            receiptNo: cleanReceiptNumber,
+            amount: paidAmt,
+            type: 'TOPUP',
+            bonusAmount: bonusAmt,
+            totalCredit: totalCred,
+            balanceBefore: balBefore,
+            balanceAfter: balAfter,
+            paymentChannel: data.paymentChannel,
+            slipImageUrl: data.slipImageUrl || null,
+            packageName: data.packageName,
+            branchId: effectiveBranchId,
+          }),
+          userId: data.actorId || null,
+          userName: data.actorName || null,
+        }
+      }),
+      tx.walletTransaction.create({
+        data: {
+          customerId: data.customerId,
+          customerName: currentCust.name,
+          type: 'TOPUP',
+          amount: totalCred,
+          direction: 'CREDIT',
           balanceBefore: balBefore,
           balanceAfter: balAfter,
+          referenceId: cleanReceiptNumber,
+          referenceType: 'topup_receipt',
+          packageName: data.packageName || 'TOPUP',
+          bonusAmount: bonusAmt,
           paymentChannel: data.paymentChannel,
           slipImageUrl: data.slipImageUrl || null,
-          packageName: data.packageName,
+          reason: data.paymentLinkId
+            ? `Beam PaymentLink: ${data.paymentLinkId.trim()}`
+            : (data.idempotencyKey ? `IdempotencyKey: ${data.idempotencyKey.trim()}` : null),
+          createdById: data.actorId || null,
+          createdByName: data.actorName || 'Staff',
           branchId: effectiveBranchId,
-        }),
-        userId: data.actorId || null,
-        userName: data.actorName || null,
-      }
-    });
-
-    // 6. Create WalletTransaction for Post-Approval Tracking
-    await tx.walletTransaction.create({
-      data: {
-        customerId: data.customerId,
-        customerName: currentCust.name,
-        type: 'TOPUP',
-        amount: totalCred,
-        direction: 'CREDIT',
-        balanceBefore: balBefore,
-        balanceAfter: balAfter,
-        referenceId: cleanReceiptNumber,
-        referenceType: 'topup_receipt',
-        packageName: data.packageName || 'TOPUP',
-        bonusAmount: bonusAmt,
-        paymentChannel: data.paymentChannel,
-        slipImageUrl: data.slipImageUrl || null,
-        reason: data.paymentLinkId
-          ? `Beam PaymentLink: ${data.paymentLinkId.trim()}`
-          : (data.idempotencyKey ? `IdempotencyKey: ${data.idempotencyKey.trim()}` : null),
-        createdById: data.actorId || null,
-        createdByName: data.actorName || 'Staff',
-        branchId: effectiveBranchId,
-        approvalStatus: 'PENDING',
-      }
-    });
+          approvalStatus: 'PENDING',
+        }
+      }),
+    ]);
 
     invalidateDbCache('customers');
     return {
@@ -3927,7 +4028,7 @@ export async function processTopUpAction(data: {
       balanceBefore: balBefore,
       balanceAfter: balAfter,
     };
-  });
+  }, { maxWait: 15000, timeout: 30000 });
 }
 
 // TOP-UP TRANSACTIONS
@@ -3941,6 +4042,9 @@ export async function createTopUpTransactionAction(data: {
   userId?: string | null;
   userName?: string | null;
 }) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  data.userId = authUser.id;
+  data.userName = authUser.name || authUser.email;
   const tx = await prisma.transaction.create({
     data: {
       id: data.id,
@@ -4003,6 +4107,7 @@ export async function getTopUpTransactionsAction(
     branchId?: string;
   }
 ) {
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     const where: any = { type: 'TOPUP' };
 
@@ -4084,6 +4189,9 @@ export async function getTopUpTransactionsAction(
       targetBranchId = filterOrCustomerId.branchId;
     }
 
+    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+      targetBranchId = authUser.branchId;
+    }
     if (targetBranchId && targetBranchId !== 'all') {
       return mapped.filter(t => t.branchId === targetBranchId);
     }
@@ -4101,6 +4209,9 @@ export async function updateTopUpTransactionSlipAction(data: {
   userId?: string | null;
   userName?: string | null;
 }) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  data.userId = authUser.id;
+  data.userName = authUser.name || authUser.email;
   const tx = await prisma.transaction.findUnique({
     where: { id: data.transactionId },
   });
@@ -4154,6 +4265,7 @@ export async function updateTopUpTransactionSlipAction(data: {
 }
 
 export async function getCustomerTodayTopUpAction(customerId: string) {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -4218,6 +4330,9 @@ export async function createWalletTransactionAction(data: {
   createdByName?: string | null;
   branchId?: string | null;
 }) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'], targetBranchId: data?.branchId || null });
+  data.createdById = authUser.id;
+  data.createdByName = authUser.name || authUser.email;
   return await prisma.walletTransaction.create({
     data: {
       customerId: data.customerId,
@@ -4251,6 +4366,10 @@ export async function getWalletTransactionsAction(filters?: {
   endDate?: string;
   branchId?: string;
 }) {
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: filters?.branchId || null });
+  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    filters = { ...(filters || {}), branchId: authUser.branchId };
+  }
   const where: any = {};
   if (filters?.customerId) where.customerId = filters.customerId;
   if (filters?.approvalStatus && filters.approvalStatus !== 'all') where.approvalStatus = filters.approvalStatus;
@@ -4289,12 +4408,14 @@ export async function getWalletTransactionsAction(filters?: {
 }
 
 export async function getPendingWalletCountAction(customerId?: string) {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   const where: any = { approvalStatus: 'PENDING' };
   if (customerId) where.customerId = customerId;
   return await prisma.walletTransaction.count({ where });
 }
 
 export async function getPendingWalletMapAction() {
+  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   const pendingTxs = await prisma.walletTransaction.findMany({
     where: { approvalStatus: 'PENDING' },
     select: { customerId: true }
@@ -4316,6 +4437,9 @@ export async function approveWalletTransactionAction(data: {
   approvedById: string;
   approvedByName: string;
 }) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  data.approvedById = authUser.id;
+  data.approvedByName = authUser.name || authUser.email;
   const tx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
   if (!tx) throw new Error("Transaction not found");
   if (tx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${tx.approvalStatus}`);
@@ -4357,6 +4481,9 @@ export async function rejectWalletTransactionAction(data: {
   rejectReason: string;
   deductFromWallet?: boolean;
 }) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  data.approvedById = authUser.id;
+  data.approvedByName = authUser.name || authUser.email;
   const originalTx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
   if (!originalTx) throw new Error("Transaction not found");
   if (originalTx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${originalTx.approvalStatus}`);
@@ -4581,6 +4708,9 @@ export async function bulkApproveWalletAction(data: {
   approvedById: string;
   approvedByName: string;
 }) {
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  data.approvedById = authUser.id;
+  data.approvedByName = authUser.name || authUser.email;
   const count = await prisma.walletTransaction.updateMany({
     where: {
       id: { in: data.ids },
@@ -4628,6 +4758,18 @@ export async function processRefundAndCorrectAction(data: {
   actorName?: string | null;
   branchId?: string | null;
 }) {
+  const authUser = await assertServerActionAuthorized({
+    requireWrite: true,
+    forbidRoles: ['rider'],
+    targetBranchId: data?.branchId || null,
+  });
+  const canRefund = authUser.role === 'admin' || authUser.role === 'superadmin' || authUser.permissions.includes('refund-job');
+  if (!canRefund) {
+    throw new Error("403 Forbidden: คุณไม่มีสิทธิ์ในการ Refund Job (ต้องมีสิทธิ์ refund-job หรือสิทธิ์ Admin)");
+  }
+  data.actorId = authUser.id;
+  data.actorName = authUser.name || authUser.email;
+
   const result = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
     await lockJobRowForUpdate(tx, data.jobId);
     const job = await tx.job.findUnique({
@@ -4638,30 +4780,12 @@ export async function processRefundAndCorrectAction(data: {
     if (!job) {
       throw new Error("Job not found");
     }
+    if (!canUserAccessJob(authUser, job)) {
+      throw new Error("403 Forbidden: Cross-branch access denied");
+    }
 
     if (job.refundId) {
       throw new Error("Job has already been refunded");
-    }
-
-    // Check actor permission from authoritative server session or verified actorId in DB
-    const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser();
-    if (explicitCredentialsProvided && !sessionActor) {
-      throw new Error("Unauthorized: ไม่พบข้อมูลผู้ใช้งานในระบบ หรือเซสชันหมดอายุ");
-    }
-    const effectiveActorId = sessionActor?.id || data.actorId;
-    if (effectiveActorId) {
-      const actor = await tx.adminUser.findUnique({ where: { id: effectiveActorId } });
-      if (!actor || actor.isActive === false) {
-        throw new Error("Unauthorized: บัญชีผู้ใช้งานนี้ถูกระงับหรือไม่พบในระบบ");
-      }
-      let perms: string[] = [];
-      try { perms = JSON.parse(actor.permissions || "[]"); } catch {}
-      const canRefund = actor.role === 'admin' || actor.role === 'superadmin' || perms.includes('refund-job');
-      if (!canRefund) {
-        throw new Error("คุณไม่มีสิทธิ์ในการ Refund Job (ต้องมีสิทธิ์ refund-job หรือสิทธิ์ Admin)");
-      }
-      data.actorId = actor.id;
-      data.actorName = actor.name || actor.email;
     }
 
     const originalAmount = Number(job.totalAmount) || 0;
@@ -5110,6 +5234,10 @@ export async function getJobRefundsAction(filters?: {
   endDate?: string;
   branchId?: string;
 }) {
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: filters?.branchId || null });
+  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    filters = { ...(filters || {}), branchId: authUser.branchId };
+  }
   const where: any = {};
   if (filters?.jobId) where.jobId = filters.jobId;
   if (filters?.branchId && filters.branchId !== 'all') where.branchId = filters.branchId;
@@ -5140,45 +5268,22 @@ export async function unlockPaidJobAction(data: {
   clearedPayments?: any[];
 }> {
   try {
+    const authUser = await assertServerActionAuthorized({
+      requireWrite: true,
+      forbidRoles: ['rider'],
+    });
     const unlockRes = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
       // ──── 1. Lock Row & Fetch & Validate ────
       await lockJobRowForUpdate(tx, data.jobId);
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
+      if (!canUserAccessJob(authUser, job)) throw new Error("403 Forbidden: Cross-branch access denied");
       if (!job.isPaid && !job.isShopPaid) throw new Error("Job is not currently paid");
-
-      // Check permission: Admin, Superadmin, and Accounting have unlimited unlock access.
-      // CSO can only unlock jobs whose payment was recorded today or yesterday.
-      // Derive actor role & permissions from server session or DB record (do not trust spoofed actorRole).
-      const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser();
-      if (explicitCredentialsProvided && !sessionActor) {
-        throw new Error("Unauthorized: ไม่พบข้อมูลผู้ใช้งานในระบบ หรือเซสชันหมดอายุ");
-      }
-      let hasFullAccess = false;
-      const effectiveActorId = sessionActor?.id || data.actorId;
-      if (effectiveActorId) {
-        const userRec = await tx.adminUser.findUnique({
-          where: { id: effectiveActorId },
-          select: { id: true, name: true, email: true, role: true, permissions: true, isActive: true },
-        });
-        if (!userRec || userRec.isActive === false) {
-          throw new Error("Unauthorized: บัญชีผู้ใช้งานนี้ถูกระงับหรือไม่พบในระบบ");
-        }
-        const role = (userRec.role || "").toLowerCase();
-        if (role === "spectator") {
-          throw new Error("Forbidden: บัญชี Spectator ไม่สามารถปลดล็อคการชำระเงินได้");
-        }
-        const perms = userRec.permissions || "";
-        if (role === "admin" || role === "superadmin" || role === "accounting" || perms.includes("accounting")) {
-          hasFullAccess = true;
-        }
-        data.actorId = userRec.id;
-        data.actorName = userRec.name || userRec.email;
-        data.actorRole = userRec.role;
-      } else {
-        const fallbackRole = (data.actorRole || "").toLowerCase();
-        hasFullAccess = fallbackRole === "admin" || fallbackRole === "superadmin" || fallbackRole === "accounting";
-      }
+      const role = (authUser.role || "").toLowerCase();
+      const hasFullAccess = role === "admin" || role === "superadmin" || role === "accounting" || authUser.permissions.includes("accounting");
+      data.actorId = authUser.id;
+      data.actorName = authUser.name || authUser.email;
+      data.actorRole = authUser.role;
       if (!hasFullAccess) {
         const paymentDate = getJobPaymentDate(job);
         if (!isPaidTodayOrYesterday(paymentDate)) {
@@ -5380,7 +5485,7 @@ export async function unlockPaidJobAction(data: {
         walletRefundAmount,
         clearedPayments: existingPayments,
       };
-    }));
+    }, { maxWait: 15000, timeout: 30000 }));
 
     invalidateDbCache('customers');
     if (unlockRes.updatedJob) {
@@ -5427,10 +5532,15 @@ export async function recordJobPaymentAction(data: {
   couponsIssued?: any[];
 }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    data.actorId = authUser.id;
+    data.actorName = authUser.name || authUser.email;
+    data.actorRole = authUser.role;
     const result = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
       await lockJobRowForUpdate(tx, data.jobId);
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
+      if (!canUserAccessJob(authUser, job)) throw new Error("403 Forbidden: Cross-branch access denied");
 
       const amount = Math.round(Number(data.amount) * 100) / 100;
       if (isNaN(amount) || amount <= 0) throw new Error("จำนวนเงินต้องมากกว่า 0");
@@ -5643,7 +5753,7 @@ export async function recordJobPaymentAction(data: {
         paymentEntry,
         newBalance,
       };
-    }));
+    }, { maxWait: 15000, timeout: 30000 }));
 
     // Evaluate promotion coupon issuance when job payment completes and marks shop paid
     let couponsIssued: any[] = [];
@@ -5702,28 +5812,22 @@ export async function voidJobPaymentAction(data: {
   newBalance?: number;
 }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    data.actorId = authUser.id;
+    data.actorName = authUser.name || authUser.email;
+    data.actorRole = authUser.role;
     const voidRes = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
       await lockJobRowForUpdate(tx, data.jobId);
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
+      if (!canUserAccessJob(authUser, job)) throw new Error("403 Forbidden: Cross-branch access denied");
 
       if (!data.reason || !data.reason.trim()) {
         throw new Error("กรุณาระบุเหตุผลในการยกเลิกรายการชำระเงิน");
       }
 
-      // Permission check: admin, superadmin, accounting, or CSO
-      let actorRole = (data.actorRole || "").toLowerCase();
-      let hasFullAccess = actorRole === "admin" || actorRole === "superadmin" || actorRole === "accounting";
-      if (!hasFullAccess && data.actorId) {
-        const userRec = await tx.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true, permissions: true } });
-        if (userRec) {
-          const role = (userRec.role || "").toLowerCase();
-          const perms = userRec.permissions || "";
-          if (role === "admin" || role === "superadmin" || role === "accounting" || perms.includes("accounting")) {
-            hasFullAccess = true;
-          }
-        }
-      }
+      const role = (authUser.role || "").toLowerCase();
+      const hasFullAccess = role === "admin" || role === "superadmin" || role === "accounting" || authUser.permissions.includes("accounting");
 
       // Parse existing payments
       let existingNotes: any = {};
@@ -5960,6 +6064,9 @@ export async function createCustomerCouponAction(data: {
   sourceJobId?: string | null;
 }) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    data.issuedById = authUser.id;
+    data.issuedByName = authUser.name || authUser.email;
     const customer = await prisma.customer.findUnique({
       where: { id: data.customerId },
       select: { id: true, name: true, phone: true, brand: true },
@@ -6028,6 +6135,7 @@ export async function getCustomerCouponsAction(filters?: {
   search?: string;
 }) {
   try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
     const where: any = {};
     if (filters?.customerId) {
       where.customerId = filters.customerId;
@@ -6091,6 +6199,8 @@ export async function updateCustomerCouponStatusAction(
   details?: { usedJobId?: string; actorId?: string; actorName?: string; reason?: string }
 ) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    details = { ...(details || {}), actorId: authUser.id, actorName: authUser.name || authUser.email };
     const data: any = { status };
     if (status === "USED") {
       data.usedAt = new Date();
@@ -6131,6 +6241,8 @@ export async function updateCustomerCouponStatusAction(
 
 export async function deleteCustomerCouponAction(id: string, actor?: { id?: string; name?: string }) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    actor = { id: authUser.id, name: authUser.name || authUser.email };
     const coupon = await prisma.customerVoucher.findUnique({ where: { id } });
     if (!coupon) throw new Error("ไม่พบวอยเชอร์");
 
@@ -6236,6 +6348,7 @@ const DEFAULT_COUPON_TEMPLATES: CouponTemplate[] = [
 
 export async function getCouponTemplatesAction(): Promise<{ success: boolean; templates: CouponTemplate[]; error?: string }> {
   try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
     const setting = await prisma.setting.findUnique({ where: { key: "coupon_templates" } });
     if (!setting || !setting.value) {
       // Lazy initialize with defaults
@@ -6258,6 +6371,7 @@ export async function saveCouponTemplateAction(
   template: Partial<CouponTemplate> & { label: string; name: string; discountType: CouponTemplate["discountType"]; discountValue: number }
 ): Promise<{ success: boolean; template?: CouponTemplate; templates?: CouponTemplate[]; error?: string }> {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const res = await getCouponTemplatesAction();
     let currentTemplates = res.templates || [];
 
@@ -6326,6 +6440,7 @@ export async function deleteCouponTemplateAction(
   id: string
 ): Promise<{ success: boolean; templates?: CouponTemplate[]; error?: string }> {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const res = await getCouponTemplatesAction();
     const currentTemplates = (res.templates || []).filter(t => t.id !== id);
 
@@ -6344,6 +6459,7 @@ export async function deleteCouponTemplateAction(
 
 export async function resetCouponTemplatesAction(): Promise<{ success: boolean; templates: CouponTemplate[]; error?: string }> {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     await prisma.setting.upsert({
       where: { key: "coupon_templates" },
       update: { value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
@@ -6362,6 +6478,7 @@ export async function resetCouponTemplatesAction(): Promise<{ success: boolean; 
 
 export async function getPromotionCampaignsAction(): Promise<{ success: boolean; campaigns: PromotionCampaign[]; error?: string }> {
   try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
     const setting = await prisma.setting.findUnique({ where: { key: "promotion_campaigns" } });
     if (!setting || !setting.value) {
       await prisma.setting.upsert({
@@ -6383,6 +6500,7 @@ export async function savePromotionCampaignAction(
   campaign: PromotionCampaign
 ): Promise<{ success: boolean; campaigns?: PromotionCampaign[]; error?: string }> {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const res = await getPromotionCampaignsAction();
     let campaigns = [...(res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS)];
 
@@ -6414,6 +6532,7 @@ export async function deletePromotionCampaignAction(
   campaignId: string
 ): Promise<{ success: boolean; campaigns?: PromotionCampaign[]; error?: string }> {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const res = await getPromotionCampaignsAction();
     let campaigns = [...(res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS)];
 
@@ -6456,6 +6575,7 @@ export async function evaluateAndIssuePromotionCouponsAction(data: {
   error?: string;
 }> {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
     const job = await prisma.job.findUnique({
       where: { id: data.jobId },
       include: { customer: true },
@@ -6810,6 +6930,10 @@ export async function getPromotionReportAction(filters?: {
   endDate?: string;
 }) {
   try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: filters?.branchId || null });
+    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+      filters = { ...(filters || {}), branchId: authUser.branchId };
+    }
     const campaignId = filters?.campaignId || "promo_shoe100_oct26";
 
     // Query all coupons belonging to this campaign

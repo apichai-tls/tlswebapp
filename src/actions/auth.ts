@@ -6,7 +6,9 @@ import {
   signStaffSessionToken,
   invalidateServerAuthCache,
   assertServerActionAuthorized,
-  resolveServerActionUser
+  resolveServerActionUser,
+  revokeSessionToken,
+  revokeAllUserSessions
 } from "@/lib/server-auth";
 
 export async function loginUser(email: string, password?: string) {
@@ -133,7 +135,29 @@ export async function changePasswordWithReauthAction(params: {
       data: { password: hashPassword(params.newPassword) }
     });
 
+    await revokeAllUserSessions(dbUser.id);
     invalidateServerAuthCache(dbUser.id);
+
+    // Issue a fresh session token after revoking prior sessions
+    const freshToken = signStaffSessionToken({
+      id: dbUser.id,
+      email: dbUser.email,
+      role: dbUser.role,
+      branchId: dbUser.branchId || null,
+      area: dbUser.area || null,
+    });
+    try {
+      const { cookies } = await import("next/headers");
+      const cookieStore = await cookies();
+      cookieStore.set("tls_session", freshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: 60 * 60 * 18,
+      });
+    } catch {}
+
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || "Failed to change password" };
@@ -143,12 +167,16 @@ export async function changePasswordWithReauthAction(params: {
 export async function logoutUserAction() {
   try {
     const { user } = await resolveServerActionUser();
-    if (user) {
-      invalidateServerAuthCache(user.id);
-    }
-    const { cookies } = await import("next/headers");
+    const { cookies, headers } = await import("next/headers");
     const cookieStore = await cookies();
+    const headerStore = await headers();
+    const authHeader = headerStore.get("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+    const sessionToken = bearerToken || cookieStore.get("tls_session")?.value || null;
+
+    await revokeSessionToken(sessionToken, user?.id || null);
     cookieStore.delete("tls_session");
+    cookieStore.delete("tls_user_id");
   } catch {}
   return { success: true };
 }

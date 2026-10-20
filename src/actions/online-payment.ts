@@ -3,6 +3,7 @@
 import { prisma } from '@/lib/prisma';
 import { invalidateDbCache } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
+import { assertServerActionAuthorized, canUserAccessJob } from '@/lib/server-auth';
 import { processTopUpAction, evaluateAndIssuePromotionCouponsAction, lockJobRowForUpdate } from '@/actions/db';
 import {
   createBeamPaymentLink,
@@ -84,7 +85,6 @@ async function markJobAsPaidInDb(params: {
     const isFullyPaidNow = effectiveTotalAmount > 0 && totalPaidAfter >= effectiveTotalAmount - 0.01;
 
     if (!isFullyPaidNow) {
-      // Clear consumed link so a new link can be generated for the remaining balance
       delete adminNotesObj.lastBeamPaymentLink;
     }
 
@@ -123,10 +123,10 @@ async function markJobAsPaidInDb(params: {
       await evaluateAndIssuePromotionCouponsAction({
         jobId: updated.id,
         customerId: updated.customerId,
-        actor: { name: "System (Online Payment)" },
+        actor: { name: 'System (Online Payment)' },
       });
     } catch (e) {
-      console.warn("[recordOnlinePaymentSuccess] Promo evaluation failed:", e);
+      console.warn('[recordOnlinePaymentSuccess] Promo evaluation failed:', e);
     }
   }
 
@@ -141,6 +141,8 @@ export async function createJobOnlinePaymentAction(
   customAmount?: number
 ): Promise<CreateOnlinePaymentResult> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+
     const job = await prisma.job.findUnique({
       where: { id: jobId },
     });
@@ -149,11 +151,14 @@ export async function createJobOnlinePaymentAction(
       return { success: false, error: 'Job not found' };
     }
 
+    if (!canUserAccessJob(authUser, job)) {
+      return { success: false, error: 'Forbidden: You do not have access to this job' };
+    }
+
     if (job.isPaid || job.isShopPaid) {
       return { success: false, isAlreadyPaid: true, error: 'ออเดอร์นี้ชำระเงินเรียบร้อยแล้ว' };
     }
 
-    // Guard: Prevent generating a Beam link when the job has 0 laundry items (only delivery fee)
     let jobItems: any[] = [];
     try {
       if (job.itemsJson) {
@@ -168,7 +173,6 @@ export async function createJobOnlinePaymentAction(
       };
     }
 
-    // Check existing payments & links in adminNotesJson
     let adminNotesObj: any = {};
     let existingPayments: any[] = [];
     try {
@@ -208,11 +212,9 @@ export async function createJobOnlinePaymentAction(
       !recordedIds.has(existingLink.id) &&
       Math.abs((existingLink.amount || 0) - amount) < 0.01
     ) {
-      // Check status of existing link with Beam
       const linkCheck = await getBeamPaymentLink(existingLink.id);
       if (linkCheck.success && linkCheck.data) {
         if (linkCheck.data.status === 'PAID') {
-          // Already paid! Update DB immediately
           const updated = await markJobAsPaidInDb({
             job,
             paidAmount: amount,
@@ -229,7 +231,6 @@ export async function createJobOnlinePaymentAction(
         }
 
         if (linkCheck.data.status === 'ACTIVE') {
-          // Link is still active and valid, reuse it!
           const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(existingLink.url)}`;
           return {
             success: true,
@@ -242,7 +243,6 @@ export async function createJobOnlinePaymentAction(
       }
     }
 
-    // Call Beam API to generate a new payment link
     const description = alreadyPaid > 0
       ? `TLS Order #${job.billNo || job.id} (${job.customerName || 'Customer'}) - Remaining Balance`
       : `TLS Order #${job.billNo || job.id} (${job.customerName || 'Customer'})`;
@@ -258,11 +258,8 @@ export async function createJobOnlinePaymentAction(
     }
 
     const { id: paymentLinkId, url: paymentUrl } = res.data;
-
-    // Use standard QR code generator service for the payment URL
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(paymentUrl)}`;
 
-    // Update job notes with payment link metadata (never shrink job.totalAmount!)
     try {
       adminNotesObj.lastBeamPaymentLink = {
         id: paymentLinkId,
@@ -283,7 +280,7 @@ export async function createJobOnlinePaymentAction(
         job: updatedWithLink,
         action: 'payment_link_created',
         changedFields: ['adminNotesJson'],
-        actorName: 'Beam Payment Link',
+        actorName: authUser.name || authUser.email || 'Beam Payment Link',
       });
     } catch (dbErr) {
       console.warn('[Beam Action] Failed to save payment link meta to job:', dbErr);
@@ -309,6 +306,8 @@ export async function checkJobOnlinePaymentStatusAction(
   jobId: string
 ): Promise<CheckPaymentStatusResult> {
   try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+
     const job = await prisma.job.findUnique({
       where: { id: jobId },
     });
@@ -317,7 +316,10 @@ export async function checkJobOnlinePaymentStatusAction(
       return { success: false, isPaid: false, error: 'Job not found' };
     }
 
-    // 1. Check if already marked as paid in local database (via Webhook)
+    if (!canUserAccessJob(authUser, job)) {
+      return { success: false, isPaid: false, error: 'Forbidden: You do not have access to this job' };
+    }
+
     if (job.isPaid && job.isShopPaid) {
       return {
         success: true,
@@ -345,7 +347,6 @@ export async function checkJobOnlinePaymentStatusAction(
       ...existingPayments.map((p: any) => p?.chargeId).filter(Boolean),
     ]);
 
-    // 2. Check Beam Payment Link status directly (only if not already recorded/cleared)
     if (adminNotesObj.lastBeamPaymentLink?.id && !ignoredIds.has(adminNotesObj.lastBeamPaymentLink.id)) {
       const linkRes = await getBeamPaymentLink(adminNotesObj.lastBeamPaymentLink.id);
       if (linkRes.success && linkRes.data?.status === 'PAID') {
@@ -367,7 +368,6 @@ export async function checkJobOnlinePaymentStatusAction(
       }
     }
 
-    // 3. Fallback: check Beam charges directly (skipping any charge/sourceId already recorded or unlocked)
     const chargesRes = await getBeamChargesByReference(job.id);
     if (chargesRes.success && chargesRes.data && chargesRes.data.length > 0) {
       const successfulCharge = chargesRes.data.find((c: any) => {
@@ -420,6 +420,16 @@ export async function syncJobBeamPaymentStatusAction(jobId: string): Promise<{
   message: string;
   paidAmount?: number;
 }> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  } catch (err: any) {
+    return {
+      success: false,
+      isPaid: false,
+      message: err?.message || 'Unauthorized',
+    };
+  }
+
   const result = await checkJobOnlinePaymentStatusAction(jobId);
   if (!result.success) {
     return {
@@ -460,13 +470,17 @@ export interface CreateTopUpOnlinePaymentParams {
 
 /**
  * Create a Beam Payment Link and QR Code for a Member Top-Up
- * Stores a persistent pending intent in prisma.transaction (type: 'BEAM_TOPUP_PENDING')
- * so that webhook or background polling can fulfill the wallet credit automatically anytime.
  */
 export async function createTopUpOnlinePaymentAction(
   params: CreateTopUpOnlinePaymentParams
 ): Promise<CreateOnlinePaymentResult> {
   try {
+    const authUser = await assertServerActionAuthorized({
+      requireWrite: true,
+      forbidRoles: ['rider'],
+      targetBranchId: params.branchId || null,
+    });
+
     const amount = Number(params.amount);
     if (!amount || amount <= 0) {
       return { success: false, error: 'ยอด Top-Up ต้องมากกว่า 0 บาท' };
@@ -492,7 +506,6 @@ export async function createTopUpOnlinePaymentAction(
     const paymentUrl = result.data.url;
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(paymentUrl)}`;
 
-    // Persist pending intent in DB so webhook can fulfill even if user closes the modal
     const metaPayload = {
       paymentLinkId,
       paymentUrl,
@@ -500,9 +513,9 @@ export async function createTopUpOnlinePaymentAction(
       bonusAmount: params.bonusAmount || 0,
       totalCredit: params.totalCredit || amount,
       packageName: params.packageName || 'TOPUP',
-      branchId: params.branchId || null,
-      actorId: params.actorId || null,
-      actorName: params.actorName || 'Staff',
+      branchId: params.branchId || authUser.branchId || null,
+      actorId: authUser.id,
+      actorName: authUser.name || authUser.email || 'Staff',
       priceListId: params.priceListId || null,
     };
 
@@ -541,14 +554,13 @@ export async function createTopUpOnlinePaymentAction(
 
 /**
  * Check payment status of a Top-up Payment Link
- * Checks DB status first (for instant fulfillment if webhook arrived),
- * or queries Beam API and fulfills immediately if paid.
  */
 export async function checkTopUpPaymentStatusAction(
   paymentLinkId: string
 ): Promise<CheckPaymentStatusResult> {
   try {
-    // 1. Check if already marked as COMPLETED in DB (fulfilled by Webhook)
+    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+
     const completedIntent = await prisma.transaction.findFirst({
       where: {
         type: 'BEAM_TOPUP_PENDING',
@@ -566,7 +578,6 @@ export async function checkTopUpPaymentStatusAction(
       };
     }
 
-    // 2. Query Beam API directly
     const linkCheck = await getBeamPaymentLink(paymentLinkId);
     if (!linkCheck.success || !linkCheck.data) {
       return { success: false, isPaid: false, error: linkCheck.error };
@@ -582,7 +593,6 @@ export async function checkTopUpPaymentStatusAction(
 
     const paidAmount = linkCheck.data.amount ? linkCheck.data.amount / 100 : undefined;
 
-    // 3. Fulfill pending top-up in DB if still pending
     const pendingIntent = await prisma.transaction.findFirst({
       where: {
         type: 'BEAM_TOPUP_PENDING',
@@ -641,5 +651,3 @@ export async function checkTopUpPaymentStatusAction(
     return { success: false, isPaid: false, error: err.message };
   }
 }
-
-

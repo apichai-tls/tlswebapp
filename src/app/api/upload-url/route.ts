@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateGcsPath, generateUploadUrl, bucketName } from '@/lib/gcs';
-import { resolveRequestUser } from '@/lib/server-auth';
+import { prisma } from '@/lib/prisma';
+import { resolveRequestUser, canUserAccessJob } from '@/lib/server-auth';
 import { verifyCustomerToken, verifyServiceApiKey } from '@/lib/external-api-auth';
 
 const ALLOWED_EXTENSIONS = new Set([
@@ -43,17 +44,24 @@ export async function POST(request: NextRequest) {
   try {
     // 1. Enforce staff/rider session or external API/customer authentication
     const { user } = await resolveRequestUser(request);
+    if (user && !user.isActive) {
+      return NextResponse.json(
+        { error: 'Forbidden: This account has been deactivated' },
+        { status: 403 }
+      );
+    }
+
     const authHeader = request.headers.get('authorization');
     const hasApiKeyHeader = Boolean(request.headers.get('x-api-key') || request.headers.get('X-API-KEY'));
     const isExternalAuthorized =
-      (!user || !user.isActive) &&
+      !user &&
       ((hasApiKeyHeader && verifyServiceApiKey(request)) ||
         (authHeader ? Boolean(verifyCustomerToken(authHeader)) : false));
 
-    if ((!user || !user.isActive) && !isExternalAuthorized) {
+    if (!user && !isExternalAuthorized) {
       return NextResponse.json(
         { error: 'Unauthorized: Valid staff or rider session required for upload' },
-        { status: user && !user.isActive ? 403 : 401 }
+        { status: 401 }
       );
     }
 
@@ -66,24 +74,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'entityType and entityId are required' }, { status: 400 });
     }
 
-    if (!ALLOWED_ENTITY_TYPES.has(String(entityType).trim())) {
+    const cleanEntityType = String(entityType).trim();
+    if (!ALLOWED_ENTITY_TYPES.has(cleanEntityType)) {
       return NextResponse.json({ error: 'Invalid entityType' }, { status: 400 });
     }
     const normalizedGcsEntityType = (
-      entityType === 'jobs'
+      cleanEntityType === 'jobs'
         ? 'job'
-        : entityType === 'riders'
+        : cleanEntityType === 'riders'
           ? 'rider'
-          : entityType === 'tasks'
+          : cleanEntityType === 'tasks'
             ? 'task'
-            : ['job', 'rider', 'system', 'task'].includes(entityType)
-              ? entityType
+            : ['job', 'rider', 'system', 'task'].includes(cleanEntityType)
+              ? cleanEntityType
               : 'system'
     ) as 'job' | 'rider' | 'system' | 'task';
 
     const cleanEntityId = String(entityId).trim();
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(cleanEntityId)) {
       return NextResponse.json({ error: 'Invalid entityId format' }, { status: 400 });
+    }
+
+    // Enforce job-level authorization when staff/rider uploads to an existing job
+    if (user && normalizedGcsEntityType === 'job' && cleanEntityId !== 'temp') {
+      const targetJob = await prisma.job.findUnique({
+        where: { id: cleanEntityId },
+        select: {
+          id: true,
+          branchId: true,
+          riderId: true,
+          pickupRiderId: true,
+          deliveryRiderId: true,
+          status: true,
+        },
+      });
+      if (targetJob && !canUserAccessJob(user, targetJob)) {
+        return NextResponse.json(
+          { error: 'Forbidden: You are not authorized to upload files for this job' },
+          { status: 403 }
+        );
+      }
     }
 
     const cleanSubType = subType ? String(subType).trim() : undefined;

@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { prisma } from '@/lib/prisma';
 import { dbCache } from '@/lib/db-cache';
 
@@ -49,13 +50,129 @@ interface CachedUserEntry {
   cachedAt: number;
 }
 
+const REVOCATION_SETTING_KEY = 'auth_session_revocations';
+const REVOCATION_SYNC_TTL_MS = 15000;
+
+interface RevocationState {
+  users: Record<string, number>;   // userId -> revokedBeforeMs
+  tokens: Record<string, number>;  // tokenSha256 -> expMs
+}
+
 const globalForAuth = globalThis as unknown as {
   __tlsAuthUserCache?: Map<string, CachedUserEntry>;
   __tlsBranchesCache?: { branches: { id: string; name: string; area?: string | null }[]; cachedAt: number };
+  __tlsRevokedTokens?: Map<string, number>;
+  __tlsUserRevokedBefore?: Map<string, number>;
+  __tlsRevocationSyncedAt?: number;
 };
 
 const userAuthCache = globalForAuth.__tlsAuthUserCache || new Map<string, CachedUserEntry>();
 globalForAuth.__tlsAuthUserCache = userAuthCache;
+
+const revokedTokensMap = globalForAuth.__tlsRevokedTokens || new Map<string, number>();
+globalForAuth.__tlsRevokedTokens = revokedTokensMap;
+
+const userRevokedBeforeMap = globalForAuth.__tlsUserRevokedBefore || new Map<string, number>();
+globalForAuth.__tlsUserRevokedBefore = userRevokedBeforeMap;
+
+function hashSessionToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('base64url');
+}
+
+function pruneExpiredRevocations(now = Date.now()) {
+  for (const [tokenHash, exp] of revokedTokensMap.entries()) {
+    if (exp <= now) revokedTokensMap.delete(tokenHash);
+  }
+  for (const [uid, ts] of userRevokedBeforeMap.entries()) {
+    if (now - ts > SESSION_TTL_MS) userRevokedBeforeMap.delete(uid);
+  }
+}
+
+async function syncRevocationsFromDb(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && globalForAuth.__tlsRevocationSyncedAt && now - globalForAuth.__tlsRevocationSyncedAt < REVOCATION_SYNC_TTL_MS) {
+    return;
+  }
+  globalForAuth.__tlsRevocationSyncedAt = now;
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: REVOCATION_SETTING_KEY } });
+    if (row?.value) {
+      const parsed = JSON.parse(row.value) as Partial<RevocationState>;
+      if (parsed.tokens && typeof parsed.tokens === 'object') {
+        for (const [hash, exp] of Object.entries(parsed.tokens)) {
+          if (typeof exp === 'number' && exp > now) {
+            revokedTokensMap.set(hash, exp);
+          }
+        }
+      }
+      if (parsed.users && typeof parsed.users === 'object') {
+        for (const [uid, ts] of Object.entries(parsed.users)) {
+          if (typeof ts === 'number' && now - ts <= SESSION_TTL_MS) {
+            const existing = userRevokedBeforeMap.get(uid) || 0;
+            if (ts > existing) userRevokedBeforeMap.set(uid, ts);
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore DB read errors during revocation sync
+  }
+}
+
+async function persistRevocationsToDb(): Promise<void> {
+  const now = Date.now();
+  pruneExpiredRevocations(now);
+  const state: RevocationState = {
+    users: Object.fromEntries(userRevokedBeforeMap.entries()),
+    tokens: Object.fromEntries(revokedTokensMap.entries()),
+  };
+  try {
+    await prisma.setting.upsert({
+      where: { key: REVOCATION_SETTING_KEY },
+      update: { value: JSON.stringify(state) },
+      create: { key: REVOCATION_SETTING_KEY, value: JSON.stringify(state) },
+    });
+    globalForAuth.__tlsRevocationSyncedAt = now;
+  } catch {
+    // Ignore persistence error if DB is unreachable
+  }
+}
+
+export async function revokeSessionToken(token?: string | null, userId?: string | null): Promise<void> {
+  const now = Date.now();
+  if (token) {
+    const verified = verifyStaffSessionToken(token);
+    const exp = verified?.exp || now + SESSION_TTL_MS;
+    revokedTokensMap.set(hashSessionToken(token), exp);
+    if (!userId && verified?.id) {
+      userId = verified.id;
+    }
+  }
+  if (userId) {
+    invalidateServerAuthCache(userId);
+  }
+  await persistRevocationsToDb();
+}
+
+export async function revokeAllUserSessions(userId: string): Promise<void> {
+  if (!userId) return;
+  userRevokedBeforeMap.set(userId, Date.now());
+  invalidateServerAuthCache(userId);
+  await persistRevocationsToDb();
+}
+
+function isTokenRevoked(token: string, verified: { id: string; iat?: number }): boolean {
+  const tokenHash = hashSessionToken(token);
+  const revokedExp = revokedTokensMap.get(tokenHash);
+  if (revokedExp && revokedExp > Date.now()) {
+    return true;
+  }
+  const revokedBefore = userRevokedBeforeMap.get(verified.id);
+  if (revokedBefore && typeof verified.iat === 'number' && verified.iat <= revokedBefore) {
+    return true;
+  }
+  return false;
+}
 
 export function invalidateServerAuthCache(userId?: string) {
   if (userId) {
@@ -172,6 +289,11 @@ export function verifyStaffSessionToken(token: string): {
       return null;
     }
 
+    // Enforce immediate in-memory revocation check
+    if (isTokenRevoked(token, parsed)) {
+      return null;
+    }
+
     return parsed;
   } catch {
     return null;
@@ -285,19 +407,57 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
   const sessionToken = bearerToken || cookies['tls_session'] || url.searchParams.get('token');
 
   if (sessionToken) {
+    await syncRevocationsFromDb();
     const verified = verifyStaffSessionToken(sessionToken);
-    if (verified?.id) {
+    if (verified?.id && !isTokenRevoked(sessionToken, verified)) {
       const dbUser = await lookupAuthoritativeUser(verified.id);
       if (dbUser) {
         return { user: dbUser, explicitCredentialsProvided: true };
       }
     }
-    // Invalid or expired session token provided
+    // Invalid, expired, or revoked session token provided
     return { user: null, explicitCredentialsProvided: true };
   }
 
   // No verified session token provided
   return { user: null, explicitCredentialsProvided: false };
+}
+
+interface ServerActionContextStore {
+  sessionToken?: string | null;
+  internalSystemUser?: ServerAuthUser | null;
+}
+
+const serverActionAuthContext = new AsyncLocalStorage<ServerActionContextStore>();
+
+/**
+ * Runs a function within an explicit session token context (used by server-side test suites
+ * or internal callers where Next.js request cookies are not active).
+ * The token still undergoes full HMAC verification, revocation check, and DB user lookup.
+ */
+export function runWithSessionToken<T>(sessionToken: string | null, fn: () => Promise<T>): Promise<T> {
+  return serverActionAuthContext.run({ sessionToken }, fn);
+}
+
+/**
+ * Runs a function within an unforgeable internal system context (e.g. HMAC-verified Beam webhook).
+ */
+export function runWithInternalSystemAuth<T>(
+  actorOrFn: { id: string; name?: string; email?: string } | (() => Promise<T>),
+  maybeFn?: () => Promise<T>
+): Promise<T> {
+  const fn = typeof actorOrFn === 'function' ? actorOrFn : maybeFn!;
+  const systemActor = typeof actorOrFn === 'function' ? { id: '__internal_system__', name: 'System Internal' } : actorOrFn;
+  const internalSystemUser: ServerAuthUser = {
+    id: systemActor.id,
+    email: systemActor.email || 'system@tls.internal',
+    name: systemActor.name || 'System Internal',
+    role: 'admin',
+    permissions: ['users', 'accounting', 'reports'],
+    isActive: true,
+    allowedBranchIds: 'ALL',
+  };
+  return serverActionAuthContext.run({ internalSystemUser }, fn);
 }
 
 /**
@@ -309,6 +469,24 @@ export async function resolveServerActionUser(): Promise<{
   user: ServerAuthUser | null;
   explicitCredentialsProvided: boolean;
 }> {
+  const localCtx = serverActionAuthContext.getStore();
+  if (localCtx?.internalSystemUser) {
+    return { user: localCtx.internalSystemUser, explicitCredentialsProvided: true };
+  }
+  if (localCtx && 'sessionToken' in localCtx) {
+    const token = localCtx.sessionToken;
+    if (!token) {
+      return { user: null, explicitCredentialsProvided: false };
+    }
+    await syncRevocationsFromDb();
+    const verified = verifyStaffSessionToken(token);
+    if (verified?.id && !isTokenRevoked(token, verified)) {
+      const dbUser = await lookupAuthoritativeUser(verified.id);
+      return { user: dbUser, explicitCredentialsProvided: true };
+    }
+    return { user: null, explicitCredentialsProvided: true };
+  }
+
   try {
     const { cookies, headers } = await import('next/headers');
     const cookieStore = await cookies();
@@ -320,8 +498,9 @@ export async function resolveServerActionUser(): Promise<{
     const sessionToken = bearerToken || sessionCookie;
 
     if (sessionToken) {
+      await syncRevocationsFromDb();
       const verified = verifyStaffSessionToken(sessionToken);
-      if (verified?.id) {
+      if (verified?.id && !isTokenRevoked(sessionToken, verified)) {
         const dbUser = await lookupAuthoritativeUser(verified.id);
         return { user: dbUser, explicitCredentialsProvided: true };
       }
@@ -343,6 +522,8 @@ export async function assertServerActionAuthorized(options?: {
   requireAdmin?: boolean;
   requiredPermission?: string;
   targetBranchId?: string | null;
+  forbidRoles?: string[];
+  allowedRoles?: string[];
 }): Promise<ServerAuthUser> {
   const { user, explicitCredentialsProvided } = await resolveServerActionUser();
 
@@ -358,6 +539,20 @@ export async function assertServerActionAuthorized(options?: {
   }
 
   const role = (user.role || '').toLowerCase();
+
+  if (options?.forbidRoles && options.forbidRoles.some((r) => r.toLowerCase() === role)) {
+    throw new Error(`Forbidden: Role '${role}' is not permitted to perform this operation`);
+  }
+
+  if (
+    options?.allowedRoles &&
+    options.allowedRoles.length > 0 &&
+    !options.allowedRoles.some((r) => r.toLowerCase() === role) &&
+    role !== 'admin' &&
+    role !== 'superadmin'
+  ) {
+    throw new Error(`Forbidden: Role '${role}' does not have access to this operation`);
+  }
 
   if (options?.requireWrite && role === 'spectator') {
     throw new Error('Forbidden: Spectator role has read-only access and cannot modify data');
@@ -392,6 +587,12 @@ export async function assertServerActionAuthorized(options?: {
 }
 
 // ─── Granular Role-Based Permission Gates ───────────────────────────────────
+
+export function isAdminOrSuperadmin(user: { role?: string | null } | null | undefined): boolean {
+  if (!user) return false;
+  const role = (user.role || '').toLowerCase();
+  return role === 'admin' || role === 'superadmin';
+}
 
 export function canAccessCustomerRecords(
   user: ServerAuthUser | null,
@@ -483,8 +684,7 @@ export function canUserAccessJob(
       if (user.allowedBranchIds === 'ALL' || !job.branchId) return true;
       return user.allowedBranchIds.includes(job.branchId);
     }
-    if (user.allowedBranchIds === 'ALL') return true;
-    return !job.branchId || user.allowedBranchIds.includes(job.branchId);
+    return false;
   }
 
   if (user.allowedBranchIds === 'ALL') {
@@ -508,23 +708,23 @@ export function buildJobAuthWhereClause(user: ServerAuthUser | null): Record<str
 
   const role = (user.role || '').toLowerCase();
   if (role === 'rider') {
+    const unassignedFilter: Record<string, any> = {
+      status: { in: ['pending', 'tba'] },
+      riderId: null,
+      pickupRiderId: null,
+    };
     if (user.allowedBranchIds !== 'ALL') {
-      return {
-        OR: [
-          { riderId: user.id },
-          { pickupRiderId: user.id },
-          { deliveryRiderId: user.id },
-          { branchId: { in: user.allowedBranchIds } },
-          { branchId: null },
-        ],
-      };
+      unassignedFilter.OR = [
+        { branchId: { in: user.allowedBranchIds } },
+        { branchId: null },
+      ];
     }
     return {
       OR: [
         { riderId: user.id },
         { pickupRiderId: user.id },
         { deliveryRiderId: user.id },
-        { status: { in: ['pending', 'tba'] } },
+        unassignedFilter,
       ],
     };
   }

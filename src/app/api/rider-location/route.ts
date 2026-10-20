@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { resolveRequestUser } from '@/lib/server-auth';
 
 /**
  * PATCH /api/rider-location
@@ -8,17 +9,32 @@ import { prisma } from '@/lib/prisma';
  */
 export async function PATCH(req: NextRequest) {
   try {
-    const { riderId, lat, lng } = await req.json();
+    const { user } = await resolveRequestUser(req);
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized: Valid session required' }, { status: 401 });
+    }
+    if (!user.isActive) {
+      return NextResponse.json({ error: 'Forbidden: Account is deactivated' }, { status: 403 });
+    }
+
+    const body = await req.json();
+    const riderId = body.riderId || body.id;
+    const { lat, lng } = body;
 
     if (!riderId || typeof lat !== 'number' || typeof lng !== 'number') {
       return NextResponse.json({ error: 'Missing riderId, lat, or lng' }, { status: 400 });
+    }
+
+    const role = (user.role || '').toLowerCase();
+    if (role === 'rider' && riderId !== user.id) {
+      return NextResponse.json({ error: 'Forbidden: Cannot update another rider location' }, { status: 403 });
     }
 
     await prisma.rider.update({
       where: { id: riderId },
       data: {
         currentLat: lat,
-        currentLng:  lng,
+        currentLng: lng,
       },
     });
 
@@ -34,8 +50,16 @@ export async function PATCH(req: NextRequest) {
  * Lightweight endpoint for Admin Live Map real-time GPS polling.
  * Returns only active riders with their current coordinates and status.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const { user } = await resolveRequestUser(req);
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized: Valid session required' }, { status: 401 });
+    }
+    if (!user.isActive) {
+      return NextResponse.json({ error: 'Forbidden: Account is deactivated' }, { status: 403 });
+    }
+
     const riders = await prisma.rider.findMany({
       where: { isActive: true },
       select: {
@@ -60,4 +84,3 @@ export async function GET() {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
-

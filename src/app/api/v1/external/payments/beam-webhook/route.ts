@@ -4,6 +4,7 @@ import { verifyBeamWebhookSignature } from '@/lib/external-api-auth'
 import { invalidateDbCache } from '@/lib/db-cache'
 import { publishOrderEvent } from '@/lib/realtime-bus'
 import { processTopUpAction, lockJobRowForUpdate } from '@/actions/db'
+import { runWithInternalSystemAuth } from '@/lib/server-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -176,7 +177,7 @@ export async function POST(req: Request) {
       const finalBonus = meta.bonusAmount || 0
       const finalTotalCredit = meta.totalCredit || (paidAmount + finalBonus)
 
-      await processTopUpAction({
+      await runWithInternalSystemAuth(() => processTopUpAction({
         receiptNumber,
         customerId: pendingTopUp.memberId,
         paidAmount,
@@ -189,7 +190,7 @@ export async function POST(req: Request) {
         branchId: meta.branchId || null,
         priceListId: meta.priceListId || null,
         paymentLinkId: paymentLinkId || meta.paymentLinkId || undefined,
-      })
+      }))
 
       await prisma.transaction.update({
         where: { id: pendingTopUp.id },

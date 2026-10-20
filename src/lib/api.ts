@@ -90,11 +90,7 @@ export function getClientAuthUser(): {
   try {
     const raw = localStorage.getItem('authUser');
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed?.id && typeof document !== 'undefined' && !document.cookie.includes('tls_user_id=')) {
-      document.cookie = `tls_user_id=${encodeURIComponent(parsed.id)}; path=/; max-age=${60 * 60 * 20}; SameSite=Lax`;
-    }
-    return parsed;
+    return JSON.parse(raw);
   } catch {
     return null;
   }
@@ -103,9 +99,6 @@ export function getClientAuthUser(): {
 export function getClientAuthHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...(extra || {}) };
   const user = getClientAuthUser();
-  if (user?.id) {
-    headers['x-tls-user-id'] = String(user.id);
-  }
   if (user?.sessionToken) {
     headers['Authorization'] = `Bearer ${user.sessionToken}`;
   }
@@ -526,7 +519,6 @@ export function startRealtimeConnection(forceReconnect = false) {
 
   eventSourceUserId = currentUid;
   const params = new URLSearchParams();
-  if (currentUid) params.set('userId', currentUid);
   if (lastServerSyncMs > 0) params.set('since', String(lastServerSyncMs - 2000));
 
   const streamUrl = `/api/events/stream${params.toString() ? `?${params.toString()}` : ''}`;
@@ -825,21 +817,48 @@ export const api = {
 
     inFlightDeltaPromise = (async () => {
       try {
-        let currentSince =
+        const baseSince =
           sinceMs ?? (lastServerSyncMs > 0 ? Math.max(0, lastServerSyncMs - 3000) : Date.now() - 60_000);
         let totalJobsUpdated = 0;
         let totalCustomersUpdated = 0;
-        let hasMore = true;
+        let hasMoreJobs = true;
+        let hasMoreCustomers = true;
+        let jobCursor: { updatedAt: number; id: string } | null = null;
+        let custCursor: { updatedAt: number; id: string } | null = null;
         let pageCount = 0;
         let highestServerTime = lastServerSyncMs;
+        let completedCleanly = false;
 
-        // Multi-page delta recovery loop: Fetch every page until hasMore is false before advancing sync checkpoint
-        while (hasMore && pageCount < 20) {
+        // Multi-page delta recovery loop using stable composite cursors (updatedAt, id)
+        // Paginates jobs and customers independently and only advances the checkpoint when BOTH complete
+        while ((hasMoreJobs || hasMoreCustomers) && pageCount < 50) {
           pageCount++;
-          const res = await fetch(`/api/jobs/delta?since=${encodeURIComponent(String(currentSince))}&limit=250`, {
+          const qs = new URLSearchParams();
+          qs.set('since', String(baseSince));
+          qs.set('limit', '250');
+          qs.set('custLimit', '100');
+
+          if (!hasMoreJobs) {
+            qs.set('skipJobs', '1');
+          } else if (jobCursor) {
+            qs.set('cursorUpdatedAt', String(jobCursor.updatedAt));
+            qs.set('cursorId', jobCursor.id);
+          }
+
+          if (!hasMoreCustomers) {
+            qs.set('skipCustomers', '1');
+          } else if (custCursor) {
+            qs.set('custCursorUpdatedAt', String(custCursor.updatedAt));
+            qs.set('custCursorId', custCursor.id);
+          }
+
+          const res = await fetch(`/api/jobs/delta?${qs.toString()}`, {
             headers: getClientAuthHeaders(),
           });
-          if (!res.ok) break;
+          if (!res.ok) {
+            completedCleanly = false;
+            break;
+          }
 
           const data = await res.json();
           let pageJobsUpdated = 0;
@@ -912,25 +931,64 @@ export const api = {
             highestServerTime = data.serverTime;
           }
 
-          if (typeof data.maxRevision === 'number' && data.maxRevision > currentSince) {
-            currentSince = data.maxRevision;
-          }
-
           if (data.openShifts && onOpenShiftsSyncCallback) {
             onOpenShiftsSyncCallback(data.openShifts);
           }
 
-          hasMore = Boolean(data.hasMore);
-          if ((!data.jobs || data.jobs.length === 0) && (!data.customers || data.customers.length === 0)) {
-            hasMore = false;
+          const nextHasMoreJobs =
+            data.hasMoreJobs !== undefined ? Boolean(data.hasMoreJobs) : Boolean(data.hasMore && Array.isArray(data.jobs) && data.jobs.length > 0);
+          const nextHasMoreCustomers =
+            data.hasMoreCustomers !== undefined ? Boolean(data.hasMoreCustomers) : false;
+
+          if (nextHasMoreJobs) {
+            if (data.nextJobCursor && data.nextJobCursor.id) {
+              jobCursor = {
+                updatedAt: Number(data.nextJobCursor.updatedAt) || baseSince,
+                id: String(data.nextJobCursor.id),
+              };
+            } else if (Array.isArray(data.jobs) && data.jobs.length > 0) {
+              const lastJ = data.jobs[data.jobs.length - 1];
+              jobCursor = {
+                updatedAt: lastJ.updatedAt ? new Date(lastJ.updatedAt).getTime() : baseSince,
+                id: String(lastJ.id),
+              };
+            } else {
+              hasMoreJobs = false;
+            }
+          }
+          hasMoreJobs = nextHasMoreJobs && Boolean(jobCursor);
+
+          if (nextHasMoreCustomers) {
+            if (data.nextCustomerCursor && data.nextCustomerCursor.id) {
+              custCursor = {
+                updatedAt: Number(data.nextCustomerCursor.updatedAt) || baseSince,
+                id: String(data.nextCustomerCursor.id),
+              };
+            } else if (Array.isArray(data.customers) && data.customers.length > 0) {
+              const lastC = data.customers[data.customers.length - 1];
+              custCursor = {
+                updatedAt: lastC.updatedAt ? new Date(lastC.updatedAt).getTime() : baseSince,
+                id: String(lastC.id),
+              };
+            } else {
+              hasMoreCustomers = false;
+            }
+          }
+          hasMoreCustomers = nextHasMoreCustomers && Boolean(custCursor);
+
+          if (!hasMoreJobs && !hasMoreCustomers) {
+            completedCleanly = true;
+            break;
           }
         }
 
-        // Only advance sync checkpoint after all pages are completely reconciled
-        if (highestServerTime > lastServerSyncMs) {
-          lastServerSyncMs = highestServerTime;
+        // Do NOT advance synchronization checkpoint if recovery stopped before completion
+        if (completedCleanly) {
+          if (highestServerTime > lastServerSyncMs) {
+            lastServerSyncMs = highestServerTime;
+          }
+          realtimeState.lastSyncAt = Date.now();
         }
-        realtimeState.lastSyncAt = Date.now();
 
         if (totalJobsUpdated > 0) api.notify('jobs');
         if (totalCustomersUpdated > 0) api.notify('customers');

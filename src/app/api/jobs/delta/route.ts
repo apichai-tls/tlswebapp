@@ -12,6 +12,15 @@ export const dynamic = 'force-dynamic';
 
 const inFlightDeltaQueries = new Map<string, Promise<any>>();
 
+function parseTimestampParam(raw: string | null): number | null {
+  if (!raw) return null;
+  const asNum = Number(raw);
+  if (!isNaN(asNum) && asNum > 0) return asNum;
+  const asDate = Date.parse(raw);
+  if (!isNaN(asDate)) return asDate;
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { user, explicitCredentialsProvided } = await resolveRequestUser(request);
@@ -31,67 +40,117 @@ export async function GET(request: NextRequest) {
 
     const url = new URL(request.url);
     const sinceParam = url.searchParams.get('since');
-    const limit = Math.min(500, Math.max(10, Number(url.searchParams.get('limit')) || 250));
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 250));
+    const custLimit = Math.min(500, Math.max(1, Number(url.searchParams.get('custLimit')) || 100));
 
-    let sinceMs = Date.now() - 60000;
-    if (sinceParam) {
-      const asNum = Number(sinceParam);
-      if (!isNaN(asNum) && asNum > 0) {
-        sinceMs = asNum;
-      } else {
-        const asDate = Date.parse(sinceParam);
-        if (!isNaN(asDate)) sinceMs = asDate;
-      }
-    }
+    const cursorUpdatedAtMs = parseTimestampParam(url.searchParams.get('cursorUpdatedAt'));
+    const cursorId = url.searchParams.get('cursorId')?.trim() || null;
+
+    const custCursorUpdatedAtMs = parseTimestampParam(url.searchParams.get('custCursorUpdatedAt'));
+    const custCursorId = url.searchParams.get('custCursorId')?.trim() || null;
+
+    const skipJobs = url.searchParams.get('skipJobs') === '1' || url.searchParams.get('skipJobs') === 'true';
+    const skipCustomers = url.searchParams.get('skipCustomers') === '1' || url.searchParams.get('skipCustomers') === 'true';
+
+    const parsedSince = parseTimestampParam(sinceParam);
+    const sinceMs = parsedSince !== null ? parsedSince : Date.now() - 60000;
 
     // Clamp lookback to max 24h
     const minAllowedMs = Date.now() - 24 * 60 * 60 * 1000;
     const effectiveSinceDate = new Date(Math.max(sinceMs, minAllowedMs));
 
     const authWhere = buildJobAuthWhereClause(user);
-    const scopeKey = `${user.role}:${Array.isArray(user.allowedBranchIds) ? user.allowedBranchIds.join(',') : 'ALL'}:${limit}`;
-    const bucketKey = `${scopeKey}:${Math.floor(effectiveSinceDate.getTime() / 250)}`;
+    const isInitialPage = !cursorUpdatedAtMs && !cursorId && !custCursorUpdatedAtMs && !custCursorId && !skipJobs && !skipCustomers;
+    const scopeKey = `${user.id}:${user.role}:${Array.isArray(user.allowedBranchIds) ? user.allowedBranchIds.join(',') : 'ALL'}:${limit}:${custLimit}`;
+    const bucketKey = isInitialPage
+      ? `${scopeKey}:init:${Math.floor(effectiveSinceDate.getTime() / 250)}`
+      : `${scopeKey}:cursor:${cursorUpdatedAtMs || 0}:${cursorId || ''}:${custCursorUpdatedAtMs || 0}:${custCursorId || ''}:${skipJobs}:${skipCustomers}`;
 
     let queryPromise = inFlightDeltaQueries.get(bucketKey);
     if (!queryPromise) {
-      const jobWhere: any = authWhere
-        ? {
-            AND: [
-              { updatedAt: { gt: effectiveSinceDate } },
-              authWhere,
-            ],
-          }
-        : { updatedAt: { gt: effectiveSinceDate } };
-
-      const customerWhere: any = {
-        updatedAt: { gt: effectiveSinceDate },
-      };
-      if (user.allowedBranchIds !== 'ALL') {
-        customerWhere.OR = [
-          { branchId: { in: user.allowedBranchIds } },
-          { branchId: null },
-        ];
+      // 1. Build stable composite cursor condition for Jobs: (updatedAt, id)
+      let jobCursorCondition: any;
+      if (cursorUpdatedAtMs !== null && cursorId) {
+        const cursorDate = new Date(cursorUpdatedAtMs);
+        jobCursorCondition = {
+          OR: [
+            { updatedAt: { gt: cursorDate } },
+            { updatedAt: cursorDate, id: { gt: cursorId } },
+          ],
+        };
+      } else if (cursorId) {
+        jobCursorCondition = {
+          OR: [
+            { updatedAt: { gt: effectiveSinceDate } },
+            { updatedAt: effectiveSinceDate, id: { gt: cursorId } },
+          ],
+        };
+      } else {
+        jobCursorCondition = { updatedAt: { gte: effectiveSinceDate } };
       }
 
+      const jobWhere: any = authWhere
+        ? { AND: [jobCursorCondition, authWhere] }
+        : jobCursorCondition;
+
+      // 2. Build stable composite cursor condition for Customers: (updatedAt, id)
+      let custCursorCondition: any;
+      if (custCursorUpdatedAtMs !== null && custCursorId) {
+        const custCursorDate = new Date(custCursorUpdatedAtMs);
+        custCursorCondition = {
+          OR: [
+            { updatedAt: { gt: custCursorDate } },
+            { updatedAt: custCursorDate, id: { gt: custCursorId } },
+          ],
+        };
+      } else if (custCursorId) {
+        custCursorCondition = {
+          OR: [
+            { updatedAt: { gt: effectiveSinceDate } },
+            { updatedAt: effectiveSinceDate, id: { gt: custCursorId } },
+          ],
+        };
+      } else {
+        custCursorCondition = { updatedAt: { gte: effectiveSinceDate } };
+      }
+
+      const customerWhere: any =
+        user.allowedBranchIds !== 'ALL'
+          ? {
+              AND: [
+                custCursorCondition,
+                {
+                  OR: [
+                    { branchId: { in: user.allowedBranchIds } },
+                    { branchId: null },
+                  ],
+                },
+              ],
+            }
+          : custCursorCondition;
+
       queryPromise = Promise.all([
-        prisma.job.findMany({
-          where: jobWhere,
-          orderBy: { updatedAt: 'asc' },
-          take: limit,
-          select: JOB_SELECT_FIELDS,
-        }),
-        user.role === 'rider'
+        skipJobs
+          ? Promise.resolve([])
+          : prisma.job.findMany({
+              where: jobWhere,
+              orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+              take: limit + 1,
+              select: JOB_SELECT_FIELDS,
+            }),
+        skipCustomers || !canAccessCustomerRecords(user)
           ? Promise.resolve([])
           : prisma.customer.findMany({
               where: customerWhere,
-              take: 100,
+              orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+              take: custLimit + 1,
               include: {
                 addresses: {
                   orderBy: { isPrimary: 'desc' },
                 },
               },
             }),
-        user.role === 'rider'
+        !isInitialPage || !canAccessShifts(user)
           ? Promise.resolve([])
           : prisma.cashierShift.findMany({
               where: {
@@ -116,17 +175,45 @@ export async function GET(request: NextRequest) {
     }
 
     const [jobsRaw, customersRaw, openShifts] = await queryPromise;
-    const jobs = jobsRaw.map((j: any) => primeJobCache(j));
-    const customers = customersRaw.map((c: any) => sanitizeCustomerRecord(c));
 
-    const maxRevision = jobs.reduce((max: number, j: any) => {
+    const hasMoreJobs = !skipJobs && jobsRaw.length > limit;
+    const pageJobsRaw = hasMoreJobs ? jobsRaw.slice(0, limit) : jobsRaw;
+
+    const hasMoreCustomers = !skipCustomers && customersRaw.length > custLimit;
+    const pageCustomersRaw = hasMoreCustomers ? customersRaw.slice(0, custLimit) : customersRaw;
+
+    const jobs = pageJobsRaw.map((j: any) => primeJobCache(j));
+    const customers = pageCustomersRaw.map((c: any) => sanitizeCustomerRecord(c));
+
+    const lastJob = pageJobsRaw.length > 0 ? pageJobsRaw[pageJobsRaw.length - 1] : null;
+    const nextJobCursor =
+      hasMoreJobs && lastJob
+        ? {
+            updatedAt: new Date(lastJob.updatedAt).getTime(),
+            id: lastJob.id,
+          }
+        : null;
+
+    const lastCustomer = pageCustomersRaw.length > 0 ? pageCustomersRaw[pageCustomersRaw.length - 1] : null;
+    const nextCustomerCursor =
+      hasMoreCustomers && lastCustomer
+        ? {
+            updatedAt: new Date(lastCustomer.updatedAt).getTime(),
+            id: lastCustomer.id,
+          }
+        : null;
+
+    let maxRevision = effectiveSinceDate.getTime();
+    for (const j of pageJobsRaw) {
       const t = j?.updatedAt ? new Date(j.updatedAt).getTime() : 0;
-      return t > max ? t : max;
-    }, effectiveSinceDate.getTime());
+      if (t > maxRevision) maxRevision = t;
+    }
+    for (const c of pageCustomersRaw) {
+      const t = c?.updatedAt ? new Date(c.updatedAt).getTime() : 0;
+      if (t > maxRevision) maxRevision = t;
+    }
 
-    // Flag hasMore when the batch is full so the client fetches the next page
-    // before advancing its local synchronization watermark
-    const hasMore = jobsRaw.length >= limit;
+    const hasMore = hasMoreJobs || hasMoreCustomers;
 
     return NextResponse.json(
       {
@@ -135,7 +222,12 @@ export async function GET(request: NextRequest) {
         openShifts,
         maxRevision,
         hasMore,
+        hasMoreJobs,
+        nextJobCursor,
+        hasMoreCustomers,
+        nextCustomerCursor,
         limit,
+        custLimit,
         serverTime: Date.now(),
       },
       {

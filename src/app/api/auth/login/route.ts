@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/crypto";
-import { signStaffSessionToken, invalidateServerAuthCache } from "@/lib/server-auth";
+import { signStaffSessionToken, invalidateServerAuthCache, revokeSessionToken, resolveRequestUser } from "@/lib/server-auth";
 
 export async function POST(req: NextRequest) {
   try {
@@ -87,5 +87,34 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error("API login error:", error);
     return NextResponse.json({ success: false, error: error.message || "Internal server error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const authHeader = req.headers.get("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+    const cookieToken = req.cookies.get("tls_session")?.value || null;
+    const token = bearerToken || cookieToken;
+
+    const { user } = await resolveRequestUser(req);
+    await revokeSessionToken(token, user?.id || null);
+
+    const res = NextResponse.json({ success: true });
+    res.cookies.set("tls_session", "", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+    });
+    res.cookies.set("tls_user_id", "", {
+      path: "/",
+      maxAge: 0,
+      sameSite: "lax",
+    });
+    return res;
+  } catch (error: any) {
+    return NextResponse.json({ success: false, error: error.message || "Failed to log out" }, { status: 500 });
   }
 }

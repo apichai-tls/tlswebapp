@@ -1,11 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveRequestUser } from "@/lib/server-auth";
+import { verifyServiceApiKey } from "@/lib/external-api-auth";
 
 const PROMO_BASE = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
 const PROMO_KEY  = process.env.TLS_PROMO_API_KEY || "";
 
 export async function POST(req: NextRequest) {
   try {
+    const { user } = await resolveRequestUser(req);
+    if (user && !user.isActive) {
+      return NextResponse.json({ success: false, error: "Forbidden: Account is deactivated" }, { status: 403 });
+    }
+    const hasApiKeyHeader = Boolean(req.headers.get("x-api-key") || req.headers.get("X-API-KEY"));
+    const isServiceAuthorized = !user && hasApiKeyHeader && verifyServiceApiKey(req);
+
+    if (!user && !isServiceAuthorized) {
+      return NextResponse.json({ success: false, error: "Unauthorized: Valid staff session required" }, { status: 401 });
+    }
+    if (user) {
+      const role = (user.role || "").toLowerCase();
+      if (role === "rider" || role === "spectator") {
+        return NextResponse.json({ success: false, error: "Forbidden: Insufficient permissions to void voucher" }, { status: 403 });
+      }
+    }
+
     const body = await req.json();
     const { code, receiptNo } = body;
     const promoCode = (code || "").trim().toUpperCase();
@@ -56,12 +75,10 @@ export async function POST(req: NextRequest) {
                 code: localCoupon.code,
                 reason: `Restored to ACTIVE on POS void/cancel (receiptNo: ${receiptNo || "N/A"})`,
               }),
-              userId: null,
-              userName: "POS System",
+              userId: user?.id || null,
+              userName: user?.name || user?.email || "POS System",
             },
           }).catch(() => {});
-
-          console.log(`[CustomerVoucher/void] Successfully restored ${promoCode} to ACTIVE`);
         }
         return NextResponse.json({ success: true, isCustomerCoupon: true, restored: restoreRes.count > 0 });
       }

@@ -45,8 +45,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         const parsed = JSON.parse(savedUser);
         // eslint-disable-next-line
         setUser(parsed);
-        if (parsed?.id && typeof document !== 'undefined') {
-          document.cookie = `tls_user_id=${encodeURIComponent(parsed.id)}; path=/; max-age=${60 * 60 * 20}; SameSite=Lax`;
+        if (typeof document !== 'undefined') {
+          document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
         }
       } catch (e) {
         console.error("Failed to parse auth user", e);
@@ -88,8 +88,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(userData);
     localStorage.setItem('authUser', JSON.stringify(userData));
     localStorage.setItem('lastLoginDate', new Date().toDateString());
-    if (userData?.id && typeof document !== 'undefined') {
-      document.cookie = `tls_user_id=${encodeURIComponent(userData.id)}; path=/; max-age=${60 * 60 * 20}; SameSite=Lax`;
+    if (typeof document !== 'undefined') {
+      document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
     }
     return userData;
   };
