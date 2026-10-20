@@ -138,32 +138,38 @@ export async function GET(
       referrer,
     };
 
-    // Update click count & logs
-    link.totalClicks = (link.totalClicks || 0) + 1;
-    link.lastClickedAt = now;
-
-    if (!Array.isArray(link.clickLogs)) link.clickLogs = [];
-    link.clickLogs.unshift(newLog);
-
-    // Keep max 500 recent logs per link to keep storage clean
-    if (link.clickLogs.length > 500) {
-      link.clickLogs = link.clickLogs.slice(0, 500);
-    }
-
-    // Calculate Unique Clicks based on distinct ipHash
-    const uniqueHashes = new Set(link.clickLogs.map((l: any) => l.ipHash));
-    link.uniqueClicks = uniqueHashes.size;
-
-    links[linkIndex] = link;
-
-    // Save updated analytics back to DB
-    prisma.setting
-      .upsert({
+    // Save updated analytics back to DB using row-level lock on Setting to prevent lost click counts under concurrent scans
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT key FROM "Setting" WHERE key = ${SETTING_KEY} FOR UPDATE`;
+      const latestSetting = await tx.setting.findUnique({ where: { key: SETTING_KEY } });
+      let currentLinks: any[] = links;
+      if (latestSetting?.value) {
+        try {
+          currentLinks = JSON.parse(latestSetting.value);
+        } catch {
+          currentLinks = links;
+        }
+      }
+      const idx = currentLinks.findIndex((l: any) => l.slug?.toLowerCase() === targetSlug);
+      if (idx !== -1) {
+        const currentLink = currentLinks[idx];
+        currentLink.totalClicks = (currentLink.totalClicks || 0) + 1;
+        currentLink.lastClickedAt = now;
+        if (!Array.isArray(currentLink.clickLogs)) currentLink.clickLogs = [];
+        currentLink.clickLogs.unshift(newLog);
+        if (currentLink.clickLogs.length > 500) {
+          currentLink.clickLogs = currentLink.clickLogs.slice(0, 500);
+        }
+        const uniqueHashes = new Set(currentLink.clickLogs.map((l: any) => l.ipHash));
+        currentLink.uniqueClicks = uniqueHashes.size;
+        currentLinks[idx] = currentLink;
+      }
+      await tx.setting.upsert({
         where: { key: SETTING_KEY },
-        update: { value: JSON.stringify(links) },
-        create: { key: SETTING_KEY, value: JSON.stringify(links) },
-      })
-      .catch((err) => console.error("Error saving link click stats:", err));
+        update: { value: JSON.stringify(currentLinks) },
+        create: { key: SETTING_KEY, value: JSON.stringify(currentLinks) },
+      });
+    }).catch((err) => console.error("Error saving link click stats:", err));
 
     // Ensure targetUrl has protocol
     let finalTarget = link.targetUrl.trim();

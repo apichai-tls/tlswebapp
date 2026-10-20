@@ -6,8 +6,9 @@ import { calculateWalletExpiryDate, CREDIT_NOTE_SEQ_KEY, generateCreditNoteNumbe
 import { createTask, addTaskNote } from '@/actions/tasks';
 import { type CouponTemplate } from '@/lib/store';
 import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel } from '@/lib/promotions';
-import { invalidateDbCache } from '@/lib/db-cache';
+import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
+import { assertServerActionAuthorized, resolveServerActionUser } from '@/lib/server-auth';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -212,8 +213,8 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
       console.error("Failed to write ActivityLog on customer create:", err.message);
     }
 
-    invalidateDbCache();
-    return { success: true, customer: c };
+    invalidateDbCache('customers');
+    return { success: true, customer: sanitizeCustomerRecord(c) };
   } catch (err: any) {
     console.error("[addCustomerAction Error]:", err);
     if (err?.code === 'P2002') {
@@ -227,9 +228,123 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
   }
 }
 
+async function lockCustomerRowForWallet(tx: any, customerId: string) {
+  await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${customerId} FOR UPDATE`;
+}
+
+export async function lockJobRowForUpdate(tx: any, jobId: string) {
+  await tx.$queryRaw`SELECT id FROM "Job" WHERE id = ${jobId} FOR UPDATE`;
+}
+
+function parseStructuredAdminNotes(raw: string | null | undefined): {
+  obj: Record<string, any>;
+  notes: any[];
+  payments: any[];
+  isStructured: boolean;
+} {
+  if (!raw) return { obj: {}, notes: [], payments: [], isStructured: false };
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return { obj: { notes: parsed }, notes: [...parsed], payments: [], isStructured: false };
+    }
+    if (parsed && typeof parsed === 'object') {
+      const notes = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
+      const payments = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
+      return { obj: { ...parsed }, notes, payments, isStructured: true };
+    }
+  } catch {}
+  return { obj: {}, notes: [], payments: [], isStructured: false };
+}
+
+function mergeAdminNotesJson(
+  existingRaw: string | null | undefined,
+  incomingRaw: string | null | undefined,
+  options?: { isUnlockingPayment?: boolean; isExplicitAdminNotesOnlyEdit?: boolean }
+): string | null {
+  if (incomingRaw === null || incomingRaw === undefined) return incomingRaw as any;
+  if (!existingRaw) return incomingRaw;
+
+  const existing = parseStructuredAdminNotes(existingRaw);
+  const incoming = parseStructuredAdminNotes(incomingRaw);
+  if (!existing.isStructured && existing.notes.length === 0 && existing.payments.length === 0) {
+    return incomingRaw;
+  }
+
+  // 1. Merge payments: unless explicitly unlocking payment, preserve all existing DB payments and append any new incoming payments
+  let mergedPayments: any[] = [];
+  if (options?.isUnlockingPayment) {
+    mergedPayments = incoming.payments;
+  } else {
+    const seenPaymentKeys = new Set<string>();
+    const getPayKey = (p: any, idx: number) => {
+      if (!p || typeof p !== 'object') return `idx-${idx}`;
+      if (p.id) return `id:${p.id}`;
+      if (p.chargeId) return `charge:${p.chargeId}`;
+      return `sig:${Number(p.amount) || 0}|${p.method || ''}|${p.channel || ''}|${p.timestamp || ''}`;
+    };
+    for (let i = 0; i < existing.payments.length; i++) {
+      const p = existing.payments[i];
+      const k = getPayKey(p, i);
+      if (!seenPaymentKeys.has(k)) {
+        seenPaymentKeys.add(k);
+        mergedPayments.push(p);
+      }
+    }
+    for (let i = 0; i < incoming.payments.length; i++) {
+      const p = incoming.payments[i];
+      const k = getPayKey(p, i + existing.payments.length);
+      if (!seenPaymentKeys.has(k)) {
+        seenPaymentKeys.add(k);
+        mergedPayments.push(p);
+      }
+    }
+  }
+
+  // 2. Merge notes: if the caller is explicitly editing/deleting only adminNotesJson and reduced notes count, respect deletion;
+  // otherwise merge existing + incoming notes by id/signature so concurrent saves never lose notes
+  let mergedNotes: any[] = [];
+  if (options?.isExplicitAdminNotesOnlyEdit && incoming.notes.length < existing.notes.length) {
+    mergedNotes = incoming.notes;
+  } else {
+    const seenNoteKeys = new Set<string>();
+    const getNoteKey = (n: any, idx: number) => {
+      if (!n || typeof n !== 'object') return `raw:${String(n)}:${idx}`;
+      if (n.id) return `id:${n.id}`;
+      return `sig:${n.timestamp || n.date || ''}|${n.text || n.note || ''}|${n.user || n.userName || ''}`;
+    };
+    for (let i = 0; i < existing.notes.length; i++) {
+      const n = existing.notes[i];
+      const k = getNoteKey(n, i);
+      if (!seenNoteKeys.has(k)) {
+        seenNoteKeys.add(k);
+        mergedNotes.push(n);
+      }
+    }
+    for (let i = 0; i < incoming.notes.length; i++) {
+      const n = incoming.notes[i];
+      const k = getNoteKey(n, i + existing.notes.length);
+      if (!seenNoteKeys.has(k)) {
+        seenNoteKeys.add(k);
+        mergedNotes.push(n);
+      }
+    }
+  }
+
+  const mergedObj: Record<string, any> = {
+    ...existing.obj,
+    ...incoming.obj,
+    notes: mergedNotes,
+  };
+  if (mergedPayments.length > 0 || Array.isArray(existing.obj.payments) || Array.isArray(incoming.obj.payments)) {
+    mergedObj.payments = mergedPayments;
+  }
+  return JSON.stringify(mergedObj);
+}
+
 export async function updateCustomerAction(id: string, updates: any): Promise<{ success: boolean; customer?: any; error?: string }> {
   try {
-    const currentCustomer = await prisma.customer.findUnique({ where: { id } });
+    let currentCustomer = await prisma.customer.findUnique({ where: { id } });
     if (!currentCustomer) return { success: false, error: "ไม่พบข้อมูลลูกค้าในระบบ (Customer not found)" };
 
     if (updates.updatedAt) {
@@ -250,12 +365,20 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
     data.defaultLng = updates.defaultCoords.lng;
   }
   if (updates.priceListId !== undefined) data.priceListId = updates.priceListId;
+  const isWalletUpdate = updates.creditBalanceDelta !== undefined || updates.creditBalance !== undefined;
   if (updates.creditBalanceDelta !== undefined) {
-    const balBefore = Number(currentCustomer.creditBalance || 0);
     const delta = Number(updates.creditBalanceDelta);
+    if (!Number.isFinite(delta)) {
+      return { success: false, error: "จำนวนเงินที่ต้องการปรับปรุงไม่ถูกต้อง (Invalid amount)" };
+    }
+    const balBefore = Number(currentCustomer.creditBalance || 0);
     data.creditBalance = Math.round((balBefore + delta) * 100) / 100;
   } else if (updates.creditBalance !== undefined) {
-    data.creditBalance = updates.creditBalance;
+    const explicitBal = Number(updates.creditBalance);
+    if (!Number.isFinite(explicitBal)) {
+      return { success: false, error: "ยอดเงินคงเหลือไม่ถูกต้อง (Invalid creditBalance)" };
+    }
+    data.creditBalance = Math.round(explicitBal * 100) / 100;
   }
   if (updates.tier !== undefined) data.tier = updates.tier;
   
@@ -385,16 +508,102 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
   }
 
   let updatedCustomer: any;
+  let walletAdjustedInsideTx = false;
   try {
-    updatedCustomer = await prisma.customer.update({
-      where: { id },
-      data,
-      include: {
-        addresses: {
-          orderBy: { isPrimary: 'desc' }
+    if (isWalletUpdate) {
+      updatedCustomer = await prisma.$transaction(async (tx) => {
+        await lockCustomerRowForWallet(tx, id);
+        const lockedCustomer = await tx.customer.findUnique({ where: { id } });
+        if (!lockedCustomer) {
+          throw new Error("ไม่พบข้อมูลลูกค้าในระบบ (Customer not found)");
         }
-      }
-    });
+        currentCustomer = lockedCustomer;
+        const balBefore = Number(lockedCustomer.creditBalance || 0);
+        let balAfter = balBefore;
+        if (updates.creditBalanceDelta !== undefined) {
+          const delta = Number(updates.creditBalanceDelta);
+          balAfter = Math.round((balBefore + delta) * 100) / 100;
+          if (delta < 0 && (updates.walletTxType === 'DEDUCT' || updates.disallowNegativeBalance) && balAfter < 0) {
+            throw new Error(`ยอดเงินในกระเป๋า Wallet ไม่เพียงพอ (มี ฿${balBefore.toLocaleString()}, ต้องการหัก ฿${Math.abs(delta).toLocaleString()})`);
+          }
+        } else if (updates.creditBalance !== undefined) {
+          balAfter = Math.round(Number(updates.creditBalance) * 100) / 100;
+        }
+        data.creditBalance = balAfter;
+
+        const savedCust = await tx.customer.update({
+          where: { id },
+          data,
+          include: {
+            addresses: {
+              orderBy: { isPrimary: 'desc' }
+            }
+          }
+        });
+
+        const diff = updates.creditBalanceDelta !== undefined
+          ? Number(updates.creditBalanceDelta)
+          : Math.round((balAfter - balBefore) * 100) / 100;
+
+        if (Math.abs(diff) > 0.0001 && !updates.skipAdjustLog && updates.actionSource !== 'topup') {
+          const isAdd = diff >= 0;
+          await tx.activityLog.create({
+            data: {
+              entityId: id,
+              entityType: 'customer',
+              action: 'ADJUST',
+              details: JSON.stringify({
+                customerName: lockedCustomer.name,
+                adjustMode: isAdd ? 'add' : 'deduct',
+                adjustAmount: Math.abs(diff),
+                balanceBefore: balBefore,
+                balanceAfter: balAfter,
+                reason: updates.adjustReason || updates.reason || null,
+              }),
+              userId: updates.actorId || null,
+              userName: updates.actorName || null,
+            }
+          });
+          console.log(`[ActivityLog] Adjusted wallet for customer ${id} (${lockedCustomer.name}): ฿${balBefore} → ฿${balAfter}`);
+
+          if (!updates.skipWalletTx) {
+            const txType = updates.walletTxType || (isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT');
+            const refType = updates.walletRefType || (txType === 'DEDUCT' ? 'job' : 'manual');
+            await tx.walletTransaction.create({
+              data: {
+                customerId: id,
+                customerName: lockedCustomer.name,
+                type: txType,
+                amount: Math.abs(diff),
+                direction: isAdd ? 'CREDIT' : 'DEBIT',
+                balanceBefore: balBefore,
+                balanceAfter: balAfter,
+                reason: updates.adjustReason || updates.reason || null,
+                referenceId: updates.walletRefId || null,
+                referenceType: refType,
+                createdById: updates.actorId || null,
+                createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
+                branchId: updates.branchId || null,
+                approvalStatus: 'PENDING',
+              }
+            });
+          }
+          walletAdjustedInsideTx = true;
+        }
+
+        return savedCust;
+      });
+    } else {
+      updatedCustomer = await prisma.customer.update({
+        where: { id },
+        data,
+        include: {
+          addresses: {
+            orderBy: { isPrimary: 'desc' }
+          }
+        }
+      });
+    }
   } catch (dbErr: any) {
     if (dbErr?.code === 'P2002') {
       const target = dbErr?.meta?.target;
@@ -467,6 +676,7 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
 
   const changes: Record<string, { from: any, to: any } | any> = {};
   for (const key of Object.keys(data)) {
+    if (key === 'passwordHash' || key === 'forcePasswordReset') continue;
     if (currentCustomer[key as keyof typeof currentCustomer] !== data[key]) {
       changes[key] = {
         from: currentCustomer[key as keyof typeof currentCustomer],
@@ -480,8 +690,8 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
       changes.customerName = currentCustomer.name;
 
       // If creditBalance changed, also write a dedicated ADJUST log with clear before/after/diff details
-      // Skip if explicitly suppressed or initiated by topup
-      if (changes.creditBalance && !updates.skipAdjustLog && updates.actionSource !== 'topup') {
+      // Skip if explicitly suppressed, initiated by topup, or already written inside the wallet transaction
+      if (changes.creditBalance && !walletAdjustedInsideTx && !updates.skipAdjustLog && updates.actionSource !== 'topup') {
         const balBefore = Number(currentCustomer.creditBalance || 0);
         const balAfter = Number(data.creditBalance || 0);
         const diff = updates.creditBalanceDelta !== undefined 
@@ -621,7 +831,7 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
       actorId: updates.actorId,
       actorName: updates.actorName,
     });
-    return { success: true, customer: updatedCustomer };
+    return { success: true, customer: sanitizeCustomerRecord(updatedCustomer) };
   } catch (err: any) {
     console.error("[updateCustomerAction Error]:", err);
     if (err?.code === 'P2002') {
@@ -660,7 +870,7 @@ export async function deleteCustomerAction(id: string, actorId?: string, actorNa
   } catch (err: any) {
     console.error("Failed to write ActivityLog on customer delete:", err.message);
   }
-  invalidateDbCache();
+  invalidateDbCache('customers');
   return deleted;
 }
 
@@ -699,6 +909,10 @@ export async function mergeCustomerAction(data: {
     }
 
     const mergeResult = await prisma.$transaction(async (tx) => {
+      const sortedMergeIds = [data.primaryCustomerId, data.duplicateCustomerId].sort();
+      for (const cid of sortedMergeIds) {
+        await lockCustomerRowForWallet(tx, cid);
+      }
       const [primary, duplicate] = await Promise.all([
         tx.customer.findUnique({
           where: { id: data.primaryCustomerId },
@@ -1023,36 +1237,41 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
   deliveryNote?: string;
   isPrimary?: boolean;
 }) {
-  if (addressData.isPrimary) {
-    await prisma.customerAddress.updateMany({
-      where: { customerId, isPrimary: true },
-      data: { isPrimary: false }
-    });
-  }
-  const created = await prisma.customerAddress.create({
-    data: {
-      customerId,
-      label: addressData.label || 'Home Condo',
-      placeName: addressData.placeName || null,
-      address: addressData.address || addressData.placeName || '',
-      roomNumber: addressData.roomNumber || null,
-      district: addressData.district || 'Bangkok',
-      province: addressData.province || 'Bangkok',
-      postalCode: addressData.postalCode || null,
-      googleMapsUrl: addressData.googleMapsUrl || null,
-      leaveWithJuristic: addressData.leaveWithJuristic ?? true,
-      deliveryNote: addressData.deliveryNote || null,
-      isPrimary: Boolean(addressData.isPrimary)
+  const created = await prisma.$transaction(async (tx) => {
+    if (addressData.isPrimary) {
+      await tx.customerAddress.updateMany({
+        where: { customerId, isPrimary: true },
+        data: { isPrimary: false }
+      });
     }
+    const addr = await tx.customerAddress.create({
+      data: {
+        customerId,
+        label: addressData.label || 'Home Condo',
+        placeName: addressData.placeName || null,
+        address: addressData.address || addressData.placeName || '',
+        roomNumber: addressData.roomNumber || null,
+        district: addressData.district || 'Bangkok',
+        province: addressData.province || 'Bangkok',
+        postalCode: addressData.postalCode || null,
+        googleMapsUrl: addressData.googleMapsUrl || null,
+        leaveWithJuristic: addressData.leaveWithJuristic ?? true,
+        deliveryNote: addressData.deliveryNote || null,
+        isPrimary: Boolean(addressData.isPrimary)
+      }
+    });
+
+    if (addressData.isPrimary) {
+      await tx.customer.update({
+        where: { id: customerId },
+        data: { defaultAddress: addressData.address }
+      });
+    }
+
+    return addr;
   });
 
-  if (addressData.isPrimary) {
-    await prisma.customer.update({
-      where: { id: customerId },
-      data: { defaultAddress: addressData.address }
-    });
-  }
-
+  invalidateDbCache('customers');
   return created;
 }
 
@@ -1060,115 +1279,148 @@ export async function deleteCustomerAddressAction(addressId: string, customerId:
   await prisma.customerAddress.delete({
     where: { id: addressId }
   });
+  invalidateDbCache('customers');
   return { success: true };
 }
 
 export async function setPrimaryCustomerAddressAction(customerId: string, addressId: string) {
-  await prisma.customerAddress.updateMany({
-    where: { customerId, isPrimary: true },
-    data: { isPrimary: false }
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.customerAddress.updateMany({
+      where: { customerId, isPrimary: true },
+      data: { isPrimary: false }
+    });
+    const addr = await tx.customerAddress.update({
+      where: { id: addressId },
+      data: { isPrimary: true }
+    });
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { defaultAddress: addr.address }
+    });
+    return addr;
   });
-  const updated = await prisma.customerAddress.update({
-    where: { id: addressId },
-    data: { isPrimary: true }
-  });
-  await prisma.customer.update({
-    where: { id: customerId },
-    data: { defaultAddress: updated.address }
-  });
+  invalidateDbCache('customers');
   return updated;
 }
 
 export async function addJobAction(data: any) {
-  let jobId = data.id;
-  
-  if (!jobId || String(jobId).startsWith('JOB-')) {
-    const year = new Date().getFullYear().toString(); // 4-digit year, auto-changes each year
-    const isTestDb = Boolean(
-      process.env.DATABASE_URL?.includes('/tls_test') || 
+  const year = new Date().getFullYear().toString(); // 4-digit year, auto-changes each year
+  const isTestDb = Boolean(
+    process.env.DATABASE_URL?.includes('/tls_test') ||
       process.env.DIRECT_URL?.includes('/tls_test') ||
       process.env.APP_ENV === 'test'
-    );
-    const prefix = isTestDb ? `T${year}` : year;
+  );
+  const prefix = isTestDb ? `T${year}` : year;
+  const needsSequentialId = !data.id || String(data.id).startsWith('JOB-');
 
-    const latestJob = await prisma.job.findFirst({
-      where: { id: { startsWith: prefix } },
-      orderBy: { id: 'desc' }
-    });
-    
-    if (latestJob) {
-      const numericPart = latestJob.id.replace(/^T/, '').substring(4);
-      const lastNum = parseInt(numericPart, 10);
-      if (!isNaN(lastNum)) {
-        jobId = `${prefix}${(lastNum + 1).toString().padStart(6, '0')}`;
+  const createdJob = await prisma.$transaction(async (tx) => {
+    let jobId = data.id;
+    if (needsSequentialId) {
+      const seqLockKey = `job_seq:${prefix}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${seqLockKey}))`;
+
+      const latestJob = await tx.job.findFirst({
+        where: { id: { startsWith: prefix } },
+        orderBy: { id: 'desc' },
+      });
+
+      if (latestJob) {
+        const numericPart = latestJob.id.replace(/^T/, '').substring(4);
+        const lastNum = parseInt(numericPart, 10);
+        if (!isNaN(lastNum)) {
+          jobId = `${prefix}${(lastNum + 1).toString().padStart(6, '0')}`;
+        } else {
+          jobId = `${prefix}000001`;
+        }
       } else {
         jobId = `${prefix}000001`;
       }
-    } else {
-      jobId = `${prefix}000001`;
     }
-  }
 
-  const createdJob = await prisma.job.create({
-    data: {
-      id: jobId,
-      type: data.type || 'full_service',
-      customerId: data.customerId,
-      customerName: data.customerName,
-      customerPhone: data.customerPhone,
-      pickupLocation: data.pickupLocation,
-      dropoffLocation: data.dropoffLocation,
-      pickupLat: data.pickupCoords?.lat || 0,
-      pickupLng: data.pickupCoords?.lng || 0,
-      dropoffLat: data.dropoffCoords?.lat || 0,
-      dropoffLng: data.dropoffCoords?.lng || 0,
-      distance: data.distance || data.deliveryDistance || data.pickupDistance || 0,
-      fee: Math.max(0, Number(data.fee) || 0),
-      status: data.status,
-      createdAt: data.createdAt,
-      scheduledAt: data.scheduledAt,
-      completedAt: data.completedAt,
-      proofImageUrl: data.proofImageUrl,
-      riderId: data.riderId,
-      bagImageUrl: data.bagImageUrl,
-      billImageUrl: data.billImageUrl,
-      billNo: data.billNo ? String(data.billNo).trim() : null,
-      serviceType: data.serviceType,
-      laundryTypes: data.laundryTypes ? data.laundryTypes.join(',') : null,
-      source: data.source,
-      totalAmount: data.totalAmount !== undefined && data.totalAmount !== null ? Math.max(0, Number(data.totalAmount) || 0) : null,
-      paymentMethod: data.paymentMethod,
-      paymentChannel: data.paymentChannel,
-      isPaid: data.isPaid || false,
-      isShopPaid: data.isShopPaid || false,
-      csoPaidAt: data.isPaid ? new Date() : null,
-      shopPaidAt: data.isShopPaid ? new Date() : null,
-      discount: data.discount || 0,
-      discountPercent: data.discountPercent || 0,
-      pickupDistance: data.pickupDistance,
-      deliveryDistance: data.deliveryDistance,
-      pickupCommission: data.pickupCommission !== undefined && data.pickupCommission !== null ? Math.max(0, Number(data.pickupCommission) || 0) : null,
-      deliveryCommission: data.deliveryCommission !== undefined && data.deliveryCommission !== null ? Math.max(0, Number(data.deliveryCommission) || 0) : null,
-      pickupScheduledAt: data.pickupScheduledAt,
-      pickupScheduledEndAt: data.pickupScheduledEndAt,
-      deliveryScheduledAt: data.deliveryScheduledAt,
-      deliveryScheduledEndAt: data.deliveryScheduledEndAt,
-      pickupRiderId: data.pickupRiderId,
-      deliveryRiderId: data.deliveryRiderId,
-      itemsJson: data.items ? JSON.stringify(data.items) : null,
-      legsJson: data.legs ? JSON.stringify(data.legs) : null,
-      remark: data.remark,
-      adminNotesJson: data.adminNotesJson,
-      branchId: data.branchId,
-      createdBy: data.createdBy,
-      cashPlaced: data.cashPlaced || false,
-      isStuck: data.isStuck || false,
-      shiftId: data.shiftId || null,
-      walletBalanceAfter: data.walletBalanceAfter !== undefined ? data.walletBalanceAfter : null,
-      proformaNumber: data.proformaNumber || (data as any).proformaReceiptNumber || null,
-      proformaRevision: data.proformaRevision !== undefined ? data.proformaRevision : null,
-      proformaCartHash: data.proformaCartHash || null,
+    const shouldAutoProforma = Boolean(
+      (data as any).autoAssignProforma ||
+      (data.source === 'pos' && Array.isArray(data.items) && data.items.length > 0)
+    );
+    const resolvedProformaNumber =
+      (data.proformaNumber && data.proformaNumber !== 'DRAFT' ? data.proformaNumber : null) ||
+      ((data as any).proformaReceiptNumber && (data as any).proformaReceiptNumber !== 'DRAFT' ? (data as any).proformaReceiptNumber : null) ||
+      (shouldAutoProforma ? generateProformaBaseNumber(jobId) : null);
+    const resolvedProformaRevision =
+      data.proformaRevision !== undefined && data.proformaRevision !== null
+        ? data.proformaRevision
+        : (resolvedProformaNumber ? 0 : null);
+    const resolvedProformaCartHash =
+      data.proformaCartHash ||
+      (resolvedProformaNumber && Array.isArray(data.items) ? computeCartHash({ items: data.items }) : null);
+    let resolvedRemark = data.remark;
+    if ((data as any).autoAssignProforma && resolvedProformaNumber) {
+      const proformaRemark = `Proforma: ${resolvedProformaNumber}`;
+      resolvedRemark = resolvedRemark
+        ? (String(resolvedRemark).includes('Proforma:') ? resolvedRemark : `${proformaRemark} | ${resolvedRemark}`)
+        : proformaRemark;
     }
+
+    return await tx.job.create({
+      data: {
+        id: jobId,
+        type: data.type || 'full_service',
+        customerId: data.customerId,
+        customerName: data.customerName,
+        customerPhone: data.customerPhone,
+        pickupLocation: data.pickupLocation,
+        dropoffLocation: data.dropoffLocation,
+        pickupLat: data.pickupCoords?.lat || 0,
+        pickupLng: data.pickupCoords?.lng || 0,
+        dropoffLat: data.dropoffCoords?.lat || 0,
+        dropoffLng: data.dropoffCoords?.lng || 0,
+        distance: Math.max(0, Number.isFinite(Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance)) ? Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance) : 0),
+        fee: Math.max(0, Number.isFinite(Number(data.fee)) ? Number(data.fee) : 0),
+        status: data.status,
+        createdAt: data.createdAt,
+        scheduledAt: data.scheduledAt,
+        completedAt: data.completedAt,
+        proofImageUrl: data.proofImageUrl,
+        riderId: data.riderId,
+        bagImageUrl: data.bagImageUrl,
+        billImageUrl: data.billImageUrl,
+        billNo: data.billNo ? String(data.billNo).trim() : null,
+        serviceType: data.serviceType,
+        laundryTypes: data.laundryTypes ? data.laundryTypes.join(',') : null,
+        source: data.source,
+        totalAmount: data.totalAmount !== undefined && data.totalAmount !== null ? Math.max(0, Number.isFinite(Number(data.totalAmount)) ? Number(data.totalAmount) : 0) : null,
+        paymentMethod: data.paymentMethod,
+        paymentChannel: data.paymentChannel,
+        isPaid: data.isPaid || false,
+        isShopPaid: data.isShopPaid || false,
+        csoPaidAt: data.isPaid ? new Date() : null,
+        shopPaidAt: data.isShopPaid ? new Date() : null,
+        discount: Math.max(0, Number.isFinite(Number(data.discount)) ? Number(data.discount) : 0),
+        discountPercent: Math.min(100, Math.max(0, Number.isFinite(Number(data.discountPercent)) ? Number(data.discountPercent) : 0)),
+        pickupDistance: data.pickupDistance !== undefined && data.pickupDistance !== null ? Math.max(0, Number.isFinite(Number(data.pickupDistance)) ? Number(data.pickupDistance) : 0) : null,
+        deliveryDistance: data.deliveryDistance !== undefined && data.deliveryDistance !== null ? Math.max(0, Number.isFinite(Number(data.deliveryDistance)) ? Number(data.deliveryDistance) : 0) : null,
+        pickupCommission: data.pickupCommission !== undefined && data.pickupCommission !== null ? Math.max(0, Number.isFinite(Number(data.pickupCommission)) ? Number(data.pickupCommission) : 0) : null,
+        deliveryCommission: data.deliveryCommission !== undefined && data.deliveryCommission !== null ? Math.max(0, Number.isFinite(Number(data.deliveryCommission)) ? Number(data.deliveryCommission) : 0) : null,
+        pickupScheduledAt: data.pickupScheduledAt,
+        pickupScheduledEndAt: data.pickupScheduledEndAt,
+        deliveryScheduledAt: data.deliveryScheduledAt,
+        deliveryScheduledEndAt: data.deliveryScheduledEndAt,
+        pickupRiderId: data.pickupRiderId,
+        deliveryRiderId: data.deliveryRiderId,
+        itemsJson: data.items ? JSON.stringify(data.items) : null,
+        legsJson: data.legs ? JSON.stringify(data.legs) : null,
+        remark: resolvedRemark,
+        adminNotesJson: data.adminNotesJson,
+        branchId: data.branchId,
+        createdBy: data.createdBy,
+        cashPlaced: data.cashPlaced || false,
+        isStuck: data.isStuck || false,
+        shiftId: data.shiftId || null,
+        walletBalanceAfter: data.walletBalanceAfter !== undefined ? data.walletBalanceAfter : null,
+        proformaNumber: resolvedProformaNumber,
+        proformaRevision: resolvedProformaRevision,
+        proformaCartHash: resolvedProformaCartHash,
+      },
+    });
   });
 
   await syncRiderCommissionsForJob(createdJob.id);
@@ -1484,24 +1736,90 @@ export async function getCustomerJobCountsAction(customerIds: string[]) {
   }
 }
 
-export async function updateJobAction(id: string, updates: any) {
-  console.log(`[updateJobAction] id: ${id}`, updates);
-  const existingJob = await prisma.job.findUnique({ where: { id } });
-  
-  const isMediaOrProformaOnlyUpdate = Object.keys(updates).every(k => 
-    ['billImageUrl', 'bagImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl', 'proformaNumber', 'proformaRevision', 'proformaCartHash', 'adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt'].includes(k)
-  );
+const jobUpdateLocks = new Map<string, Promise<any>>();
 
-  if (existingJob && (updates.expectedUpdatedAt || (updates.checkConflict && updates.updatedAt)) && !isMediaOrProformaOnlyUpdate) {
-    const checkTime = updates.expectedUpdatedAt || updates.updatedAt;
-    const incomingTime = new Date(checkTime).getTime();
-    const dbTime = new Date(existingJob.updatedAt).getTime();
-    if (!isNaN(incomingTime) && dbTime > incomingTime + 50) {
-      throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
+async function withJobUpdateLock<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = jobUpdateLocks.get(jobId) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = prev.then(() => current, () => current);
+  jobUpdateLocks.set(jobId, chained);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (jobUpdateLocks.get(jobId) === chained) {
+      jobUpdateLocks.delete(jobId);
     }
   }
+}
+
+function areJobFieldValuesEqual(field: string, oldVal: any, newVal: any): boolean {
+  if (oldVal === newVal) return true;
+  if ((oldVal === null || oldVal === undefined || oldVal === '') && (newVal === null || newVal === undefined || newVal === '')) {
+    return true;
+  }
+  if (oldVal instanceof Date || newVal instanceof Date || field.endsWith('At')) {
+    const oldTime = oldVal instanceof Date ? oldVal.getTime() : (oldVal ? new Date(oldVal).getTime() : NaN);
+    const newTime = newVal instanceof Date ? newVal.getTime() : (newVal ? new Date(newVal).getTime() : NaN);
+    if (!isNaN(oldTime) && !isNaN(newTime)) {
+      return oldTime === newTime;
+    }
+  }
+  if (
+    [
+      'fee', 'discount', 'discountPercent', 'totalAmount',
+      'pickupDistance', 'deliveryDistance', 'distance',
+      'pickupCommission', 'deliveryCommission', 'walletBalanceAfter',
+    ].includes(field)
+  ) {
+    const oNum = oldVal === null || oldVal === undefined || oldVal === '' ? 0 : Number(oldVal);
+    const nNum = newVal === null || newVal === undefined || newVal === '' ? 0 : Number(newVal);
+    if (!isNaN(oNum) && !isNaN(nNum) && Math.abs(oNum - nNum) < 0.001) {
+      return true;
+    }
+  }
+  return String(oldVal) === String(newVal);
+}
+
+export async function updateJobAction(id: string, updates: any) {
+  return withJobUpdateLock(id, async () => {
+    return updateJobActionInternal(id, updates);
+  });
+}
+
+async function updateJobActionInternal(id: string, updates: any) {
+  console.log(`[updateJobAction] id: ${id}`, updates);
+  const existingJob = await prisma.job.findUnique({ where: { id } });
+
+  const authUser = await assertServerActionAuthorized({
+    fallbackActorId: updates?.actorId,
+    requireWrite: true,
+    targetBranchId: existingJob?.branchId || updates?.branchId || null,
+  });
+  if (authUser) {
+    updates.actorId = authUser.id;
+    updates.actorName = authUser.name || authUser.email;
+    updates.actorRole = authUser.role;
+  }
+  
+  const isMediaOrProformaOnlyUpdate = Object.keys(updates).every(k => 
+    ['billImageUrl', 'bagImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl', 'proformaNumber', 'proformaRevision', 'proformaCartHash', 'adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt', 'expectedUpdatedAt', 'checkConflict'].includes(k)
+  );
+
   const data: any = {};
-  const isPaidLockedJob = Boolean(existingJob && (existingJob.isPaid || existingJob.isShopPaid) && updates.isPaid !== false);
+  const isPosJob = existingJob ? (existingJob.source === 'pos' || existingJob.type === 'in_store') : false;
+  // Shop Paid (isShopPaid) is the primary source of truth for payment settlement:
+  // A job is only financial-locked if it has been settled by the Shop (isShopPaid), or if it's a Walk-In POS job marked paid.
+  // CSO Paid (isPaid) alone on a delivery job does not lock financial pricing before Shop confirmation.
+  const isAlreadyShopSettled = Boolean(existingJob && (isPosJob ? (existingJob.isPaid || existingJob.isShopPaid) : existingJob.isShopPaid));
+  const isUnlockingPayment = updates.isShopPaid === false || (isPosJob && updates.isPaid === false);
+  const isSettlingShopPaymentNow = Boolean(updates.isShopPaid === true && existingJob && !existingJob.isShopPaid);
+
+  const isPaidLockedJob = isAlreadyShopSettled && !isUnlockingPayment && !isSettlingShopPaymentNow;
 
   if (updates.type !== undefined) {
     if (isPaidLockedJob && existingJob?.type && updates.type !== existingJob.type) {
@@ -1533,7 +1851,40 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.deliveryProofImageUrl !== undefined) data.deliveryProofImageUrl = updates.deliveryProofImageUrl;
   if (updates.proofImageUrl !== undefined) data.proofImageUrl = updates.proofImageUrl;
   if (updates.riderId !== undefined) data.riderId = updates.riderId;
-  if (updates.legs) data.legsJson = JSON.stringify(updates.legs);
+  if (updates.legs) {
+    if (
+      existingJob?.legsJson &&
+      (updates.pickupRiderId !== undefined ||
+        updates.deliveryRiderId !== undefined ||
+        updates.pickupScheduledAt !== undefined ||
+        updates.deliveryScheduledAt !== undefined)
+    ) {
+      try {
+        const mergedLegs = JSON.parse(existingJob.legsJson);
+        if (updates.pickupRiderId !== undefined) {
+          if (mergedLegs.pickupOutbound) mergedLegs.pickupOutbound.riderId = updates.pickupRiderId || "";
+          if (mergedLegs.pickupInbound) mergedLegs.pickupInbound.riderId = updates.pickupRiderId || "";
+        }
+        if (updates.deliveryRiderId !== undefined) {
+          if (mergedLegs.deliveryOutbound) mergedLegs.deliveryOutbound.riderId = updates.deliveryRiderId || "";
+          if (mergedLegs.deliveryInbound) mergedLegs.deliveryInbound.riderId = updates.deliveryRiderId || "";
+        }
+        if (updates.pickupScheduledAt !== undefined && updates.pickupScheduledAt) {
+          if (mergedLegs.pickupOutbound) mergedLegs.pickupOutbound.scheduledAt = updates.pickupScheduledAt;
+          if (mergedLegs.pickupInbound) mergedLegs.pickupInbound.scheduledAt = updates.pickupScheduledAt;
+        }
+        if (updates.deliveryScheduledAt !== undefined && updates.deliveryScheduledAt) {
+          if (mergedLegs.deliveryOutbound) mergedLegs.deliveryOutbound.scheduledAt = updates.deliveryScheduledAt;
+          if (mergedLegs.deliveryInbound) mergedLegs.deliveryInbound.scheduledAt = updates.deliveryScheduledAt;
+        }
+        data.legsJson = JSON.stringify(mergedLegs);
+      } catch {
+        data.legsJson = JSON.stringify(updates.legs);
+      }
+    } else {
+      data.legsJson = JSON.stringify(updates.legs);
+    }
+  }
   if (updates.pickupRiderId !== undefined) data.pickupRiderId = updates.pickupRiderId;
   if (updates.pickupScheduledAt !== undefined) data.pickupScheduledAt = updates.pickupScheduledAt;
   if (updates.deliveryRiderId !== undefined) data.deliveryRiderId = updates.deliveryRiderId;
@@ -1602,7 +1953,7 @@ export async function updateJobAction(id: string, updates: any) {
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           // If incoming has a receipt, replace older receipt from existing
-          const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-")));
+          const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-"))) || Boolean(updates.isShopPaid === true && !existingJob?.isShopPaid);
           let baseExisting = incomingHasReceipt
             ? existingUrls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes("receipt-"))
             : existingUrls;
@@ -1617,7 +1968,8 @@ export async function updateJobAction(id: string, updates: any) {
           }
 
           // Merge unique URLs so concurrent background uploads (e.g. proforma and receipt) never clobber each other
-          const merged = Array.from(new Set([...baseExisting, ...incomingUrls]));
+          const filteredBaseExisting = isMediaOrProformaOnlyUpdate ? baseExisting : baseExisting.filter(u => typeof u === "string" && (u.includes("proforma-") || u.includes("receipt-")));
+          const merged = Array.from(new Set([...filteredBaseExisting, ...incomingUrls]));
           // Sort so highest revision proforma always comes first, followed by receipt, then other proofs
           merged.sort((a, b) => {
             const aIsPf = a.includes("proforma-");
@@ -1689,7 +2041,8 @@ export async function updateJobAction(id: string, updates: any) {
     }
   }
   if (updates.fee !== undefined) {
-    const newFee = Math.max(0, Number(updates.fee) || 0);
+    const parsedFee = Number(updates.fee);
+    const newFee = Math.max(0, Number.isFinite(parsedFee) ? parsedFee : 0);
     if (isPaidLockedJob && existingJob && (existingJob.fee ?? 0) !== newFee) {
       console.warn(`[Financial Guard] Blocked attempt to change fee from ${existingJob.fee} to ${newFee} on paid job ${id} without unlocking.`);
       data.fee = existingJob.fee ?? 0;
@@ -1697,10 +2050,27 @@ export async function updateJobAction(id: string, updates: any) {
       data.fee = newFee;
     }
   }
-  if (updates.discount !== undefined) data.discount = updates.discount;
-  if (updates.discountPercent !== undefined) data.discountPercent = updates.discountPercent;
+  if (updates.discount !== undefined) {
+    const parsedDiscount = Number(updates.discount);
+    const newDiscount = Math.max(0, Number.isFinite(parsedDiscount) ? parsedDiscount : 0);
+    if (isPaidLockedJob && existingJob && (existingJob.discount ?? 0) !== newDiscount) {
+      data.discount = existingJob.discount ?? 0;
+    } else {
+      data.discount = newDiscount;
+    }
+  }
+  if (updates.discountPercent !== undefined) {
+    const parsedPct = Number(updates.discountPercent);
+    const newPct = Math.min(100, Math.max(0, Number.isFinite(parsedPct) ? parsedPct : 0));
+    if (isPaidLockedJob && existingJob && (existingJob.discountPercent ?? 0) !== newPct) {
+      data.discountPercent = existingJob.discountPercent ?? 0;
+    } else {
+      data.discountPercent = newPct;
+    }
+  }
   if (updates.totalAmount !== undefined) {
-    const newTotal = updates.totalAmount !== null ? Math.max(0, Number(updates.totalAmount) || 0) : null;
+    const parsedTotal = Number(updates.totalAmount);
+    const newTotal = updates.totalAmount !== null ? Math.max(0, Number.isFinite(parsedTotal) ? parsedTotal : 0) : null;
     if (isPaidLockedJob && existingJob && (Number(existingJob.totalAmount) || 0) !== (newTotal || 0)) {
       console.warn(`[Financial Guard] Blocked attempt to change totalAmount from ${existingJob.totalAmount} to ${newTotal} on paid job ${id} without unlocking.`);
       data.totalAmount = existingJob.totalAmount;
@@ -1715,8 +2085,7 @@ export async function updateJobAction(id: string, updates: any) {
   // This ensures AutoReceiptWorker will auto-generate an updated Proforma matching the new items/amount.
   if (
     existingJob &&
-    !existingJob.isPaid &&
-    !existingJob.isShopPaid &&
+    !isAlreadyShopSettled &&
     (existingJob.proformaNumber || (existingJob.billImageUrl && existingJob.billImageUrl.includes("proforma-"))) &&
     (updates as any).proformaRevision === undefined
   ) {
@@ -1764,7 +2133,15 @@ export async function updateJobAction(id: string, updates: any) {
       data.remark = updates.remark;
     }
   }
-  if (updates.adminNotesJson !== undefined) data.adminNotesJson = updates.adminNotesJson;
+  if (updates.adminNotesJson !== undefined) {
+    const isExplicitAdminNotesOnlyEdit = Object.keys(updates).every((k) =>
+      ['adminNotesJson', 'actorId', 'actorName', 'actorRole', 'updatedAt', 'expectedUpdatedAt', 'checkConflict'].includes(k)
+    );
+    data.adminNotesJson = mergeAdminNotesJson(existingJob?.adminNotesJson, updates.adminNotesJson, {
+      isUnlockingPayment,
+      isExplicitAdminNotesOnlyEdit,
+    });
+  }
   if (updates.shiftId !== undefined) data.shiftId = updates.shiftId;
   if (updates.scheduledAt !== undefined) data.scheduledAt = updates.scheduledAt;
   if (updates.branchId !== undefined) data.branchId = updates.branchId;
@@ -1784,39 +2161,107 @@ export async function updateJobAction(id: string, updates: any) {
   if (updates.isStuck !== undefined) data.isStuck = updates.isStuck;
   if (updates.walletBalanceAfter !== undefined) data.walletBalanceAfter = updates.walletBalanceAfter;
 
-  // Compare changes for logging
+  // Compare changes for logging and field-level conflict detection
   const changes: any = {};
   if (existingJob) {
     const logFields = [
-      'status', 'subStatus', 'isPaid', 'paymentChannel', 'riderId', 
-      'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 
-      'deliveryScheduledAt', 'fee', 'totalAmount', 'remark', 'isStuck', 'cashPlaced',
+      'status', 'subStatus', 'isPaid', 'paymentMethod', 'paymentChannel', 'riderId', 
+      'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 'pickupScheduledEndAt',
+      'deliveryScheduledAt', 'deliveryScheduledEndAt', 'scheduledAt', 'fee', 'discount', 'discountPercent',
+      'totalAmount', 'remark', 'isStuck', 'cashPlaced',
       'bagImageUrl', 'billImageUrl', 'pickupProofImageUrl', 'deliveryProofImageUrl', 'proofImageUrl',
-      'adminNotesJson', 'billNo', 'isShopPaid', 'customerName', 'customerPhone',
-      'pickupLocation', 'dropoffLocation', 'serviceType', 'type', 'pickupCommission', 
-      'deliveryCommission', 'laundryTypes', 'itemsJson'
+      'adminNotesJson', 'billNo', 'isShopPaid', 'customerId', 'customerName', 'customerPhone',
+      'pickupLocation', 'dropoffLocation', 'pickupCoords', 'dropoffCoords', 'serviceType', 'type',
+      'pickupDistance', 'deliveryDistance', 'distance', 'pickupCommission', 
+      'deliveryCommission', 'laundryTypes', 'itemsJson', 'legsJson', 'branchId', 'walletBalanceAfter'
     ];
     logFields.forEach(field => {
       const oldVal = (existingJob as any)[field];
       const newVal = data[field];
-      if (newVal !== undefined && oldVal !== newVal) {
-        if (oldVal instanceof Date || newVal instanceof Date) {
-          const oldTime = oldVal instanceof Date ? oldVal.getTime() : new Date(oldVal).getTime();
-          const newTime = newVal instanceof Date ? newVal.getTime() : new Date(newVal).getTime();
-          if (oldTime !== newTime) {
-            changes[field] = newVal;
-          }
-        } else {
-          changes[field] = newVal;
-        }
+      if (newVal !== undefined && !areJobFieldValuesEqual(field, oldVal, newVal)) {
+        changes[field] = newVal;
       }
     });
   }
 
-  const updatedJob = await prisma.job.update({ where: { id }, data });
+  // Field-level Optimistic Concurrency Control (OCC):
+  // Allow concurrent edits to DIFFERENT fields on the same order to merge cleanly,
+  // while blocking conflicting edits to the SAME field (or coupled financial fields).
+  if (
+    existingJob &&
+    (updates.expectedUpdatedAt || (updates.checkConflict && updates.updatedAt)) &&
+    !isMediaOrProformaOnlyUpdate &&
+    !(updates.isShopPaid === true && !existingJob.isShopPaid)
+  ) {
+    const checkTime = updates.expectedUpdatedAt || updates.updatedAt;
+    const incomingTime = new Date(checkTime).getTime();
+    const dbTime = new Date(existingJob.updatedAt).getTime();
+    if (!isNaN(incomingTime) && dbTime > incomingTime + 1) {
+      const incomingConflictFields = new Set<string>(Object.keys(changes));
+      if (
+        incomingConflictFields.has('legsJson') &&
+        (updates.pickupRiderId !== undefined ||
+          updates.deliveryRiderId !== undefined ||
+          updates.pickupScheduledAt !== undefined ||
+          updates.deliveryScheduledAt !== undefined)
+      ) {
+        incomingConflictFields.delete('legsJson');
+      }
+      incomingConflictFields.delete('proformaRevision');
+      incomingConflictFields.delete('proformaNumber');
+      incomingConflictFields.delete('proformaCartHash');
 
-  // Sync commissions based on payment eligibility (CSO Paid & SHOP Paid)
-  await syncRiderCommissionsForJob(id);
+      if (incomingConflictFields.size > 0) {
+        const recentLogs = await prisma.activityLog.findMany({
+          where: {
+            entityId: id,
+            entityType: 'job',
+            action: 'update',
+            createdAt: { gt: new Date(incomingTime) },
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+
+        if (recentLogs.length === 0) {
+          throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
+        }
+
+        const interveningFields = new Set<string>();
+        for (const log of recentLogs) {
+          if (!log.details) continue;
+          try {
+            const parsed = JSON.parse(log.details);
+            for (const k of Object.keys(parsed)) {
+              if (!['pickupRiderName', 'deliveryRiderName', 'riderName'].includes(k)) {
+                interveningFields.add(k);
+              }
+            }
+          } catch {}
+        }
+
+        const financialGroup = ['itemsJson', 'fee', 'discount', 'discountPercent', 'totalAmount'];
+        if (financialGroup.some((f) => interveningFields.has(f))) {
+          financialGroup.forEach((f) => interveningFields.add(f));
+        }
+
+        const conflictingFields = Array.from(incomingConflictFields).filter((f) => interveningFields.has(f));
+        if (conflictingFields.length > 0) {
+          throw new Error(
+            `409 Conflict: This record was modified by another user (${conflictingFields.join(', ')}). Please refresh and try again.`
+          );
+        }
+      }
+    }
+  }
+
+  if (existingJob) {
+    data.updatedAt = new Date(Math.max(Date.now(), new Date(existingJob.updatedAt).getTime() + 2));
+  }
+
+  const updatedJob = await prisma.job.update({
+    where: existingJob ? { id, updatedAt: existingJob.updatedAt } : { id },
+    data,
+  });
 
   if (Object.keys(changes).length > 0) {
     try {
@@ -1846,6 +2291,7 @@ export async function updateJobAction(id: string, updates: any) {
           details: JSON.stringify(changes),
           userId: updates.actorId || null,
           userName: updates.actorName || null,
+          createdAt: updatedJob.updatedAt,
         }
       });
       console.log(`[ActivityLog] Updated job ${id}:`, JSON.stringify(changes));
@@ -1853,6 +2299,9 @@ export async function updateJobAction(id: string, updates: any) {
       console.error("Failed to write ActivityLog on update:", err.message);
     }
   }
+
+  // Sync commissions based on payment eligibility (CSO Paid & SHOP Paid)
+  await syncRiderCommissionsForJob(id);
 
   // If job is cancelled, restore any CustomerVoucher that was marked USED
   if (updates.status === 'cancel') {
@@ -1863,7 +2312,7 @@ export async function updateJobAction(id: string, updates: any) {
         where: {
           OR: [
             { usedJobId: id, status: "USED" },
-            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED" }] : []),
+            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: id }, { usedJobId: null }] }] : []),
           ],
         },
         data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
@@ -1929,8 +2378,11 @@ export async function updateJobAction(id: string, updates: any) {
         if (localCoupon && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
           const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
           const wasActive = localCoupon.status === "ACTIVE";
-          await prisma.customerVoucher.update({
-            where: { id: localCoupon.id },
+          const claimRes = await prisma.customerVoucher.updateMany({
+            where: {
+              id: localCoupon.id,
+              OR: [{ status: "ACTIVE" }, { status: "USED", usedJobId: id }],
+            },
             data: {
               status: "USED",
               usedAt: localCoupon.usedAt || new Date(),
@@ -1938,7 +2390,7 @@ export async function updateJobAction(id: string, updates: any) {
               discountAmountUsed: usedDiscount,
             },
           });
-          if (wasActive) {
+          if (wasActive && claimRes.count > 0) {
             await prisma.activityLog.create({
               data: {
                 entityId: localCoupon.customerId,
@@ -2412,70 +2864,77 @@ export async function updateSettingAction(key: string, value: string) {
 }
 
 export async function addJobLogAction(id: string, logEntry: any, actorId?: string, actorName?: string) {
-  const job = await prisma.job.findUnique({ where: { id }, select: { adminNotesJson: true } });
-  if (!job) throw new Error('Job not found');
-  let notes: any[] = [];
-  let payments: any[] = [];
-  let isStructured = false;
+  return withJobUpdateLock(id, async () => {
+    const { updated, updatedJson } = await prisma.$transaction(async (tx) => {
+      await lockJobRowForUpdate(tx, id);
+      const job = await tx.job.findUnique({ where: { id }, select: { adminNotesJson: true } });
+      if (!job) throw new Error('Job not found');
+      let notes: any[] = [];
+      let payments: any[] = [];
+      let isStructured = false;
 
-  let existingObj: any = {};
+      let existingObj: any = {};
 
-  if (job.adminNotesJson) {
-    try {
-      const parsed = JSON.parse(job.adminNotesJson);
-      if (parsed && typeof parsed === 'object') {
-        existingObj = parsed;
-        if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
-          isStructured = true;
-          notes = Array.isArray(parsed.notes) ? parsed.notes : [];
-          payments = Array.isArray(parsed.payments) ? parsed.payments : [];
-        } else if (Array.isArray(parsed)) {
-          notes = parsed;
+      if (job.adminNotesJson) {
+        try {
+          const parsed = JSON.parse(job.adminNotesJson);
+          if (parsed && typeof parsed === 'object') {
+            existingObj = parsed;
+            if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
+              isStructured = true;
+              notes = Array.isArray(parsed.notes) ? parsed.notes : [];
+              payments = Array.isArray(parsed.payments) ? parsed.payments : [];
+            } else if (Array.isArray(parsed)) {
+              notes = parsed;
+            }
+          }
+        } catch (e) {
+          notes = [];
         }
       }
-    } catch (e) {
-      notes = [];
-    }
-  }
-  notes.push(logEntry);
+      notes.push(logEntry);
 
-  let updatedJson: string;
-  if (isStructured || payments.length > 0 || existingObj.isTaxInvoiceRequested !== undefined) {
-    updatedJson = JSON.stringify({ ...existingObj, payments, notes });
-  } else {
-    updatedJson = JSON.stringify(notes);
-  }
-
-  const updated = await prisma.job.update({ 
-    where: { id }, 
-    data: { adminNotesJson: updatedJson } 
-  });
-
-  try {
-    await prisma.activityLog.create({
-      data: {
-        entityId: id,
-        entityType: 'job',
-        action: 'update',
-        details: JSON.stringify({ adminNotesJson: updatedJson }),
-        userId: actorId || null,
-        userName: actorName || null,
+      let nextJson: string;
+      if (isStructured || payments.length > 0 || existingObj.isTaxInvoiceRequested !== undefined) {
+        nextJson = JSON.stringify({ ...existingObj, payments, notes });
+      } else {
+        nextJson = JSON.stringify(notes);
       }
+
+      const savedJob = await tx.job.update({ 
+        where: { id }, 
+        data: { adminNotesJson: nextJson } 
+      });
+      return { updated: savedJob, updatedJson: nextJson };
     });
-  } catch (err: any) {
-    console.error("Failed to write ActivityLog on addJobLogAction:", err.message);
-  }
 
-  await publishOrderEvent({
-    type: 'job.updated',
-    job: updated,
-    action: 'note_added',
-    changedFields: ['adminNotesJson'],
-    actorId: actorId,
-    actorName: actorName,
+    try {
+      await prisma.activityLog.create({
+        data: {
+          entityId: id,
+          entityType: 'job',
+          action: 'update',
+          details: JSON.stringify({ adminNotesJson: updatedJson }),
+          userId: actorId || null,
+          userName: actorName || null,
+          createdAt: updated.updatedAt,
+        }
+      });
+    } catch (err: any) {
+      console.error("Failed to write ActivityLog on addJobLogAction:", err.message);
+    }
+
+    await publishOrderEvent({
+      type: 'job.updated',
+      job: updated,
+      action: 'note_added',
+      changedFields: ['adminNotesJson'],
+      actorId: actorId,
+      actorName: actorName,
+    });
+
+    return updated;
   });
-
-  return updated;
 }
 
 export async function diagnoseJobAction(jobId: string) {
@@ -2484,7 +2943,7 @@ export async function diagnoseJobAction(jobId: string) {
     if (!job) {
       return { success: false, error: 'Job not found' };
     }
-    const gcsFiles = await listFilesForJob(jobId);
+    const gcsFiles = await listFilesForJob(jobId, [job.createdAt, job.updatedAt, job.completedAt]);
     return {
       success: true,
       job: {
@@ -2640,6 +3099,8 @@ function calculateShiftSales(
     paymentChannel: string | null;
     status: string;
     isPaid: boolean;
+    isShopPaid?: boolean;
+    source?: string | null;
     adminNotesJson: string | null;
   }>,
   cashRefunds: number = 0
@@ -2649,7 +3110,7 @@ function calculateShiftSales(
 
   for (const job of jobs) {
     if (job.status === 'cancel') continue;
-    if (!job.isPaid) continue;
+    if (!job.isShopPaid && !(job.source === 'pos' && job.isPaid)) continue;
 
     let jobCounted = false;
     let usedCash = false, usedTransfer = false, usedCard = false, usedCredit = false;
@@ -2723,7 +3184,7 @@ export async function getOpenShiftAction(userId: string) {
     const [jobs, refunds] = await Promise.all([
       prisma.job.findMany({
         where: { shiftId: shift.id },
-        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, adminNotesJson: true }
+        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, isShopPaid: true, source: true, adminNotesJson: true }
       }),
       prisma.jobRefund.findMany({
         where: { shiftId: shift.id, shiftAffected: true },
@@ -2758,7 +3219,7 @@ export async function getBranchOpenShiftAction(branchId: string) {
     const [jobs, refunds] = await Promise.all([
       prisma.job.findMany({
         where: { shiftId: shift.id },
-        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, adminNotesJson: true }
+        select: { totalAmount: true, paymentChannel: true, status: true, isPaid: true, isShopPaid: true, source: true, adminNotesJson: true }
       }),
       prisma.jobRefund.findMany({
         where: { shiftId: shift.id, shiftAffected: true },
@@ -2784,7 +3245,17 @@ export async function getBranchOpenShiftAction(branchId: string) {
 
 export async function openShiftAction(data: { userId: string, userName: string, branchId: string, startingCash: number, notes?: string }) {
   try {
+    const startingCashNum = Number(data.startingCash);
+    if (!Number.isFinite(startingCashNum) || startingCashNum < 0) {
+      throw new Error("Invalid starting cash amount");
+    }
     return await prisma.$transaction(async (tx) => {
+      // Acquire transaction-scoped advisory locks on branchId & userId (in deterministic order) to prevent concurrent duplicate open shifts
+      const lockKeys = [`shift:branch:${data.branchId}`, `shift:user:${data.userId}`].sort();
+      for (const k of lockKeys) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${k}))`;
+      }
+
       // Check if there is already an open shift for this user
       const existingUserOpen = await tx.cashierShift.findFirst({
         where: { userId: data.userId, status: 'open' },
@@ -2808,12 +3279,13 @@ export async function openShiftAction(data: { userId: string, userName: string, 
           userId: data.userId,
           userName: data.userName,
           branchId: data.branchId,
-          startingCash: data.startingCash,
-          expectedCash: data.startingCash,
+          startingCash: startingCashNum,
+          expectedCash: startingCashNum,
           status: 'open',
           notes: data.notes || null,
         }
       });
+      invalidateDbCache('jobs');
       return { success: true as const, shift: newShift };
     });
   } catch (e) {
@@ -2825,6 +3297,7 @@ export async function openShiftAction(data: { userId: string, userName: string, 
 export async function closeShiftAction(data: { shiftId: string, actualCash: number, notes?: string }) {
   try {
     return await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "CashierShift" WHERE id = ${data.shiftId} FOR UPDATE`;
       const shift = await tx.cashierShift.findUnique({
         where: { id: data.shiftId }
       });
@@ -2844,6 +3317,8 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
             paymentChannel: true,
             status: true,
             isPaid: true,
+            isShopPaid: true,
+            source: true,
             adminNotesJson: true,
           }
         }),
@@ -2916,6 +3391,7 @@ export async function closeShiftAction(data: { shiftId: string, actualCash: numb
         }
       }
 
+      invalidateDbCache('jobs');
       return { success: true as const, shift: closedShift };
     });
   } catch (e) {
@@ -3121,9 +3597,23 @@ export async function processTopUpAction(data: {
   branchId?: string | null;
   priceListId?: string | null;
   paymentLinkId?: string | null;
+  idempotencyKey?: string | null;
 }) {
+  const cleanReceiptNumber = String(data.receiptNumber || '').trim();
+  if (!cleanReceiptNumber) {
+    throw new Error("Receipt number is required for wallet top-up");
+  }
+  const paidAmt = Number(data.paidAmount);
+  const bonusAmt = data.bonusAmount !== undefined ? Number(data.bonusAmount) : 0;
+  const totalCred = Number(data.totalCredit);
+  if (!Number.isFinite(paidAmt) || paidAmt < 0 || !Number.isFinite(bonusAmt) || bonusAmt < 0 || !Number.isFinite(totalCred) || totalCred <= 0) {
+    throw new Error("Invalid top-up amount");
+  }
+
   return await prisma.$transaction(async (tx) => {
-    // 1. Fetch fresh customer directly from DB with transaction lock
+    // 1. Acquire row-level FOR UPDATE lock on the customer row first to serialize concurrent wallet mutations
+    await lockCustomerRowForWallet(tx, data.customerId);
+
     const currentCust = await tx.customer.findUnique({
       where: { id: data.customerId },
       include: {
@@ -3141,14 +3631,24 @@ export async function processTopUpAction(data: {
 
     const balBefore = Number(currentCust.creditBalance || 0);
 
-    // Idempotency Check 1: Check if receiptNumber already exists
-    const existingTx = await tx.transaction.findUnique({
-      where: { id: data.receiptNumber }
-    });
-    if (existingTx) {
-      console.warn(`[TopUp] Duplicate top-up ignored for receipt: ${data.receiptNumber}`);
+    // Idempotency Check 1: Check if receiptNumber already exists in Transaction or WalletTransaction
+    const [existingTx, existingReceiptWalletTx] = await Promise.all([
+      tx.transaction.findUnique({
+        where: { id: cleanReceiptNumber }
+      }),
+      tx.walletTransaction.findFirst({
+        where: {
+          customerId: data.customerId,
+          type: 'TOPUP',
+          referenceId: cleanReceiptNumber,
+        }
+      }),
+    ]);
+    if (existingTx || existingReceiptWalletTx) {
+      console.warn(`[TopUp] Duplicate top-up ignored for receipt: ${cleanReceiptNumber}`);
       return {
         success: true,
+        duplicate: true,
         updatedCustomer: currentCust,
         transaction: existingTx,
         balanceBefore: balBefore,
@@ -3156,18 +3656,25 @@ export async function processTopUpAction(data: {
       };
     }
 
-    // Idempotency Check 2: Check if paymentLinkId has already been credited
-    if (data.paymentLinkId) {
+    // Idempotency Check 2: Check structured paymentLinkId / idempotencyKey reference
+    const dedupRef = (data.paymentLinkId || data.idempotencyKey || '').trim();
+    if (dedupRef) {
       const existingPaymentLink = await tx.walletTransaction.findFirst({
         where: {
           customerId: data.customerId,
-          reason: { contains: data.paymentLinkId }
+          type: 'TOPUP',
+          OR: [
+            { referenceId: dedupRef },
+            { reason: `Beam PaymentLink: ${dedupRef}` },
+            { reason: `IdempotencyKey: ${dedupRef}` },
+          ]
         }
       });
       if (existingPaymentLink) {
-        console.warn(`[TopUp] Duplicate top-up ignored for paymentLinkId: ${data.paymentLinkId}`);
+        console.warn(`[TopUp] Duplicate top-up ignored for reference: ${dedupRef}`);
         return {
           success: true,
+          duplicate: true,
           updatedCustomer: currentCust,
           transaction: null,
           balanceBefore: balBefore,
@@ -3176,28 +3683,7 @@ export async function processTopUpAction(data: {
       }
     }
 
-    // Idempotency Check 3: Guard against rapid duplicate clicks (same customer, same totalCredit within 10 seconds)
-    const recentTx = await tx.walletTransaction.findFirst({
-      where: {
-        customerId: data.customerId,
-        type: 'TOPUP',
-        amount: data.totalCredit,
-        createdAt: { gte: new Date(Date.now() - 10000) }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-    if (recentTx) {
-      console.warn(`[TopUp] Rapid duplicate top-up blocked for customer ${data.customerId} (${recentTx.id}) within 10s`);
-      return {
-        success: true,
-        updatedCustomer: currentCust,
-        transaction: null,
-        balanceBefore: balBefore,
-        balanceAfter: balBefore,
-      };
-    }
-
-    const balAfter = Math.round((balBefore + data.totalCredit) * 100) / 100;
+    const balAfter = Math.round((balBefore + totalCred) * 100) / 100;
     const now = new Date();
     const expiry = calculateWalletExpiryDate(now);
 
@@ -3222,10 +3708,10 @@ export async function processTopUpAction(data: {
     // 3. Prepare receiptData and txDescription
     const rdata = data.receiptData ? {
       ...data.receiptData,
-      id: data.receiptNumber,
-      receiptNumber: data.receiptNumber,
-      total: data.paidAmount,
-      subtotal: data.paidAmount,
+      id: cleanReceiptNumber,
+      receiptNumber: cleanReceiptNumber,
+      total: paidAmt,
+      subtotal: paidAmt,
       isPaid: true,
       createdAt: now,
     } : null;
@@ -3234,8 +3720,8 @@ export async function processTopUpAction(data: {
       packageName: data.packageName || "TOPUP",
       paymentChannel: data.paymentChannel,
       slipImageUrl: data.slipImageUrl || null,
-      bonusAmount: data.bonusAmount || 0,
-      totalCredit: data.totalCredit,
+      bonusAmount: bonusAmt,
+      totalCredit: totalCred,
       balanceBefore: balBefore,
       balanceAfter: balAfter,
       createdBy: data.actorName || "Staff",
@@ -3246,9 +3732,9 @@ export async function processTopUpAction(data: {
     // 4. Create Transaction record
     const transaction = await tx.transaction.create({
       data: {
-        id: data.receiptNumber,
+        id: cleanReceiptNumber,
         memberId: data.customerId,
-        amount: data.paidAmount,
+        amount: paidAmt,
         type: 'TOPUP',
         description: txDescription,
         status: 'COMPLETED',
@@ -3264,11 +3750,11 @@ export async function processTopUpAction(data: {
         action: 'TOPUP',
         details: JSON.stringify({
           customerName: currentCust.name,
-          receiptNo: data.receiptNumber,
-          amount: data.paidAmount,
+          receiptNo: cleanReceiptNumber,
+          amount: paidAmt,
           type: 'TOPUP',
-          bonusAmount: data.bonusAmount || 0,
-          totalCredit: data.totalCredit,
+          bonusAmount: bonusAmt,
+          totalCredit: totalCred,
           balanceBefore: balBefore,
           balanceAfter: balAfter,
           paymentChannel: data.paymentChannel,
@@ -3287,17 +3773,19 @@ export async function processTopUpAction(data: {
         customerId: data.customerId,
         customerName: currentCust.name,
         type: 'TOPUP',
-        amount: data.totalCredit,
+        amount: totalCred,
         direction: 'CREDIT',
         balanceBefore: balBefore,
         balanceAfter: balAfter,
-        referenceId: data.receiptNumber,
+        referenceId: cleanReceiptNumber,
         referenceType: 'topup_receipt',
         packageName: data.packageName || 'TOPUP',
-        bonusAmount: data.bonusAmount || 0,
+        bonusAmount: bonusAmt,
         paymentChannel: data.paymentChannel,
         slipImageUrl: data.slipImageUrl || null,
-        reason: data.paymentLinkId ? `Beam PaymentLink: ${data.paymentLinkId}` : null,
+        reason: data.paymentLinkId
+          ? `Beam PaymentLink: ${data.paymentLinkId.trim()}`
+          : (data.idempotencyKey ? `IdempotencyKey: ${data.idempotencyKey.trim()}` : null),
         createdById: data.actorId || null,
         createdByName: data.actorName || 'Staff',
         branchId: effectiveBranchId,
@@ -3305,9 +3793,10 @@ export async function processTopUpAction(data: {
       }
     });
 
+    invalidateDbCache('customers');
     return {
       success: true,
-      updatedCustomer,
+      updatedCustomer: sanitizeCustomerRecord(updatedCustomer),
       transaction,
       balanceBefore: balBefore,
       balanceAfter: balAfter,
@@ -3826,6 +4315,7 @@ export async function rejectWalletTransactionAction(data: {
     let balAfter = 0;
 
     if (shouldDeduct) {
+      await lockCustomerRowForWallet(tx, originalTx.customerId);
       const currentCust = await tx.customer.findUnique({
         where: { id: originalTx.customerId }
       });
@@ -4012,7 +4502,8 @@ export async function processRefundAndCorrectAction(data: {
   actorName?: string | null;
   branchId?: string | null;
 }) {
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
+    await lockJobRowForUpdate(tx, data.jobId);
     const job = await tx.job.findUnique({
       where: { id: data.jobId },
       include: { customer: true, shift: true }
@@ -4026,23 +4517,72 @@ export async function processRefundAndCorrectAction(data: {
       throw new Error("Job has already been refunded");
     }
 
-    // Check actor permission if actorId provided
-    if (data.actorId) {
-      const actor = await tx.adminUser.findUnique({ where: { id: data.actorId } });
-      if (actor) {
-        let perms: string[] = [];
-        try { perms = JSON.parse(actor.permissions || "[]"); } catch {}
-        const canRefund = actor.role === 'admin' || perms.includes('refund-job');
-        if (!canRefund) {
-          throw new Error("คุณไม่มีสิทธิ์ในการ Refund Job (ต้องมีสิทธิ์ refund-job หรือสิทธิ์ Admin)");
-        }
+    // Check actor permission from authoritative server session or verified actorId in DB
+    const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser(data.actorId);
+    if (explicitCredentialsProvided && !sessionActor) {
+      throw new Error("Unauthorized: ไม่พบข้อมูลผู้ใช้งานในระบบ หรือเซสชันหมดอายุ");
+    }
+    const effectiveActorId = sessionActor?.id || data.actorId;
+    if (effectiveActorId) {
+      const actor = await tx.adminUser.findUnique({ where: { id: effectiveActorId } });
+      if (!actor || actor.isActive === false) {
+        throw new Error("Unauthorized: บัญชีผู้ใช้งานนี้ถูกระงับหรือไม่พบในระบบ");
       }
+      let perms: string[] = [];
+      try { perms = JSON.parse(actor.permissions || "[]"); } catch {}
+      const canRefund = actor.role === 'admin' || actor.role === 'superadmin' || perms.includes('refund-job');
+      if (!canRefund) {
+        throw new Error("คุณไม่มีสิทธิ์ในการ Refund Job (ต้องมีสิทธิ์ refund-job หรือสิทธิ์ Admin)");
+      }
+      data.actorId = actor.id;
+      data.actorName = actor.name || actor.email;
     }
 
     const originalAmount = Number(job.totalAmount) || 0;
-    const refundAmount = originalAmount;
 
-    // 1. Generate Credit Note sequence
+    // Parse existing payments first to verify actual collected amount and eligibility
+    let existingPayments: any[] = [];
+    if (job.adminNotesJson) {
+      try {
+        const parsed = JSON.parse(job.adminNotesJson);
+        if (Array.isArray(parsed?.payments)) {
+          existingPayments = parsed.payments;
+        }
+      } catch {}
+    }
+
+    const isWalkInPos = job.source === 'pos' || job.type === 'in_store';
+    const isSettledShopPaid = isWalkInPos ? Boolean(job.isShopPaid || job.isPaid) : Boolean(job.isShopPaid);
+    const recordedPaidSum = existingPayments.reduce((s, p) => s + (Number(p?.amount) || 0), 0);
+
+    if (!isSettledShopPaid && recordedPaidSum <= 0) {
+      throw new Error("ไม่สามารถทำรายการ Refund ได้ เนื่องจากออเดอร์นี้ยังไม่ได้รับชำระเงินสำเร็จ (Shop Paid)");
+    }
+
+    if (existingPayments.length === 0 && isSettledShopPaid && originalAmount > 0) {
+      const rawOrigChannel = (job.paymentChannel || "").toLowerCase();
+      existingPayments = [{
+        amount: originalAmount,
+        channel: job.paymentChannel || "Cash / COD",
+        method:
+          rawOrigChannel.includes("deduct") || rawOrigChannel.includes("wallet") || rawOrigChannel.includes("member")
+            ? "credit"
+            : rawOrigChannel.includes("transfer") || rawOrigChannel.includes("promptpay") || rawOrigChannel.includes("qr") || rawOrigChannel.includes("bank") || rawOrigChannel.includes("beam") || rawOrigChannel.includes("online")
+            ? "transfer"
+            : rawOrigChannel.includes("card")
+            ? "card"
+            : "cash",
+        shiftId: job.shiftId || undefined,
+      }];
+    }
+
+    const actualCollectedAmount = recordedPaidSum > 0
+      ? (originalAmount > 0 ? Math.min(originalAmount, recordedPaidSum) : recordedPaidSum)
+      : originalAmount;
+    const refundAmount = Math.round(Math.max(0, actualCollectedAmount) * 100) / 100;
+
+    // 1. Generate Credit Note sequence under advisory lock
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${CREDIT_NOTE_SEQ_KEY}))`;
     const seqSetting = await tx.setting.findUnique({
       where: { key: CREDIT_NOTE_SEQ_KEY }
     });
@@ -4069,26 +4609,6 @@ export async function processRefundAndCorrectAction(data: {
       issuedBy: data.actorName || "Staff",
       createdAt: new Date().toISOString(),
     });
-
-    // Parse existing payments to determine refund breakdown per channel
-    let existingPayments: any[] = [];
-    if (job.adminNotesJson) {
-      try {
-        const parsed = JSON.parse(job.adminNotesJson);
-        if (Array.isArray(parsed?.payments)) {
-          existingPayments = parsed.payments;
-        }
-      } catch {}
-    }
-
-    if (existingPayments.length === 0 && (job.isPaid || job.isShopPaid) && originalAmount > 0) {
-      existingPayments = [{
-        amount: originalAmount,
-        channel: job.paymentChannel || "Cash / COD",
-        method: (job.paymentChannel || "").toLowerCase().includes("deduct") || (job.paymentChannel || "").toLowerCase().includes("wallet") ? "credit" : ((job.paymentChannel || "").toLowerCase().includes("transfer") ? "transfer" : "cash"),
-        shiftId: job.shiftId || undefined,
-      }];
-    }
 
     const isWalletPay = (p: any) => {
       const m = (p.method || "").toLowerCase();
@@ -4317,6 +4837,7 @@ export async function processRefundAndCorrectAction(data: {
 
     // 6. Handle Wallet refund if walletRefundPortion > 0
     if (walletRefundPortion > 0 && job.customerId) {
+      await lockCustomerRowForWallet(tx, job.customerId);
       const currentCust = await tx.customer.findUnique({ where: { id: job.customerId } });
       if (currentCust) {
         const balBefore = currentCust.creditBalance || 0;
@@ -4396,7 +4917,7 @@ export async function processRefundAndCorrectAction(data: {
       duplicatedJob,
       correctedJob: duplicatedJob,
     };
-  });
+  }));
 
   // 9. Void promo redemption on upstream marketing server if applicable (fire-and-forget)
   if (result?.jobRefund) {
@@ -4410,7 +4931,7 @@ export async function processRefundAndCorrectAction(data: {
             where: {
               OR: [
                 { usedJobId: data.jobId, status: "USED" },
-                { code: { equals: pCode, mode: "insensitive" as const }, status: "USED" },
+                { code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: data.jobId }, { usedJobId: null }] },
               ],
             },
             data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
@@ -4453,6 +4974,7 @@ export async function processRefundAndCorrectAction(data: {
     });
   }
 
+  invalidateDbCache('customers');
   return result;
 }
 
@@ -4492,25 +5014,44 @@ export async function unlockPaidJobAction(data: {
   clearedPayments?: any[];
 }> {
   try {
-    const unlockRes = await prisma.$transaction(async (tx) => {
-      // ──── 1. Fetch & Validate ────
+    const unlockRes = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
+      // ──── 1. Lock Row & Fetch & Validate ────
+      await lockJobRowForUpdate(tx, data.jobId);
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
       if (!job.isPaid && !job.isShopPaid) throw new Error("Job is not currently paid");
 
       // Check permission: Admin, Superadmin, and Accounting have unlimited unlock access.
       // CSO can only unlock jobs whose payment was recorded today or yesterday.
-      let actorRole = (data.actorRole || "").toLowerCase();
-      let hasFullAccess = actorRole === "admin" || actorRole === "superadmin" || actorRole === "accounting";
-      if (!hasFullAccess && data.actorId) {
-        const userRec = await tx.adminUser.findUnique({ where: { id: data.actorId }, select: { role: true, permissions: true } });
-        if (userRec) {
-          const role = (userRec.role || "").toLowerCase();
-          const perms = userRec.permissions || "";
-          if (role === "admin" || role === "superadmin" || role === "accounting" || perms.includes("accounting")) {
-            hasFullAccess = true;
-          }
+      // Derive actor role & permissions from server session or DB record (do not trust spoofed actorRole).
+      const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser(data.actorId);
+      if (explicitCredentialsProvided && !sessionActor) {
+        throw new Error("Unauthorized: ไม่พบข้อมูลผู้ใช้งานในระบบ หรือเซสชันหมดอายุ");
+      }
+      let hasFullAccess = false;
+      const effectiveActorId = sessionActor?.id || data.actorId;
+      if (effectiveActorId) {
+        const userRec = await tx.adminUser.findUnique({
+          where: { id: effectiveActorId },
+          select: { id: true, name: true, email: true, role: true, permissions: true, isActive: true },
+        });
+        if (!userRec || userRec.isActive === false) {
+          throw new Error("Unauthorized: บัญชีผู้ใช้งานนี้ถูกระงับหรือไม่พบในระบบ");
         }
+        const role = (userRec.role || "").toLowerCase();
+        if (role === "spectator") {
+          throw new Error("Forbidden: บัญชี Spectator ไม่สามารถปลดล็อคการชำระเงินได้");
+        }
+        const perms = userRec.permissions || "";
+        if (role === "admin" || role === "superadmin" || role === "accounting" || perms.includes("accounting")) {
+          hasFullAccess = true;
+        }
+        data.actorId = userRec.id;
+        data.actorName = userRec.name || userRec.email;
+        data.actorRole = userRec.role;
+      } else {
+        const fallbackRole = (data.actorRole || "").toLowerCase();
+        hasFullAccess = fallbackRole === "admin" || fallbackRole === "superadmin" || fallbackRole === "accounting";
       }
       if (!hasFullAccess) {
         const paymentDate = getJobPaymentDate(job);
@@ -4535,7 +5076,14 @@ export async function unlockPaidJobAction(data: {
         const legacyMethod = (job.paymentChannel || job.paymentMethod || "cash").toLowerCase();
         existingPayments = [{
           amount: job.totalAmount || 0,
-          method: legacyMethod.includes("credit") || legacyMethod.includes("wallet") ? "credit" : (legacyMethod.includes("transfer") ? "transfer" : (legacyMethod.includes("card") ? "card" : "cash")),
+          method:
+            legacyMethod.includes("credit") || legacyMethod.includes("wallet") || legacyMethod.includes("member")
+              ? "credit"
+              : legacyMethod.includes("transfer") || legacyMethod.includes("promptpay") || legacyMethod.includes("qr") || legacyMethod.includes("bank") || legacyMethod.includes("beam") || legacyMethod.includes("online")
+              ? "transfer"
+              : legacyMethod.includes("card") || legacyMethod.includes("edc") || legacyMethod.includes("visa") || legacyMethod.includes("master")
+              ? "card"
+              : "cash",
           shiftId: job.shiftId || undefined,
           timestamp: job.updatedAt?.toISOString() || new Date().toISOString(),
           paidBy: "Legacy Record"
@@ -4554,6 +5102,7 @@ export async function unlockPaidJobAction(data: {
         .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
 
       if (walletRefundAmount > 0 && job.customerId) {
+        await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
         if (customer) {
           const balBefore = customer.creditBalance || 0;
@@ -4705,8 +5254,9 @@ export async function unlockPaidJobAction(data: {
         walletRefundAmount,
         clearedPayments: existingPayments,
       };
-    });
+    }));
 
+    invalidateDbCache('customers');
     if (unlockRes.updatedJob) {
       await publishOrderEvent({
         type: 'job.updated',
@@ -4751,7 +5301,8 @@ export async function recordJobPaymentAction(data: {
   couponsIssued?: any[];
 }> {
   try {
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
+      await lockJobRowForUpdate(tx, data.jobId);
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
 
@@ -4781,9 +5332,9 @@ export async function recordJobPaymentAction(data: {
 
       const rawChannelLower = (data.channel || "").toLowerCase();
       const method = data.method || (
-        rawChannelLower.includes("member") || rawChannelLower.includes("wallet") ? "credit" :
-        rawChannelLower.includes("transfer") ? "transfer" :
-        rawChannelLower.includes("card") ? "card" : "cash"
+        rawChannelLower.includes("member") || rawChannelLower.includes("wallet") || rawChannelLower.includes("deduct") ? "credit" :
+        rawChannelLower.includes("transfer") || rawChannelLower.includes("promptpay") || rawChannelLower.includes("qr") || rawChannelLower.includes("bank") || rawChannelLower.includes("beam") || rawChannelLower.includes("online") ? "transfer" :
+        rawChannelLower.includes("card") || rawChannelLower.includes("edc") || rawChannelLower.includes("visa") || rawChannelLower.includes("master") ? "card" : "cash"
       );
 
       let newBalance: number | undefined = undefined;
@@ -4791,6 +5342,7 @@ export async function recordJobPaymentAction(data: {
       // If method is credit / Deduct Member
       if (method === "credit") {
         if (!job.customerId) throw new Error("ไม่พบข้อมูลลูกค้าสำหรับหักกระเป๋าเงินสมาชิก");
+        await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
         if (!customer) throw new Error("ไม่พบข้อมูลลูกค้าในระบบ");
         if (!customer.isMember) throw new Error("ลูกค้ารายนี้ไม่ได้เป็นสมาชิก (Member)");
@@ -4835,18 +5387,41 @@ export async function recordJobPaymentAction(data: {
         newBalance = balAfter;
       }
 
-      // Handle CashierShift if cash & shiftId provided
+      // Handle CashierShift sales by payment method when shiftId is provided
       const effectiveShiftId = data.shiftId || job.shiftId;
-      if (effectiveShiftId && method === "cash") {
+      if (effectiveShiftId) {
         const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
         if (shift && shift.status === "open") {
-          await tx.cashierShift.update({
-            where: { id: effectiveShiftId },
-            data: {
-              cashSales: (shift.cashSales || 0) + amount,
-              expectedCash: (shift.expectedCash || 0) + amount,
-            }
-          });
+          if (method === "cash") {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                cashSales: { increment: amount },
+                expectedCash: { increment: amount },
+              }
+            });
+          } else if (method === "transfer") {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                transferSales: { increment: amount },
+              }
+            });
+          } else if (method === "card") {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                cardSales: { increment: amount },
+              }
+            });
+          } else if (method === "credit") {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                creditSales: { increment: amount },
+              }
+            });
+          }
         }
       }
 
@@ -4942,7 +5517,7 @@ export async function recordJobPaymentAction(data: {
         paymentEntry,
         newBalance,
       };
-    });
+    }));
 
     // Evaluate promotion coupon issuance when job payment completes and marks shop paid
     let couponsIssued: any[] = [];
@@ -4961,6 +5536,7 @@ export async function recordJobPaymentAction(data: {
       }
     }
 
+    invalidateDbCache('customers');
     if (result.updatedJob) {
       await publishOrderEvent({
         type: 'job.updated',
@@ -5000,7 +5576,8 @@ export async function voidJobPaymentAction(data: {
   newBalance?: number;
 }> {
   try {
-    const voidRes = await prisma.$transaction(async (tx) => {
+    const voidRes = await withJobUpdateLock(data.jobId, async () => prisma.$transaction(async (tx) => {
+      await lockJobRowForUpdate(tx, data.jobId);
       const job = await tx.job.findUnique({ where: { id: data.jobId } });
       if (!job) throw new Error("Job not found");
 
@@ -5056,6 +5633,7 @@ export async function voidJobPaymentAction(data: {
 
       // 1. If method was credit (Member Wallet), refund back to wallet
       if (targetMethod === "credit" && job.customerId) {
+        await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
         if (customer) {
           const balBefore = customer.creditBalance || 0;
@@ -5089,18 +5667,42 @@ export async function voidJobPaymentAction(data: {
         }
       }
 
-      // 2. If cash and open shift, adjust shift
+      // 2. If open shift, adjust shift sales by method
       const effectiveShiftId = targetPayment.shiftId || job.shiftId;
-      if (effectiveShiftId && targetMethod === "cash") {
+      if (effectiveShiftId) {
         const shift = await tx.cashierShift.findUnique({ where: { id: effectiveShiftId } });
         if (shift && shift.status === "open") {
-          await tx.cashierShift.update({
-            where: { id: effectiveShiftId },
-            data: {
-              cashSales: Math.max(0, (shift.cashSales || 0) - targetAmount),
-              expectedCash: Math.max(0, (shift.expectedCash || 0) - targetAmount),
-            }
-          });
+          const chLower = String(targetChannel || "").toLowerCase();
+          if (targetMethod === "cash" || chLower.includes("cash") || chLower.includes("cod")) {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                cashSales: Math.max(0, (shift.cashSales || 0) - targetAmount),
+                expectedCash: Math.max(0, (shift.expectedCash || 0) - targetAmount),
+              }
+            });
+          } else if (targetMethod === "transfer" || chLower.includes("transfer") || chLower.includes("promptpay") || chLower.includes("qr")) {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                transferSales: Math.max(0, (shift.transferSales || 0) - targetAmount),
+              }
+            });
+          } else if (targetMethod === "card" || chLower.includes("card")) {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                cardSales: Math.max(0, (shift.cardSales || 0) - targetAmount),
+              }
+            });
+          } else if (targetMethod === "credit" || chLower.includes("wallet") || chLower.includes("member")) {
+            await tx.cashierShift.update({
+              where: { id: effectiveShiftId },
+              data: {
+                creditSales: Math.max(0, (shift.creditSales || 0) - targetAmount),
+              }
+            });
+          }
         }
       }
 
@@ -5185,8 +5787,9 @@ export async function voidJobPaymentAction(data: {
         refundedAmount,
         newBalance,
       };
-    });
+    }));
 
+    invalidateDbCache('customers');
     if (voidRes.updatedJob) {
       await publishOrderEvent({
         type: 'job.updated',

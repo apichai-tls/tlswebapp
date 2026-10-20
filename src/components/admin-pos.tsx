@@ -1551,6 +1551,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
     for (const job of jobs) {
       if (job.branchId !== shift.branchId) continue;
+      if (!(job.isShopPaid || (job.source === 'pos' && job.isPaid))) continue;
       let hasPaymentLog = false;
       let usedCash = false;
       let usedTransfer = false;
@@ -1582,7 +1583,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const jobTime = new Date(job.createdAt).getTime();
         const isShiftOwner = job.shiftId === shift.id ||
           Boolean(job.createdBy && (job.createdBy === shift.userName || job.createdBy === shift.userId));
-        if (jobTime >= shiftOpenTime && isShiftOwner && job.isPaid) {
+        if (jobTime >= shiftOpenTime && isShiftOwner && (job.isShopPaid || (job.source === 'pos' && job.isPaid))) {
           const method = job.paymentMethod?.toLowerCase();
           const amount = job.totalAmount || 0;
           if (method === 'cash') { cashSales += amount; usedCash = true; }
@@ -1701,6 +1702,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (job.branchId !== activeShift.branchId) continue;
       // Skip cancelled jobs in sales calculation
       if (job.status === 'cancel') continue;
+      if (!(job.isShopPaid || (job.source === 'pos' && job.isPaid))) continue;
       
       let hasPaymentLog = false;
       let usedCash = false;
@@ -1747,7 +1749,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       if (!hasPaymentLog) {
         if (!job.createdAt) continue;
         const jobTime = new Date(job.createdAt).getTime();
-        if (jobTime >= shiftOpenTime && jobTime <= shiftCloseTime && job.createdBy === activeShift.userName && job.isPaid) {
+        if (jobTime >= shiftOpenTime && jobTime <= shiftCloseTime && job.createdBy === activeShift.userName && (job.isShopPaid || (job.source === 'pos' && job.isPaid))) {
           const method = job.paymentMethod?.toLowerCase();
           const amount = job.totalAmount || 0;
           if (method === 'cash') {
@@ -3210,16 +3212,18 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         // For new POS jobs: generate proforma from real job ID now that we have it
         // Guard: Only auto-assign proforma if cart has actual laundry items!
         if (finalJob && !targetProformaNum && cart.length > 0) {
-          targetProformaNum = generateProformaBaseNumber(finalJob.id);
+          targetProformaNum = (finalJob as any).proformaNumber || generateProformaBaseNumber(finalJob.id);
           effectiveRevision = 0;
           setProformaReceiptNumber(targetProformaNum);
           setProformaRevision(0);
           setLastProformaCartHash(currentCartHash);
-          await jobStore.updateJobDetails(finalJob.id, {
-            proformaNumber: targetProformaNum,
-            proformaRevision: 0,
-            proformaCartHash: currentCartHash,
-          } as any);
+          if ((finalJob as any).proformaNumber !== targetProformaNum) {
+            await jobStore.updateJobDetails(finalJob.id, {
+              proformaNumber: targetProformaNum,
+              proformaRevision: 0,
+              proformaCartHash: currentCartHash,
+            } as any);
+          }
           finalJob = {
             ...finalJob,
             proformaNumber: targetProformaNum,
@@ -3275,16 +3279,25 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         } : null);
 
         if (finalJob) {
+          const prevSavedWalletBal = finalJob.walletBalanceAfter;
+          const prevSavedCustomerId = finalJob.customerId;
           finalJob = {
             ...finalJob,
             walletBalanceAfter: confirmedBalance,
             customerId: selectedCustomer.id,
             isMember: updates.isMember !== undefined ? updates.isMember : (selectedCustomer.isMember || balanceAdjustment > 0),
           };
-          await jobStore.updateJobDetails(finalJob.id, {
-            walletBalanceAfter: confirmedBalance,
-            customerId: selectedCustomer.id,
-          } as any);
+          if (
+            prevSavedWalletBal === null ||
+            prevSavedWalletBal === undefined ||
+            Math.abs(Number(prevSavedWalletBal) - confirmedBalance) > 0.001 ||
+            prevSavedCustomerId !== selectedCustomer.id
+          ) {
+            await jobStore.updateJobDetails(finalJob.id, {
+              walletBalanceAfter: confirmedBalance,
+              customerId: selectedCustomer.id,
+            } as any);
+          }
         }
       } else if (finalJob && selectedCustomer) {
         finalJob = {
@@ -5970,9 +5983,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                 if (j.branchId !== activeShop?.id) return false;
                 let matchTab = false;
                 if (recallTab === "unpaid") {
-                  matchTab = !j.isPaid && j.status !== 'cancel' && j.status !== 'completed';
+                  matchTab = !(j.isShopPaid || (j.source === 'pos' && j.isPaid)) && j.status !== 'cancel' && j.status !== 'completed';
                 } else {
-                  matchTab = !!j.isPaid && j.status !== 'cancel' && j.status !== 'completed';
+                  matchTab = Boolean(j.isShopPaid || (j.source === 'pos' && j.isPaid)) && j.status !== 'cancel' && j.status !== 'completed';
                 }
 
                 if (!matchTab) return false;
@@ -6022,11 +6035,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                             : job.type}
                         </Badge>
                         <Badge variant="outline" className={`text-[8.5px] uppercase font-bold py-0.5 px-1.5 border-none shadow-none ${
-                          job.isPaid 
+                          (job.isShopPaid || (job.source === 'pos' && job.isPaid)) 
                             ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" 
                             : "bg-red-500/10 text-red-600 dark:text-red-400"
                         }`}>
-                          {job.isPaid 
+                          {(job.isShopPaid || (job.source === 'pos' && job.isPaid)) 
                             ? (currentLanguage === "en" ? "Paid" : "จ่ายแล้ว") 
                             : (currentLanguage === "en" ? "Unpaid" : "ค้างจ่าย")}
                         </Badge>
@@ -6267,7 +6280,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                           </>
                         )}
 
-                        {!job.isPaid && job.status !== "completed" && job.status !== "cancel" && !isSpectatorMode && (
+                        {!(job.isShopPaid || (job.source === 'pos' && job.isPaid)) && job.status !== "completed" && job.status !== "cancel" && !isSpectatorMode && (
                           <Button
                             variant="ghost"
                             size="icon"
@@ -6584,11 +6597,13 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         customAmount={onlinePaymentJob?.totalAmount ?? undefined}
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
-            await jobStore.updateJobDetails(onlinePaymentJob.id, {
+            const { api, refreshDb } = await import("@/lib/api");
+            api.optimisticUpdate(onlinePaymentJob.id, {
               isPaid: true,
               isShopPaid: true,
               paymentChannel: paidInfo.channel,
             } as any);
+            jobStore.notify();
             const all = jobStore.getSnapshot();
             const updated = all.find(j => j.id === onlinePaymentJob.id);
             if (updated) {
@@ -6597,7 +6612,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
             setIsDraftPreview(false);
             setShowReceipt(true);
             playAudioFeedback("success");
-            const { refreshDb } = await import("@/lib/api");
             await refreshDb();
           }
           setOnlinePaymentJob(null);

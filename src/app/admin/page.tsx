@@ -2942,19 +2942,6 @@ export default function AdminPage() {
           payload.proofImageUrl = (safeDeliveryUrls.length > 0 ? JSON.stringify(safeDeliveryUrls) : null) as any;
         }
 
-        // 3. Persist to DB and await confirmation (includes walletBalanceAfter if deducted!)
-        if (Object.keys(payload).length > 0) {
-          (payload as any).actorId = user?.id;
-          (payload as any).actorName = user?.name || user?.email;
-          (payload as any).actorRole = user?.role;
-          if ((originalJobRef.current as any)?.updatedAt) {
-            (payload as any).updatedAt = (originalJobRef.current as any).updatedAt;
-            (payload as any).expectedUpdatedAt = (originalJobRef.current as any).updatedAt;
-          }
-          await api.updateJob(targetEditingJobId, payload);
-          jobStore.notify();
-        }
-
         // [AUTO-PROFORMA] Capture proforma ONLY IF:
         // 1. Proforma preview was explicitly requested in this session, OR
         // 2. Shop payment occurred (isShopPaid) AND job actually has laundry items!
@@ -2971,6 +2958,9 @@ export default function AdminPage() {
           targetProformaNum && 
           (proformaPressedSinceLastEdit || (isShopPaidNow && hasActualItems) || (isCartChangedFromLastProforma && !isAlreadyPaidJob))
         );
+        let resolvedFinalProformaNum = "";
+        let resolvedFinalRevision = 0;
+        let resolvedFinalCartHash = effectiveProformaCartHash;
         if (shouldCaptureProforma) {
           let finalProformaNum = targetProformaNum!;
           if (targetEditingJobId.startsWith("RF-")) {
@@ -2978,17 +2968,37 @@ export default function AdminPage() {
           } else if (!finalProformaNum) {
             finalProformaNum = generateProformaBaseNumber(targetEditingJobId);
           }
-          finalProformaNum = cleanProformaNumber(finalProformaNum);
-          const finalRevision = isRfJob ? Math.max(1, effectiveProformaRevision ?? 1) : (effectiveProformaRevision ?? 0);
-          const finalCartHash = effectiveProformaCartHash;
+          resolvedFinalProformaNum = cleanProformaNumber(finalProformaNum);
+          resolvedFinalRevision = isRfJob ? Math.max(1, effectiveProformaRevision ?? 1) : (effectiveProformaRevision ?? 0);
+          resolvedFinalCartHash = effectiveProformaCartHash;
 
-          // Always ensure proforma details are saved to DB
-          await api.updateJob(targetEditingJobId, {
-            proformaNumber: finalProformaNum,
-            proformaRevision: finalRevision,
-            proformaCartHash: finalCartHash,
-          } as any);
+          // Merge proforma metadata into main payload so we only perform a SINGLE DB update!
+          (payload as any).proformaNumber = resolvedFinalProformaNum;
+          (payload as any).proformaRevision = resolvedFinalRevision;
+          (payload as any).proformaCartHash = resolvedFinalCartHash;
+        }
+
+        // 3. Persist to DB and await confirmation (includes walletBalanceAfter and proforma metadata in a single call!)
+        if (Object.keys(payload).length > 0) {
+          (payload as any).actorId = user?.id;
+          (payload as any).actorName = user?.name || user?.email;
+          (payload as any).actorRole = user?.role;
+          if ((originalJobRef.current as any)?.updatedAt) {
+            (payload as any).updatedAt = (originalJobRef.current as any).updatedAt;
+            (payload as any).expectedUpdatedAt = (originalJobRef.current as any).updatedAt;
+          }
+          const savedMainJob = await api.updateJob(targetEditingJobId, payload);
+          if ((savedMainJob as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
+            (originalJobRef.current as any).updatedAt = (savedMainJob as any).updatedAt;
+          }
           jobStore.notify();
+        }
+
+        if (shouldCaptureProforma) {
+          const finalProformaNum = resolvedFinalProformaNum;
+          const finalRevision = resolvedFinalRevision;
+          const finalCartHash = resolvedFinalCartHash;
+
           setProformaReceiptNumber(finalProformaNum);
           setProformaRevision(finalRevision);
           setLastProformaCartHash(finalCartHash);
@@ -3138,7 +3148,10 @@ export default function AdminPage() {
                       .filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(`proforma-${cleanBase}-rev${finalRevision}.png`));
                     const nextTargetBills = sortBills(Array.from(new Set([capturedUrl, ...filteredTargetBills])));
 
-                    await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+                    const updatedProformaJob = await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+                    if ((updatedProformaJob as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
+                      (originalJobRef.current as any).updatedAt = (updatedProformaJob as any).updatedAt;
+                    }
 
                     // ONLY update React state if the dialog is still editing this exact same job!
                     if (editingJobIdRef.current === targetEditingJobId) {
@@ -3214,7 +3227,10 @@ export default function AdminPage() {
               const filteredTargetBills = targetCurrentBills
                 .filter(u => isBillUrlBelongingToJob(u, targetEditingJobId) && !u.includes(receiptFilename) && !u.includes("/receipt-"));
               const nextTargetBills = Array.from(new Set([recUrl, ...filteredTargetBills]));
-              await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+              const updatedRecJob = await jobStore.updateJobDetails(targetEditingJobId, { billImageUrl: JSON.stringify(nextTargetBills) } as any);
+              if ((updatedRecJob as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
+                (originalJobRef.current as any).updatedAt = (updatedRecJob as any).updatedAt;
+              }
 
               if (editingJobIdRef.current === targetEditingJobId) {
                 setBillImageUrls(prev => prev.includes(recUrl) ? prev : [...prev, recUrl]);
@@ -3301,10 +3317,18 @@ export default function AdminPage() {
         const packageItems = dialogCart.filter(item => item.category === "PACKAGE");
         const packageTotal = packageItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
 
-        // Now create the job — include walletBalanceAfter if pre-deducted
-        const jobDataWithWallet = preDeductedBalance !== null
-          ? { ...newJobData, walletBalanceAfter: preDeductedBalance }
-          : newJobData;
+        const isNewJobShopPaid = isPayment && !cannotDeduct;
+        const shouldAutoAssignNewJobProforma = Boolean(isNewJobProformaRequested || (isNewJobShopPaid && hasActualItems));
+        const expectedWalletBalAfterTopup = (isShopPaidNow_new && selectedProfileCustomer && packageTotal > 0)
+          ? ((preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0)) + packageTotal)
+          : preDeductedBalance;
+
+        // Now create the job — include walletBalanceAfter and autoAssignProforma so DB saves everything in 1 INSERT!
+        const jobDataWithWallet = {
+          ...newJobData,
+          ...(expectedWalletBalAfterTopup !== null ? { walletBalanceAfter: expectedWalletBalAfterTopup } : {}),
+          ...(shouldAutoAssignNewJobProforma ? { autoAssignProforma: true, proformaCartHash: currentCartHash } : {}),
+        };
 
         const job = await jobStore.addJob(jobDataWithWallet as any);
         savedJobId = job.id;
@@ -3327,21 +3351,30 @@ export default function AdminPage() {
         }
 
         // [AUTO-PROFORMA for NEW JOB] If previewed or shop paid WITH actual laundry items → auto-assign + capture in background
-        const isNewJobShopPaid = isPayment && !cannotDeduct;
-        if (savedJobId && (isNewJobProformaRequested || (isNewJobShopPaid && hasActualItems))) {
-          const autoProformaNum = generateProformaBaseNumber(savedJobId);
+        if (savedJobId && shouldAutoAssignNewJobProforma) {
+          const autoProformaNum = (job as any)?.proformaNumber || generateProformaBaseNumber(savedJobId);
           const proformaRemark = `Proforma: ${autoProformaNum}`;
-          const existingRemark = newJobData.remark || "";
+          const existingRemark = (job as any)?.remark || newJobData.remark || "";
           const updatedRemark = existingRemark
             ? (existingRemark.includes("Proforma:") ? existingRemark : `${proformaRemark} | ${existingRemark}`)
             : proformaRemark;
 
-          await jobStore.updateJobDetails(savedJobId, {
-            proformaNumber: autoProformaNum,
-            proformaRevision: 0,
-            proformaCartHash: currentCartHash,
-            remark: updatedRemark,
-          } as any);
+          if ((job as any)?.proformaNumber !== autoProformaNum) {
+            await jobStore.updateJobDetails(savedJobId, {
+              proformaNumber: autoProformaNum,
+              proformaRevision: 0,
+              proformaCartHash: currentCartHash,
+              remark: updatedRemark,
+            } as any);
+          } else {
+            api.optimisticUpdate(savedJobId, {
+              proformaNumber: autoProformaNum,
+              proformaRevision: 0,
+              proformaCartHash: currentCartHash,
+              remark: updatedRemark,
+            } as any);
+            jobStore.notify();
+          }
           setProformaReceiptNumber(autoProformaNum);
           setProformaRevision(0);
           if (lastPaidProformaInfoRef) {
@@ -3487,7 +3520,12 @@ export default function AdminPage() {
           const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, upd);
           const currentBal = preDeductedBalance ?? (selectedProfileCustomer.creditBalance || 0);
           const confirmedBal = updatedCust?.creditBalance ?? (currentBal + packageTotal);
-          await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: confirmedBal });
+          if (Math.abs((expectedWalletBalAfterTopup ?? -1) - confirmedBal) > 0.001) {
+            await jobStore.updateJobDetails(savedJobId, { walletBalanceAfter: confirmedBal });
+          } else {
+            api.optimisticUpdate(savedJobId, { walletBalanceAfter: confirmedBal } as any);
+            jobStore.notify();
+          }
           setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
           toast.success(`Member wallet topped up. New balance: ฿${confirmedBal.toLocaleString()}`);
         }
@@ -7089,7 +7127,11 @@ export default function AdminPage() {
                                         proformaNumber: targetProformaNum,
                                         proformaRevision: targetRevision,
                                         proformaCartHash: cartHash,
-                                      } as any);
+                                      } as any).then((confirmed) => {
+                                        if (confirmed?.updatedAt && originalJobRef.current) {
+                                          (originalJobRef.current as any).updatedAt = confirmed.updatedAt;
+                                        }
+                                      });
                                     }
                                   } else if (editingJobId?.startsWith("RF-") && (targetRevision === null || targetRevision === 0)) {
                                     targetRevision = 1;
@@ -8419,11 +8461,12 @@ export default function AdminPage() {
         customAmount={onlinePaymentJob?.totalAmount ?? undefined}
         onPaymentSuccess={async (paidInfo) => {
           if (onlinePaymentJob) {
-            await jobStore.updateJobDetails(onlinePaymentJob.id, {
+            api.optimisticUpdate(onlinePaymentJob.id, {
               isPaid: true,
               isShopPaid: true,
               paymentChannel: paidInfo.channel,
             } as any);
+            jobStore.notify();
             await refreshDb();
             const current = jobs.find(j => j.id === onlinePaymentJob.id) || activeJob;
             if (current) {

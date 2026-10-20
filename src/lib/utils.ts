@@ -735,8 +735,8 @@ export function isPaidTodayOrYesterday(paidAt: Date | string | number | null | u
  */
 export function getJobPaymentDate(job: any): Date | null {
   if (!job) return null;
-  if (job.csoPaidAt) return new Date(job.csoPaidAt);
   if (job.shopPaidAt) return new Date(job.shopPaidAt);
+  if (job.csoPaidAt) return new Date(job.csoPaidAt);
   if (job.adminNotesJson) {
     try {
       const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;

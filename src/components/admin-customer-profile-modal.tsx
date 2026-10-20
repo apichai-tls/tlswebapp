@@ -305,7 +305,7 @@ export function AdminCustomerProfileModal({
     });
 
     const custJobs = Array.from(jobMap.values());
-    const countedJobs = custJobs.filter(j => isStandardPlan ? j.isPaid : j.status === "completed");
+    const countedJobs = custJobs.filter(j => isStandardPlan ? Boolean(j.isShopPaid) : j.status === "completed");
     return {
       customerJobs: custJobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
       jobsCount: countedJobs.length,
@@ -322,7 +322,7 @@ export function AdminCustomerProfileModal({
     const weightSum = customerJobs.reduce((acc, j) => acc + (Number((j as any).weight) || 0), 0);
 
     // Calculate revenue from actual jobs
-    const revSum = customerJobs.reduce((acc, j) => acc + (j.isPaid || j.status === "completed" ? (j.totalAmount || j.fee || 0) : 0), 0);
+    const revSum = customerJobs.reduce((acc, j) => acc + (j.isShopPaid || j.status === "completed" ? (j.totalAmount || j.fee || 0) : 0), 0);
 
     return {
       activeJobs: active,

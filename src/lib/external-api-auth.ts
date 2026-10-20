@@ -1,7 +1,19 @@
 import crypto from 'crypto'
 
-const JWT_SECRET = process.env.EXTERNAL_JWT_SECRET || 'tls-noname-external-secret-key-2026'
-const API_KEY = process.env.EXTERNAL_API_KEY || 'nl_api_key_live_9988776655'
+function getJwtSecret(): string {
+  const secret = process.env.EXTERNAL_JWT_SECRET
+  if (secret && secret.trim()) return secret.trim()
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('EXTERNAL_JWT_SECRET environment variable is required in production')
+  }
+  return 'dev-only-external-jwt-secret-not-for-prod'
+}
+
+function getExternalApiKey(): string | null {
+  const key = process.env.EXTERNAL_API_KEY
+  if (key && key.trim()) return key.trim()
+  return null
+}
 
 /**
  * Hash a customer password using PBKDF2 / Salt
@@ -45,7 +57,7 @@ export function generateCustomerToken(payload: {
   ).toString('base64url')
 
   const signature = crypto
-    .createHmac('sha256', JWT_SECRET)
+    .createHmac('sha256', getJwtSecret())
     .update(`${header}.${body}`)
     .digest('base64url')
 
@@ -67,11 +79,12 @@ export function verifyCustomerToken(tokenString: string): {
     const [header, body, signature] = parts
 
     const expectedSig = crypto
-      .createHmac('sha256', JWT_SECRET)
+      .createHmac('sha256', getJwtSecret())
       .update(`${header}.${body}`)
       .digest('base64url')
 
-    if (expectedSig !== signature) return null
+    if (expectedSig.length !== signature.length) return null
+    if (!crypto.timingSafeEqual(Buffer.from(expectedSig), Buffer.from(signature))) return null
 
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf-8'))
     if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
@@ -94,7 +107,10 @@ export function verifyCustomerToken(tokenString: string): {
  */
 export function verifyServiceApiKey(req: Request): boolean {
   const apiKey = req.headers.get('x-api-key') || req.headers.get('X-API-KEY')
-  if (apiKey && apiKey === API_KEY) return true
+  const configuredKey = getExternalApiKey()
+  if (apiKey && configuredKey && apiKey.length === configuredKey.length) {
+    return crypto.timingSafeEqual(Buffer.from(apiKey), Buffer.from(configuredKey))
+  }
   // Allow if in development environment when no key is explicitly passed
   if (process.env.NODE_ENV === 'development' && !apiKey) return true
   return false

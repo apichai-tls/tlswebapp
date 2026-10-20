@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { generateReceiptNumber } from '@/lib/utils'
+import { verifyCustomerToken, verifyServiceApiKey } from '@/lib/external-api-auth'
+import { resolveRequestUser, canUserAccessJob } from '@/lib/server-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,12 +13,51 @@ export async function GET(
   try {
     const { id } = await context.params
 
+    // 1. Verify authentication before returning any order or customer details
+    const authHeader = req.headers.get('authorization')
+    const verifiedCustomer = authHeader ? verifyCustomerToken(authHeader) : null
+    const isServiceCaller = verifyServiceApiKey(req)
+    const { user: staffUser } = await resolveRequestUser(req)
+    const isAuthorizedStaff = Boolean(staffUser && staffUser.isActive)
+
+    if (!verifiedCustomer && !isServiceCaller && !isAuthorizedStaff) {
+      return NextResponse.json(
+        { error: 'Unauthorized: Valid customer token, service API key, or staff session required' },
+        { status: 401 }
+      )
+    }
+
     const job = await prisma.job.findUnique({
       where: { id }
     })
 
     if (!job) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+    }
+
+    // 2. Enforce customer ownership or staff branch authorization
+    if (verifiedCustomer) {
+      if (!job.customerId || job.customerId !== verifiedCustomer.customerId) {
+        return NextResponse.json(
+          { error: 'Forbidden: You do not have permission to view this receipt' },
+          { status: 403 }
+        )
+      }
+    } else if (isServiceCaller) {
+      const requestedCustomerId = req.headers.get('x-customer-id')
+      if (requestedCustomerId && job.customerId && job.customerId !== requestedCustomerId) {
+        return NextResponse.json(
+          { error: 'Forbidden: Receipt does not belong to the specified customer' },
+          { status: 403 }
+        )
+      }
+    } else if (staffUser) {
+      if (!canUserAccessJob(staffUser, job)) {
+        return NextResponse.json(
+          { error: 'Forbidden: You do not have branch access to this order' },
+          { status: 403 }
+        )
+      }
     }
 
     const isPaid = Boolean(job.isPaid || job.isShopPaid)

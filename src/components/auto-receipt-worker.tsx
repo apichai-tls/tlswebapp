@@ -63,12 +63,13 @@ export function AutoReceiptWorker() {
         checkJobOnlinePaymentStatusAction(unpaidBeamJob.id).then(async (res) => {
           if (res.success && res.isPaid) {
             console.log(`[AutoReceiptWorker] ✔ Detected online payment for Job #${unpaidBeamJob.id} via background poller`);
-            await jobStore.updateJobDetails(unpaidBeamJob.id, {
+            const { api, refreshDb } = await import("@/lib/api");
+            api.optimisticUpdate(unpaidBeamJob.id, {
               isPaid: true,
               isShopPaid: true,
               paymentChannel: res.paymentChannel || unpaidBeamJob.paymentChannel,
             } as any);
-            const { refreshDb } = await import("@/lib/api");
+            jobStore.notify();
             await refreshDb();
           }
         }).catch((err) => {
@@ -117,7 +118,8 @@ export function AutoReceiptWorker() {
         // still missing after 20s (e.g. dialog/tab closed early), AutoReceiptWorker steps in as a safety net.
         const channel = (job.paymentChannel || "").toLowerCase();
         const isOnlineGateway = channel.includes("beam") || channel.includes("gateway");
-        if (!isOnlineGateway && (now - jobPaidTime) < 20000) return false;
+        const minWaitMs = isOnlineGateway ? (1500 + (Math.abs((job.id || "").charCodeAt((job.id || "").length - 1) || 0) % 3) * 1000) : 20000;
+        if ((now - jobPaidTime) < minWaitMs) return false;
 
         // Guard: Job must have actual laundry items (excluding PACKAGE top-ups) to auto-generate receipt!
         // Delivery booking fees alone or package top-ups without clothes must NOT generate a receipt!
@@ -205,6 +207,9 @@ export function AutoReceiptWorker() {
             clearReceiptCaptureLock(filename);
           }
 
+          if (completedRef.current.size > 500) {
+            completedRef.current.clear();
+          }
           completedRef.current.add(`receipt_${jobId}_${pendingPaidJob.updatedAt || ""}`);
         } catch (err) {
           clearReceiptCaptureLock(filename);

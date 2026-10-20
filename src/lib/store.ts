@@ -699,10 +699,10 @@ export const jobStore = {
           })
         );
       }
-      if ((updates as any)?.throwOnError) {
-        throw err;
+      if ((updates as any)?.suppressThrow) {
+        return undefined;
       }
-      return undefined;
+      throw err;
     }
   },
 

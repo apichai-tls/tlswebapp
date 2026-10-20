@@ -290,7 +290,7 @@ export function ReportsSalesByItem({ jobs, selectedBranch = "all", onViewJob }: 
   const employeeList = useMemo(() => {
     const set = new Set<string>();
     jobs.forEach(j => {
-      if (j.isPaid || j.isShopPaid) {
+      if (j.isShopPaid) {
         const payee = getJobPayee(j);
         if (payee) set.add(payee);
       }
@@ -432,8 +432,10 @@ export function ReportsSalesByItem({ jobs, selectedBranch = "all", onViewJob }: 
 
     // 1. Process Jobs Line Items & Fees
     currentPeriodJobs.forEach(job => {
-      const isCancelled = job.status === "cancel";
-      const isPaid = Boolean(job.isPaid || job.isShopPaid);
+      const isCancelled =
+        job.status === "cancel" &&
+        Boolean(job.isShopPaid || (job as any).refundId || (job.remark && job.remark.toLowerCase().includes("refund")));
+      const isPaid = Boolean(job.isShopPaid) && job.status !== "cancel";
 
       // We process jobs that had commercial value (paid or cancelled-after-payment)
       if (!isPaid && !isCancelled) return;

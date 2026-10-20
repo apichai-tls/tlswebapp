@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 const PROMO_BASE = process.env.TLS_PROMO_API_BASE || "https://thatlaundryshop.com";
-const PROMO_KEY  = process.env.TLS_PROMO_API_KEY  || "tls_pos_live_4cd242ae264a906fd734de04396617407bdb59f74d67bcac";
+const PROMO_KEY  = process.env.TLS_PROMO_API_KEY || "";
 
 export async function POST(req: NextRequest) {
   try {
@@ -211,11 +211,15 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Forward to upstream promo server for validity & discount calculation
+    const promoKey = process.env.TLS_PROMO_API_KEY || PROMO_KEY;
+    if (!promoKey) {
+      return NextResponse.json({ valid: false, error: "ไม่พบรหัสส่วนลดนี้ในระบบ (Missing upstream promo configuration)" }, { status: 503 });
+    }
     const upstream = await fetch(`${PROMO_BASE}/api/pos/promo/check`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-tls-pos-key": PROMO_KEY,
+        "x-tls-pos-key": promoKey,
       },
       body: JSON.stringify({ code: promoCode, orderTotal }),
     });

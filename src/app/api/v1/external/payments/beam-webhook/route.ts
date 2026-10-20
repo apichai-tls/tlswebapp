@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { verifyBeamWebhookSignature } from '@/lib/external-api-auth'
 import { invalidateDbCache } from '@/lib/db-cache'
 import { publishOrderEvent } from '@/lib/realtime-bus'
-import { processTopUpAction } from '@/actions/db'
+import { processTopUpAction, lockJobRowForUpdate } from '@/actions/db'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,13 +16,16 @@ export async function POST(req: Request) {
       req.headers.get('x-signature') ||
       req.headers.get('signature')
 
-    // Verify HMAC-SHA256 signature if webhook secret is configured
-    if (process.env.BEAM_WEBHOOK_SECRET) {
-      const isValid = verifyBeamWebhookSignature(rawBody, signature, process.env.BEAM_WEBHOOK_SECRET)
-      if (!isValid) {
-        console.warn('✘ Beam Webhook: Invalid signature received')
-        return NextResponse.json({ error: 'Invalid webhook signature' }, { status: 401 })
-      }
+    // Verify HMAC-SHA256 signature — fail closed if webhook secret is missing or signature is invalid
+    const webhookSecret = (process.env.BEAM_WEBHOOK_SECRET || '').trim()
+    if (!webhookSecret) {
+      console.error('✘ Beam Webhook: BEAM_WEBHOOK_SECRET is not configured; rejecting unverified callback')
+      return NextResponse.json({ error: 'Webhook verification secret is not configured' }, { status: 503 })
+    }
+    const isValid = verifyBeamWebhookSignature(rawBody, signature, webhookSecret)
+    if (!isValid) {
+      console.warn('✘ Beam Webhook: Invalid signature received')
+      return NextResponse.json({ error: 'Invalid webhook signature' }, { status: 401 })
     }
 
     let payload: any = {}
@@ -346,24 +349,74 @@ export async function POST(req: Request) {
 
     const now = new Date()
 
-    // Parse existing payments from adminNotesJson
-    let adminNotesObj: any = {}
-    let existingPayments: any[] = []
-    try {
-      if (job.adminNotesJson) {
-        adminNotesObj = JSON.parse(job.adminNotesJson)
-        if (Array.isArray(adminNotesObj.payments)) {
-          existingPayments = adminNotesObj.payments
+    const txResult = await prisma.$transaction(async (tx) => {
+      await lockJobRowForUpdate(tx, job.id)
+      const freshJob = (await tx.job.findUnique({ where: { id: job.id } })) || job
+
+      // Parse existing payments from adminNotesJson
+      let adminNotesObj: any = {}
+      let existingPayments: any[] = []
+      try {
+        if (freshJob.adminNotesJson) {
+          adminNotesObj = JSON.parse(freshJob.adminNotesJson)
+          if (Array.isArray(adminNotesObj.payments)) {
+            existingPayments = adminNotesObj.payments
+          }
         }
+      } catch {}
+
+      // Idempotency: avoid recording duplicate payment if this exact chargeId is already recorded
+      const isThisChargeRecorded = existingPayments.some(
+        (p: any) => p && p.chargeId && (p.chargeId === chargeId || (paymentLinkId && p.chargeId === paymentLinkId))
+      )
+
+      if (isThisChargeRecorded && freshJob.isPaid && freshJob.isShopPaid) {
+        return { alreadyRecorded: true, updatedJob: freshJob }
       }
-    } catch {}
 
-    // Idempotency: avoid recording duplicate payment if this exact chargeId is already recorded
-    const isThisChargeRecorded = existingPayments.some(
-      (p: any) => p && p.chargeId && (p.chargeId === chargeId || (paymentLinkId && p.chargeId === paymentLinkId))
-    )
+      const updatedPayments = isThisChargeRecorded
+        ? existingPayments
+        : [
+            ...existingPayments,
+            {
+              amount: paidAmount,
+              method: paymentMethodCode,
+              channel: paymentChannel,
+              timestamp: now.toISOString(),
+              chargeId,
+            },
+          ]
 
-    if (isThisChargeRecorded && job.isPaid && job.isShopPaid) {
+      adminNotesObj.payments = updatedPayments
+
+      const totalPaidAfter = updatedPayments.reduce((sum: number, p: any) => sum + (Number(p?.amount) || 0), 0)
+      const currentJobTotal = Number(freshJob.totalAmount) || 0
+      const effectiveTotalAmount = Math.max(currentJobTotal, totalPaidAfter)
+      const isFullyPaidNow = effectiveTotalAmount > 0 && totalPaidAfter >= effectiveTotalAmount - 0.01
+
+      if (!isFullyPaidNow) {
+        delete adminNotesObj.lastBeamPaymentLink
+      }
+
+      // Update Job payment state
+      const savedJob = await tx.job.update({
+        where: { id: freshJob.id },
+        data: {
+          isPaid: isFullyPaidNow ? true : freshJob.isPaid,
+          isShopPaid: isFullyPaidNow ? true : freshJob.isShopPaid,
+          paymentMethod: paymentMethodCode,
+          paymentChannel,
+          totalAmount: effectiveTotalAmount,
+          ...(isFullyPaidNow ? { csoPaidAt: now, shopPaidAt: now } : {}),
+          subStatus: isFullyPaidNow && freshJob.subStatus === 'billing' ? 'wash' : freshJob.subStatus,
+          adminNotesJson: JSON.stringify(adminNotesObj),
+        },
+      })
+
+      return { alreadyRecorded: false, updatedJob: savedJob }
+    })
+
+    if (txResult.alreadyRecorded) {
       console.log(`[Beam Webhook] Job ${job.id} already recorded charge ${chargeId}. Acknowledging event: ${event}`)
       return NextResponse.json({
         success: true,
@@ -373,44 +426,7 @@ export async function POST(req: Request) {
       })
     }
 
-    const updatedPayments = isThisChargeRecorded
-      ? existingPayments
-      : [
-          ...existingPayments,
-          {
-            amount: paidAmount,
-            method: paymentMethodCode,
-            channel: paymentChannel,
-            timestamp: now.toISOString(),
-            chargeId,
-          },
-        ]
-
-    adminNotesObj.payments = updatedPayments
-
-    const totalPaidAfter = updatedPayments.reduce((sum: number, p: any) => sum + (Number(p?.amount) || 0), 0)
-    const currentJobTotal = Number(job.totalAmount) || 0
-    const effectiveTotalAmount = Math.max(currentJobTotal, totalPaidAfter)
-    const isFullyPaidNow = effectiveTotalAmount > 0 && totalPaidAfter >= effectiveTotalAmount - 0.01
-
-    if (!isFullyPaidNow) {
-      delete adminNotesObj.lastBeamPaymentLink
-    }
-
-    // Update Job payment state
-    const updatedJob = await prisma.job.update({
-      where: { id: job.id },
-      data: {
-        isPaid: isFullyPaidNow,
-        isShopPaid: isFullyPaidNow,
-        paymentMethod: paymentMethodCode,
-        paymentChannel,
-        totalAmount: effectiveTotalAmount,
-        ...(isFullyPaidNow ? { csoPaidAt: now, shopPaidAt: now } : {}),
-        subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
-        adminNotesJson: JSON.stringify(adminNotesObj),
-      },
-    })
+    const updatedJob = txResult.updatedJob
 
     try {
       await publishOrderEvent({

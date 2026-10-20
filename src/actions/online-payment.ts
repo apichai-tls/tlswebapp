@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/prisma';
 import { invalidateDbCache } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
-import { processTopUpAction, evaluateAndIssuePromotionCouponsAction } from '@/actions/db';
+import { processTopUpAction, evaluateAndIssuePromotionCouponsAction, lockJobRowForUpdate } from '@/actions/db';
 import {
   createBeamPaymentLink,
   getBeamPaymentLink,
@@ -40,84 +40,71 @@ async function markJobAsPaidInDb(params: {
   channelName?: string;
   chargeId?: string;
 }) {
-  const { job, paidAmount, paymentMethodCode = 'card', channelName = 'Beam Checkout', chargeId } = params;
+  const { job: initialJob, paidAmount, paymentMethodCode = 'card', channelName = 'Beam Checkout', chargeId } = params;
   const now = new Date();
 
-  let adminNotesObj: any = {};
-  let existingPayments: any[] = [];
-  try {
-    if (job.adminNotesJson) {
-      adminNotesObj = JSON.parse(job.adminNotesJson);
-      if (Array.isArray(adminNotesObj.payments)) {
-        existingPayments = adminNotesObj.payments;
+  const { updated, transitionedToShopPaid } = await prisma.$transaction(async (tx) => {
+    await lockJobRowForUpdate(tx, initialJob.id);
+    const job = (await tx.job.findUnique({ where: { id: initialJob.id } })) || initialJob;
+
+    let adminNotesObj: any = {};
+    let existingPayments: any[] = [];
+    try {
+      if (job.adminNotesJson) {
+        adminNotesObj = JSON.parse(job.adminNotesJson);
+        if (Array.isArray(adminNotesObj.payments)) {
+          existingPayments = adminNotesObj.payments;
+        }
       }
+    } catch {}
+
+    const effectiveChargeId = chargeId || 'BEAM-' + Date.now();
+    const alreadyRecorded = existingPayments.some(
+      (p: any) => p && p.chargeId && (p.chargeId === effectiveChargeId || p.chargeId === adminNotesObj.lastBeamPaymentLink?.id)
+    );
+
+    const updatedPayments = alreadyRecorded
+      ? existingPayments
+      : [
+          ...existingPayments,
+          {
+            amount: paidAmount,
+            method: paymentMethodCode === 'card' ? 'card' : 'transfer',
+            channel: channelName,
+            timestamp: now.toISOString(),
+            chargeId: effectiveChargeId,
+          },
+        ];
+
+    adminNotesObj.payments = updatedPayments;
+
+    const totalPaidAfter = updatedPayments.reduce((sum: number, p: any) => sum + (Number(p?.amount) || 0), 0);
+    const currentJobTotal = Number(job.totalAmount) || 0;
+    const effectiveTotalAmount = Math.max(currentJobTotal, totalPaidAfter);
+    const isFullyPaidNow = effectiveTotalAmount > 0 && totalPaidAfter >= effectiveTotalAmount - 0.01;
+
+    if (!isFullyPaidNow) {
+      // Clear consumed link so a new link can be generated for the remaining balance
+      delete adminNotesObj.lastBeamPaymentLink;
     }
-  } catch {}
 
-  const effectiveChargeId = chargeId || 'BEAM-' + Date.now();
-  const alreadyRecorded = existingPayments.some(
-    (p: any) => p && p.chargeId && (p.chargeId === effectiveChargeId || p.chargeId === adminNotesObj.lastBeamPaymentLink?.id)
-  );
-
-  const updatedPayments = alreadyRecorded
-    ? existingPayments
-    : [
-        ...existingPayments,
-        {
-          amount: paidAmount,
-          method: paymentMethodCode === 'card' ? 'card' : 'transfer',
-          channel: channelName,
-          timestamp: now.toISOString(),
-          chargeId: effectiveChargeId,
-        },
-      ];
-
-  adminNotesObj.payments = updatedPayments;
-
-  const totalPaidAfter = updatedPayments.reduce((sum: number, p: any) => sum + (Number(p?.amount) || 0), 0);
-  const currentJobTotal = Number(job.totalAmount) || 0;
-  const effectiveTotalAmount = Math.max(currentJobTotal, totalPaidAfter);
-  const isFullyPaidNow = effectiveTotalAmount > 0 && totalPaidAfter >= effectiveTotalAmount - 0.01;
-
-  if (!isFullyPaidNow) {
-    // Clear consumed link so a new link can be generated for the remaining balance
-    delete adminNotesObj.lastBeamPaymentLink;
-  }
-
-  let transitionedToShopPaid = false;
-  if (isFullyPaidNow) {
-    const atomicRes = await prisma.job.updateMany({
-      where: { id: job.id, isShopPaid: false },
+    const didTransition = Boolean(isFullyPaidNow && !job.isShopPaid);
+    const savedJob = await tx.job.update({
+      where: { id: job.id },
       data: {
-        isPaid: true,
-        isShopPaid: true,
+        isPaid: isFullyPaidNow ? true : job.isPaid,
+        isShopPaid: isFullyPaidNow ? true : job.isShopPaid,
         paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
         paymentChannel: channelName,
         totalAmount: effectiveTotalAmount,
-        csoPaidAt: now,
-        shopPaidAt: now,
-        subStatus: job.subStatus === 'billing' ? 'wash' : job.subStatus,
+        ...(isFullyPaidNow && !job.shopPaidAt ? { csoPaidAt: now, shopPaidAt: now } : {}),
+        subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
         adminNotesJson: JSON.stringify(adminNotesObj),
       },
     });
-    transitionedToShopPaid = atomicRes.count > 0;
-  }
 
-  const updated = transitionedToShopPaid
-    ? ((await prisma.job.findUnique({ where: { id: job.id } })) || job)
-    : await prisma.job.update({
-        where: { id: job.id },
-        data: {
-          isPaid: isFullyPaidNow,
-          isShopPaid: isFullyPaidNow,
-          paymentMethod: paymentMethodCode === 'card' ? 'card' : 'transfer',
-          paymentChannel: channelName,
-          totalAmount: effectiveTotalAmount,
-          ...(isFullyPaidNow && !job.shopPaidAt ? { csoPaidAt: now, shopPaidAt: now } : {}),
-          subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
-          adminNotesJson: JSON.stringify(adminNotesObj),
-        },
-      });
+    return { updated: savedJob, transitionedToShopPaid: didTransition };
+  });
 
   try {
     await publishOrderEvent({

@@ -69,8 +69,9 @@ export interface RealtimeStateSnapshot {
   externalJobUpdates: Record<string, ExternalJobUpdateNotice>;
 }
 
-// Track active in-flight saves per job and pre-edit confirmed snapshots for rollback
+// Track active in-flight saves per job, per-field pending edits, and pre-edit confirmed snapshots
 const pendingJobSaves = new Map<string, number>();
+const pendingFieldEdits = new Map<string, Set<string>>();
 const confirmedJobSnapshots = new Map<string, Job>();
 const lastSeenJobRevision = new Map<string, number>();
 const inFlightClientJobFetches = new Map<string, Promise<Job | null>>();
@@ -89,7 +90,11 @@ export function getClientAuthUser(): {
   try {
     const raw = localStorage.getItem('authUser');
     if (!raw) return null;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (parsed?.id && typeof document !== 'undefined' && !document.cookie.includes('tls_user_id=')) {
+      document.cookie = `tls_user_id=${encodeURIComponent(parsed.id)}; path=/; max-age=${60 * 60 * 20}; SameSite=Lax`;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -194,6 +199,12 @@ function setConnectionStatus(status: ConnectionStatus) {
   }
 }
 
+function isJobShopSettled(j?: { isShopPaid?: boolean; isPaid?: boolean; source?: string; type?: string } | null): boolean {
+  if (!j) return false;
+  const isPosJob = j.source === 'pos' || j.type === 'in_store';
+  return Boolean(j.isShopPaid || (isPosJob && j.isPaid));
+}
+
 // Helper to normalize a server or Prisma job record into client Job structure
 function normalizeServerJob(raw: any, existing?: Job): Job {
   const parsed = JSON.parse(JSON.stringify(raw), dateReviver);
@@ -255,15 +266,43 @@ function normalizeServerJob(raw: any, existing?: Job): Job {
     isShopPaid: parsed.isShopPaid !== undefined ? Boolean(parsed.isShopPaid) : Boolean(existing?.isShopPaid),
   };
 
+  const jobId = merged.id || existing?.id || '';
+  const hasPendingSave = Boolean(jobId && (pendingJobSaves.get(jobId) || 0) > 0);
+  const dirtyFields = jobId ? pendingFieldEdits.get(jobId) : undefined;
+  const incomingRev = parsed.updatedAt ? new Date(parsed.updatedAt).getTime() : 0;
+  const existingRev = existing?.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+
+  // Preserve any unconfirmed dirty fields that are currently pending save/retry
+  if (existing && dirtyFields && dirtyFields.size > 0) {
+    for (const field of dirtyFields) {
+      if (field in existing && (existing as any)[field] !== undefined) {
+        (merged as any)[field] = (existing as any)[field];
+      }
+    }
+  }
+
   if (existing?.billNo && (!merged.billNo || merged.billNo === '')) {
-    merged.billNo = existing.billNo;
+    const shouldProtectBillNo =
+      hasPendingSave ||
+      Boolean(dirtyFields?.has('billNo')) ||
+      parsed.billNo === undefined ||
+      (existingRev > 0 && incomingRev <= existingRev);
+    if (shouldProtectBillNo) {
+      merged.billNo = existing.billNo;
+    }
   }
   if (
     existing?.billImageUrl &&
     existing.billImageUrl !== '[]' &&
-    (!merged.billImageUrl || merged.billImageUrl === '[]')
+    parsed.billImageUrl === undefined
   ) {
     merged.billImageUrl = existing.billImageUrl;
+  }
+
+  if (hasPendingSave) {
+    (merged as any)._saveStatus = 'saving';
+  } else if ((existing as any)?._saveStatus === 'failed' && dirtyFields && dirtyFields.size > 0) {
+    (merged as any)._saveStatus = 'failed';
   }
 
   return merged;
@@ -355,13 +394,13 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
         parsed.jobs = parsed.jobs.map((serverJob: any) => {
           const memJob = memoryDb!.jobs.find((j) => j.id === serverJob.id);
           if (memJob) {
-            // If server confirmed payment, adopt exact server paid states immediately
-            if ((serverJob.isPaid && !memJob.isPaid) || (serverJob.isShopPaid && !memJob.isShopPaid)) {
-              return normalizeServerJob(serverJob, memJob);
-            }
+            const hasInFlightSave = (pendingJobSaves.get(serverJob.id) || 0) > 0;
+            const hasDirtyEdits = (pendingFieldEdits.get(serverJob.id)?.size || 0) > 0;
+            const isPaymentAdvance = isJobShopSettled(serverJob) && !isJobShopSettled(memJob);
 
-            // Only protect jobs that currently have an active in-flight save to the server
-            if ((pendingJobSaves.get(serverJob.id) || 0) > 0) {
+            // If a save is in-flight or has unconfirmed draft edits, never let a refresh clobber pending fields.
+            // Even when payment state advances on the server, normalizeServerJob preserves all dirty fields (including billNo).
+            if ((hasInFlightSave || hasDirtyEdits) && !isPaymentAdvance) {
               return memJob;
             }
 
@@ -688,17 +727,17 @@ export const api = {
       (rawJob.updatedAt ? new Date(rawJob.updatedAt).getTime() : Date.now());
     const prevRev = lastSeenJobRevision.get(rawJob.id) || 0;
 
-    // Ignore out-of-order older events unless payment state advanced
+    // Ignore out-of-order older events unless Shop Paid settlement state advanced
     const isPaymentAdvance =
-      existingJob &&
-      ((rawJob.isPaid && !existingJob.isPaid) || (rawJob.isShopPaid && !existingJob.isShopPaid));
+      Boolean(existingJob && isJobShopSettled(rawJob) && !isJobShopSettled(existingJob));
 
     if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance) {
       return { changed: false, job: existingJob || normalizeServerJob(rawJob) };
     }
 
-    // Do not clobber an active in-flight save unless payment state advanced
-    if ((pendingJobSaves.get(rawJob.id) || 0) > 0 && !isPaymentAdvance) {
+    // Do not clobber an active in-flight save or dirty edits unless Shop Paid state advanced
+    const hasDirtyEdits = (pendingFieldEdits.get(rawJob.id)?.size || 0) > 0;
+    if (((pendingJobSaves.get(rawJob.id) || 0) > 0 || hasDirtyEdits) && !isPaymentAdvance) {
       return { changed: false, job: existingJob || normalizeServerJob(rawJob) };
     }
 
@@ -710,19 +749,22 @@ export const api = {
     }
 
     const normalized = normalizeServerJob(rawJob, existingJob);
-    (normalized as any)._saveStatus = 'saved';
-
-    if (memoryDb) {
-      if (existingIdx >= 0) {
-        const nextJobs = [...memoryDb.jobs];
-        nextJobs[existingIdx] = normalized;
-        memoryDb.jobs = nextJobs;
-      } else {
-        memoryDb.jobs = [normalized, ...memoryDb.jobs];
-      }
-      realtimeState.lastSyncAt = Date.now();
-      api.notify('jobs');
+    if (!(normalized as any)._saveStatus) {
+      (normalized as any)._saveStatus = 'saved';
     }
+
+    if (!memoryDb) {
+      memoryDb = db;
+    }
+    if (existingIdx >= 0) {
+      const nextJobs = [...memoryDb.jobs];
+      nextJobs[existingIdx] = normalized;
+      memoryDb.jobs = nextJobs;
+    } else {
+      memoryDb.jobs = [normalized, ...memoryDb.jobs];
+    }
+    realtimeState.lastSyncAt = Date.now();
+    api.notify('jobs');
 
     return { changed: true, job: normalized };
   },
@@ -806,11 +848,10 @@ export const api = {
             const existingJob = existingIdx !== undefined ? nextJobs[existingIdx] : undefined;
 
             const isPaymentAdvance =
-              existingJob &&
-              ((rawJob.isPaid && !existingJob.isPaid) ||
-                (rawJob.isShopPaid && !existingJob.isShopPaid));
+              Boolean(existingJob && isJobShopSettled(rawJob) && !isJobShopSettled(existingJob));
+            const hasDirtyEdits = (pendingFieldEdits.get(rawJob.id)?.size || 0) > 0;
 
-            if ((pendingJobSaves.get(rawJob.id) || 0) > 0 && !isPaymentAdvance) {
+            if (((pendingJobSaves.get(rawJob.id) || 0) > 0 || hasDirtyEdits) && !isPaymentAdvance) {
               continue;
             }
             if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance) {
@@ -819,7 +860,9 @@ export const api = {
 
             if (incomingRev > prevRev) lastSeenJobRevision.set(rawJob.id, incomingRev);
             const normalized = normalizeServerJob(rawJob, existingJob);
-            (normalized as any)._saveStatus = 'saved';
+            if (!(normalized as any)._saveStatus) {
+              (normalized as any)._saveStatus = 'saved';
+            }
 
             if (existingIdx !== undefined) {
               nextJobs[existingIdx] = normalized;
@@ -1286,8 +1329,10 @@ export const api = {
       confirmedJobSnapshots.set(id, { ...existingJob });
     }
 
-    // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo
+    // Prevent accidental in-memory erasure of billNo by empty/undefined values if existingJob already has billNo,
+    // unless caller explicitly passed allowClearBillNo: true for an intentional authorized correction.
     if (
+      !(cleanUpdates as any).allowClearBillNo &&
       cleanUpdates.billNo !== undefined &&
       (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') &&
       existingJob.billNo &&
@@ -1302,7 +1347,16 @@ export const api = {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
-          const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
+          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
+          const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
+          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid === true || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined);
+          let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
+            ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
+            : existingUrls;
+          if (!isMediaOnly) {
+            baseExisting = baseExisting.filter((u: string) => typeof u === 'string' && (u.includes('proforma-') || u.includes('receipt-')));
+          }
+          const merged = Array.from(new Set([...baseExisting, ...incomingUrls]));
           merged.sort((a, b) => {
             const aIsPf = a.includes('proforma-');
             const bIsPf = b.includes('proforma-');
@@ -1332,10 +1386,23 @@ export const api = {
       cleanUpdates.status = 'pending';
     }
 
-    // Omit stale updatedAt timestamp from DB updates unless concurrency check is explicitly requested
-    if (!(cleanUpdates as any).expectedUpdatedAt && !(cleanUpdates as any).checkConflict) {
+    // Attach base expectedUpdatedAt from the confirmed snapshot (or existingJob) so field-level concurrency check is active by default
+    const baseConfirmedSnapshot = confirmedJobSnapshots.get(id) || existingJob;
+    if (!(cleanUpdates as any).expectedUpdatedAt && !(cleanUpdates as any).checkConflict && baseConfirmedSnapshot?.updatedAt) {
+      (cleanUpdates as any).expectedUpdatedAt = baseConfirmedSnapshot.updatedAt;
+    }
+    if (!(cleanUpdates as any).checkConflict) {
       delete cleanUpdates.updatedAt;
     }
+
+    // Track pending field keys so concurrent refreshes (including paid-state transitions) do not overwrite unconfirmed drafts
+    const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
+    for (const k of Object.keys(cleanUpdates)) {
+      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo'].includes(k)) {
+        dirtySet.add(k);
+      }
+    }
+    pendingFieldEdits.set(id, dirtySet);
 
     // Mark local state as saving (unconfirmed) until server responds
     const optimisticJob: Job = {
@@ -1357,10 +1424,15 @@ export const api = {
       const remainingSaves = Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
       pendingJobSaves.set(id, remainingSaves);
 
+      if (remainingSaves === 0) {
+        pendingFieldEdits.delete(id);
+        confirmedJobSnapshots.delete(id);
+      }
+
       const currentIdx = db.jobs.findIndex((j) => j.id === id);
       const baseJob = currentIdx >= 0 ? db.jobs[currentIdx] : optimisticJob;
       const confirmedJob = normalizeServerJob(savedInDb, baseJob);
-      (confirmedJob as any)._saveStatus = 'saved';
+      (confirmedJob as any)._saveStatus = remainingSaves === 0 ? 'saved' : 'saving';
       if ((savedInDb as any)?.issuedCoupons) {
         (confirmedJob as any).issuedCoupons = (savedInDb as any).issuedCoupons;
       }
@@ -1376,7 +1448,6 @@ export const api = {
       }
 
       if (remainingSaves === 0) {
-        confirmedJobSnapshots.delete(id);
         setJobSaveState(id, 'saved');
       }
       api.notify('jobs');
@@ -1385,24 +1456,26 @@ export const api = {
       const remainingSaves = Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
       pendingJobSaves.set(id, remainingSaves);
 
-      // Roll back unconfirmed local change to last confirmed server snapshot
-      const rollbackSnapshot = confirmedJobSnapshots.get(id);
-      if (rollbackSnapshot && remainingSaves === 0) {
-        const currentIdx = db.jobs.findIndex((j) => j.id === id);
-        if (currentIdx >= 0) {
-          const nextJobs = [...db.jobs];
-          nextJobs[currentIdx] = { ...rollbackSnapshot };
-          db.jobs = nextJobs;
-        }
-        confirmedJobSnapshots.delete(id);
-      }
-
       const isConflict =
         String(err?.message || '').includes('409') ||
         String(err?.message || '').toLowerCase().includes('conflict');
+
+      const currentIdx = db.jobs.findIndex((j) => j.id === id);
+      if (currentIdx >= 0 && remainingSaves === 0) {
+        const nextJobs = [...db.jobs];
+        // Retain the user's draft on failure (marked 'failed' or 'conflict') so entered values like billNo are not lost!
+        nextJobs[currentIdx] = {
+          ...nextJobs[currentIdx],
+          _saveStatus: isConflict ? 'conflict' : 'failed',
+        } as any;
+        db.jobs = nextJobs;
+      }
+
       setJobSaveState(id, isConflict ? 'conflict' : 'failed', err?.message || 'Save failed');
 
       if (isConflict) {
+        pendingFieldEdits.delete(id);
+        confirmedJobSnapshots.delete(id);
         // Immediately fetch the latest server version so UI displays the authoritative state
         api.fetchAndApplyJob(id).catch(() => {});
       } else {
@@ -1435,6 +1508,7 @@ export const api = {
     }
 
     if (
+      !(cleanUpdates as any).allowClearBillNo &&
       cleanUpdates.billNo !== undefined &&
       (!cleanUpdates.billNo || String(cleanUpdates.billNo).trim() === '') &&
       existingJob.billNo &&
@@ -1443,12 +1517,29 @@ export const api = {
       delete cleanUpdates.billNo;
     }
 
+    const dirtySet = pendingFieldEdits.get(id) || new Set<string>();
+    for (const k of Object.keys(cleanUpdates)) {
+      if (!['actorId', 'actorName', 'actorRole', 'expectedUpdatedAt', 'checkConflict', 'throwOnError', 'allowClearBillNo'].includes(k)) {
+        dirtySet.add(k);
+      }
+    }
+    pendingFieldEdits.set(id, dirtySet);
+
     if (cleanUpdates.billImageUrl !== undefined && cleanUpdates.billImageUrl && existingJob.billImageUrl) {
       try {
         const incomingUrls = JSON.parse(cleanUpdates.billImageUrl);
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
-          const merged = Array.from(new Set([...existingUrls, ...incomingUrls]));
+          const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
+          const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
+          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid === true || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined);
+          let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
+            ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
+            : existingUrls;
+          if (!isMediaOnly) {
+            baseExisting = baseExisting.filter((u: string) => typeof u === 'string' && (u.includes('proforma-') || u.includes('receipt-')));
+          }
+          const merged = Array.from(new Set([...baseExisting, ...incomingUrls]));
           merged.sort((a, b) => {
             const aIsPf = a.includes('proforma-');
             const bIsPf = b.includes('proforma-');

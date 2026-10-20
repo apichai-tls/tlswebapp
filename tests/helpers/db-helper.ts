@@ -3,7 +3,24 @@ import { hashPassword } from "../../src/lib/crypto";
 
 const prisma = new PrismaClient();
 
+export function assertTestDatabaseUrl(dbUrl: string | undefined = process.env.DATABASE_URL): void {
+  const raw = String(dbUrl || "").trim();
+  if (!raw) {
+    throw new Error("SAFETY BLOCK: DATABASE_URL is empty; refusing to run destructive resetAndSeedDatabase().");
+  }
+  const isLocalHost = raw.includes("localhost") || raw.includes("127.0.0.1");
+  const isExplicitTestDb = raw.includes("/tls_test") || raw.includes("_test");
+  const isAllowedLocalTest = isLocalHost && (isExplicitTestDb || process.env.APP_ENV === "test");
+
+  if (!isAllowedLocalTest && process.env.ALLOW_DESTRUCTIVE_DB_RESET !== "true") {
+    throw new Error(
+      `SAFETY BLOCK: Refusing to execute resetAndSeedDatabase() (TRUNCATE CASCADE) against non-test DATABASE_URL.`
+    );
+  }
+}
+
 export async function resetAndSeedDatabase() {
+  assertTestDatabaseUrl(process.env.DATABASE_URL);
   console.log("🧹 Resetting test database...");
   
   // 1. Delete dependent transactional records using raw SQL truncate cascade for FK safety

@@ -162,48 +162,54 @@ export async function POST(req: NextRequest) {
       rawSlug = Math.random().toString(36).substring(2, 8);
     }
 
-    const setting = await prisma.setting.findUnique({
-      where: { key: SETTING_KEY },
-    });
+    const { newLink, links } = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT key FROM "Setting" WHERE key = ${SETTING_KEY} FOR UPDATE`;
+      const setting = await tx.setting.findUnique({
+        where: { key: SETTING_KEY },
+      });
 
-    let links: TrackingLinkItem[] = [];
-    if (setting?.value) {
-      try {
-        links = JSON.parse(setting.value);
-      } catch (e) {
-        links = [];
+      let currentLinks: TrackingLinkItem[] = [];
+      if (setting?.value) {
+        try {
+          currentLinks = JSON.parse(setting.value);
+        } catch (e) {
+          currentLinks = [];
+        }
+      } else {
+        currentLinks = getDefaultLinks();
       }
-    } else {
-      links = getDefaultLinks();
-    }
 
-    // Check slug uniqueness
-    if (links.some((l) => l.slug.toLowerCase() === rawSlug.toLowerCase())) {
-      rawSlug = `${rawSlug}-${Math.random().toString(36).substring(2, 5)}`;
-    }
+      // Check slug uniqueness
+      let finalSlug = rawSlug;
+      if (currentLinks.some((l) => l.slug.toLowerCase() === finalSlug.toLowerCase())) {
+        finalSlug = `${finalSlug}-${Math.random().toString(36).substring(2, 5)}`;
+      }
 
-    const newLink: TrackingLinkItem = {
-      id: `lnk-${Date.now()}`,
-      title: link.title.trim(),
-      slug: rawSlug,
-      targetUrl: link.targetUrl.trim(),
-      brand: link.brand || "that_laundry_shop",
-      channel: link.channel || "offline_qr",
-      notes: link.notes?.trim() || undefined,
-      isActive: link.isActive !== undefined ? link.isActive : true,
-      totalClicks: 0,
-      uniqueClicks: 0,
-      clickLogs: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+      const createdLink: TrackingLinkItem = {
+        id: `lnk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title: link.title.trim(),
+        slug: finalSlug,
+        targetUrl: link.targetUrl.trim(),
+        brand: link.brand || "that_laundry_shop",
+        channel: link.channel || "offline_qr",
+        notes: link.notes?.trim() || undefined,
+        isActive: link.isActive !== undefined ? link.isActive : true,
+        totalClicks: 0,
+        uniqueClicks: 0,
+        clickLogs: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
 
-    links.unshift(newLink);
+      currentLinks.unshift(createdLink);
 
-    await prisma.setting.upsert({
-      where: { key: SETTING_KEY },
-      update: { value: JSON.stringify(links) },
-      create: { key: SETTING_KEY, value: JSON.stringify(links) },
+      await tx.setting.upsert({
+        where: { key: SETTING_KEY },
+        update: { value: JSON.stringify(currentLinks) },
+        create: { key: SETTING_KEY, value: JSON.stringify(currentLinks) },
+      });
+
+      return { newLink: createdLink, links: currentLinks };
     });
 
     return NextResponse.json({ success: true, link: newLink, links });
@@ -223,52 +229,57 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Link ID is required" }, { status: 400 });
     }
 
-    const setting = await prisma.setting.findUnique({
-      where: { key: SETTING_KEY },
+    const txResult = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT key FROM "Setting" WHERE key = ${SETTING_KEY} FOR UPDATE`;
+      const setting = await tx.setting.findUnique({
+        where: { key: SETTING_KEY },
+      });
+
+      let links: TrackingLinkItem[] = [];
+      if (setting?.value) {
+        try {
+          links = JSON.parse(setting.value);
+        } catch (e) {
+          links = [];
+        }
+      } else {
+        links = getDefaultLinks();
+      }
+
+      const index = links.findIndex((l) => l.id === link.id);
+      if (index === -1) {
+        return { status: 404, error: "Link not found" as const };
+      }
+
+      // Check if slug changed and is duplicate
+      if (link.slug && link.slug !== links[index].slug) {
+        const cleanSlug = link.slug.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "");
+        const isDup = links.some((l) => l.id !== link.id && l.slug.toLowerCase() === cleanSlug);
+        if (isDup) {
+          return { status: 400, error: "Slug code is already in use by another link" as const };
+        }
+        links[index].slug = cleanSlug;
+      }
+
+      links[index] = {
+        ...links[index],
+        ...link,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await tx.setting.upsert({
+        where: { key: SETTING_KEY },
+        update: { value: JSON.stringify(links) },
+        create: { key: SETTING_KEY, value: JSON.stringify(links) },
+      });
+      return { link: links[index], links };
     });
 
-    let links: TrackingLinkItem[] = [];
-    if (setting?.value) {
-      try {
-        links = JSON.parse(setting.value);
-      } catch (e) {
-        links = [];
-      }
-    } else {
-      links = getDefaultLinks();
+    if ("error" in txResult && txResult.error) {
+      return NextResponse.json({ success: false, error: txResult.error }, { status: txResult.status });
     }
 
-    const index = links.findIndex((l) => l.id === link.id);
-    if (index === -1) {
-      return NextResponse.json({ success: false, error: "Link not found" }, { status: 404 });
-    }
-
-    // Check if slug changed and is duplicate
-    if (link.slug && link.slug !== links[index].slug) {
-      const cleanSlug = link.slug.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "");
-      const isDup = links.some((l) => l.id !== link.id && l.slug.toLowerCase() === cleanSlug);
-      if (isDup) {
-        return NextResponse.json(
-          { success: false, error: "Slug code is already in use by another link" },
-          { status: 400 }
-        );
-      }
-      links[index].slug = cleanSlug;
-    }
-
-    links[index] = {
-      ...links[index],
-      ...link,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await prisma.setting.upsert({
-      where: { key: SETTING_KEY },
-      update: { value: JSON.stringify(links) },
-      create: { key: SETTING_KEY, value: JSON.stringify(links) },
-    });
-
-    return NextResponse.json({ success: true, link: links[index], links });
+    return NextResponse.json({ success: true, link: txResult.link, links: txResult.links });
   } catch (error: any) {
     console.error("Error updating tracking link:", error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
@@ -285,25 +296,29 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Link ID required" }, { status: 400 });
     }
 
-    const setting = await prisma.setting.findUnique({
-      where: { key: SETTING_KEY },
-    });
+    const links = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT key FROM "Setting" WHERE key = ${SETTING_KEY} FOR UPDATE`;
+      const setting = await tx.setting.findUnique({
+        where: { key: SETTING_KEY },
+      });
 
-    let links: TrackingLinkItem[] = [];
-    if (setting?.value) {
-      try {
-        links = JSON.parse(setting.value);
-      } catch (e) {
-        links = [];
+      let currentLinks: TrackingLinkItem[] = [];
+      if (setting?.value) {
+        try {
+          currentLinks = JSON.parse(setting.value);
+        } catch (e) {
+          currentLinks = [];
+        }
       }
-    }
 
-    links = links.filter((l) => l.id !== id);
+      currentLinks = currentLinks.filter((l) => l.id !== id);
 
-    await prisma.setting.upsert({
-      where: { key: SETTING_KEY },
-      update: { value: JSON.stringify(links) },
-      create: { key: SETTING_KEY, value: JSON.stringify(links) },
+      await tx.setting.upsert({
+        where: { key: SETTING_KEY },
+        update: { value: JSON.stringify(currentLinks) },
+        create: { key: SETTING_KEY, value: JSON.stringify(currentLinks) },
+      });
+      return currentLinks;
     });
 
     return NextResponse.json({ success: true, links });

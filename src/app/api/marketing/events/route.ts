@@ -188,27 +188,31 @@ export async function POST(req: Request) {
       updatedAt: new Date().toISOString(),
     };
 
-    const setting = await prisma.setting.findUnique({
-      where: { key: SETTING_KEY },
-    });
+    const events = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT key FROM "Setting" WHERE key = ${SETTING_KEY} FOR UPDATE`;
+      const setting = await tx.setting.findUnique({
+        where: { key: SETTING_KEY },
+      });
 
-    let events: any[] = [];
-    if (setting?.value) {
-      try {
-        events = JSON.parse(setting.value);
-      } catch (e) {
-        events = [];
+      let currentEvents: any[] = [];
+      if (setting?.value) {
+        try {
+          currentEvents = JSON.parse(setting.value);
+        } catch (e) {
+          currentEvents = [];
+        }
+      } else {
+        currentEvents = getDefaultEvents();
       }
-    } else {
-      events = getDefaultEvents();
-    }
 
-    events.unshift(newEvent);
+      currentEvents.unshift(newEvent);
 
-    await prisma.setting.upsert({
-      where: { key: SETTING_KEY },
-      update: { value: JSON.stringify(events) },
-      create: { key: SETTING_KEY, value: JSON.stringify(events) },
+      await tx.setting.upsert({
+        where: { key: SETTING_KEY },
+        update: { value: JSON.stringify(currentEvents) },
+        create: { key: SETTING_KEY, value: JSON.stringify(currentEvents) },
+      });
+      return currentEvents;
     });
 
     return NextResponse.json({ success: true, event: newEvent, events });
@@ -227,51 +231,59 @@ export async function PUT(req: Request) {
     const body = await req.json();
     const { event, events: updatedAllEvents } = body;
 
-    const setting = await prisma.setting.findUnique({
-      where: { key: SETTING_KEY },
+    const txResult = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT key FROM "Setting" WHERE key = ${SETTING_KEY} FOR UPDATE`;
+      const setting = await tx.setting.findUnique({
+        where: { key: SETTING_KEY },
+      });
+
+      let events: any[] = [];
+      if (setting?.value) {
+        try {
+          events = JSON.parse(setting.value);
+        } catch (e) {
+          events = [];
+        }
+      } else {
+        events = getDefaultEvents();
+      }
+
+      if (updatedAllEvents && Array.isArray(updatedAllEvents)) {
+        events = updatedAllEvents;
+      } else if (event && event.id) {
+        const index = events.findIndex((e) => e.id === event.id);
+        if (index !== -1) {
+          events[index] = {
+            ...events[index],
+            ...event,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          events.unshift({
+            ...event,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      } else {
+        return { error: 'Event or events array required' as const };
+      }
+
+      await tx.setting.upsert({
+        where: { key: SETTING_KEY },
+        update: { value: JSON.stringify(events) },
+        create: { key: SETTING_KEY, value: JSON.stringify(events) },
+      });
+      return { events };
     });
 
-    let events: any[] = [];
-    if (setting?.value) {
-      try {
-        events = JSON.parse(setting.value);
-      } catch (e) {
-        events = [];
-      }
-    } else {
-      events = getDefaultEvents();
-    }
-
-    if (updatedAllEvents && Array.isArray(updatedAllEvents)) {
-      events = updatedAllEvents;
-    } else if (event && event.id) {
-      const index = events.findIndex((e) => e.id === event.id);
-      if (index !== -1) {
-        events[index] = {
-          ...events[index],
-          ...event,
-          updatedAt: new Date().toISOString(),
-        };
-      } else {
-        events.unshift({
-          ...event,
-          updatedAt: new Date().toISOString(),
-        });
-      }
-    } else {
+    if ('error' in txResult && txResult.error) {
       return NextResponse.json(
-        { success: false, error: 'Event or events array required' },
+        { success: false, error: txResult.error },
         { status: 400 }
       );
     }
 
-    await prisma.setting.upsert({
-      where: { key: SETTING_KEY },
-      update: { value: JSON.stringify(events) },
-      create: { key: SETTING_KEY, value: JSON.stringify(events) },
-    });
-
-    return NextResponse.json({ success: true, events });
+    return NextResponse.json({ success: true, events: txResult.events });
   } catch (error: any) {
     console.error('Error updating marketing event:', error);
     return NextResponse.json(
@@ -294,25 +306,29 @@ export async function DELETE(req: Request) {
       );
     }
 
-    const setting = await prisma.setting.findUnique({
-      where: { key: SETTING_KEY },
-    });
+    const events = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT key FROM "Setting" WHERE key = ${SETTING_KEY} FOR UPDATE`;
+      const setting = await tx.setting.findUnique({
+        where: { key: SETTING_KEY },
+      });
 
-    let events: any[] = [];
-    if (setting?.value) {
-      try {
-        events = JSON.parse(setting.value);
-      } catch (e) {
-        events = [];
+      let currentEvents: any[] = [];
+      if (setting?.value) {
+        try {
+          currentEvents = JSON.parse(setting.value);
+        } catch (e) {
+          currentEvents = [];
+        }
       }
-    }
 
-    events = events.filter((e) => e.id !== id);
+      currentEvents = currentEvents.filter((e) => e.id !== id);
 
-    await prisma.setting.upsert({
-      where: { key: SETTING_KEY },
-      update: { value: JSON.stringify(events) },
-      create: { key: SETTING_KEY, value: JSON.stringify(events) },
+      await tx.setting.upsert({
+        where: { key: SETTING_KEY },
+        update: { value: JSON.stringify(currentEvents) },
+        create: { key: SETTING_KEY, value: JSON.stringify(currentEvents) },
+      });
+      return currentEvents;
     });
 
     return NextResponse.json({ success: true, events });

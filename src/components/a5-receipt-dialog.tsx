@@ -389,7 +389,6 @@ export function A5ReceiptDialog({
           const filtered = existingBills.filter((u: string) => !u.includes(`proforma-${cleanBaseProforma}-rev${currentRev}.png`));
           const newBills = [uploadResult.publicUrl, ...filtered];
           await jobStore.updateJobDetails(targetId, { billImageUrl: JSON.stringify(newBills) } as any);
-          await api.updateJob(targetId, { billImageUrl: JSON.stringify(newBills) } as any);
         }
         toast.success(currentLanguage === "en" ? "Proforma image saved successfully!" : `บันทึกรูป Proforma (Rev ${currentRev}) เรียบร้อยแล้ว`);
       } else {
@@ -861,6 +860,7 @@ export function A5ReceiptContent({
         position: "relative",
         backgroundColor: "#ffffff",
         boxSizing: "border-box",
+        fontFamily: "'Inter', 'Prompt', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       }}
       className="bg-white text-zinc-800 font-sans select-none"
     >

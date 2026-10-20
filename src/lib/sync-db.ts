@@ -62,11 +62,15 @@ async function createConnectedClient(connectionString: string): Promise<Client> 
 
 export async function performProdToTestSync(): Promise<SyncSummary> {
   const startTime = Date.now();
-  const prodUrl = process.env.PROD_DATABASE_URL || 'postgresql://postgres:%40K0tApq9R%40(CEQk%22@34.10.25.133:5432/postgres';
-  const testUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL || 'postgresql://postgres:%40K0tApq9R%40(CEQk%22@34.10.25.133:5432/tls_test';
+  const prodUrl = process.env.PROD_DATABASE_URL;
+  const testUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
+
+  if (!prodUrl || !testUrl) {
+    throw new Error('Missing required PROD_DATABASE_URL or TEST_DATABASE_URL environment configuration');
+  }
 
   // Strict guardrail: Prevent syncing if testUrl points to prod database!
-  if (testUrl.includes('/postgres') && !testUrl.includes('/tls_test')) {
+  if (testUrl === prodUrl || (testUrl.includes('/postgres') && !testUrl.includes('/tls_test'))) {
     throw new Error('Safety guard: Target database cannot be the Production database!');
   }
 

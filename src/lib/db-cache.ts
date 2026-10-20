@@ -157,6 +157,16 @@ export function formatJobRecord(j: any) {
   };
 }
 
+export function sanitizeCustomerRecord(c: any) {
+  if (!c) return null;
+  const { passwordHash: _passwordHash, forcePasswordReset: _forcePasswordReset, ...safe } = c;
+  return {
+    ...safe,
+    vatType: safe.vatType || 'default',
+    defaultCoords: safe.defaultCoords || { lat: safe.defaultLat, lng: safe.defaultLng },
+  };
+}
+
 export function computeDeterministicEtag(params: {
   jobsCount: number;
   maxJobUpdated: number;

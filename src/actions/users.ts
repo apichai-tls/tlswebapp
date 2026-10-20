@@ -3,6 +3,22 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { hashPassword } from "@/lib/crypto";
+import { assertServerActionAuthorized, invalidateServerAuthCache } from "@/lib/server-auth";
+
+const SAFE_USER_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  area: true,
+  branchId: true,
+  department: true,
+  isDepartmentHead: true,
+  permissions: true,
+  isActive: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 function safeRevalidatePath(path: string) {
   try {
@@ -14,31 +30,22 @@ function safeRevalidatePath(path: string) {
 
 export async function getUsers() {
   try {
+    await assertServerActionAuthorized();
     const users = await prisma.adminUser.findMany({
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        area: true,
-        branchId: true,
-        department: true,
-        isDepartmentHead: true,
-        permissions: true,
-        isActive: true,
-        createdAt: true,
-      },
+      select: SAFE_USER_SELECT,
       orderBy: { createdAt: 'desc' }
     });
     return { success: true, data: users };
   } catch (error: any) {
     console.error("Failed to fetch users:", error);
-    return { success: false, error: "Failed to load users" };
+    return { success: false, error: error?.message || "Failed to load users" };
   }
 }
 
 export async function createUser(data: { name: string; email: string; password?: string; role: string; department?: string | null; isDepartmentHead?: boolean; permissions: string[]; area?: string | null; branchId?: string | null }) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
     });
@@ -58,7 +65,8 @@ export async function createUser(data: { name: string; email: string; password?:
         permissions: JSON.stringify(data.permissions),
         area: data.area,
         branchId: data.branchId
-      }
+      },
+      select: SAFE_USER_SELECT,
     });
 
     if (data.role === 'rider') {
@@ -74,16 +82,19 @@ export async function createUser(data: { name: string; email: string; password?:
       });
     }
 
+    invalidateServerAuthCache(newUser.id);
     safeRevalidatePath('/admin');
     return { success: true, data: newUser };
   } catch (error: any) {
     console.error("Failed to create user:", error);
-    return { success: false, error: "Failed to create user" };
+    return { success: false, error: error?.message || "Failed to create user" };
   }
 }
 
 export async function updateUser(id: string, data: { name: string; email: string; password?: string; role: string; department?: string | null; isDepartmentHead?: boolean; permissions: string[]; area?: string | null; branchId?: string | null; isActive?: boolean }) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const existingUser = await prisma.adminUser.findUnique({
       where: { email: data.email.toLowerCase().trim() }
     });
@@ -110,7 +121,8 @@ export async function updateUser(id: string, data: { name: string; email: string
 
     const updated = await prisma.adminUser.update({
       where: { id },
-      data: updateData
+      data: updateData,
+      select: SAFE_USER_SELECT,
     });
 
     if (data.role === 'rider') {
@@ -137,22 +149,26 @@ export async function updateUser(id: string, data: { name: string; email: string
       }
     }
 
+    invalidateServerAuthCache(id);
     safeRevalidatePath('/admin');
     return { success: true, data: updated };
   } catch (error: any) {
     console.error("Failed to update user:", error);
-    return { success: false, error: "Failed to update user" };
+    return { success: false, error: error?.message || "Failed to update user" };
   }
 }
 
 export async function deleteUser(id: string, currentUserEmail: string) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const targetUser = await prisma.adminUser.findUnique({ where: { id } });
     if (!targetUser) {
       return { success: false, error: "User not found" };
     }
 
-    if (targetUser.email === currentUserEmail) {
+    const effectiveCallerEmail = authUser?.email || currentUserEmail;
+    if (targetUser.email === effectiveCallerEmail) {
       return { success: false, error: "You cannot delete your own account" };
     }
 
@@ -163,7 +179,10 @@ export async function deleteUser(id: string, currentUserEmail: string) {
       }
     }
 
-    const deleted = await prisma.adminUser.delete({ where: { id } });
+    const deleted = await prisma.adminUser.delete({
+      where: { id },
+      select: SAFE_USER_SELECT,
+    });
     
     if (targetUser.role === 'rider') {
       try {
@@ -173,10 +192,11 @@ export async function deleteUser(id: string, currentUserEmail: string) {
       }
     }
 
+    invalidateServerAuthCache(id);
     safeRevalidatePath('/admin');
     return { success: true, data: deleted };
   } catch (error: any) {
     console.error("Failed to delete user:", error);
-    return { success: false, error: "Failed to delete user" };
+    return { success: false, error: error?.message || "Failed to delete user" };
   }
 }

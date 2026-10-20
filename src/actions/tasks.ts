@@ -274,14 +274,29 @@ export async function getTasks(
   }
 }
 
-export async function generateNextTaskId(): Promise<string> {
+function isTaskAssignee(assignedToId: string | null | undefined, userId: string | null | undefined): boolean {
+  if (!assignedToId || !userId) return false;
+  const cleanUserId = userId.trim();
+  if (!cleanUserId) return false;
+  return assignedToId
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .includes(cleanUserId);
+}
+
+async function lockTaskRowForUpdate(tx: any, taskId: string) {
+  await tx.$queryRaw`SELECT id FROM "Task" WHERE id = ${taskId} FOR UPDATE`;
+}
+
+async function generateNextTaskIdWithTx(tx: any = prisma): Promise<string> {
   const now = new Date();
   const year = now.getFullYear().toString();
   const month = (now.getMonth() + 1).toString().padStart(2, "0");
   const prefix = `${year}${month}`; // e.g. "202608"
 
   try {
-    const latestTask = await prisma.task.findFirst({
+    const latestTask = await tx.task.findFirst({
       where: {
         id: {
           startsWith: prefix,
@@ -309,6 +324,10 @@ export async function generateNextTaskId(): Promise<string> {
   return `${prefix}0001`;
 }
 
+export async function generateNextTaskId(): Promise<string> {
+  return generateNextTaskIdWithTx(prisma);
+}
+
 export async function createTask(data: {
   title: string;
   description?: string;
@@ -325,35 +344,43 @@ export async function createTask(data: {
   try {
     const cleanAssigneeId = data.assignedToId && data.assignedToId.trim() !== "" ? data.assignedToId.trim() : null;
     const cleanAssigneeName = cleanAssigneeId ? (data.assignedToName?.trim() || null) : null;
-    const nextId = await generateNextTaskId();
     const effectiveDueDate = data.dueDate ? new Date(data.dueDate) : getAutoDueDate(data.priority);
 
-    const task = await prisma.task.create({
-      data: {
-        id: nextId,
-        title: data.title.trim(),
-        description: data.description?.trim().slice(0, 100) || null,
-        priority: data.priority,
-        status: "todo",
-        jobId: data.jobId?.trim() || null,
-        assignedToId: cleanAssigneeId,
-        assignedToName: cleanAssigneeName,
-        createdById: data.createdById,
-        createdByName: data.createdByName,
-        dueDate: effectiveDueDate,
-        attachmentsJson: data.attachments && data.attachments.length > 0 ? JSON.stringify(data.attachments) : null,
-        checklistJson: data.checklist && data.checklist.length > 0 ? JSON.stringify(data.checklist) : null,
-        notesJson: JSON.stringify([
-          {
-            id: Math.random().toString(36).slice(2, 9),
-            text: `Created task "${data.title.trim()}" (Priority: ${data.priority.toUpperCase()}${data.assignedToName ? `, Assigned to: ${data.assignedToName}` : ""}${effectiveDueDate ? `, Due: ${format(effectiveDueDate, "d MMM yyyy")}` : ""})`,
-            userId: data.createdById,
-            userName: data.createdByName,
-            timestamp: new Date().toISOString(),
-            type: "activity",
-          }
-        ]),
-      },
+    const now = new Date();
+    const prefix = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, "0")}`;
+    const lockKey = `task_seq:${prefix}`;
+
+    const task = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+      const nextId = await generateNextTaskIdWithTx(tx);
+
+      return await tx.task.create({
+        data: {
+          id: nextId,
+          title: data.title.trim(),
+          description: data.description?.trim().slice(0, 100) || null,
+          priority: data.priority,
+          status: "todo",
+          jobId: data.jobId?.trim() || null,
+          assignedToId: cleanAssigneeId,
+          assignedToName: cleanAssigneeName,
+          createdById: data.createdById,
+          createdByName: data.createdByName,
+          dueDate: effectiveDueDate,
+          attachmentsJson: data.attachments && data.attachments.length > 0 ? JSON.stringify(data.attachments) : null,
+          checklistJson: data.checklist && data.checklist.length > 0 ? JSON.stringify(data.checklist) : null,
+          notesJson: JSON.stringify([
+            {
+              id: Math.random().toString(36).slice(2, 9),
+              text: `Created task "${data.title.trim()}" (Priority: ${data.priority.toUpperCase()}${data.assignedToName ? `, Assigned to: ${data.assignedToName}` : ""}${effectiveDueDate ? `, Due: ${format(effectiveDueDate, "d MMM yyyy")}` : ""})`,
+              userId: data.createdById,
+              userName: data.createdByName,
+              timestamp: new Date().toISOString(),
+              type: "activity",
+            }
+          ]),
+        },
+      });
     });
 
     // Write to ActivityLog table
@@ -424,185 +451,191 @@ export async function updateTask(
     name: string;
     role?: string;
   }
-) {
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const existing = await prisma.task.findUnique({ where: { id } });
-    if (!existing) return { success: false, error: "Task not found" };
+    const txRes = await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, id);
+      const existing = await tx.task.findUnique({ where: { id } });
+      if (!existing) return { error: "Task not found" as const };
 
-    const actorId = actor?.id || "unknown";
-    const actorName = actor?.name || "User";
-    const actorRole = actor?.role || "staff";
+      const actorId = actor?.id || "unknown";
+      const actorName = actor?.name || "User";
+      const actorRole = actor?.role || "staff";
 
-    // 🔒 Authorization check: Only Creator, Assignee, or Super Admin can modify this Task
-    const isAssignee = existing.assignedToId
-      ? existing.assignedToId.split(",").map((s) => s.trim()).includes(actorId)
-      : false;
-    const isAuthorized = actorRole === "admin" || existing.createdById === actorId || isAssignee;
-    if (!isAuthorized) {
-      return { success: false, error: "Unauthorized: You do not have permission to edit this task" };
-    }
-
-    const isCreator = existing.createdById === actorId;
-    const isAdmin = actorRole === "admin";
-
-    // 🔒 Assignee Rule: The person who is assigned (not creator & not admin) is FORBIDDEN from editing core details EXCEPT status, checklist toggling, attachments, and assigning additional people
-    if (!isCreator && !isAdmin) {
-      if (
-        (updates.title !== undefined && updates.title.trim() !== existing.title) ||
-        (updates.description !== undefined && (updates.description?.trim() || null) !== existing.description) ||
-        (updates.priority !== undefined && updates.priority !== existing.priority) ||
-        (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) ||
-        (updates.dueDate !== undefined && (updates.dueDate ? new Date(updates.dueDate).getTime() : null) !== (existing.dueDate ? new Date(existing.dueDate).getTime() : null))
-      ) {
-        return {
-          success: false,
-          error: "Only the Task Creator or Super Admin can edit core details like Title, Description, or Due Date",
-        };
+      // 🔒 Authorization check: Only Creator, Assignee, or Super Admin can modify this Task
+      const isAssignee = isTaskAssignee(existing.assignedToId, actorId);
+      const isAuthorized = actorRole === "admin" || existing.createdById === actorId || isAssignee;
+      if (!isAuthorized) {
+        return { error: "Unauthorized: You do not have permission to edit this task" as const };
       }
-    }
 
-    // 🔒 Permission check: Only creator or Admin can change Due Date
-    if (updates.dueDate !== undefined) {
-      const oldDueTime = existing.dueDate ? new Date(existing.dueDate).getTime() : null;
-      const newDueTime = updates.dueDate ? new Date(updates.dueDate).getTime() : null;
+      const isCreator = existing.createdById === actorId;
+      const isAdmin = actorRole === "admin";
 
-      if (oldDueTime !== newDueTime) {
-        if (!isCreator && !isAdmin) {
+      // 🔒 Assignee Rule: The person who is assigned (not creator & not admin) is FORBIDDEN from editing core details EXCEPT status, checklist toggling, attachments, and assigning additional people
+      if (!isCreator && !isAdmin) {
+        if (
+          (updates.title !== undefined && updates.title.trim() !== existing.title) ||
+          (updates.description !== undefined && (updates.description?.trim() || null) !== existing.description) ||
+          (updates.priority !== undefined && updates.priority !== existing.priority) ||
+          (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) ||
+          (updates.dueDate !== undefined && (updates.dueDate ? new Date(updates.dueDate).getTime() : null) !== (existing.dueDate ? new Date(existing.dueDate).getTime() : null))
+        ) {
           return {
-            success: false,
-            error: "Only the Task Creator or Admin can modify the Due Date",
+            error: "Only the Task Creator or Super Admin can edit core details like Title, Description, or Due Date" as const,
           };
         }
       }
-    }
 
-    const data: any = {};
-    const changes: Record<string, { from: any; to: any }> = {};
-    const activityMessages: string[] = [];
+      // 🔒 Permission check: Only creator or Admin can change Due Date
+      if (updates.dueDate !== undefined) {
+        const oldDueTime = existing.dueDate ? new Date(existing.dueDate).getTime() : null;
+        const newDueTime = updates.dueDate ? new Date(updates.dueDate).getTime() : null;
 
-    // Track Title change
-    if (updates.title !== undefined && updates.title.trim() !== existing.title) {
-      const newTitle = updates.title.trim();
-      changes.title = { from: existing.title, to: newTitle };
-      activityMessages.push(`Changed title to "${newTitle}"`);
-      data.title = newTitle;
-    }
-
-    // Track Description change
-    if (updates.description !== undefined && (updates.description?.trim().slice(0, 100) || null) !== existing.description) {
-      const newDesc = updates.description?.trim().slice(0, 100) || null;
-      changes.description = { from: existing.description, to: newDesc };
-      activityMessages.push("Updated description");
-      data.description = newDesc;
-    }
-
-    // Track Priority change
-    if (updates.priority !== undefined && updates.priority !== existing.priority) {
-      changes.priority = { from: existing.priority, to: updates.priority };
-      activityMessages.push(`Changed priority from ${existing.priority.toUpperCase()} to ${updates.priority.toUpperCase()}`);
-      data.priority = updates.priority;
-    }
-
-    // Track Status change
-    if (updates.status !== undefined && updates.status !== existing.status) {
-      changes.status = { from: existing.status, to: updates.status };
-      const statusLabels: Record<string, string> = { todo: "To Do", in_progress: "In Progress", stuck: "Stuck", done: "Done" };
-      activityMessages.push(`Changed status from ${statusLabels[existing.status] || existing.status} to ${statusLabels[updates.status] || updates.status}`);
-      data.status = updates.status;
-      data.completedAt = updates.status === "done" ? new Date() : null;
-    }
-
-    // Track Job ID change
-    if (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) {
-      const newJobId = updates.jobId?.trim() || null;
-      changes.jobId = { from: existing.jobId, to: newJobId };
-      activityMessages.push(newJobId ? `Linked to Job #${newJobId}` : "Removed Job link");
-      data.jobId = newJobId;
-    }
-
-    // Track Assignee change
-    if (updates.assignedToId !== undefined) {
-      const newAssigneeId = updates.assignedToId && updates.assignedToId.trim() !== "" ? updates.assignedToId.trim() : null;
-      const newAssigneeName = newAssigneeId ? (updates.assignedToName?.trim() || null) : null;
-
-      if (newAssigneeId !== existing.assignedToId) {
-        changes.assignedTo = {
-          from: existing.assignedToName || "Unassigned",
-          to: newAssigneeName || "Unassigned",
-        };
-        activityMessages.push(`Reassigned from ${existing.assignedToName || "Unassigned"} to ${newAssigneeName || "Unassigned"}`);
-        data.assignedToId = newAssigneeId;
-        data.assignedToName = newAssigneeName;
-      }
-    }
-
-    // Track Due Date change
-    if (updates.dueDate !== undefined) {
-      const oldDueStr = existing.dueDate ? format(new Date(existing.dueDate), "d MMM yyyy") : "None";
-      const newDueStr = updates.dueDate ? format(new Date(updates.dueDate), "d MMM yyyy") : "None";
-      const oldDueTime = existing.dueDate ? new Date(existing.dueDate).getTime() : null;
-      const newDueTime = updates.dueDate ? new Date(updates.dueDate).getTime() : null;
-
-      if (oldDueTime !== newDueTime) {
-        changes.dueDate = { from: oldDueStr, to: newDueStr };
-        activityMessages.push(`Changed Due Date from ${oldDueStr} to ${newDueStr}`);
-        data.dueDate = updates.dueDate ? new Date(updates.dueDate) : null;
-      }
-    }
-
-    // Track Attachments change
-    if (updates.attachments !== undefined) {
-      const newAttachmentsJson = updates.attachments && updates.attachments.length > 0 ? JSON.stringify(updates.attachments) : null;
-      if (newAttachmentsJson !== existing.attachmentsJson) {
-        const oldAtts: TaskAttachment[] = existing.attachmentsJson ? JSON.parse(existing.attachmentsJson) : [];
-        const newAtts: TaskAttachment[] = updates.attachments || [];
-        changes.attachments = { from: oldAtts.length, to: newAtts.length };
-        activityMessages.push(`Updated attachments (${newAtts.length} files)`);
-        data.attachmentsJson = newAttachmentsJson;
-      }
-    }
-
-    // Track Checklist change
-    if (updates.checklist !== undefined) {
-      const newChecklistJson = updates.checklist && updates.checklist.length > 0 ? JSON.stringify(updates.checklist) : null;
-      if (newChecklistJson !== existing.checklistJson) {
-        const oldList: TaskChecklistItem[] = existing.checklistJson ? JSON.parse(existing.checklistJson) : [];
-        const newList: TaskChecklistItem[] = updates.checklist || [];
-        
-        const completedCountOld = oldList.filter(i => i.completed).length;
-        const completedCountNew = newList.filter(i => i.completed).length;
-        
-        if (oldList.length !== newList.length) {
-          changes.checklist = { from: `${oldList.length} items`, to: `${newList.length} items` };
-          activityMessages.push(`Updated checklist (${newList.length} items)`);
-        } else if (completedCountOld !== completedCountNew) {
-          changes.checklist = { from: `${completedCountOld}/${oldList.length}`, to: `${completedCountNew}/${newList.length}` };
-          activityMessages.push(`Checklist progress: ${completedCountNew}/${newList.length} completed`);
+        if (oldDueTime !== newDueTime) {
+          if (!isCreator && !isAdmin) {
+            return {
+              error: "Only the Task Creator or Admin can modify the Due Date" as const,
+            };
+          }
         }
-        data.checklistJson = newChecklistJson;
       }
-    }
 
-    // Append auto-activity note if any fields changed
-    let notes: TaskNote[] = existing.notesJson ? JSON.parse(existing.notesJson) : [];
-    if (activityMessages.length > 0) {
-      const activityNote: TaskNote = {
-        id: Math.random().toString(36).slice(2, 9),
-        text: activityMessages.join(" · "),
-        userId: actorId,
-        userName: actorName,
-        timestamp: new Date().toISOString(),
-        type: "activity",
-      };
-      notes = [activityNote, ...notes];
-      data.notesJson = JSON.stringify(notes);
-    }
+      const data: any = {};
+      const changes: Record<string, { from: any; to: any }> = {};
+      const activityMessages: string[] = [];
 
-    // Execute Task update
-    const updatedTask = await prisma.task.update({
-      where: { id },
-      data,
+      // Track Title change
+      if (updates.title !== undefined && updates.title.trim() !== existing.title) {
+        const newTitle = updates.title.trim();
+        changes.title = { from: existing.title, to: newTitle };
+        activityMessages.push(`Changed title to "${newTitle}"`);
+        data.title = newTitle;
+      }
+
+      // Track Description change
+      if (updates.description !== undefined && (updates.description?.trim().slice(0, 100) || null) !== existing.description) {
+        const newDesc = updates.description?.trim().slice(0, 100) || null;
+        changes.description = { from: existing.description, to: newDesc };
+        activityMessages.push("Updated description");
+        data.description = newDesc;
+      }
+
+      // Track Priority change
+      if (updates.priority !== undefined && updates.priority !== existing.priority) {
+        changes.priority = { from: existing.priority, to: updates.priority };
+        activityMessages.push(`Changed priority from ${existing.priority.toUpperCase()} to ${updates.priority.toUpperCase()}`);
+        data.priority = updates.priority;
+      }
+
+      // Track Status change
+      if (updates.status !== undefined && updates.status !== existing.status) {
+        changes.status = { from: existing.status, to: updates.status };
+        const statusLabels: Record<string, string> = { todo: "To Do", in_progress: "In Progress", stuck: "Stuck", done: "Done" };
+        activityMessages.push(`Changed status from ${statusLabels[existing.status] || existing.status} to ${statusLabels[updates.status] || updates.status}`);
+        data.status = updates.status;
+        data.completedAt = updates.status === "done" ? new Date() : null;
+      }
+
+      // Track Job ID change
+      if (updates.jobId !== undefined && (updates.jobId?.trim() || null) !== existing.jobId) {
+        const newJobId = updates.jobId?.trim() || null;
+        changes.jobId = { from: existing.jobId, to: newJobId };
+        activityMessages.push(newJobId ? `Linked to Job #${newJobId}` : "Removed Job link");
+        data.jobId = newJobId;
+      }
+
+      // Track Assignee change
+      if (updates.assignedToId !== undefined) {
+        const newAssigneeId = updates.assignedToId && updates.assignedToId.trim() !== "" ? updates.assignedToId.trim() : null;
+        const newAssigneeName = newAssigneeId ? (updates.assignedToName?.trim() || null) : null;
+
+        if (newAssigneeId !== existing.assignedToId) {
+          changes.assignedTo = {
+            from: existing.assignedToName || "Unassigned",
+            to: newAssigneeName || "Unassigned",
+          };
+          activityMessages.push(`Reassigned from ${existing.assignedToName || "Unassigned"} to ${newAssigneeName || "Unassigned"}`);
+          data.assignedToId = newAssigneeId;
+          data.assignedToName = newAssigneeName;
+        }
+      }
+
+      // Track Due Date change
+      if (updates.dueDate !== undefined) {
+        const oldDueStr = existing.dueDate ? format(new Date(existing.dueDate), "d MMM yyyy") : "None";
+        const newDueStr = updates.dueDate ? format(new Date(updates.dueDate), "d MMM yyyy") : "None";
+        const oldDueTime = existing.dueDate ? new Date(existing.dueDate).getTime() : null;
+        const newDueTime = updates.dueDate ? new Date(updates.dueDate).getTime() : null;
+
+        if (oldDueTime !== newDueTime) {
+          changes.dueDate = { from: oldDueStr, to: newDueStr };
+          activityMessages.push(`Changed Due Date from ${oldDueStr} to ${newDueStr}`);
+          data.dueDate = updates.dueDate ? new Date(updates.dueDate) : null;
+        }
+      }
+
+      // Track Attachments change
+      if (updates.attachments !== undefined) {
+        const newAttachmentsJson = updates.attachments && updates.attachments.length > 0 ? JSON.stringify(updates.attachments) : null;
+        if (newAttachmentsJson !== existing.attachmentsJson) {
+          const oldAtts: TaskAttachment[] = existing.attachmentsJson ? JSON.parse(existing.attachmentsJson) : [];
+          const newAtts: TaskAttachment[] = updates.attachments || [];
+          changes.attachments = { from: oldAtts.length, to: newAtts.length };
+          activityMessages.push(`Updated attachments (${newAtts.length} files)`);
+          data.attachmentsJson = newAttachmentsJson;
+        }
+      }
+
+      // Track Checklist change
+      if (updates.checklist !== undefined) {
+        const newChecklistJson = updates.checklist && updates.checklist.length > 0 ? JSON.stringify(updates.checklist) : null;
+        if (newChecklistJson !== existing.checklistJson) {
+          const oldList: TaskChecklistItem[] = existing.checklistJson ? JSON.parse(existing.checklistJson) : [];
+          const newList: TaskChecklistItem[] = updates.checklist || [];
+          
+          const completedCountOld = oldList.filter(i => i.completed).length;
+          const completedCountNew = newList.filter(i => i.completed).length;
+          
+          if (oldList.length !== newList.length) {
+            changes.checklist = { from: `${oldList.length} items`, to: `${newList.length} items` };
+            activityMessages.push(`Updated checklist (${newList.length} items)`);
+          } else if (completedCountOld !== completedCountNew) {
+            changes.checklist = { from: `${completedCountOld}/${oldList.length}`, to: `${completedCountNew}/${newList.length}` };
+            activityMessages.push(`Checklist progress: ${completedCountNew}/${newList.length} completed`);
+          }
+          data.checklistJson = newChecklistJson;
+        }
+      }
+
+      // Append auto-activity note if any fields changed
+      let notes: TaskNote[] = existing.notesJson ? JSON.parse(existing.notesJson) : [];
+      if (activityMessages.length > 0) {
+        const activityNote: TaskNote = {
+          id: Math.random().toString(36).slice(2, 9),
+          text: activityMessages.join(" · "),
+          userId: actorId,
+          userName: actorName,
+          timestamp: new Date().toISOString(),
+          type: "activity",
+        };
+        notes = [activityNote, ...notes];
+        data.notesJson = JSON.stringify(notes);
+      }
+
+      // Execute Task update
+      const updatedTask = await tx.task.update({
+        where: { id },
+        data,
+      });
+
+      return { existing, updatedTask, data, changes, actorId, actorName };
     });
+
+    if ("error" in txRes && txRes.error) {
+      return { success: false, error: txRes.error };
+    }
+    const { existing, updatedTask, data, changes, actorId, actorName } = txRes;
 
     // Write to ActivityLog table if changes occurred
     if (Object.keys(changes).length > 0) {
@@ -651,77 +684,91 @@ export async function updateTask(
   }
 }
 
-export async function addTaskAttachment(taskId: string, attachment: TaskAttachment, actor?: { id: string; name: string }) {
+export async function addTaskAttachment(
+  taskId: string,
+  attachment: TaskAttachment,
+  actor?: { id: string; name: string }
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({
-      where: { id: taskId },
-      select: { attachmentsJson: true, notesJson: true },
+    return await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, taskId);
+      const task = await tx.task.findUnique({
+        where: { id: taskId },
+        select: { attachmentsJson: true, notesJson: true },
+      });
+      if (!task) return { success: false, error: "Task not found" };
+
+      const existing: TaskAttachment[] = task.attachmentsJson ? JSON.parse(task.attachmentsJson) : [];
+      const updated = [...existing, attachment];
+
+      const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      if (actor) {
+        const activityNote: TaskNote = {
+          id: Math.random().toString(36).slice(2, 9),
+          text: `Uploaded attachment: ${attachment.name}`,
+          userId: actor.id,
+          userName: actor.name,
+          timestamp: new Date().toISOString(),
+          type: "activity",
+        };
+        notes.unshift(activityNote);
+      }
+
+      const result = await tx.task.update({
+        where: { id: taskId },
+        data: {
+          attachmentsJson: JSON.stringify(updated),
+          notesJson: JSON.stringify(notes),
+        },
+      });
+      return { success: true, data: result as TaskItem };
     });
-    if (!task) return { success: false, error: "Task not found" };
-
-    const existing: TaskAttachment[] = task.attachmentsJson ? JSON.parse(task.attachmentsJson) : [];
-    const updated = [...existing, attachment];
-
-    const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    if (actor) {
-      const activityNote: TaskNote = {
-        id: Math.random().toString(36).slice(2, 9),
-        text: `Uploaded attachment: ${attachment.name}`,
-        userId: actor.id,
-        userName: actor.name,
-        timestamp: new Date().toISOString(),
-        type: "activity",
-      };
-      notes.unshift(activityNote);
-    }
-
-    const result = await prisma.task.update({
-      where: { id: taskId },
-      data: {
-        attachmentsJson: JSON.stringify(updated),
-        notesJson: JSON.stringify(notes),
-      },
-    });
-    return { success: true, data: result as TaskItem };
   } catch (error: any) {
     console.error("Failed to add task attachment:", error);
     return { success: false, error: "Failed to add attachment" };
   }
 }
 
-export async function deleteTaskAttachment(taskId: string, attachmentId: string, actor?: { id: string; name: string }) {
+export async function deleteTaskAttachment(
+  taskId: string,
+  attachmentId: string,
+  actor?: { id: string; name: string }
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({
-      where: { id: taskId },
-      select: { attachmentsJson: true, notesJson: true },
+    return await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, taskId);
+      const task = await tx.task.findUnique({
+        where: { id: taskId },
+        select: { attachmentsJson: true, notesJson: true },
+      });
+      if (!task) return { success: false, error: "Task not found" };
+
+      const existing: TaskAttachment[] = task.attachmentsJson ? JSON.parse(task.attachmentsJson) : [];
+      const removed = existing.find((a) => a.id === attachmentId);
+      const filtered = existing.filter((a) => a.id !== attachmentId);
+
+      const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      if (actor && removed) {
+        const activityNote: TaskNote = {
+          id: Math.random().toString(36).slice(2, 9),
+          text: `Removed attachment: ${removed.name}`,
+          userId: actor.id,
+          userName: actor.name,
+          timestamp: new Date().toISOString(),
+          type: "activity",
+        };
+        notes.unshift(activityNote);
+      }
+
+      const result = await tx.task.update({
+        where: { id: taskId },
+        data: {
+          attachmentsJson: filtered.length > 0 ? JSON.stringify(filtered) : null,
+          notesJson: JSON.stringify(notes),
+        },
+      });
+      return { success: true, data: result as TaskItem };
     });
-    if (!task) return { success: false, error: "Task not found" };
-
-    const existing: TaskAttachment[] = task.attachmentsJson ? JSON.parse(task.attachmentsJson) : [];
-    const removed = existing.find((a) => a.id === attachmentId);
-    const filtered = existing.filter((a) => a.id !== attachmentId);
-
-    const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    if (actor && removed) {
-      const activityNote: TaskNote = {
-        id: Math.random().toString(36).slice(2, 9),
-        text: `Removed attachment: ${removed.name}`,
-        userId: actor.id,
-        userName: actor.name,
-        timestamp: new Date().toISOString(),
-        type: "activity",
-      };
-      notes.unshift(activityNote);
-    }
-
-    const result = await prisma.task.update({
-      where: { id: taskId },
-      data: {
-        attachmentsJson: filtered.length > 0 ? JSON.stringify(filtered) : null,
-        notesJson: JSON.stringify(notes),
-      },
-    });
-    return { success: true, data: result as TaskItem };
   } catch (error: any) {
     console.error("Failed to delete task attachment:", error);
     return { success: false, error: "Failed to delete attachment" };
@@ -733,28 +780,36 @@ export async function addTaskNote(
   note: { text: string; userId: string; userName: string; attachments?: TaskAttachment[] }
 ) {
   try {
-    const task = await prisma.task.findUnique({
-      where: { id: taskId },
-      select: { title: true, assignedToId: true, createdById: true, notesJson: true },
-    });
-    if (!task) return { success: false, error: "Task not found" };
+    const txRes = await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, taskId);
+      const task = await tx.task.findUnique({
+        where: { id: taskId },
+        select: { title: true, assignedToId: true, createdById: true, notesJson: true },
+      });
+      if (!task) return null;
 
-    const existing: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    const newNote: TaskNote = {
-      id: Math.random().toString(36).slice(2, 9),
-      text: note.text.trim(),
-      userId: note.userId,
-      userName: note.userName,
-      timestamp: new Date().toISOString(),
-      type: "user",
-      attachments: note.attachments && note.attachments.length > 0 ? note.attachments : undefined,
-    };
-    const updated = [newNote, ...existing]; // newest first
+      const existing: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      const newNote: TaskNote = {
+        id: Math.random().toString(36).slice(2, 9),
+        text: note.text.trim(),
+        userId: note.userId,
+        userName: note.userName,
+        timestamp: new Date().toISOString(),
+        type: "user",
+        attachments: note.attachments && note.attachments.length > 0 ? note.attachments : undefined,
+      };
+      const updated = [newNote, ...existing]; // newest first
 
-    const result = await prisma.task.update({
-      where: { id: taskId },
-      data: { notesJson: JSON.stringify(updated) },
+      const result = await tx.task.update({
+        where: { id: taskId },
+        data: { notesJson: JSON.stringify(updated) },
+      });
+
+      return { task, result, newNote };
     });
+
+    if (!txRes) return { success: false, error: "Task not found" };
+    const { task, result, newNote } = txRes;
 
     // Write to ActivityLog table
     try {
@@ -829,22 +884,28 @@ export async function addTaskNote(
   }
 }
 
-export async function deleteTaskNote(taskId: string, noteId: string) {
+export async function deleteTaskNote(
+  taskId: string,
+  noteId: string
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({
-      where: { id: taskId },
-      select: { notesJson: true },
-    });
-    if (!task) return { success: false, error: "Task not found" };
+    return await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, taskId);
+      const task = await tx.task.findUnique({
+        where: { id: taskId },
+        select: { notesJson: true },
+      });
+      if (!task) return { success: false, error: "Task not found" };
 
-    const existing: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    const filtered = existing.filter((n) => n.id !== noteId);
+      const existing: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      const filtered = existing.filter((n) => n.id !== noteId);
 
-    const result = await prisma.task.update({
-      where: { id: taskId },
-      data: { notesJson: filtered.length > 0 ? JSON.stringify(filtered) : null },
+      const result = await tx.task.update({
+        where: { id: taskId },
+        data: { notesJson: filtered.length > 0 ? JSON.stringify(filtered) : null },
+      });
+      return { success: true, data: result as TaskItem };
     });
-    return { success: true, data: result as TaskItem };
   } catch (error: any) {
     console.error("Failed to delete task note:", error);
     return { success: false, error: "Failed to delete note" };
@@ -927,37 +988,49 @@ export async function getLinkedJobDetails(jobId: string) {
   }
 }
 
-export async function archiveTask(id: string, actor: { id: string; name: string; role?: string }) {
+export async function archiveTask(
+  id: string,
+  actor: { id: string; name: string; role?: string }
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({ where: { id } });
-    if (!task) return { success: false, error: "Task not found" };
+    const txRes = await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, id);
+      const task = await tx.task.findUnique({ where: { id } });
+      if (!task) return { error: "Task not found" as const };
 
-    const isAdmin = actor.role === "admin";
-    const isOwnerOrAssignee = task.createdById === actor.id || task.assignedToId === actor.id;
-    if (!isAdmin && !isOwnerOrAssignee) {
-      return { success: false, error: "Unauthorized: You do not have permission to manage this task" };
+      const isAdmin = actor.role === "admin";
+      const isOwnerOrAssignee = task.createdById === actor.id || isTaskAssignee(task.assignedToId, actor.id);
+      if (!isAdmin && !isOwnerOrAssignee) {
+        return { error: "Unauthorized: You do not have permission to manage this task" as const };
+      }
+
+      const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      notes.unshift({
+        id: Math.random().toString(36).slice(2, 9),
+        text: `Archived this task`,
+        userId: actor.id,
+        userName: actor.name,
+        timestamp: new Date().toISOString(),
+        type: "activity",
+      });
+
+      const updated = await tx.task.update({
+        where: { id },
+        data: {
+          isArchived: true,
+          archivedAt: new Date(),
+          archivedById: actor.id,
+          archivedByName: actor.name,
+          notesJson: JSON.stringify(notes),
+        },
+      });
+      return { updated };
+    });
+
+    if ("error" in txRes && txRes.error) {
+      return { success: false, error: txRes.error };
     }
-
-    const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    notes.unshift({
-      id: Math.random().toString(36).slice(2, 9),
-      text: `Archived this task`,
-      userId: actor.id,
-      userName: actor.name,
-      timestamp: new Date().toISOString(),
-      type: "activity",
-    });
-
-    const updated = await prisma.task.update({
-      where: { id },
-      data: {
-        isArchived: true,
-        archivedAt: new Date(),
-        archivedById: actor.id,
-        archivedByName: actor.name,
-        notesJson: JSON.stringify(notes),
-      },
-    });
+    const updated = txRes.updated!;
 
     try {
       await prisma.activityLog.create({
@@ -978,37 +1051,49 @@ export async function archiveTask(id: string, actor: { id: string; name: string;
   }
 }
 
-export async function unarchiveTask(id: string, actor: { id: string; name: string; role?: string }) {
+export async function unarchiveTask(
+  id: string,
+  actor: { id: string; name: string; role?: string }
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({ where: { id } });
-    if (!task) return { success: false, error: "Task not found" };
+    const txRes = await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, id);
+      const task = await tx.task.findUnique({ where: { id } });
+      if (!task) return { error: "Task not found" as const };
 
-    const isAdmin = actor.role === "admin";
-    const isOwnerOrAssignee = task.createdById === actor.id || task.assignedToId === actor.id;
-    if (!isAdmin && !isOwnerOrAssignee) {
-      return { success: false, error: "Unauthorized: You do not have permission to manage this task" };
+      const isAdmin = actor.role === "admin";
+      const isOwnerOrAssignee = task.createdById === actor.id || isTaskAssignee(task.assignedToId, actor.id);
+      if (!isAdmin && !isOwnerOrAssignee) {
+        return { error: "Unauthorized: You do not have permission to manage this task" as const };
+      }
+
+      const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      notes.unshift({
+        id: Math.random().toString(36).slice(2, 9),
+        text: `Restored (Unarchived) this task`,
+        userId: actor.id,
+        userName: actor.name,
+        timestamp: new Date().toISOString(),
+        type: "activity",
+      });
+
+      const updated = await tx.task.update({
+        where: { id },
+        data: {
+          isArchived: false,
+          archivedAt: null,
+          archivedById: null,
+          archivedByName: null,
+          notesJson: JSON.stringify(notes),
+        },
+      });
+      return { updated };
+    });
+
+    if ("error" in txRes && txRes.error) {
+      return { success: false, error: txRes.error };
     }
-
-    const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    notes.unshift({
-      id: Math.random().toString(36).slice(2, 9),
-      text: `Restored (Unarchived) this task`,
-      userId: actor.id,
-      userName: actor.name,
-      timestamp: new Date().toISOString(),
-      type: "activity",
-    });
-
-    const updated = await prisma.task.update({
-      where: { id },
-      data: {
-        isArchived: false,
-        archivedAt: null,
-        archivedById: null,
-        archivedByName: null,
-        notesJson: JSON.stringify(notes),
-      },
-    });
+    const updated = txRes.updated!;
 
     try {
       await prisma.activityLog.create({
@@ -1036,13 +1121,18 @@ export async function archiveAllDoneTasks(actor: { id: string; name: string; rol
     if (!isAdmin && actor.id) {
       whereClause.OR = [
         { createdById: actor.id },
-        { assignedToId: actor.id },
+        { assignedToId: { contains: actor.id } },
       ];
     }
 
-    const doneTasks = await prisma.task.findMany({
+    const candidateTasks = await prisma.task.findMany({
       where: whereClause,
     });
+    const doneTasks = isAdmin
+      ? candidateTasks
+      : candidateTasks.filter(
+          (t) => t.createdById === actor.id || isTaskAssignee(t.assignedToId, actor.id)
+        );
 
     if (doneTasks.length === 0) {
       return { success: true, count: 0 };
@@ -1099,47 +1189,50 @@ export async function toggleTaskChecklistItem(
   itemId: string,
   completed: boolean,
   actor: { id: string; name: string; role?: string }
-) {
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({ where: { id: taskId } });
-    if (!task) return { success: false, error: "Task not found" };
+    return await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, taskId);
+      const task = await tx.task.findUnique({ where: { id: taskId } });
+      if (!task) return { success: false, error: "Task not found" };
 
-    const isAdmin = actor.role === "admin";
-    const isOwnerOrAssignee = task.createdById === actor.id || task.assignedToId === actor.id;
-    if (!isAdmin && !isOwnerOrAssignee) {
-      return { success: false, error: "Unauthorized: You do not have permission to access this task" };
-    }
+      const isAdmin = actor.role === "admin";
+      const isOwnerOrAssignee = task.createdById === actor.id || isTaskAssignee(task.assignedToId, actor.id);
+      if (!isAdmin && !isOwnerOrAssignee) {
+        return { success: false, error: "Unauthorized: You do not have permission to access this task" };
+      }
 
-    const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
-    const item = list.find((i) => i.id === itemId);
-    if (!item) return { success: false, error: "Checklist item not found" };
+      const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
+      const item = list.find((i) => i.id === itemId);
+      if (!item) return { success: false, error: "Checklist item not found" };
 
-    item.completed = completed;
-    item.completedAt = completed ? new Date().toISOString() : null;
-    item.completedById = completed ? actor.id : null;
-    item.completedByName = completed ? actor.name : null;
+      item.completed = completed;
+      item.completedAt = completed ? new Date().toISOString() : null;
+      item.completedById = completed ? actor.id : null;
+      item.completedByName = completed ? actor.name : null;
 
-    const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    notes.unshift({
-      id: Math.random().toString(36).slice(2, 9),
-      text: completed
-        ? `Checked sub-task: "${item.text}"`
-        : `Unchecked sub-task: "${item.text}"`,
-      userId: actor.id,
-      userName: actor.name,
-      timestamp: new Date().toISOString(),
-      type: "activity",
+      const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      notes.unshift({
+        id: Math.random().toString(36).slice(2, 9),
+        text: completed
+          ? `Checked sub-task: "${item.text}"`
+          : `Unchecked sub-task: "${item.text}"`,
+        userId: actor.id,
+        userName: actor.name,
+        timestamp: new Date().toISOString(),
+        type: "activity",
+      });
+
+      const updated = await tx.task.update({
+        where: { id: taskId },
+        data: {
+          checklistJson: JSON.stringify(list),
+          notesJson: JSON.stringify(notes),
+        },
+      });
+
+      return { success: true, data: updated as TaskItem };
     });
-
-    const updated = await prisma.task.update({
-      where: { id: taskId },
-      data: {
-        checklistJson: JSON.stringify(list),
-        notesJson: JSON.stringify(notes),
-      },
-    });
-
-    return { success: true, data: updated as TaskItem };
   } catch (e: any) {
     console.error("Failed to toggle checklist item:", e);
     return { success: false, error: e.message || "Failed to update checklist item" };
@@ -1150,47 +1243,50 @@ export async function addChecklistItem(
   taskId: string,
   text: string,
   actor: { id: string; name: string; role?: string }
-) {
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({ where: { id: taskId } });
-    if (!task) return { success: false, error: "Task not found" };
+    return await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, taskId);
+      const task = await tx.task.findUnique({ where: { id: taskId } });
+      if (!task) return { success: false, error: "Task not found" };
 
-    const isAdmin = actor.role === "admin";
-    const isCreator = task.createdById === actor.id;
-    if (!isAdmin && !isCreator) {
-      return { success: false, error: "Only the Task Creator or Super Admin can add sub-tasks" };
-    }
+      const isAdmin = actor.role === "admin";
+      const isCreator = task.createdById === actor.id;
+      if (!isAdmin && !isCreator) {
+        return { success: false, error: "Only the Task Creator or Super Admin can add sub-tasks" };
+      }
 
-    const cleanText = text.trim();
-    if (!cleanText) return { success: false, error: "Sub-task text cannot be empty" };
+      const cleanText = text.trim();
+      if (!cleanText) return { success: false, error: "Sub-task text cannot be empty" };
 
-    const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
-    const newItem: TaskChecklistItem = {
-      id: Math.random().toString(36).slice(2, 9),
-      text: cleanText,
-      completed: false,
-    };
-    list.push(newItem);
+      const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
+      const newItem: TaskChecklistItem = {
+        id: Math.random().toString(36).slice(2, 9),
+        text: cleanText,
+        completed: false,
+      };
+      list.push(newItem);
 
-    const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    notes.unshift({
-      id: Math.random().toString(36).slice(2, 9),
-      text: `Added sub-task: "${cleanText}"`,
-      userId: actor.id,
-      userName: actor.name,
-      timestamp: new Date().toISOString(),
-      type: "activity",
+      const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      notes.unshift({
+        id: Math.random().toString(36).slice(2, 9),
+        text: `Added sub-task: "${cleanText}"`,
+        userId: actor.id,
+        userName: actor.name,
+        timestamp: new Date().toISOString(),
+        type: "activity",
+      });
+
+      const updated = await tx.task.update({
+        where: { id: taskId },
+        data: {
+          checklistJson: JSON.stringify(list),
+          notesJson: JSON.stringify(notes),
+        },
+      });
+
+      return { success: true, data: updated as TaskItem };
     });
-
-    const updated = await prisma.task.update({
-      where: { id: taskId },
-      data: {
-        checklistJson: JSON.stringify(list),
-        notesJson: JSON.stringify(notes),
-      },
-    });
-
-    return { success: true, data: updated as TaskItem };
   } catch (e: any) {
     console.error("Failed to add checklist item:", e);
     return { success: false, error: e.message || "Failed to add checklist item" };
@@ -1201,42 +1297,45 @@ export async function deleteChecklistItem(
   taskId: string,
   itemId: string,
   actor: { id: string; name: string; role?: string }
-) {
+): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
-    const task = await prisma.task.findUnique({ where: { id: taskId } });
-    if (!task) return { success: false, error: "Task not found" };
+    return await prisma.$transaction(async (tx) => {
+      await lockTaskRowForUpdate(tx, taskId);
+      const task = await tx.task.findUnique({ where: { id: taskId } });
+      if (!task) return { success: false, error: "Task not found" };
 
-    const isAdmin = actor.role === "admin";
-    const isCreator = task.createdById === actor.id;
-    if (!isAdmin && !isCreator) {
-      return { success: false, error: "Only the Task Creator or Super Admin can remove sub-tasks" };
-    }
+      const isAdmin = actor.role === "admin";
+      const isCreator = task.createdById === actor.id;
+      if (!isAdmin && !isCreator) {
+        return { success: false, error: "Only the Task Creator or Super Admin can remove sub-tasks" };
+      }
 
-    const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
-    const targetItem = list.find((i) => i.id === itemId);
-    const filtered = list.filter((i) => i.id !== itemId);
+      const list: TaskChecklistItem[] = task.checklistJson ? JSON.parse(task.checklistJson) : [];
+      const targetItem = list.find((i) => i.id === itemId);
+      const filtered = list.filter((i) => i.id !== itemId);
 
-    const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
-    if (targetItem) {
-      notes.unshift({
-        id: Math.random().toString(36).slice(2, 9),
-        text: `Removed sub-task: "${targetItem.text}"`,
-        userId: actor.id,
-        userName: actor.name,
-        timestamp: new Date().toISOString(),
-        type: "activity",
+      const notes: TaskNote[] = task.notesJson ? JSON.parse(task.notesJson) : [];
+      if (targetItem) {
+        notes.unshift({
+          id: Math.random().toString(36).slice(2, 9),
+          text: `Removed sub-task: "${targetItem.text}"`,
+          userId: actor.id,
+          userName: actor.name,
+          timestamp: new Date().toISOString(),
+          type: "activity",
+        });
+      }
+
+      const updated = await tx.task.update({
+        where: { id: taskId },
+        data: {
+          checklistJson: filtered.length > 0 ? JSON.stringify(filtered) : null,
+          notesJson: JSON.stringify(notes),
+        },
       });
-    }
 
-    const updated = await prisma.task.update({
-      where: { id: taskId },
-      data: {
-        checklistJson: filtered.length > 0 ? JSON.stringify(filtered) : null,
-        notesJson: JSON.stringify(notes),
-      },
+      return { success: true, data: updated as TaskItem };
     });
-
-    return { success: true, data: updated as TaskItem };
   } catch (e: any) {
     console.error("Failed to delete checklist item:", e);
     return { success: false, error: e.message || "Failed to delete checklist item" };

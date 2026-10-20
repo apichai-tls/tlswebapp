@@ -102,18 +102,100 @@ export function getPublicUrl(filePath: string): string {
 }
 
 /**
- * List all files in the bucket matching a specific job ID.
+ * Build candidate GCS prefixes for a given jobId and date hints so we never scan the entire bucket.
+ * Structure: jobs/{YYYY}/{MM}/{DD}/{jobId}/...
  */
-export async function listFilesForJob(jobId: string): Promise<Array<{ name: string; size?: string | number; created?: string; publicUrl: string }>> {
+export function buildJobGcsPrefixes(jobId: string, dateHints?: Array<Date | string | null | undefined>): string[] {
+  const cleanJobId = String(jobId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!cleanJobId) return [];
+
+  const validDates: Date[] = [];
+  if (Array.isArray(dateHints)) {
+    for (const d of dateHints) {
+      if (!d) continue;
+      const parsed = d instanceof Date ? d : new Date(d);
+      if (!isNaN(parsed.getTime())) {
+        validDates.push(parsed);
+      }
+    }
+  }
+
+  // Also parse YYMMDD from standard TLS job IDs like ORD-261020-001 or TLS-261020-001 if present
+  const idDateMatch = cleanJobId.match(/(?:^|[-_])(\d{2})(\d{2})(\d{2})(?:[-_]|$)/);
+  if (idDateMatch) {
+    const yy = Number(idDateMatch[1]);
+    const mm = Number(idDateMatch[2]);
+    const dd = Number(idDateMatch[3]);
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+      const inferred = new Date(2000 + yy, mm - 1, dd);
+      if (!isNaN(inferred.getTime())) {
+        validDates.push(inferred);
+      }
+    }
+  }
+
+  if (validDates.length === 0) {
+    validDates.push(new Date());
+  }
+
+  const dayPrefixes = new Set<string>();
+  const monthPrefixes = new Set<string>();
+
+  const minTime = Math.min(...validDates.map((d) => d.getTime())) - 24 * 60 * 60 * 1000;
+  const maxTime = Math.max(...validDates.map((d) => d.getTime())) + 24 * 60 * 60 * 1000;
+  const spanDays = Math.ceil((maxTime - minTime) / (24 * 60 * 60 * 1000));
+
+  if (spanDays <= 14) {
+    for (let t = minTime; t <= maxTime; t += 24 * 60 * 60 * 1000) {
+      const dt = new Date(t);
+      const yyyy = dt.getFullYear();
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getDate()).padStart(2, '0');
+      dayPrefixes.add(`jobs/${yyyy}/${mm}/${dd}/${cleanJobId}/`);
+    }
+    return Array.from(dayPrefixes);
+  }
+
+  for (const dt of validDates) {
+    const yyyy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    monthPrefixes.add(`jobs/${yyyy}/${mm}/`);
+  }
+  return Array.from(monthPrefixes);
+}
+
+/**
+ * List files in the bucket matching a specific job ID using narrow prefix queries instead of full-bucket scans.
+ */
+export async function listFilesForJob(
+  jobId: string,
+  dateHints?: Array<Date | string | null | undefined>
+): Promise<Array<{ name: string; size?: string | number; created?: string; publicUrl: string }>> {
   try {
-    const [files] = await storage.bucket(bucketName).getFiles();
-    const matchingFiles = files.filter(f => f.name.includes(jobId));
-    return matchingFiles.map(file => ({
-      name: file.name,
-      size: file.metadata.size,
-      created: file.metadata.timeCreated ? String(file.metadata.timeCreated) : undefined,
-      publicUrl: `https://storage.googleapis.com/${bucketName}/${file.name}`
-    }));
+    const cleanJobId = String(jobId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleanJobId) return [];
+
+    const prefixes = buildJobGcsPrefixes(cleanJobId, dateHints);
+    const seenNames = new Set<string>();
+    const results: Array<{ name: string; size?: string | number; created?: string; publicUrl: string }> = [];
+
+    const bucket = storage.bucket(bucketName);
+    for (const prefix of prefixes) {
+      const [files] = await bucket.getFiles({ prefix, maxResults: 500 });
+      for (const file of files) {
+        if (file.name.includes(`/${cleanJobId}/`) && !seenNames.has(file.name)) {
+          seenNames.add(file.name);
+          results.push({
+            name: file.name,
+            size: file.metadata.size,
+            created: file.metadata.timeCreated ? String(file.metadata.timeCreated) : undefined,
+            publicUrl: `https://storage.googleapis.com/${bucketName}/${file.name}`,
+          });
+        }
+      }
+    }
+
+    return results;
   } catch (err: any) {
     console.error('Error listing GCS files for job:', err.message);
     return [];

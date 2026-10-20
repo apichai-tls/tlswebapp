@@ -176,10 +176,15 @@ export async function lookupAuthoritativeUser(userId: string): Promise<ServerAut
 
   const branches = await getBranchesForAuth();
 
-  // 1. Check AdminUser table first
-  const adminUser = await prisma.adminUser.findUnique({
+  // 1. Check AdminUser table first (by id, or fallback to email if userId looks like an email)
+  let adminUser = await prisma.adminUser.findUnique({
     where: { id: userId },
   });
+  if (!adminUser && userId.includes('@')) {
+    adminUser = await prisma.adminUser.findUnique({
+      where: { email: userId.toLowerCase().trim() },
+    });
+  }
 
   if (adminUser) {
     let permissions: string[] = [];
@@ -287,6 +292,109 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
   }
 
   return { user: null, explicitCredentialsProvided: false };
+}
+
+/**
+ * Resolves the authoritative user inside a Next.js Server Action by checking
+ * Next.js request cookies/headers first, then falling back to a caller-supplied
+ * actorId (verified against the database, never trusting caller-supplied role strings).
+ */
+export async function resolveServerActionUser(fallbackActorId?: string | null): Promise<{
+  user: ServerAuthUser | null;
+  explicitCredentialsProvided: boolean;
+}> {
+  try {
+    const { cookies, headers } = await import('next/headers');
+    const cookieStore = await cookies();
+    const headerStore = await headers();
+
+    const authHeader = headerStore.get('authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    const sessionCookie = cookieStore.get('tls_session')?.value;
+    const sessionToken = bearerToken || sessionCookie;
+
+    if (sessionToken) {
+      const verified = verifyStaffSessionToken(sessionToken);
+      if (verified?.id) {
+        const dbUser = await lookupAuthoritativeUser(verified.id);
+        return { user: dbUser, explicitCredentialsProvided: true };
+      }
+      return { user: null, explicitCredentialsProvided: true };
+    }
+
+    const headerUserId =
+      headerStore.get('x-tls-user-id') ||
+      cookieStore.get('tls_user_id')?.value;
+
+    if (headerUserId) {
+      const dbUser = await lookupAuthoritativeUser(headerUserId.trim());
+      return { user: dbUser, explicitCredentialsProvided: true };
+    }
+  } catch {
+    // Outside Next.js request context (e.g., standalone scripts or unit test harness)
+  }
+
+  if (fallbackActorId && String(fallbackActorId).trim() !== '' && fallbackActorId !== 'system') {
+    const dbUser = await lookupAuthoritativeUser(String(fallbackActorId).trim());
+    return { user: dbUser, explicitCredentialsProvided: true };
+  }
+
+  return { user: null, explicitCredentialsProvided: false };
+}
+
+export async function assertServerActionAuthorized(options?: {
+  fallbackActorId?: string | null;
+  requireWrite?: boolean;
+  requireAdmin?: boolean;
+  requiredPermission?: string;
+  targetBranchId?: string | null;
+}): Promise<ServerAuthUser | null> {
+  const { user, explicitCredentialsProvided } = await resolveServerActionUser(options?.fallbackActorId);
+
+  if (explicitCredentialsProvided && !user) {
+    throw new Error('Unauthorized: Invalid or expired staff session');
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  if (!user.isActive) {
+    throw new Error('Unauthorized: This account has been deactivated');
+  }
+
+  const role = (user.role || '').toLowerCase();
+
+  if (options?.requireWrite && role === 'spectator') {
+    throw new Error('Forbidden: Spectator role has read-only access and cannot modify data');
+  }
+
+  if (options?.requireAdmin) {
+    const isAdmin = role === 'admin' || role === 'superadmin' || user.permissions.includes('users');
+    if (!isAdmin) {
+      throw new Error('Forbidden: Admin permission is required for this operation');
+    }
+  }
+
+  if (options?.requiredPermission) {
+    const hasPerm =
+      role === 'admin' ||
+      role === 'superadmin' ||
+      user.permissions.includes(options.requiredPermission);
+    if (!hasPerm) {
+      throw new Error(`Forbidden: Missing required permission (${options.requiredPermission})`);
+    }
+  }
+
+  if (
+    options?.targetBranchId &&
+    user.allowedBranchIds !== 'ALL' &&
+    !user.allowedBranchIds.includes(options.targetBranchId)
+  ) {
+    throw new Error('Forbidden: You do not have access to records in this branch');
+  }
+
+  return user;
 }
 
 /**

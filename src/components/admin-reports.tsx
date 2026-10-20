@@ -820,7 +820,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       // Legacy fallback check
       if (job.createdAt) {
         const jobTime = new Date(job.createdAt).getTime();
-        if (jobTime >= shiftOpenTime && jobTime <= shiftCloseTime && job.createdBy === shift.userName && job.isPaid) {
+        if (jobTime >= shiftOpenTime && jobTime <= shiftCloseTime && job.createdBy === shift.userName && job.isShopPaid) {
           return true;
         }
       }
@@ -850,8 +850,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       
       // Payment filter
       if (orderPaymentFilter !== "all") {
-        if (orderPaymentFilter === "paid" && !job.isPaid) return false;
-        if (orderPaymentFilter === "unpaid" && job.isPaid) return false;
+        if (orderPaymentFilter === "paid" && !job.isShopPaid) return false;
+        if (orderPaymentFilter === "unpaid" && job.isShopPaid) return false;
       }
 
       // Search query
@@ -906,7 +906,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
 
     list.forEach(job => {
       posCount++;
-      if (job.isPaid) {
+      if (job.isShopPaid) {
         posRevenue += job.totalAmount || 0;
         
         let splitProcessed = false;
@@ -1013,7 +1013,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       
       orderReportData.forEach(job => {
         const dateStr = job.createdAt ? format(new Date(job.createdAt), "yyyy-MM-dd HH:mm:ss") : "";
-        csvContent += `"${job.id}","${(job.customerName || "").replace(/"/g, '""')}","${dateStr}","${job.status}","${job.paymentChannel || ""}","${job.isPaid ? 'Paid' : 'Unpaid'}",${job.fee || 0},${job.totalAmount || 0},"${job.source || ""}"\n`;
+        csvContent += `"${job.id}","${(job.customerName || "").replace(/"/g, '""')}","${dateStr}","${job.status}","${job.paymentChannel || ""}","${job.isShopPaid ? 'Paid' : 'Unpaid'}",${job.fee || 0},${job.totalAmount || 0},"${job.source || ""}"\n`;
       });
 
     } else if (subTab === "pos") {
@@ -1022,7 +1022,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       
       posReportData.list.forEach(job => {
         const dateStr = job.createdAt ? format(new Date(job.createdAt), "yyyy-MM-dd HH:mm:ss") : "";
-        csvContent += `"${job.id}","${(job.customerName || "").replace(/"/g, '""')}","${dateStr}","${job.status}","${job.paymentChannel || ""}","${job.isPaid ? 'Paid' : 'Unpaid'}",${job.totalAmount || 0}\n`;
+        csvContent += `"${job.id}","${(job.customerName || "").replace(/"/g, '""')}","${dateStr}","${job.status}","${job.paymentChannel || ""}","${job.isShopPaid ? 'Paid' : 'Unpaid'}",${job.totalAmount || 0}\n`;
       });
 
     }
@@ -2127,8 +2127,8 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                           <td className="py-3 text-center text-slate-400">{job.createdAt ? format(new Date(job.createdAt), "dd/MM/yyyy HH:mm") : "-"}</td>
                           <td className="py-3 text-right text-indigo-650 dark:text-indigo-400 font-black">฿{(job.totalAmount || 0).toFixed(2)}</td>
                           <td className="py-3 text-center">
-                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${job.isPaid ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
-                              {job.isPaid ? "Paid" : "Unpaid"}
+                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${job.isShopPaid ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
+                              {job.isShopPaid ? "Paid" : "Unpaid"}
                             </span>
                           </td>
                            <td className="py-3 text-center">
@@ -2263,11 +2263,11 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                                 })()}
                               </span>
                               <span className={`px-1.5 py-0.2 rounded text-[8px] font-black uppercase ${
-                                job.isPaid
+                                job.isShopPaid
                                   ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
                                   : "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
                               }`}>
-                                {job.isPaid ? "Paid" : "Unpaid"}
+                                {job.isShopPaid ? "Paid" : "Unpaid"}
                               </span>
                             </div>
                           </td>
@@ -2486,11 +2486,11 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                                 </td>
                                 <td className="py-3 px-3 text-center">
                                   <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
-                                    job.isPaid 
+                                    job.isShopPaid 
                                       ? "bg-emerald-50 text-emerald-700 border border-emerald-200/50" 
                                       : "bg-amber-50 text-amber-700 border border-amber-200/50"
                                   }`}>
-                                    {job.isPaid ? "Paid" : "Unpaid"}
+                                    {job.isShopPaid ? "Paid" : "Unpaid"}
                                   </span>
                                 </td>
                                 <td className="py-3 px-4 text-right">
@@ -2525,7 +2525,7 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
                     <span>โหมดดูรายละเอียดใบงานแบบอ่านอย่างเดียว (Read-Only) — เพื่อป้องกันข้อมูลการขายย้อนหลังถูกแก้ไข</span>
                   </div>
                   <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">
-                    {selectedJobForDetails.isPaid ? "ชำระเงินเรียบร้อย" : "ยังไม่ชำระเงิน"}
+                    {selectedJobForDetails.isShopPaid ? "ชำระเงินเรียบร้อย" : "ยังไม่ชำระเงิน"}
                   </span>
                 </div>
 

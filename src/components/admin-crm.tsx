@@ -692,7 +692,7 @@ export function AdminCRM({
       if (matchedCustomer) {
         const stats = analytics[matchedCustomer.id];
         if (stats) {
-          const isPaidOrCompleted = job.status === "completed" || (job.status !== "cancel" && (isJobFullyPaid(job) || job.isPaid === true || job.isShopPaid === true));
+          const isPaidOrCompleted = job.status === "completed" || (job.status !== "cancel" && (isJobFullyPaid(job) || job.isShopPaid === true));
           if (isPaidOrCompleted) {
             stats.jobsCount += 1;
             stats.ltv += (job.totalAmount || job.fee || 0);

@@ -5,6 +5,7 @@ import {
   invalidateDbCache,
   JOB_SELECT_FIELDS,
   formatJobRecord,
+  sanitizeCustomerRecord,
   computeDeterministicEtag,
   seedJobsIntoRevisionCache,
 } from '@/lib/db-cache';
@@ -264,11 +265,7 @@ export async function GET(request?: NextRequest) {
         settings[s.key] = s.value;
       });
 
-      const formattedCustomers = customers.map((c: any) => ({
-        ...c,
-        vatType: c.vatType || 'default',
-        defaultCoords: { lat: c.defaultLat, lng: c.defaultLng },
-      }));
+      const formattedCustomers = customers.map((c: any) => sanitizeCustomerRecord(c));
 
       const formattedShopLocations = shopLocations.map((s: any) => ({
         ...s,

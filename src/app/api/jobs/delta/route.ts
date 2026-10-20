@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { JOB_SELECT_FIELDS, primeJobCache } from '@/lib/db-cache';
+import { JOB_SELECT_FIELDS, primeJobCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { resolveRequestUser, buildJobAuthWhereClause } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -88,11 +88,7 @@ export async function GET(request: NextRequest) {
 
     const [jobsRaw, customersRaw, openShifts] = await queryPromise;
     const jobs = jobsRaw.map((j: any) => primeJobCache(j));
-    const customers = customersRaw.map((c: any) => ({
-      ...c,
-      vatType: c.vatType || 'default',
-      defaultCoords: { lat: c.defaultLat, lng: c.defaultLng },
-    }));
+    const customers = customersRaw.map((c: any) => sanitizeCustomerRecord(c));
 
     const maxRevision = jobs.reduce((max: number, j: any) => {
       const t = j?.updatedAt ? new Date(j.updatedAt).getTime() : 0;

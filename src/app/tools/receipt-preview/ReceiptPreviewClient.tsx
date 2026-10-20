@@ -235,6 +235,7 @@ export default function ReceiptPreviewClient({
           </div>
           <div
             id="receipt-capture-container"
+            style={{ fontFamily: "'Inter', 'Prompt', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
             className="w-[559px] min-h-[793px] bg-white shadow-2xl rounded-sm overflow-hidden text-black"
           >
             <A5ReceiptContent

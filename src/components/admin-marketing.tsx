@@ -348,7 +348,7 @@ export function AdminMarketing({ onViewJob }: AdminMarketingProps) {
         pickupRiderName,
         deliveryRiderName,
         netMargin,
-        isPaid: !!job.isPaid,
+        isPaid: Boolean(job.isShopPaid),
         paymentChannel: job.paymentChannel || job.paymentMethod || "-",
         isEstimated
       };

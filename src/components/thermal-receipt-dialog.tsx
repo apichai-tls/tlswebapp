@@ -503,6 +503,9 @@ export function ThermalReceiptDialog({
         } catch {}
       }
 
+      const { markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
+      if (!markReceiptCaptureStarted(filename)) return;
+
       try {
         let blob: Blob | null = null;
 
@@ -555,7 +558,10 @@ export function ThermalReceiptDialog({
           }
         }
 
-        if (!blob) return;
+        if (!blob) {
+          clearReceiptCaptureLock(filename);
+          return;
+        }
 
         // Upload to Google Cloud Storage asynchronously in background
         const uploadAndSave = async (b: Blob) => {
@@ -635,11 +641,17 @@ export function ThermalReceiptDialog({
                 });
               }
             }
+          } else {
+            clearReceiptCaptureLock(filename);
           }
         };
 
-        uploadAndSave(blob).catch(err => console.error("Thermal background upload error:", err));
+        uploadAndSave(blob).catch(err => {
+          clearReceiptCaptureLock(filename);
+          console.error("Thermal background upload error:", err);
+        });
       } catch (err) {
+        clearReceiptCaptureLock(filename);
         console.error("Failed to capture and upload receipt image:", err);
       }
     };

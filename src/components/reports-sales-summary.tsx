@@ -307,7 +307,7 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
   const employeeList = useMemo(() => {
     const set = new Set<string>();
     jobs.forEach(j => {
-      if (j.isPaid || j.isShopPaid) {
+      if (j.isShopPaid) {
         const payee = getJobPayee(j);
         if (payee) {
           set.add(payee);
@@ -445,7 +445,7 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
       const total = Number(job.totalAmount) || 0;
       const discount = Number(job.discount) || 0;
       const isCancel = job.status === "cancel";
-      const isRefund = isCancel && (job.isPaid || job.isShopPaid || (job.remark && job.remark.toLowerCase().includes("refund")));
+      const isRefund = isCancel && (job.isShopPaid || (job.remark && job.remark.toLowerCase().includes("refund")));
 
       if (isRefund) {
         refunds += total;
@@ -456,7 +456,7 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
         return;
       }
 
-      if (job.isPaid || job.isShopPaid) {
+      if (job.isShopPaid) {
         paidOrderCount++;
         // Gross sales is value before discount
         grossSales += (total + discount);
@@ -536,7 +536,7 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
         const total = Number(job.totalAmount) || 0;
         const discount = Number(job.discount) || 0;
         const isCancel = job.status === "cancel";
-        const isRefund = isCancel && (job.isPaid || job.isShopPaid || (job.remark && job.remark.toLowerCase().includes("refund")));
+        const isRefund = isCancel && (job.isShopPaid || (job.remark && job.remark.toLowerCase().includes("refund")));
 
         if (isRefund) {
           hourlyMap[h].ref += total;
@@ -544,7 +544,7 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
         }
         if (isCancel) return;
 
-        if (job.isPaid || job.isShopPaid) {
+        if (job.isShopPaid) {
           hourlyMap[h].gross += (total + discount);
           hourlyMap[h].disc += discount;
           hourlyMap[h].orders += 1;

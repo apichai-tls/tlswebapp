@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { performProdToTestSync } from '@/lib/sync-db';
 
@@ -5,22 +6,28 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 120; // 2 minutes max execution for Cloud Run / Vercel
 
 function verifyCronSecret(req: NextRequest): boolean {
-  const configuredSecret = process.env.CRON_SECRET || 'tls-cron-sync-secret-2026';
-  
+  const configuredSecret = (process.env.CRON_SECRET || '').trim();
+  if (!configuredSecret) return false;
+
+  const compareConstantTime = (candidate: string) => {
+    if (!candidate || candidate.length !== configuredSecret.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(configuredSecret));
+  };
+
   // 1. Check Authorization: Bearer <secret>
   const authHeader = req.headers.get('authorization');
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7).trim();
-    if (token === configuredSecret) return true;
+    if (compareConstantTime(token)) return true;
   }
 
   // 2. Check x-cron-secret header
   const customHeader = req.headers.get('x-cron-secret');
-  if (customHeader && customHeader.trim() === configuredSecret) return true;
+  if (customHeader && compareConstantTime(customHeader.trim())) return true;
 
   // 3. Check query param: ?secret=<secret>
   const querySecret = req.nextUrl.searchParams.get('secret');
-  if (querySecret && querySecret.trim() === configuredSecret) return true;
+  if (querySecret && compareConstantTime(querySecret.trim())) return true;
 
   return false;
 }

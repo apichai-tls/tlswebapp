@@ -86,17 +86,25 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. Parse Scheduled Date and Time Slot
+    // 2. Parse Scheduled Date and Time Slot explicitly in Thailand timezone (Asia/Bangkok, UTC+7)
     let scheduledTime = new Date()
     if (scheduledDate) {
-      const [year, month, day] = scheduledDate.split('-').map(Number)
+      const [year, month, day] = String(scheduledDate).split('-').map(Number)
       if (year && month && day) {
         let hour = 10
+        let minute = 0
         if (timeSlot && typeof timeSlot === 'string') {
-          const matchedHour = timeSlot.match(/^(\d{1,2})/)
-          if (matchedHour) hour = parseInt(matchedHour[1], 10)
+          const matchedTime = timeSlot.match(/^(\d{1,2})(?::(\d{2}))?/)
+          if (matchedTime) {
+            hour = Math.min(23, Math.max(0, parseInt(matchedTime[1], 10)))
+            if (matchedTime[2]) {
+              minute = Math.min(59, Math.max(0, parseInt(matchedTime[2], 10)))
+            }
+          }
         }
-        scheduledTime = new Date(year, month - 1, day, hour, 0, 0)
+        // Convert Bangkok local wall-clock time (UTC+7) to exact UTC timestamp regardless of container TZ
+        const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000
+        scheduledTime = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0) - BANGKOK_OFFSET_MS)
       }
     }
 

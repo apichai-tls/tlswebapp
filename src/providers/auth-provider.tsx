@@ -42,8 +42,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     if (savedUser && lastLoginDate === today) {
       try {
+        const parsed = JSON.parse(savedUser);
         // eslint-disable-next-line
-        setUser(JSON.parse(savedUser));
+        setUser(parsed);
+        if (parsed?.id && typeof document !== 'undefined') {
+          document.cookie = `tls_user_id=${encodeURIComponent(parsed.id)}; path=/; max-age=${60 * 60 * 20}; SameSite=Lax`;
+        }
       } catch (e) {
         console.error("Failed to parse auth user", e);
       }
@@ -51,38 +55,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       // Clear session if it's a new day
       localStorage.removeItem('authUser');
       localStorage.removeItem('lastLoginDate');
+      if (typeof document !== 'undefined') {
+        document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
+      }
       setUser(null);
     }
     setIsLoading(false);
   }, []);
 
   const login = async (email: string, password?: string) => {
-    // Check rider hardcoded first since riders are not in AdminUser table
-    if (email.startsWith('rider')) {
-      const users: Record<string, { role: 'rider', id: string, pass: string }> = {
-        'rider1@tls.com': { role: 'rider', id: 'RIDER-01', pass: 'rider1234' },
-        'rider2@tls.com': { role: 'rider', id: 'RIDER-02', pass: 'rider1234' },
-        'rider3@tls.com': { role: 'rider', id: 'RIDER-03', pass: 'rider1234' },
-        'rider4@tls.com': { role: 'rider', id: 'RIDER-04', pass: 'rider1234' },
-      };
-      const validUser = users[email.toLowerCase().trim()];
-      if (validUser && password === validUser.pass) {
-        const userData: User = { 
-          email: email.toLowerCase().trim(), 
-          role: validUser.role, 
-          id: validUser.id,
-          permissions: [] 
-        };
-        setUser(userData);
-        localStorage.setItem('authUser', JSON.stringify(userData));
-        localStorage.setItem('lastLoginDate', new Date().toDateString());
-        return userData;
-      }
-    }
-
-    // Authenticate Admin/Manager/CSO against DB via API route
+    // Authenticate Admin/Manager/CSO/Rider against DB via API route first so a signed server session is established.
     // NOTE: Server Actions don't work reliably in Capacitor WebView (APK),
-    // so we use a regular API route instead.
+    // so we use a regular API route first.
     let response: { success: boolean; user?: any; error?: string } | null = null;
     try {
       const apiRes = await fetch('/api/auth/login', {
@@ -104,6 +88,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(userData);
     localStorage.setItem('authUser', JSON.stringify(userData));
     localStorage.setItem('lastLoginDate', new Date().toDateString());
+    if (userData?.id && typeof document !== 'undefined') {
+      document.cookie = `tls_user_id=${encodeURIComponent(userData.id)}; path=/; max-age=${60 * 60 * 20}; SameSite=Lax`;
+    }
     return userData;
   };
 
@@ -111,6 +98,22 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(null);
     localStorage.removeItem('authUser');
     localStorage.removeItem('lastLoginDate');
+    if (typeof document !== 'undefined') {
+      document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
+    }
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      window.caches
+        .keys()
+        .then((keys) => {
+          for (const key of keys) {
+            if (key.startsWith('tls-')) {
+              window.caches.delete(key).catch(() => {});
+            }
+          }
+        })
+        .catch(() => {});
+    }
+    fetch('/api/auth/login', { method: 'DELETE' }).catch(() => {});
   };
 
   return (
