@@ -94,7 +94,8 @@ export function AdminCustomerProfileModal({
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
-  const canSeeCoupons = isAdmin || isCSO;
+  const isMarketing = user?.role === 'marketing' || user?.department === 'marketing' || Boolean(user?.permissions?.includes('marketing'));
+  const canSeeCoupons = isAdmin || isCSO || isMarketing;
 
   const jobs = useJobs();
   const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
