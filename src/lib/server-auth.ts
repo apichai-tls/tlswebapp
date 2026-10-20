@@ -16,14 +16,33 @@ export interface ServerAuthUser {
   allowedBranchIds: string[] | 'ALL';
 }
 
-const SESSION_SECRET =
-  process.env.TLS_SESSION_SECRET ||
-  process.env.CRON_SECRET ||
-  process.env.BEAM_WEBHOOK_SECRET ||
-  'tls-operations-realtime-hmac-secret-2026';
+// ─── Cryptographic Session Secret Management ───────────────────────────────
+// Uses TLS_SESSION_SECRET or CRON_SECRET or BEAM_WEBHOOK_SECRET if configured.
+// If none is provided in the environment, generates a cryptographically strong
+// random secret per process instance so an attacker can NEVER guess a hardcoded secret.
+const globalForSecret = globalThis as unknown as {
+  __tlsDynamicSessionSecret?: string;
+};
 
-const USER_CACHE_TTL_MS = 60000;
-const BRANCH_CACHE_TTL_MS = 60000;
+function getSessionSecret(): string {
+  const envSecret =
+    process.env.TLS_SESSION_SECRET ||
+    process.env.CRON_SECRET ||
+    process.env.BEAM_WEBHOOK_SECRET;
+
+  if (envSecret && envSecret.trim().length >= 16) {
+    return envSecret.trim();
+  }
+
+  if (!globalForSecret.__tlsDynamicSessionSecret) {
+    globalForSecret.__tlsDynamicSessionSecret = crypto.randomBytes(32).toString('hex');
+  }
+  return globalForSecret.__tlsDynamicSessionSecret;
+}
+
+const SESSION_TTL_MS = 18 * 60 * 60 * 1000; // 18 hours max session expiry
+const USER_CACHE_TTL_MS = 30000;             // 30s cache for authoritative DB user lookup
+const BRANCH_CACHE_TTL_MS = 60000;           // 60s cache for branch locations
 
 interface CachedUserEntry {
   user: ServerAuthUser;
@@ -110,6 +129,8 @@ export function signStaffSessionToken(payload: {
   branchId?: string | null;
   area?: string | null;
 }): string {
+  const now = Date.now();
+  const secret = getSessionSecret();
   const data = Buffer.from(
     JSON.stringify({
       id: payload.id,
@@ -117,10 +138,11 @@ export function signStaffSessionToken(payload: {
       role: payload.role,
       branchId: payload.branchId || null,
       area: payload.area || null,
-      iat: Date.now(),
+      iat: now,
+      exp: now + SESSION_TTL_MS,
     })
   ).toString('base64url');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(data).digest('base64url');
+  const sig = crypto.createHmac('sha256', secret).update(data).digest('base64url');
   return `${data}.${sig}`;
 }
 
@@ -131,17 +153,25 @@ export function verifyStaffSessionToken(token: string): {
   branchId?: string | null;
   area?: string | null;
   iat: number;
+  exp: number;
 } | null {
   try {
     const [data, sig] = token.split('.');
     if (!data || !sig) return null;
-    const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(data).digest('base64url');
+    const secret = getSessionSecret();
+    const expectedSig = crypto.createHmac('sha256', secret).update(data).digest('base64url');
     if (sig.length !== expectedSig.length) return null;
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
       return null;
     }
     const parsed = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
     if (!parsed || !parsed.id) return null;
+
+    // Enforce cryptographic session expiration
+    if (typeof parsed.exp === 'number' && Date.now() > parsed.exp) {
+      return null;
+    }
+
     return parsed;
   } catch {
     return null;
@@ -211,7 +241,7 @@ export async function lookupAuthoritativeUser(userId: string): Promise<ServerAut
     return resolved;
   }
 
-  // 2. Check Rider table or built-in rider accounts
+  // 2. Check Rider table
   const rider = await prisma.rider.findUnique({
     where: { id: userId },
   });
@@ -232,29 +262,13 @@ export async function lookupAuthoritativeUser(userId: string): Promise<ServerAut
     return resolved;
   }
 
-  if (/^RIDER-0[1-9]$/i.test(userId)) {
-    const resolved: ServerAuthUser = {
-      id: userId.toUpperCase(),
-      email: `${userId.toLowerCase()}@tls.com`,
-      name: userId.toUpperCase(),
-      role: 'rider',
-      branchId: null,
-      area: null,
-      permissions: [],
-      isActive: true,
-      allowedBranchIds: 'ALL',
-    };
-    userAuthCache.set(userId, { user: resolved, cachedAt: now });
-    return resolved;
-  }
-
   return null;
 }
 
 /**
- * Resolves the staff or rider user from request cookies, Authorization header,
- * X-TLS-User-Id header, or ?userId query parameter, and verifies their authoritative
- * role and branch permissions from the database.
+ * Resolves the staff or rider user from request cookies or Authorization header.
+ * Strictly requires a cryptographically verified HMAC session token.
+ * Unauthenticated user ID headers, query parameters, or unverified cookies are rejected.
  */
 export async function resolveRequestUser(request?: Request | null): Promise<{
   user: ServerAuthUser | null;
@@ -278,28 +292,20 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
         return { user: dbUser, explicitCredentialsProvided: true };
       }
     }
+    // Invalid or expired session token provided
     return { user: null, explicitCredentialsProvided: true };
   }
 
-  const headerUserId =
-    request.headers.get('x-tls-user-id') ||
-    url.searchParams.get('userId') ||
-    cookies['tls_user_id'];
-
-  if (headerUserId) {
-    const dbUser = await lookupAuthoritativeUser(headerUserId.trim());
-    return { user: dbUser, explicitCredentialsProvided: true };
-  }
-
+  // No verified session token provided
   return { user: null, explicitCredentialsProvided: false };
 }
 
 /**
  * Resolves the authoritative user inside a Next.js Server Action by checking
- * Next.js request cookies/headers first, then falling back to a caller-supplied
- * actorId (verified against the database, never trusting caller-supplied role strings).
+ * Next.js request cookies/headers for a valid cryptographic HMAC session token.
+ * Insecure client-supplied actorId strings are strictly rejected without a valid session.
  */
-export async function resolveServerActionUser(fallbackActorId?: string | null): Promise<{
+export async function resolveServerActionUser(): Promise<{
   user: ServerAuthUser | null;
   explicitCredentialsProvided: boolean;
 }> {
@@ -321,46 +327,34 @@ export async function resolveServerActionUser(fallbackActorId?: string | null): 
       }
       return { user: null, explicitCredentialsProvided: true };
     }
-
-    const headerUserId =
-      headerStore.get('x-tls-user-id') ||
-      cookieStore.get('tls_user_id')?.value;
-
-    if (headerUserId) {
-      const dbUser = await lookupAuthoritativeUser(headerUserId.trim());
-      return { user: dbUser, explicitCredentialsProvided: true };
-    }
   } catch {
-    // Outside Next.js request context (e.g., standalone scripts or unit test harness)
-  }
-
-  if (fallbackActorId && String(fallbackActorId).trim() !== '' && fallbackActorId !== 'system') {
-    const dbUser = await lookupAuthoritativeUser(String(fallbackActorId).trim());
-    return { user: dbUser, explicitCredentialsProvided: true };
+    // Outside Next.js request context
   }
 
   return { user: null, explicitCredentialsProvided: false };
 }
 
+/**
+ * Enforces server-side authorization for Server Actions.
+ * Throws an Error if unauthenticated, deactivated, or missing required permissions.
+ */
 export async function assertServerActionAuthorized(options?: {
-  fallbackActorId?: string | null;
   requireWrite?: boolean;
   requireAdmin?: boolean;
   requiredPermission?: string;
   targetBranchId?: string | null;
-}): Promise<ServerAuthUser | null> {
-  const { user, explicitCredentialsProvided } = await resolveServerActionUser(options?.fallbackActorId);
-
-  if (explicitCredentialsProvided && !user) {
-    throw new Error('Unauthorized: Invalid or expired staff session');
-  }
+}): Promise<ServerAuthUser> {
+  const { user, explicitCredentialsProvided } = await resolveServerActionUser();
 
   if (!user) {
-    return null;
+    if (explicitCredentialsProvided) {
+      throw new Error('Unauthorized: Invalid or expired staff session');
+    }
+    throw new Error('Unauthorized: Valid server-verified staff session required');
   }
 
   if (!user.isActive) {
-    throw new Error('Unauthorized: This account has been deactivated');
+    throw new Error('Forbidden: This account has been deactivated (Resigned)');
   }
 
   const role = (user.role || '').toLowerCase();
@@ -397,6 +391,65 @@ export async function assertServerActionAuthorized(options?: {
   return user;
 }
 
+// ─── Granular Role-Based Permission Gates ───────────────────────────────────
+
+export function canAccessCustomerRecords(
+  user: ServerAuthUser | null,
+  customerBranchId?: string | null
+): boolean {
+  if (!user || !user.isActive) return false;
+  const role = (user.role || '').toLowerCase();
+
+  // Riders do not have access to the full customer database (only their assigned jobs)
+  if (role === 'rider') return false;
+
+  // Full administrative, customer service, or accounting access
+  if (
+    role === 'admin' ||
+    role === 'superadmin' ||
+    role === 'manager' ||
+    role === 'cso' ||
+    role === 'accounting' ||
+    role === 'marketing'
+  ) {
+    if (user.allowedBranchIds === 'ALL') return true;
+    if (!customerBranchId) return true;
+    return user.allowedBranchIds.includes(customerBranchId);
+  }
+
+  // Branch staff / cashiers can only access customers of their branch or unassigned
+  if (user.allowedBranchIds === 'ALL') return true;
+  if (!customerBranchId) return true;
+  return user.allowedBranchIds.includes(customerBranchId);
+}
+
+export function canAccessFinancialData(user: ServerAuthUser | null): boolean {
+  if (!user || !user.isActive) return false;
+  const role = (user.role || '').toLowerCase();
+  return (
+    role === 'admin' ||
+    role === 'superadmin' ||
+    role === 'manager' ||
+    role === 'accounting' ||
+    user.permissions.includes('accounting') ||
+    user.permissions.includes('reports')
+  );
+}
+
+export function canAccessShifts(user: ServerAuthUser | null, branchId?: string | null): boolean {
+  if (!user || !user.isActive) return false;
+  const role = (user.role || '').toLowerCase();
+  if (role === 'rider') return false;
+
+  if (role === 'admin' || role === 'superadmin' || role === 'accounting') {
+    return true;
+  }
+
+  if (user.allowedBranchIds === 'ALL') return true;
+  if (!branchId) return true;
+  return user.allowedBranchIds.includes(branchId);
+}
+
 /**
  * Checks whether the resolved user is authorized to view/receive a specific job or job event.
  */
@@ -411,7 +464,7 @@ export function canUserAccessJob(
     status?: string | null;
   }
 ): boolean {
-  if (!user) return true;
+  if (!user) return false;
   if (!user.isActive) return false;
 
   const role = (user.role || '').toLowerCase();
@@ -430,7 +483,6 @@ export function canUserAccessJob(
       if (user.allowedBranchIds === 'ALL' || !job.branchId) return true;
       return user.allowedBranchIds.includes(job.branchId);
     }
-    // Riders also need visibility if they are assigned to any leg or if allowedBranchIds === 'ALL'
     if (user.allowedBranchIds === 'ALL') return true;
     return !job.branchId || user.allowedBranchIds.includes(job.branchId);
   }
@@ -439,7 +491,6 @@ export function canUserAccessJob(
     return true;
   }
 
-  // Branch/Area restricted staff can access jobs in their assigned branches or unassigned jobs
   if (!job.branchId) return true;
   return user.allowedBranchIds.includes(job.branchId);
 }
@@ -448,7 +499,9 @@ export function canUserAccessJob(
  * Builds a Prisma WHERE filter scoping Job queries to the user's authorized branches/role.
  */
 export function buildJobAuthWhereClause(user: ServerAuthUser | null): Record<string, any> | null {
-  if (!user) return null;
+  if (!user) {
+    return { id: '__UNAUTHORIZED_ANONYMOUS_USER__' };
+  }
   if (!user.isActive) {
     return { id: '__UNAUTHORIZED_INACTIVE_USER__' };
   }
@@ -466,7 +519,14 @@ export function buildJobAuthWhereClause(user: ServerAuthUser | null): Record<str
         ],
       };
     }
-    return null;
+    return {
+      OR: [
+        { riderId: user.id },
+        { pickupRiderId: user.id },
+        { deliveryRiderId: user.id },
+        { status: { in: ['pending', 'tba'] } },
+      ],
+    };
   }
 
   if (user.allowedBranchIds === 'ALL') {

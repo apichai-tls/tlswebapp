@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { JOB_SELECT_FIELDS, primeJobCache, sanitizeCustomerRecord } from '@/lib/db-cache';
-import { resolveRequestUser, buildJobAuthWhereClause } from '@/lib/server-auth';
+import {
+  resolveRequestUser,
+  buildJobAuthWhereClause,
+  canAccessCustomerRecords,
+  canAccessShifts
+} from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,15 +15,24 @@ const inFlightDeltaQueries = new Map<string, Promise<any>>();
 export async function GET(request: NextRequest) {
   try {
     const { user, explicitCredentialsProvided } = await resolveRequestUser(request);
-    if (explicitCredentialsProvided && (!user || !user.isActive)) {
+    if (!user) {
       return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: user && !user.isActive ? 403 : 401 }
+        { error: explicitCredentialsProvided ? 'Unauthorized: Invalid or expired staff session' : 'Unauthorized: Valid server-verified staff session required' },
+        { status: 401 }
+      );
+    }
+
+    if (!user.isActive) {
+      return NextResponse.json(
+        { error: 'Forbidden: This account has been deactivated (Resigned)' },
+        { status: 403 }
       );
     }
 
     const url = new URL(request.url);
     const sinceParam = url.searchParams.get('since');
+    const limit = Math.min(500, Math.max(10, Number(url.searchParams.get('limit')) || 250));
+
     let sinceMs = Date.now() - 60000;
     if (sinceParam) {
       const asNum = Number(sinceParam);
@@ -30,14 +44,12 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Clamp lookback to max 24h so delta stays fast and lightweight
+    // Clamp lookback to max 24h
     const minAllowedMs = Date.now() - 24 * 60 * 60 * 1000;
     const effectiveSinceDate = new Date(Math.max(sinceMs, minAllowedMs));
 
     const authWhere = buildJobAuthWhereClause(user);
-    const scopeKey = user
-      ? `${user.role}:${Array.isArray(user.allowedBranchIds) ? user.allowedBranchIds.join(',') : 'ALL'}`
-      : 'PUBLIC';
+    const scopeKey = `${user.role}:${Array.isArray(user.allowedBranchIds) ? user.allowedBranchIds.join(',') : 'ALL'}:${limit}`;
     const bucketKey = `${scopeKey}:${Math.floor(effectiveSinceDate.getTime() / 250)}`;
 
     let queryPromise = inFlightDeltaQueries.get(bucketKey);
@@ -51,34 +63,51 @@ export async function GET(request: NextRequest) {
           }
         : { updatedAt: { gt: effectiveSinceDate } };
 
+      const customerWhere: any = {
+        updatedAt: { gt: effectiveSinceDate },
+      };
+      if (user.allowedBranchIds !== 'ALL') {
+        customerWhere.OR = [
+          { branchId: { in: user.allowedBranchIds } },
+          { branchId: null },
+        ];
+      }
+
       queryPromise = Promise.all([
         prisma.job.findMany({
           where: jobWhere,
           orderBy: { updatedAt: 'asc' },
-          take: 250,
+          take: limit,
           select: JOB_SELECT_FIELDS,
         }),
-        prisma.customer.findMany({
-          where: { updatedAt: { gt: effectiveSinceDate } },
-          take: 100,
-          include: {
-            addresses: {
-              orderBy: { isPrimary: 'desc' },
-            },
-          },
-        }),
-        prisma.cashierShift.findMany({
-          where: { status: 'open' },
-          select: {
-            id: true,
-            userId: true,
-            branchId: true,
-            userName: true,
-            openedAt: true,
-            startingCash: true,
-            status: true,
-          },
-        }),
+        user.role === 'rider'
+          ? Promise.resolve([])
+          : prisma.customer.findMany({
+              where: customerWhere,
+              take: 100,
+              include: {
+                addresses: {
+                  orderBy: { isPrimary: 'desc' },
+                },
+              },
+            }),
+        user.role === 'rider'
+          ? Promise.resolve([])
+          : prisma.cashierShift.findMany({
+              where: {
+                status: 'open',
+                ...(user.allowedBranchIds !== 'ALL' ? { branchId: { in: user.allowedBranchIds } } : {}),
+              },
+              select: {
+                id: true,
+                userId: true,
+                branchId: true,
+                userName: true,
+                openedAt: true,
+                startingCash: true,
+                status: true,
+              },
+            }),
       ]).finally(() => {
         inFlightDeltaQueries.delete(bucketKey);
       });
@@ -95,13 +124,19 @@ export async function GET(request: NextRequest) {
       return t > max ? t : max;
     }, effectiveSinceDate.getTime());
 
+    // Flag hasMore when the batch is full so the client fetches the next page
+    // before advancing its local synchronization watermark
+    const hasMore = jobsRaw.length >= limit;
+
     return NextResponse.json(
       {
         jobs,
         customers,
         openShifts,
-        serverTime: Date.now(),
         maxRevision,
+        hasMore,
+        limit,
+        serverTime: Date.now(),
       },
       {
         headers: {
@@ -112,7 +147,7 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error('[GET /api/jobs/delta] Error:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch delta updates', details: error?.message },
+      { error: 'Delta fetch failed', details: error?.message },
       { status: 500 }
     );
   }

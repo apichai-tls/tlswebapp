@@ -10,7 +10,13 @@ import {
   seedJobsIntoRevisionCache,
 } from '@/lib/db-cache';
 import { ensurePgListenerStarted } from '@/lib/realtime-bus';
-import { resolveRequestUser, canUserAccessJob, type ServerAuthUser } from '@/lib/server-auth';
+import {
+  resolveRequestUser,
+  canUserAccessJob,
+  canAccessCustomerRecords,
+  canAccessShifts,
+  type ServerAuthUser
+} from '@/lib/server-auth';
 
 export { invalidateDbCache };
 export const dynamic = 'force-dynamic';
@@ -20,16 +26,43 @@ const CUSTOMERS_TTL_MS = 45000;       // 45s customer master data cache (invalid
 const MASTER_DATA_TTL_MS = 60000;     // 60s services, price lists, shop locations, settings cache
 const RIDER_EARNINGS_TTL_MS = 60000;  // 60s rider earnings aggregations cache
 
-function filterPayloadForUser(payload: any, user: ServerAuthUser | null) {
-  if (!user || user.allowedBranchIds === 'ALL') {
-    if (user?.role === 'rider') {
-      const filteredJobs = (payload.jobs || []).filter((j: any) => canUserAccessJob(user, j));
-      return { ...payload, jobs: filteredJobs };
-    }
-    return payload;
+function filterPayloadForUser(payload: any, user: ServerAuthUser): any {
+  const role = (user.role || '').toLowerCase();
+
+  // 1. Riders: Only assigned jobs (or pending unassigned in their branches), NO full customer DB, NO shifts, NO accounting
+  if (role === 'rider') {
+    const filteredJobs = (payload.jobs || []).filter((j: any) => canUserAccessJob(user, j));
+    const ownEarnings = payload.riderEarnings ? {
+      lifetimeEarnings: (payload.riderEarnings.lifetimeEarnings || []).filter((r: any) => r.riderId === user.id),
+      monthEarnings: (payload.riderEarnings.monthEarnings || []).filter((r: any) => r.riderId === user.id),
+      completedJobsCounts: (payload.riderEarnings.completedJobsCounts || []).filter((r: any) => r.riderId === user.id),
+    } : null;
+
+    return {
+      ...payload,
+      jobs: filteredJobs,
+      customers: [], // Riders never receive the full customer database
+      cashierShifts: [],
+      riderEarnings: ownEarnings,
+    };
   }
-  const filteredJobs = (payload.jobs || []).filter((j: any) => canUserAccessJob(user, j));
-  return { ...payload, jobs: filteredJobs };
+
+  // 2. Branch-Scoped Staff (Managers, Cashiers, Branch Ops)
+  if (user.allowedBranchIds !== 'ALL') {
+    const filteredJobs = (payload.jobs || []).filter((j: any) => canUserAccessJob(user, j));
+    const filteredCustomers = (payload.customers || []).filter((c: any) => canAccessCustomerRecords(user, c.branchId));
+    const filteredShifts = (payload.cashierShifts || []).filter((s: any) => canAccessShifts(user, s.branchId));
+
+    return {
+      ...payload,
+      jobs: filteredJobs,
+      customers: filteredCustomers,
+      cashierShifts: filteredShifts,
+    };
+  }
+
+  // 3. Full Access (Admin, Superadmin, HQ Accounting / Management)
+  return payload;
 }
 
 export async function GET(request?: NextRequest) {
@@ -37,10 +70,16 @@ export async function GET(request?: NextRequest) {
     ensurePgListenerStarted().catch(() => {});
 
     const { user, explicitCredentialsProvided } = await resolveRequestUser(request);
-    if (explicitCredentialsProvided && (!user || !user.isActive)) {
+    if (!user) {
       return NextResponse.json(
-        { error: 'Unauthorized or inactive account' },
-        { status: user && !user.isActive ? 403 : 401 }
+        { error: explicitCredentialsProvided ? 'Unauthorized: Invalid or expired staff session' : 'Unauthorized: Valid server-verified staff session required' },
+        { status: 401 }
+      );
+    }
+    if (!user.isActive) {
+      return NextResponse.json(
+        { error: 'Forbidden: This account has been deactivated (Resigned)' },
+        { status: 403 }
       );
     }
 

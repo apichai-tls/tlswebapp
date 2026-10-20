@@ -344,6 +344,18 @@ function mergeAdminNotesJson(
 
 export async function updateCustomerAction(id: string, updates: any): Promise<{ success: boolean; customer?: any; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({
+            requireWrite: true,
+      targetBranchId: updates?.branchId || null,
+    });
+    if (authUser?.role === 'rider') {
+      return { success: false, error: "403 Forbidden: Riders are not permitted to modify customer records." };
+    }
+    if (authUser) {
+      updates.actorId = authUser.id;
+      updates.actorName = authUser.name || authUser.email;
+    }
+
     let currentCustomer = await prisma.customer.findUnique({ where: { id } });
     if (!currentCustomer) return { success: false, error: "ไม่พบข้อมูลลูกค้าในระบบ (Customer not found)" };
 
@@ -531,6 +543,20 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
         }
         data.creditBalance = balAfter;
 
+        const dedupRef = String(updates.idempotencyKey || updates.walletRefId || '').trim();
+        if (dedupRef) {
+          const existingWalletTx = await tx.walletTransaction.findFirst({
+            where: {
+              customerId: id,
+              referenceId: dedupRef,
+            }
+          });
+          if (existingWalletTx) {
+            console.warn(`[WalletIdempotency] Duplicate wallet adjustment ignored for reference: ${dedupRef}`);
+            return lockedCustomer;
+          }
+        }
+
         const savedCust = await tx.customer.update({
           where: { id },
           data,
@@ -579,7 +605,7 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
                 balanceBefore: balBefore,
                 balanceAfter: balAfter,
                 reason: updates.adjustReason || updates.reason || null,
-                referenceId: updates.walletRefId || null,
+                referenceId: updates.idempotencyKey || updates.walletRefId || null,
                 referenceType: refType,
                 createdById: updates.actorId || null,
                 createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
@@ -1813,14 +1839,34 @@ async function updateJobActionInternal(id: string, updates: any) {
   const existingJob = await prisma.job.findUnique({ where: { id } });
 
   const authUser = await assertServerActionAuthorized({
-    fallbackActorId: updates?.actorId,
-    requireWrite: true,
+        requireWrite: true,
     targetBranchId: existingJob?.branchId || updates?.branchId || null,
   });
   if (authUser) {
     updates.actorId = authUser.id;
     updates.actorName = authUser.name || authUser.email;
     updates.actorRole = authUser.role;
+  }
+
+  if (authUser?.role === 'rider') {
+    if (!existingJob) {
+      throw new Error("404 Not Found: Order not found");
+    }
+    const isAssigned = existingJob.pickupRiderId === authUser.id ||
+                       existingJob.deliveryRiderId === authUser.id ||
+                       existingJob.riderId === authUser.id;
+    if (!isAssigned) {
+      throw new Error("403 Forbidden: Riders can only update their assigned orders.");
+    }
+    const forbiddenRiderKeys = [
+      'fee', 'discount', 'discountPercent', 'totalAmount', 'isPaid', 'isShopPaid',
+      'customerId', 'customerName', 'customerPhone', 'branchId', 'vatType', 'paymentChannel'
+    ];
+    for (const k of forbiddenRiderKeys) {
+      if (updates[k] !== undefined && updates[k] !== (existingJob as any)[k]) {
+        throw new Error(`403 Forbidden: Riders are not permitted to modify order field "${k}".`);
+      }
+    }
   }
   
   const isMediaOrProformaOnlyUpdate = Object.keys(updates).every(k => 
@@ -2186,9 +2232,17 @@ async function updateJobActionInternal(id: string, updates: any) {
   if (updates.isStuck !== undefined) data.isStuck = updates.isStuck;
   if (updates.walletBalanceAfter !== undefined) data.walletBalanceAfter = updates.walletBalanceAfter;
 
-  // Compare changes for logging and field-level conflict detection
-  const changes: any = {};
-  if (existingJob) {
+  // 1. ATOMIC TRANSACTION: Acquire PostgreSQL row-level lock and execute OCC conflict check + job update
+  const { updatedJob, effectiveChanges } = await prisma.$transaction(async (tx) => {
+    // Acquire row-level FOR UPDATE lock to serialize concurrent updates across all server instances
+    await lockJobRowForUpdate(tx, id);
+    const freshJob = await tx.job.findUnique({ where: { id } });
+    if (!freshJob) {
+      throw new Error(`404 Not Found: Job ${id} does not exist`);
+    }
+
+    // Compare changes against freshJob
+    const changes: any = {};
     const logFields = [
       'status', 'subStatus', 'isPaid', 'paymentMethod', 'paymentChannel', 'riderId', 
       'pickupRiderId', 'deliveryRiderId', 'pickupScheduledAt', 'pickupScheduledEndAt',
@@ -2201,303 +2255,321 @@ async function updateJobActionInternal(id: string, updates: any) {
       'deliveryCommission', 'laundryTypes', 'itemsJson', 'legsJson', 'branchId', 'walletBalanceAfter'
     ];
     logFields.forEach(field => {
-      const oldVal = (existingJob as any)[field];
+      const oldVal = (freshJob as any)[field];
       const newVal = data[field];
       if (newVal !== undefined && !areJobFieldValuesEqual(field, oldVal, newVal)) {
         changes[field] = newVal;
       }
     });
-  }
 
-  // Field-level Optimistic Concurrency Control (OCC):
-  // Allow concurrent edits to DIFFERENT fields on the same order to merge cleanly,
-  // while blocking conflicting edits to the SAME field (or coupled financial fields).
-  if (
-    existingJob &&
-    (updates.expectedUpdatedAt || (updates.checkConflict && updates.updatedAt)) &&
-    !isMediaOrProformaOnlyUpdate &&
-    !(updates.isShopPaid === true && !existingJob.isShopPaid)
-  ) {
-    const checkTime = updates.expectedUpdatedAt || updates.updatedAt;
-    const incomingTime = new Date(checkTime).getTime();
-    const dbTime = new Date(existingJob.updatedAt).getTime();
-    if (!isNaN(incomingTime) && dbTime > incomingTime + 1) {
-      const incomingConflictFields = new Set<string>(Object.keys(changes));
-      if (
-        incomingConflictFields.has('legsJson') &&
-        (updates.pickupRiderId !== undefined ||
-          updates.deliveryRiderId !== undefined ||
-          updates.pickupScheduledAt !== undefined ||
-          updates.deliveryScheduledAt !== undefined)
-      ) {
-        incomingConflictFields.delete('legsJson');
-      }
-      incomingConflictFields.delete('proformaRevision');
-      incomingConflictFields.delete('proformaNumber');
-      incomingConflictFields.delete('proformaCartHash');
-      if (!isUnlockingPayment && !updates.checkConflict) {
-        // adminNotesJson and billImageUrl are already additively merged above without data loss
-        incomingConflictFields.delete('adminNotesJson');
-        incomingConflictFields.delete('billImageUrl');
-      }
+    // Field-level Optimistic Concurrency Control (OCC):
+    if (
+      (updates.expectedUpdatedAt || (updates.checkConflict && updates.updatedAt)) &&
+      !isMediaOrProformaOnlyUpdate &&
+      !(updates.isShopPaid === true && !freshJob.isShopPaid)
+    ) {
+      const checkTime = updates.expectedUpdatedAt || updates.updatedAt;
+      const incomingTime = new Date(checkTime).getTime();
+      const dbTime = new Date(freshJob.updatedAt).getTime();
+      if (!isNaN(incomingTime) && dbTime > incomingTime + 1) {
+        const incomingConflictFields = new Set<string>(Object.keys(changes));
+        if (
+          incomingConflictFields.has('legsJson') &&
+          (updates.pickupRiderId !== undefined ||
+            updates.deliveryRiderId !== undefined ||
+            updates.pickupScheduledAt !== undefined ||
+            updates.deliveryScheduledAt !== undefined)
+        ) {
+          incomingConflictFields.delete('legsJson');
+        }
+        incomingConflictFields.delete('proformaRevision');
+        incomingConflictFields.delete('proformaNumber');
+        incomingConflictFields.delete('proformaCartHash');
+        if (!isUnlockingPayment && !updates.checkConflict) {
+          incomingConflictFields.delete('adminNotesJson');
+          incomingConflictFields.delete('billImageUrl');
+        }
 
-      if (incomingConflictFields.size > 0) {
-        const recentLogs = await prisma.activityLog.findMany({
-          where: {
+        if (incomingConflictFields.size > 0) {
+          const recentLogs = await tx.activityLog.findMany({
+            where: {
+              entityId: id,
+              entityType: 'job',
+              action: 'update',
+              createdAt: { gt: new Date(incomingTime) },
+            },
+            orderBy: { createdAt: 'asc' },
+          });
+
+          if (recentLogs.length === 0) {
+            if (updates.checkConflict) {
+              throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
+            }
+          } else {
+            const interveningFields = new Set<string>();
+            for (const log of recentLogs) {
+              if (!log.details) continue;
+              try {
+                const parsed = JSON.parse(log.details);
+                for (const k of Object.keys(parsed)) {
+                  if (!['pickupRiderName', 'deliveryRiderName', 'riderName'].includes(k)) {
+                    interveningFields.add(k);
+                  }
+                }
+              } catch {}
+            }
+
+            const financialGroup = ['itemsJson', 'fee', 'discount', 'discountPercent', 'totalAmount'];
+            if (financialGroup.some((f) => interveningFields.has(f))) {
+              financialGroup.forEach((f) => interveningFields.add(f));
+            }
+
+            const conflictingFields = Array.from(incomingConflictFields).filter((f) => interveningFields.has(f));
+            if (conflictingFields.length > 0) {
+              const fieldLabels: Record<string, string> = {
+                status: 'สถานะงาน (Status)',
+                subStatus: 'ขั้นตอนซัก (Process Stage)',
+                pickupRiderId: 'ไรเดอร์รับผ้า (Pickup Rider)',
+                deliveryRiderId: 'ไรเดอร์ส่งผ้า (Delivery Rider)',
+                pickupScheduledAt: 'เวลานัดรับ (Pickup Time)',
+                deliveryScheduledAt: 'เวลานัดส่ง (Delivery Time)',
+                itemsJson: 'รายการสินค้า (Order Items)',
+                totalAmount: 'ยอดรวม (Total Amount)',
+                fee: 'ค่าส่ง (Delivery Fee)',
+                discount: 'ส่วนลด (Discount)',
+                billNo: 'เลขที่บิล (Bill No.)',
+                isPaid: 'สถานะชำระเงิน CSO',
+                isShopPaid: 'สถานะชำระเงินหน้าร้าน',
+                paymentChannel: 'ช่องทางชำระเงิน',
+                customerName: 'ชื่อลูกค้า',
+                customerPhone: 'เบอร์โทรลูกค้า',
+                pickupLocation: 'สถานที่รับผ้า',
+                dropoffLocation: 'สถานที่ส่งผ้า',
+                remark: 'หมายเหตุ',
+              };
+              const readable = conflictingFields.map((f) => fieldLabels[f] || f).join(', ');
+              throw new Error(
+                `409 Conflict: ข้อมูลช่อง [${readable}] ถูกอัปเดตโดยผู้ใช้อื่นไปแล้ว ระบบได้โหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกดบันทึกอีกครั้ง`
+              );
+            }
+          }
+        }
+      }
+    }
+
+    data.updatedAt = new Date(Math.max(Date.now(), new Date(freshJob.updatedAt).getTime() + 2));
+
+    const saved = await tx.job.update({
+      where: { id },
+      data,
+    });
+
+    if (Object.keys(changes).length > 0) {
+      try {
+        const riderKeys = ['pickupRiderId', 'deliveryRiderId', 'riderId'];
+        const rawRiderIds = riderKeys.map(k => changes[k]).filter(Boolean);
+        if (rawRiderIds.length > 0) {
+          try {
+            const foundRiders = await tx.rider.findMany({
+              where: { id: { in: rawRiderIds } },
+              select: { id: true, name: true, nickname: true }
+            });
+            const rMap = new Map(foundRiders.map(r => [r.id, r.nickname ? `${r.name} (${r.nickname})` : r.name]));
+            if (changes.pickupRiderId) changes.pickupRiderName = rMap.get(changes.pickupRiderId) || changes.pickupRiderId;
+            if (changes.deliveryRiderId) changes.deliveryRiderName = rMap.get(changes.deliveryRiderId) || changes.deliveryRiderId;
+            if (changes.riderId) changes.riderName = rMap.get(changes.riderId) || changes.riderId;
+          } catch {}
+        }
+
+        await tx.activityLog.create({
+          data: {
             entityId: id,
             entityType: 'job',
             action: 'update',
-            createdAt: { gt: new Date(incomingTime) },
-          },
-          orderBy: { createdAt: 'asc' },
-        });
-
-        if (recentLogs.length === 0) {
-          if (updates.checkConflict) {
-            throw new Error("409 Conflict: This record was modified by another user. Please refresh and try again.");
-          }
-        } else {
-          const interveningFields = new Set<string>();
-          for (const log of recentLogs) {
-            if (!log.details) continue;
-            try {
-              const parsed = JSON.parse(log.details);
-              for (const k of Object.keys(parsed)) {
-                if (!['pickupRiderName', 'deliveryRiderName', 'riderName'].includes(k)) {
-                  interveningFields.add(k);
-                }
-              }
-            } catch {}
-          }
-
-          const financialGroup = ['itemsJson', 'fee', 'discount', 'discountPercent', 'totalAmount'];
-          if (financialGroup.some((f) => interveningFields.has(f))) {
-            financialGroup.forEach((f) => interveningFields.add(f));
-          }
-
-          const conflictingFields = Array.from(incomingConflictFields).filter((f) => interveningFields.has(f));
-          if (conflictingFields.length > 0) {
-            const fieldLabels: Record<string, string> = {
-              status: 'สถานะงาน (Status)',
-              subStatus: 'ขั้นตอนซัก (Process Stage)',
-              pickupRiderId: 'ไรเดอร์รับผ้า (Pickup Rider)',
-              deliveryRiderId: 'ไรเดอร์ส่งผ้า (Delivery Rider)',
-              pickupScheduledAt: 'เวลานัดรับ (Pickup Time)',
-              deliveryScheduledAt: 'เวลานัดส่ง (Delivery Time)',
-              itemsJson: 'รายการสินค้า (Order Items)',
-              totalAmount: 'ยอดรวม (Total Amount)',
-              fee: 'ค่าส่ง (Delivery Fee)',
-              discount: 'ส่วนลด (Discount)',
-              billNo: 'เลขที่บิล (Bill No.)',
-              isPaid: 'สถานะชำระเงิน CSO',
-              isShopPaid: 'สถานะชำระเงินหน้าร้าน',
-              paymentChannel: 'ช่องทางชำระเงิน',
-              customerName: 'ชื่อลูกค้า',
-              customerPhone: 'เบอร์โทรลูกค้า',
-              pickupLocation: 'สถานที่รับผ้า',
-              dropoffLocation: 'สถานที่ส่งผ้า',
-              remark: 'หมายเหตุ',
-            };
-            const readable = conflictingFields.map((f) => fieldLabels[f] || f).join(', ');
-            throw new Error(
-              `409 Conflict: ข้อมูลช่อง [${readable}] ถูกอัปเดตโดยผู้ใช้อื่นไปแล้ว ระบบได้โหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกดบันทึกอีกครั้ง`
-            );
-          }
-        }
-      }
-    }
-  }
-
-  if (existingJob) {
-    data.updatedAt = new Date(Math.max(Date.now(), new Date(existingJob.updatedAt).getTime() + 2));
-  }
-
-  const updatedJob = await prisma.job.update({
-    where: { id },
-    data,
-  });
-
-  if (Object.keys(changes).length > 0) {
-    try {
-      // Enrich rider names directly into the log details so no search/lookup is needed later
-      const riderKeys = ['pickupRiderId', 'deliveryRiderId', 'riderId'];
-      const rawRiderIds = riderKeys.map(k => changes[k]).filter(Boolean);
-      if (rawRiderIds.length > 0) {
-        try {
-          const foundRiders = await prisma.rider.findMany({
-            where: { id: { in: rawRiderIds } },
-            select: { id: true, name: true, nickname: true }
-          });
-          const rMap = new Map(foundRiders.map(r => [r.id, r.nickname ? `${r.name} (${r.nickname})` : r.name]));
-          if (changes.pickupRiderId) changes.pickupRiderName = rMap.get(changes.pickupRiderId) || changes.pickupRiderId;
-          if (changes.deliveryRiderId) changes.deliveryRiderName = rMap.get(changes.deliveryRiderId) || changes.deliveryRiderId;
-          if (changes.riderId) changes.riderName = rMap.get(changes.riderId) || changes.riderId;
-        } catch (rErr: any) {
-          console.error("Failed to enrich rider names for activity log:", rErr.message);
-        }
-      }
-
-      await prisma.activityLog.create({
-        data: {
-          entityId: id,
-          entityType: 'job',
-          action: 'update',
-          details: JSON.stringify(changes),
-          userId: updates.actorId || null,
-          userName: updates.actorName || null,
-          createdAt: updatedJob.updatedAt,
-        }
-      });
-      console.log(`[ActivityLog] Updated job ${id}:`, JSON.stringify(changes));
-    } catch (err: any) {
-      console.error("Failed to write ActivityLog on update:", err.message);
-    }
-  }
-
-  // Sync commissions based on payment eligibility (CSO Paid & SHOP Paid)
-  await syncRiderCommissionsForJob(id);
-
-  // If job is cancelled, restore any CustomerVoucher that was marked USED
-  if (updates.status === 'cancel') {
-    try {
-      const promoMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
-      const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
-      await prisma.customerVoucher.updateMany({
-        where: {
-          OR: [
-            { usedJobId: id, status: "USED" },
-            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: id }, { usedJobId: null }] }] : []),
-          ],
-        },
-        data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
-      });
-      console.log(`[CustomerVoucher] Restored voucher to ACTIVE on cancel for job ${id}`);
-
-      // VOID unspent reward vouchers that were issued because of this cancelled job
-      const voidedRewardVouchers = await prisma.customerVoucher.updateMany({
-        where: {
-          sourceJobId: id,
-          status: "ACTIVE",
-        },
-        data: {
-          status: "VOID",
-        },
-      });
-      if (voidedRewardVouchers.count > 0) {
-        console.log(`[CustomerVoucher] Voided ${voidedRewardVouchers.count} unused reward voucher(s) issued from cancelled job ${id}`);
-        await prisma.activityLog.create({
-          data: {
-            entityId: existingJob?.customerId || id,
-            entityType: "customer",
-            action: "COUPON_VOID_ON_CANCEL",
-            details: JSON.stringify({
-              sourceJobId: id,
-              voidedCount: voidedRewardVouchers.count,
-              reason: `Job ${id} was cancelled`,
-            }),
+            details: JSON.stringify(changes),
             userId: updates.actorId || null,
             userName: updates.actorName || null,
-          },
-        });
-      }
-    } catch (err) {
-      console.warn("[CustomerVoucher] Void/restore on cancel failed:", err);
-    }
-  } else if (updates.remark !== undefined) {
-    // If job is NOT cancelled and remark was updated, sync CustomerVoucher status (restore removed voucher or redeem new voucher)
-    try {
-      const oldMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
-      const oldCode = oldMatch ? oldMatch[1].trim().toUpperCase() : null;
-      const newMatch = updatedJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
-      const newCode = newMatch ? newMatch[1].trim().toUpperCase() : null;
-      const parsedPromoDiscount = newMatch ? parseFloat(newMatch[2] || newMatch[3] || "0") : 0;
-
-      if (oldCode && oldCode !== newCode) {
-        await prisma.customerVoucher.updateMany({
-          where: {
-            OR: [
-              { usedJobId: id, status: "USED" },
-              { code: { equals: oldCode, mode: "insensitive" }, usedJobId: id, status: "USED" },
-            ],
-          },
-          data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
-        });
-        console.log(`[CustomerVoucher] Restored removed voucher ${oldCode} to ACTIVE on job update ${id}`);
-      }
-
-      if (newCode) {
-        const localCoupon = await prisma.customerVoucher.findFirst({
-          where: { code: { equals: newCode, mode: "insensitive" } },
-        });
-        if (localCoupon && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
-          const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
-          const wasActive = localCoupon.status === "ACTIVE";
-          const claimRes = await prisma.customerVoucher.updateMany({
-            where: {
-              id: localCoupon.id,
-              OR: [{ status: "ACTIVE" }, { status: "USED", usedJobId: id }],
-            },
-            data: {
-              status: "USED",
-              usedAt: localCoupon.usedAt || new Date(),
-              usedJobId: id,
-              discountAmountUsed: usedDiscount,
-            },
-          });
-          if (wasActive && claimRes.count > 0) {
-            await prisma.activityLog.create({
-              data: {
-                entityId: localCoupon.customerId,
-                entityType: "customer",
-                action: "COUPON_USED",
-                details: JSON.stringify({
-                  couponId: localCoupon.id,
-                  code: localCoupon.code,
-                  usedJobId: id,
-                  discountAmountUsed: usedDiscount,
-                }),
-                userId: updates.actorId || null,
-                userName: updates.actorName || null,
-              },
-            });
+            createdAt: saved.updatedAt,
           }
-        }
+        });
+      } catch (logErr: any) {
+        console.warn("[updateJobActionInternal] Failed to create activityLog in tx:", logErr?.message || logErr);
       }
-    } catch (err) {
-      console.warn("[updateJobAction] Promo voucher sync failed:", err);
     }
-  }
 
-  // Evaluate promotion coupon issuance when job is confirmed shop paid:
-  // 1) Job just transitioned to isShopPaid === true, OR
-  // 2) Job is shop paid and items were updated/added
-  let issuedCoupons: any[] = [];
-  const justBecameShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
-  const alreadyShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid === true;
-  if ((justBecameShopPaid || (alreadyShopPaid && updates.items !== undefined)) && updatedJob.customerId) {
-    try {
-      const promoEval = await evaluateAndIssuePromotionCouponsAction({
-        jobId: id,
-        customerId: updatedJob.customerId,
-        actor: { id: updates.actorId, name: updates.actorName },
-      });
-      if (promoEval.couponsIssued?.length) {
-        issuedCoupons = promoEval.couponsIssued;
-      }
-    } catch (err) {
-      console.warn("[updateJobAction] Promo coupon evaluation failed:", err);
-    }
-  }
-
-  await publishOrderEvent({
-    type: 'job.updated',
-    job: updatedJob,
-    action: 'update',
-    changedFields: Object.keys(changes),
-    actorId: updates.actorId,
-    actorName: updates.actorName,
+    return { updatedJob: saved, effectiveChanges: changes };
   });
-  return { ...updatedJob, issuedCoupons };
+
+  // 2. SAFE POST-COMMIT FOLLOW-UP TASKS:
+  // These tasks execute after PostgreSQL transaction has safely committed.
+  // Any errors here are logged as follow-up warnings and do NOT report "Save Failed" to staff.
+  const followUpWarnings: string[] = [];
+
+  try {
+    await syncRiderCommissionsForJob(id);
+  } catch (commErr: any) {
+    console.warn(`[updateJobAction] syncRiderCommissionsForJob failed for ${id}:`, commErr?.message || commErr);
+    followUpWarnings.push("syncRiderCommissions");
+  }
+
+  try {
+    // If job is cancelled, restore any CustomerVoucher that was marked USED
+  if (updates.status === 'cancel') {
+    try {
+      const promoMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+      const pCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
+      await prisma.customerVoucher.updateMany({
+        where: {
+          OR: [
+            { usedJobId: id, status: "USED" },
+            ...(pCode ? [{ code: { equals: pCode, mode: "insensitive" as const }, status: "USED", OR: [{ usedJobId: id }, { usedJobId: null }] }] : []),
+          ],
+        },
+        data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
+      });
+      console.log(`[CustomerVoucher] Restored voucher to ACTIVE on cancel for job ${id}`);
+
+      // VOID unspent reward vouchers that were issued because of this cancelled job
+      const voidedRewardVouchers = await prisma.customerVoucher.updateMany({
+        where: {
+          sourceJobId: id,
+          status: "ACTIVE",
+        },
+        data: {
+          status: "VOID",
+        },
+      });
+      if (voidedRewardVouchers.count > 0) {
+        console.log(`[CustomerVoucher] Voided ${voidedRewardVouchers.count} unused reward voucher(s) issued from cancelled job ${id}`);
+        await prisma.activityLog.create({
+          data: {
+            entityId: existingJob?.customerId || id,
+            entityType: "customer",
+            action: "COUPON_VOID_ON_CANCEL",
+            details: JSON.stringify({
+              sourceJobId: id,
+              voidedCount: voidedRewardVouchers.count,
+              reason: `Job ${id} was cancelled`,
+            }),
+            userId: updates.actorId || null,
+            userName: updates.actorName || null,
+          },
+        });
+      }
+    } catch (err) {
+      console.warn("[CustomerVoucher] Void/restore on cancel failed:", err);
+    }
+  } else if (updates.remark !== undefined) {
+    // If job is NOT cancelled and remark was updated, sync CustomerVoucher status (restore removed voucher or redeem new voucher)
+    try {
+      const oldMatch = existingJob?.remark?.match(/Promo:\s*([^\s(|]+)/i);
+      const oldCode = oldMatch ? oldMatch[1].trim().toUpperCase() : null;
+      const newMatch = updatedJob.remark?.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
+      const newCode = newMatch ? newMatch[1].trim().toUpperCase() : null;
+      const parsedPromoDiscount = newMatch ? parseFloat(newMatch[2] || newMatch[3] || "0") : 0;
+
+      if (oldCode && oldCode !== newCode) {
+        await prisma.customerVoucher.updateMany({
+          where: {
+            OR: [
+              { usedJobId: id, status: "USED" },
+              { code: { equals: oldCode, mode: "insensitive" }, usedJobId: id, status: "USED" },
+            ],
+          },
+          data: { status: "ACTIVE", usedAt: null, usedJobId: null, discountAmountUsed: null },
+        });
+        console.log(`[CustomerVoucher] Restored removed voucher ${oldCode} to ACTIVE on job update ${id}`);
+      }
+
+      if (newCode) {
+        const localCoupon = await prisma.customerVoucher.findFirst({
+          where: { code: { equals: newCode, mode: "insensitive" } },
+        });
+        if (localCoupon && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
+          const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
+          const wasActive = localCoupon.status === "ACTIVE";
+          const claimRes = await prisma.customerVoucher.updateMany({
+            where: {
+              id: localCoupon.id,
+              OR: [{ status: "ACTIVE" }, { status: "USED", usedJobId: id }],
+            },
+            data: {
+              status: "USED",
+              usedAt: localCoupon.usedAt || new Date(),
+              usedJobId: id,
+              discountAmountUsed: usedDiscount,
+            },
+          });
+          if (wasActive && claimRes.count > 0) {
+            await prisma.activityLog.create({
+              data: {
+                entityId: localCoupon.customerId,
+                entityType: "customer",
+                action: "COUPON_USED",
+                details: JSON.stringify({
+                  couponId: localCoupon.id,
+                  code: localCoupon.code,
+                  usedJobId: id,
+                  discountAmountUsed: usedDiscount,
+                }),
+                userId: updates.actorId || null,
+                userName: updates.actorName || null,
+              },
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[updateJobAction] Promo voucher sync failed:", err);
+    }
+  }
+  } catch (vErr: any) {
+    console.warn("[updateJobAction] Promo voucher sync failed:", vErr?.message || vErr);
+    followUpWarnings.push("voucherSync");
+  }
+
+  let issuedCoupons: any[] = [];
+  try {
+    // Evaluate promotion coupon issuance when job is confirmed shop paid:
+  // 1) Job just transitioned to isShopPaid === true, OR
+  // 2) Job is shop paid and items were updated/added
+  let issuedCoupons: any[] = [];
+  const justBecameShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
+  const alreadyShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid === true;
+  if ((justBecameShopPaid || (alreadyShopPaid && updates.items !== undefined)) && updatedJob.customerId) {
+    try {
+      const promoEval = await evaluateAndIssuePromotionCouponsAction({
+        jobId: id,
+        customerId: updatedJob.customerId,
+        actor: { id: updates.actorId, name: updates.actorName },
+      });
+      if (promoEval.couponsIssued?.length) {
+        issuedCoupons = promoEval.couponsIssued;
+      }
+    } catch (err) {
+      console.warn("[updateJobAction] Promo coupon evaluation failed:", err);
+    }
+  }
+  } catch (pErr: any) {
+    console.warn("[updateJobAction] Promo coupon evaluation failed:", pErr?.message || pErr);
+    followUpWarnings.push("promoEvaluation");
+  }
+
+  try {
+    await publishOrderEvent({
+      type: 'job.updated',
+      job: updatedJob,
+      action: 'update',
+      changedFields: Object.keys(effectiveChanges),
+      actorId: updates.actorId,
+      actorName: updates.actorName,
+    });
+  } catch (rtErr: any) {
+    console.warn("[updateJobAction] publishOrderEvent failed:", rtErr?.message || rtErr);
+    followUpWarnings.push("realtimePublish");
+  }
+
+  return { ...updatedJob, issuedCoupons, followUpWarnings };
 }
 
 // SERVICES
@@ -4572,7 +4644,7 @@ export async function processRefundAndCorrectAction(data: {
     }
 
     // Check actor permission from authoritative server session or verified actorId in DB
-    const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser(data.actorId);
+    const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser();
     if (explicitCredentialsProvided && !sessionActor) {
       throw new Error("Unauthorized: ไม่พบข้อมูลผู้ใช้งานในระบบ หรือเซสชันหมดอายุ");
     }
@@ -5078,7 +5150,7 @@ export async function unlockPaidJobAction(data: {
       // Check permission: Admin, Superadmin, and Accounting have unlimited unlock access.
       // CSO can only unlock jobs whose payment was recorded today or yesterday.
       // Derive actor role & permissions from server session or DB record (do not trust spoofed actorRole).
-      const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser(data.actorId);
+      const { user: sessionActor, explicitCredentialsProvided } = await resolveServerActionUser();
       if (explicitCredentialsProvided && !sessionActor) {
         throw new Error("Unauthorized: ไม่พบข้อมูลผู้ใช้งานในระบบ หรือเซสชันหมดอายุ");
       }

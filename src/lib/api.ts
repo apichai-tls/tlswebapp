@@ -825,94 +825,117 @@ export const api = {
 
     inFlightDeltaPromise = (async () => {
       try {
-        const effectiveSince =
+        let currentSince =
           sinceMs ?? (lastServerSyncMs > 0 ? Math.max(0, lastServerSyncMs - 3000) : Date.now() - 60_000);
-        const res = await fetch(`/api/jobs/delta?since=${encodeURIComponent(String(effectiveSince))}`, {
-          headers: getClientAuthHeaders(),
-        });
-        if (!res.ok) return { jobsUpdated: 0, customersUpdated: 0 };
+        let totalJobsUpdated = 0;
+        let totalCustomersUpdated = 0;
+        let hasMore = true;
+        let pageCount = 0;
+        let highestServerTime = lastServerSyncMs;
 
-        const data = await res.json();
-        let jobsUpdated = 0;
-        let customersUpdated = 0;
+        // Multi-page delta recovery loop: Fetch every page until hasMore is false before advancing sync checkpoint
+        while (hasMore && pageCount < 20) {
+          pageCount++;
+          const res = await fetch(`/api/jobs/delta?since=${encodeURIComponent(String(currentSince))}&limit=250`, {
+            headers: getClientAuthHeaders(),
+          });
+          if (!res.ok) break;
 
-        if (Array.isArray(data.jobs) && data.jobs.length > 0 && memoryDb) {
-          const nextJobs = [...memoryDb.jobs];
-          const indexById = new Map<string, number>();
-          nextJobs.forEach((j, idx) => indexById.set(j.id, idx));
+          const data = await res.json();
+          let pageJobsUpdated = 0;
+          let pageCustomersUpdated = 0;
 
-          for (const rawJob of data.jobs) {
-            const incomingRev = rawJob.updatedAt ? new Date(rawJob.updatedAt).getTime() : Date.now();
-            const prevRev = lastSeenJobRevision.get(rawJob.id) || 0;
-            const existingIdx = indexById.get(rawJob.id);
-            const existingJob = existingIdx !== undefined ? nextJobs[existingIdx] : undefined;
-
-            const isPaymentAdvance =
-              Boolean(existingJob && isJobShopSettled(rawJob) && !isJobShopSettled(existingJob));
-            const hasDirtyEdits = (pendingFieldEdits.get(rawJob.id)?.size || 0) > 0;
-
-            if (((pendingJobSaves.get(rawJob.id) || 0) > 0 || hasDirtyEdits) && !isPaymentAdvance) {
-              continue;
-            }
-            if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance) {
-              continue;
+          // 1. Order merging strictly by record ID (Map-based, preserving existing order)
+          if (Array.isArray(data.jobs) && data.jobs.length > 0 && memoryDb) {
+            const jobMap = new Map<string, Job>();
+            for (const j of memoryDb.jobs) {
+              jobMap.set(j.id, j);
             }
 
-            if (incomingRev > prevRev) lastSeenJobRevision.set(rawJob.id, incomingRev);
-            const normalized = normalizeServerJob(rawJob, existingJob);
-            if (!(normalized as any)._saveStatus) {
-              (normalized as any)._saveStatus = 'saved';
+            for (const rawJob of data.jobs) {
+              const incomingRev = rawJob.updatedAt ? new Date(rawJob.updatedAt).getTime() : Date.now();
+              const prevRev = lastSeenJobRevision.get(rawJob.id) || 0;
+              const existingJob = jobMap.get(rawJob.id);
+
+              const isPaymentAdvance =
+                Boolean(existingJob && isJobShopSettled(rawJob) && !isJobShopSettled(existingJob));
+              const hasDirtyEdits = (pendingFieldEdits.get(rawJob.id)?.size || 0) > 0;
+
+              if (((pendingJobSaves.get(rawJob.id) || 0) > 0 || hasDirtyEdits) && !isPaymentAdvance) {
+                continue;
+              }
+              if (prevRev > 0 && incomingRev < prevRev && !isPaymentAdvance) {
+                continue;
+              }
+
+              if (incomingRev > prevRev) lastSeenJobRevision.set(rawJob.id, incomingRev);
+              const normalized = normalizeServerJob(rawJob, existingJob);
+              if (!(normalized as any)._saveStatus) {
+                (normalized as any)._saveStatus = 'saved';
+              }
+
+              jobMap.set(normalized.id, normalized);
+              pageJobsUpdated++;
             }
 
-            if (existingIdx !== undefined) {
-              nextJobs[existingIdx] = normalized;
-            } else {
-              nextJobs.unshift(normalized);
-              indexById.set(normalized.id, 0);
+            if (pageJobsUpdated > 0) {
+              memoryDb.jobs = Array.from(jobMap.values());
+              totalJobsUpdated += pageJobsUpdated;
             }
-            jobsUpdated++;
           }
 
-          if (jobsUpdated > 0) {
-            memoryDb.jobs = nextJobs;
+          // 2. Customer merging strictly by record ID
+          if (Array.isArray(data.customers) && data.customers.length > 0 && memoryDb) {
+            const parsedCustomers = JSON.parse(JSON.stringify(data.customers), dateReviver) as Customer[];
+            const custMap = new Map<string, Customer>();
+            for (const c of memoryDb.customers) {
+              custMap.set(c.id, c);
+            }
+
+            for (const sc of parsedCustomers) {
+              const existing = custMap.get(sc.id);
+              if (existing) {
+                custMap.set(sc.id, { ...existing, ...sc });
+              } else {
+                custMap.set(sc.id, sc);
+              }
+              pageCustomersUpdated++;
+            }
+
+            if (pageCustomersUpdated > 0) {
+              memoryDb.customers = Array.from(custMap.values());
+              totalCustomersUpdated += pageCustomersUpdated;
+            }
+          }
+
+          if (typeof data.serverTime === 'number' && data.serverTime > highestServerTime) {
+            highestServerTime = data.serverTime;
+          }
+
+          if (typeof data.maxRevision === 'number' && data.maxRevision > currentSince) {
+            currentSince = data.maxRevision;
+          }
+
+          if (data.openShifts && onOpenShiftsSyncCallback) {
+            onOpenShiftsSyncCallback(data.openShifts);
+          }
+
+          hasMore = Boolean(data.hasMore);
+          if ((!data.jobs || data.jobs.length === 0) && (!data.customers || data.customers.length === 0)) {
+            hasMore = false;
           }
         }
 
-        if (Array.isArray(data.customers) && data.customers.length > 0 && memoryDb) {
-          const parsedCustomers = JSON.parse(JSON.stringify(data.customers), dateReviver) as Customer[];
-          const nextCustomers = [...memoryDb.customers];
-          const custIndexById = new Map<string, number>();
-          nextCustomers.forEach((c, idx) => custIndexById.set(c.id, idx));
-
-          for (const sc of parsedCustomers) {
-            const idx = custIndexById.get(sc.id);
-            if (idx !== undefined) {
-              nextCustomers[idx] = { ...nextCustomers[idx], ...sc };
-            } else {
-              nextCustomers.unshift(sc);
-              custIndexById.set(sc.id, 0);
-            }
-            customersUpdated++;
-          }
-
-          if (customersUpdated > 0) {
-            memoryDb.customers = nextCustomers;
-          }
-        }
-
-        if (typeof data.serverTime === 'number' && data.serverTime > lastServerSyncMs) {
-          lastServerSyncMs = data.serverTime;
+        // Only advance sync checkpoint after all pages are completely reconciled
+        if (highestServerTime > lastServerSyncMs) {
+          lastServerSyncMs = highestServerTime;
         }
         realtimeState.lastSyncAt = Date.now();
 
-        if (data.openShifts && onOpenShiftsSyncCallback) {
-          onOpenShiftsSyncCallback(data.openShifts);
-        }
+        if (totalJobsUpdated > 0) api.notify('jobs');
+        if (totalCustomersUpdated > 0) api.notify('customers');
 
-        if (jobsUpdated > 0) api.notify('jobs');
-        if (customersUpdated > 0) api.notify('customers');
-
-        return { jobsUpdated, customersUpdated };
+        return { jobsUpdated: totalJobsUpdated, customersUpdated: totalCustomersUpdated };
       } catch (err) {
         console.error('[api.reconcileDelta] Error:', err);
         return { jobsUpdated: 0, customersUpdated: 0 };
