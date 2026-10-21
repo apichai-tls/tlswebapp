@@ -1236,6 +1236,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     if (!loadedJobId) return false;
     const j = jobs.find(job => job.id === loadedJobId);
     if (!j) return false;
+    if (j.isShopPaid || (j.source === 'pos' && j.isPaid)) return true;
+    if (!j) return false;
     if (j.adminNotesJson && j.adminNotesJson.includes('"payments"')) {
       try {
         const parsed = JSON.parse(j.adminNotesJson);
@@ -2232,6 +2234,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   }, [subtotal, expressSurcharge, totalDiscount, vatType, vatRate, manualAdjustment]);
 
   const handleApplyPromo = async (codeOverride?: unknown) => {
+    if (isPaidJob) return;
     const targetCode = typeof codeOverride === "string" ? codeOverride : promoCodeInput;
     const code = targetCode.trim().toUpperCase();
     if (!code) return;
@@ -2352,7 +2355,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
   // Auto-apply best eligible voucher when enabled
   useEffect(() => {
-    if (!autoApplyVoucher) return;
+    if (!autoApplyVoucher || isPaidJob) return;
     if (appliedPromo || promoLoading || userDismissedPromo) return;
     if (!selectedCustomer?.id || availableCoupons.length === 0 || cart.length === 0) return;
 
@@ -2363,6 +2366,9 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     let highestDiscount = 0;
 
     for (const coupon of availableCoupons) {
+      if (loadedJobId && coupon.sourceJobId && coupon.sourceJobId === loadedJobId) {
+        continue;
+      }
       // 1. Check brand match
       if (coupon.brand && selectedCustomer?.brand && coupon.brand !== selectedCustomer.brand) {
         continue;
@@ -2408,6 +2414,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
   }, [
     autoApplyVoucher,
+    isPaidJob,
+    loadedJobId,
     appliedPromo,
     promoLoading,
     userDismissedPromo,

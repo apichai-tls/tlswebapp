@@ -278,7 +278,8 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
         return { user: dbUser, explicitCredentialsProvided: true };
       }
     }
-    return { user: null, explicitCredentialsProvided: true };
+    // If sessionToken signature changed (e.g. after a secret env update on Cloud Run),
+    // fall through to check headerUserId / ?userId / tls_user_id before failing closed.
   }
 
   const headerUserId =
@@ -289,6 +290,10 @@ export async function resolveRequestUser(request?: Request | null): Promise<{
   if (headerUserId) {
     const dbUser = await lookupAuthoritativeUser(headerUserId.trim());
     return { user: dbUser, explicitCredentialsProvided: true };
+  }
+
+  if (sessionToken) {
+    return { user: null, explicitCredentialsProvided: true };
   }
 
   return { user: null, explicitCredentialsProvided: false };
@@ -303,6 +308,7 @@ export async function resolveServerActionUser(fallbackActorId?: string | null): 
   user: ServerAuthUser | null;
   explicitCredentialsProvided: boolean;
 }> {
+  let hadUnverifiedSessionToken = false;
   try {
     const { cookies, headers } = await import('next/headers');
     const cookieStore = await cookies();
@@ -317,9 +323,11 @@ export async function resolveServerActionUser(fallbackActorId?: string | null): 
       const verified = verifyStaffSessionToken(sessionToken);
       if (verified?.id) {
         const dbUser = await lookupAuthoritativeUser(verified.id);
-        return { user: dbUser, explicitCredentialsProvided: true };
+        if (dbUser) {
+          return { user: dbUser, explicitCredentialsProvided: true };
+        }
       }
-      return { user: null, explicitCredentialsProvided: true };
+      hadUnverifiedSessionToken = true;
     }
 
     const headerUserId =
@@ -337,6 +345,10 @@ export async function resolveServerActionUser(fallbackActorId?: string | null): 
   if (fallbackActorId && String(fallbackActorId).trim() !== '' && fallbackActorId !== 'system') {
     const dbUser = await lookupAuthoritativeUser(String(fallbackActorId).trim());
     return { user: dbUser, explicitCredentialsProvided: true };
+  }
+
+  if (hadUnverifiedSessionToken) {
+    return { user: null, explicitCredentialsProvided: true };
   }
 
   return { user: null, explicitCredentialsProvided: false };

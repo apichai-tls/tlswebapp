@@ -482,6 +482,13 @@ function startFallbackPolling() {
     }
     try {
       await api.reconcileDelta();
+      if (
+        !eventSourceInstance ||
+        eventSourceInstance.readyState === EventSource.CLOSED ||
+        consecutiveFallbackPolls % 3 === 0
+      ) {
+        startRealtimeConnection(true);
+      }
     } catch {
       if (navigator.onLine === false) {
         setConnectionStatus('disconnected');

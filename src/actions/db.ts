@@ -2155,7 +2155,33 @@ async function updateJobActionInternal(id: string, updates: any) {
     if (shouldPreserveExisting(updates.remark, existingJob?.remark)) {
       console.log(`[Prevent Overwrite] Preserved existing remark '${existingJob?.remark}' on Job ${id} from being erased by empty string.`);
     } else {
-      data.remark = updates.remark;
+      if (isPaidLockedJob && existingJob) {
+        const oldPromoMatch = existingJob.remark?.match(/Promo:\s*([^\s(|]+)/i);
+        const newPromoMatch = updates.remark?.match(/Promo:\s*([^\s(|]+)/i);
+        const oldPromoCode = oldPromoMatch ? oldPromoMatch[1].trim().toUpperCase() : null;
+        const newPromoCode = newPromoMatch ? newPromoMatch[1].trim().toUpperCase() : null;
+        if (newPromoCode && newPromoCode !== oldPromoCode) {
+          console.warn(`[Financial Guard] Blocked retroactive Promo '${newPromoCode}' on already-paid job ${id}`);
+          const hadDiscountOn = Boolean(existingJob.remark?.includes("Discount: on"));
+          const cleanedParts = String(updates.remark)
+            .split("|")
+            .map((p: string) => p.trim())
+            .filter((p: string) => {
+              if (/^Promo:/i.test(p)) return false;
+              if (!hadDiscountOn && /^Discount:\s*on$/i.test(p)) return false;
+              return Boolean(p);
+            });
+          if (oldPromoMatch && existingJob.remark) {
+            const origPromoPart = existingJob.remark.split("|").map((p: string) => p.trim()).find((p: string) => /^Promo:/i.test(p));
+            if (origPromoPart) cleanedParts.push(origPromoPart);
+          }
+          data.remark = cleanedParts.join(" | ") || null;
+        } else {
+          data.remark = updates.remark;
+        }
+      } else {
+        data.remark = updates.remark;
+      }
     }
   }
   if (updates.adminNotesJson !== undefined) {
@@ -2429,7 +2455,7 @@ async function updateJobActionInternal(id: string, updates: any) {
         const localCoupon = await prisma.customerVoucher.findFirst({
           where: { code: { equals: newCode, mode: "insensitive" } },
         });
-        if (localCoupon && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
+        if (localCoupon && (!isPaidLockedJob || newCode === oldCode) && localCoupon.sourceJobId !== id && (localCoupon.status === "ACTIVE" || (localCoupon.status === "USED" && localCoupon.usedJobId === id))) {
           const usedDiscount = parsedPromoDiscount > 0 ? parsedPromoDiscount : localCoupon.discountValue;
           const wasActive = localCoupon.status === "ACTIVE";
           const claimRes = await prisma.customerVoucher.updateMany({

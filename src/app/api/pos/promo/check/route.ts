@@ -26,6 +26,24 @@ export async function POST(req: NextRequest) {
 
     if (localCoupon) {
       const now = new Date();
+      if (currentJobId && localCoupon.sourceJobId && localCoupon.sourceJobId === String(currentJobId)) {
+        return NextResponse.json({
+          valid: false,
+          error: `วอยเชอร์นี้ได้รับจากบิลนี้ (#${currentJobId}) จึงสามารถใช้ได้ในบิลถัดไปเท่านั้น`,
+        }, { status: 200 });
+      }
+      if (currentJobId && localCoupon.usedJobId !== String(currentJobId)) {
+        const targetJob = await prisma.job.findUnique({
+          where: { id: String(currentJobId) },
+          select: { isPaid: true, isShopPaid: true, source: true },
+        });
+        if (targetJob && (targetJob.isShopPaid || (targetJob.source === "pos" && targetJob.isPaid))) {
+          return NextResponse.json({
+            valid: false,
+            error: "บิลนี้ชำระเงินเรียบร้อยแล้ว ไม่สามารถใช้โค้ดส่วนลดย้อนหลังได้",
+          }, { status: 200 });
+        }
+      }
       if (localCoupon.status === "USED" && (!currentJobId || localCoupon.usedJobId !== currentJobId)) {
         return NextResponse.json({
           valid: false,

@@ -28,6 +28,16 @@ export async function POST(req: NextRequest) {
 
         const usedDiscount = discountAmount != null ? Math.max(0, Number(discountAmount)) : localCoupon.discountValue;
         const targetJobId = receiptNo ? String(receiptNo) : null;
+        if (targetJobId && localCoupon.sourceJobId && localCoupon.sourceJobId === targetJobId) {
+          return NextResponse.json(
+            {
+              success: false,
+              isCustomerCoupon: true,
+              error: "ไม่สามารถใช้วอยเชอร์กับบิลที่เป็นต้นทางแจกวอยเชอร์ใบนี้ได้",
+            },
+            { status: 400 }
+          );
+        }
 
         const claimRes = await prisma.customerVoucher.updateMany({
           where: {

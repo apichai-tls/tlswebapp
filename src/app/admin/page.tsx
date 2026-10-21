@@ -1691,6 +1691,7 @@ export default function AdminPage() {
   // which forward to the production server with the server-side API key (TLS_PROMO_API_KEY env var)
 
   const handleApplyPromo = async (codeOverride?: unknown) => {
+    if (isPaidJob) return;
     const targetCode = typeof codeOverride === "string" ? codeOverride : promoCodeInput;
     const code = targetCode.trim().toUpperCase();
     if (!code) return;
@@ -1808,7 +1809,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     const isAutoApply = systemSettings?.posAutoApplyVoucher === "true";
-    if (!isAutoApply) return;
+    if (!isAutoApply || isPaidJob) return;
     if (appliedPromo || promoLoading || userDismissedPromo) return;
     if (!selectedProfileCustomer?.id || dialogAvailableCoupons.length === 0 || dialogCart.length === 0) return;
 
@@ -1821,6 +1822,10 @@ export default function AdminPage() {
     let highestDiscount = 0;
 
     for (const coupon of dialogAvailableCoupons) {
+      // Never auto-apply a reward coupon onto the exact same job that issued it
+      if (editingJobId && coupon.sourceJobId && coupon.sourceJobId === editingJobId) {
+        continue;
+      }
       // 1. Check brand match
       if (coupon.brand && selectedProfileCustomer.brand && coupon.brand !== selectedProfileCustomer.brand) {
         continue;
@@ -1867,6 +1872,8 @@ export default function AdminPage() {
     }
   }, [
     systemSettings?.posAutoApplyVoucher,
+    isPaidJob,
+    editingJobId,
     appliedPromo,
     promoLoading,
     userDismissedPromo,
