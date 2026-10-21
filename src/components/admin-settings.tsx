@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
@@ -72,6 +72,33 @@ export function AdminSettings() {
 
   const [vatTypeInput, setVatTypeInput] = useState("none");
   const [vatRateInput, setVatRateInput] = useState("7");
+  const [sessionTimeoutInput, setSessionTimeoutInput] = useState("20");
+
+  const handleSaveSessionTimeout = async (valStr?: string) => {
+    const raw = (valStr !== undefined ? valStr : sessionTimeoutInput).trim();
+    const num = Number(raw);
+    if (raw === "" || isNaN(num) || num < 0) {
+      toast.error("กรุณาระบุจำนวนนาทีที่ถูกต้อง (0 = ปิดใช้งาน)");
+      return;
+    }
+    const cleanVal = String(Math.floor(num));
+    setSessionTimeoutInput(cleanVal);
+    try {
+      await settingsStore.updateSetting("sessionTimeoutMinutes", cleanVal);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("tls_session_timeout_mins", cleanVal);
+      }
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success(
+        cleanVal === "0"
+          ? "ปิดระบบตัด Session อัตโนมัติเรียบร้อยแล้ว"
+          : `ตั้งเวลา Idle Session Timeout เป็น ${cleanVal} นาที เรียบร้อยแล้ว`
+      );
+    } catch (err) {
+      toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
 
   const handleSaveVatSetting = async (key: string, value: string) => {
     try {
@@ -195,6 +222,7 @@ export function AdminSettings() {
       setCurrentLanguage(systemSettings.language || "th");
       setVatTypeInput(systemSettings.vatType || "none");
       setVatRateInput(systemSettings.vatRate || "7");
+      setSessionTimeoutInput(systemSettings.sessionTimeoutMinutes ?? "20");
 
       // Cash drawer settings
       setCashDrawerAutoOpenOnPay(systemSettings.cashDrawerAutoOpenOnPay !== "false");
@@ -1123,6 +1151,79 @@ export function AdminSettings() {
                   />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">%</span>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Security & Session Timeout Settings */}
+      <div className="space-y-4 pt-8 border-t border-slate-100">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-amber-100 text-amber-600 rounded-xl">
+            <Clock size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">Security &amp; Session Timeout (ตั้งค่าเวลาตัดออกจากระบบอัตโนมัติ)</h3>
+            <p className="text-xs text-slate-500 font-medium">
+              กำหนดเวลาเมื่อเปิดหน้าจอทิ้งไว้โดยไม่มีการเคลื่อนไหว (Idle Timeout) และระบบบังคับ Login ใหม่อัตโนมัติเมื่อมีการ Deploy เวอร์ชันใหม่
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+          <div className="max-w-2xl space-y-5">
+            <div className="space-y-2">
+              <Label className="font-semibold text-slate-700">
+                Idle Session Timeout (นาที) <span className="text-xs font-normal text-slate-400">— ใส่ 0 หากต้องการปิดการตัดออกจากระบบอัตโนมัติ</span>
+              </Label>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative w-40">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={sessionTimeoutInput}
+                    onChange={(e) => setSessionTimeoutInput(e.target.value)}
+                    placeholder="20"
+                    className="font-bold pr-14 h-10 border-slate-200 shadow-sm"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 font-bold">นาที</span>
+                </div>
+                <Button
+                  type="button"
+                  onClick={() => handleSaveSessionTimeout()}
+                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs h-10 px-4 rounded-xl shadow-sm"
+                >
+                  บันทึกเวลา (Save)
+                </Button>
+                <div className="flex items-center gap-1.5">
+                  {["15", "20", "30", "60", "0"].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => handleSaveSessionTimeout(preset)}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                        sessionTimeoutInput === preset
+                          ? "bg-amber-50 border-amber-300 text-amber-800"
+                          : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                      }`}
+                    >
+                      {preset === "0" ? "ปิด (Off)" : `${preset}m`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-xs text-slate-500">
+                หากผู้ใช้ไม่มีการขยับเมาส์ คลิก หรือพิมพ์งานติดต่อกันครบตามเวลาที่กำหนด ระบบจะตัดออกจากระบบและพากลับไปหน้า Login ทันที (ค่าเริ่มต้น: 20 นาที)
+              </p>
+            </div>
+
+            <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600">
+              <ShieldCheck size={18} className="text-emerald-600 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-slate-800">Force Re-login on New Deploy (ทำงานอัตโนมัติ): </span>
+                เมื่อมีการอัปเดตหรือ Deploy ระบบเวอร์ชันใหม่ขึ้นเซิร์ฟเวอร์ ระบบจะตรวจจับหมายเลข Build ใหม่และบังคับให้ผู้ใช้งานทุกคนออกไปยังหน้า Login เพื่อให้ใช้งานโค้ดและข้อมูลเวอร์ชันล่าสุดเสมอ
               </div>
             </div>
           </div>

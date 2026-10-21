@@ -200,7 +200,7 @@ function isJobShopSettled(j?: { isShopPaid?: boolean; isPaid?: boolean; source?:
 
 // Helper to normalize a server or Prisma job record into client Job structure
 function normalizeServerJob(raw: any, existing?: Job): Job {
-  const parsed = JSON.parse(JSON.stringify(raw), dateReviver);
+  const parsed = raw?.createdAt instanceof Date ? raw : JSON.parse(JSON.stringify(raw), dateReviver);
   const pickupCoords =
     parsed.pickupCoords ||
     (parsed.pickupLat !== undefined && parsed.pickupLng !== undefined
@@ -633,8 +633,18 @@ export function startRealtimeConnection(forceReconnect = false) {
 
 // Start loading the DB and real-time stream immediately if we're on the client
 if (typeof window !== 'undefined') {
-  ensureDbLoaded();
-  startRealtimeConnection();
+  setTimeout(() => {
+    const path = window.location.pathname;
+    if (path === '/' || path.startsWith('/login')) return;
+    if (!getClientAuthUser()) return;
+    ensureDbLoaded();
+  }, 0);
+  setTimeout(() => {
+    const path = window.location.pathname;
+    if (path === '/' || path.startsWith('/login')) return;
+    if (!getClientAuthUser()) return;
+    startRealtimeConnection(false);
+  }, 0);
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {

@@ -29,8 +29,8 @@ export function ProtectedRoute({
   useEffect(() => {
     if (!isLoading) {
       if (!user) {
-        // Redirect to login and save the attempted URL
-        router.push(`/login?redirect=${encodeURIComponent(pathname)}`);
+        // Redirect to login and save the attempted URL using full navigation
+        window.location.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
       } else {
         // Check if running in a native platform (BILL APK context)
         import("@capacitor/core")
@@ -42,12 +42,12 @@ export function ProtectedRoute({
               }
             } else if (allowedRole && !isRoleAllowed(user.role)) {
               // Role mismatch, send them to their proper dashboard
-              router.push(user.role === "rider" ? "/rider" : "/admin");
+              window.location.replace(user.role === "rider" ? "/rider" : "/admin");
             }
           })
           .catch(() => {
             if (allowedRole && !isRoleAllowed(user.role)) {
-              router.push(user.role === "rider" ? "/rider" : "/admin");
+              window.location.replace(user.role === "rider" ? "/rider" : "/admin");
             }
           });
       }

@@ -8,7 +8,7 @@ import { ProtectedRoute } from "@/components/protected-route";
 import { useJobs } from "@/lib/use-jobs";
 import { useCustomers } from "@/lib/use-customers";
 import { jobStore, customerStore, calculateFee, shopStore, serviceStore, priceListStore, poiStore, settingsStore, walletApprovalStore, realtimeStore, getClosestShopIndex, type Job, type JobStatus, type LatLng, type ServiceType, type ServiceItem, type AdminNoteLog, type Customer, type CustomerCoupon, type WalletTransactionItem, shiftStore } from "@/lib/store";
-import { refreshDb, api } from "@/lib/api";
+import { refreshDb, ensureDbLoaded, startRealtimeConnection, api } from "@/lib/api";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { useSyncExternalStore } from "react";
 import { FullMap, CreateJobMap } from "@/components/map-loader";
@@ -212,6 +212,14 @@ const rowVariant = {
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 export default function AdminPage() {
+  return (
+    <ProtectedRoute allowedRole="non-rider">
+      <AdminPageContent />
+    </ProtectedRoute>
+  );
+}
+
+function AdminPageContent() {
   const { user, logout } = useAuth();
   const jobs = useJobs();
   const riders = useRiders();
@@ -227,7 +235,8 @@ export default function AdminPage() {
   // Re-bind SSE stream when authenticated user identity changes
   useEffect(() => {
     if (user?.id) {
-      realtimeStore.reconnect();
+      ensureDbLoaded();
+      startRealtimeConnection(false);
     }
   }, [user?.id]);
 
@@ -355,7 +364,7 @@ export default function AdminPage() {
             if (data?.buildTime && clientBuildTime && data.buildTime !== clientBuildTime) {
               setIsVersionOutdated(true);
               if (!dialogOpenRef.current && !isSubmittingRef.current) {
-                window.location.reload();
+                Promise.resolve(logout()).finally(() => { window.location.replace('/login?reason=new_deploy'); });
               }
             }
           })
@@ -4121,7 +4130,7 @@ export default function AdminPage() {
   }, []);
 
   return (
-    <ProtectedRoute allowedRole="non-rider">
+    <>
       <AnimatePresence mode="wait">
         <motion.div
         className="flex min-h-screen"
@@ -4767,7 +4776,7 @@ export default function AdminPage() {
               </div>
               <button 
                 type="button"
-                onClick={() => window.location.reload()}
+                onClick={() => { Promise.resolve(logout()).finally(() => { window.location.replace('/login?reason=new_deploy'); }); }}
                 className="bg-slate-900 text-white px-3 py-1 rounded text-xs font-bold hover:bg-slate-800 transition shrink-0 cursor-pointer"
               >
                 รีเฟรชเดี๋ยวนี้ (Refresh)
@@ -4943,7 +4952,7 @@ export default function AdminPage() {
                         </div>
                         <button 
                           type="button"
-                          onClick={() => window.location.reload()}
+                          onClick={() => { Promise.resolve(logout()).finally(() => { window.location.replace('/login?reason=new_deploy'); }); }}
                           className="bg-slate-900 text-white px-2.5 py-1 rounded text-[11px] font-bold hover:bg-slate-800 transition shrink-0 cursor-pointer"
                         >
                           รีเฟรชหน้าจอเดี๋ยวนี้ (Refresh)
@@ -8621,6 +8630,6 @@ export default function AdminPage() {
 
       {/* Silent Background Auto-Receipt Worker */}
       <AutoReceiptWorker />
-    </ProtectedRoute>
+    </>
   );
 }

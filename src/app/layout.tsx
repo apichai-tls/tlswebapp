@@ -10,6 +10,8 @@ const inter = Inter({
   subsets: ["latin"],
 });
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "That Laundry Shop — Rider Management",
   description: "Rider Management System for That Laundry Shop",

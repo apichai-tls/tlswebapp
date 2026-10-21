@@ -8,7 +8,7 @@ import { Logo } from "@/components/logo";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
+import { Mail, Lock, ArrowRight, Loader2, Clock, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 function LoginForm() {
@@ -29,6 +29,7 @@ function LoginForm() {
   const { login } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const logoutReason = searchParams.get("reason");
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +83,26 @@ function LoginForm() {
 
   return (
     <form onSubmit={handleLogin} className="space-y-6">
+      {logoutReason === "timeout" && (
+        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium">
+          <Clock size={18} className="text-amber-600 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-bold text-amber-950">เซสชันหมดอายุ (Session Timed Out)</p>
+            <p className="text-amber-800">ไม่มีการเคลื่อนไหวเกินเวลาที่กำหนด กรุณาเข้าสู่ระบบใหม่อีกครั้ง</p>
+          </div>
+        </div>
+      )}
+
+      {logoutReason === "new_deploy" && (
+        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-medium">
+          <Sparkles size={18} className="text-indigo-600 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-bold text-indigo-950">อัปเดตระบบเวอร์ชันใหม่ (System Updated)</p>
+            <p className="text-indigo-800">ระบบมีการอัปเดตเวอร์ชันใหม่ กรุณาเข้าสู่ระบบใหม่อีกครั้งเพื่อใช้งานเวอร์ชันล่าสุด</p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-2">
         <Label htmlFor="email" className="text-xs font-semibold uppercase tracking-wider text-slate-500">
           Email Address
