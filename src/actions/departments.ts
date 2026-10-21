@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { assertServerActionAuthorized } from "@/lib/server-auth";
 
 export interface DepartmentItem {
   id: string;
@@ -60,12 +61,13 @@ function safeRevalidatePath(path: string) {
 
 export async function getDepartments(includeInactive = false) {
   try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+
     let list = await prisma.department.findMany({
       where: includeInactive ? undefined : { isActive: true },
       orderBy: [{ order: "asc" }, { createdAt: "asc" }],
     });
 
-    // Auto-seed default 4 departments if none exist in DB
     if (list.length === 0) {
       for (const def of DEFAULT_DEPARTMENTS) {
         await prisma.department.upsert({
@@ -88,7 +90,6 @@ export async function getDepartments(includeInactive = false) {
       });
     }
 
-    // Count active users in each department
     const users = await prisma.adminUser.findMany({
       where: { isActive: true },
       select: { department: true },
@@ -108,7 +109,7 @@ export async function getDepartments(includeInactive = false) {
     return { success: true, data: enriched };
   } catch (error: any) {
     console.error("Failed to fetch departments:", error);
-    return { success: false, error: "Failed to load departments" };
+    return { success: false, error: error?.message || "Failed to load departments" };
   }
 }
 
@@ -121,6 +122,8 @@ export async function createDepartment(data: {
   order?: number;
 }) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const rawName = data.name.trim();
     if (!rawName) return { success: false, error: "Department name is required" };
 
@@ -170,6 +173,8 @@ export async function updateDepartment(
   }
 ) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const existing = await prisma.department.findUnique({ where: { id } });
     if (!existing) return { success: false, error: "Department not found" };
 
@@ -195,10 +200,11 @@ export async function updateDepartment(
 
 export async function deleteDepartment(id: string) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const existing = await prisma.department.findUnique({ where: { id } });
     if (!existing) return { success: false, error: "Department not found" };
 
-    // Check if any users belong to this department
     const userCount = await prisma.adminUser.count({
       where: { department: existing.key },
     });

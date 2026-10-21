@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveRequestUser } from "@/lib/server-auth";
+import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
 const ALLOWED_MAP_HOSTS = new Set([
   "maps.app.goo.gl",
@@ -24,7 +26,6 @@ function isPrivateOrForbiddenHost(hostname: string): boolean {
   ) {
     return true;
   }
-  // Block raw IPv4 addresses (including 127.0.0.1, 169.254.169.254, 10.x, 172.16-31.x, 192.168.x, etc.)
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(lower)) {
     return true;
   }
@@ -63,6 +64,21 @@ function validateMapConvertUrl(rawUrl: string): {
 }
 
 export async function GET(request: NextRequest) {
+  const { user } = await resolveRequestUser(request);
+  if (user && !user.isActive) {
+    return NextResponse.json({ error: "Forbidden: Account is deactivated" }, { status: 403 });
+  }
+  const authHeader = request.headers.get("authorization");
+  const hasApiKeyHeader = Boolean(request.headers.get("x-api-key") || request.headers.get("X-API-KEY"));
+  const isExternalAuthorized =
+    !user &&
+    ((hasApiKeyHeader && verifyServiceApiKey(request)) ||
+      (authHeader ? Boolean(verifyCustomerToken(authHeader)) : false));
+
+  if (!user && !isExternalAuthorized) {
+    return NextResponse.json({ error: "Unauthorized: Valid session required" }, { status: 401 });
+  }
+
   const url = request.nextUrl.searchParams.get("url");
 
   if (!url) {
@@ -78,16 +94,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Upgrade to https when fetching from Google Maps domains
     const fetchTarget = new URL(validation.parsed.toString());
     fetchTarget.protocol = "https:";
 
-    // Perform a fetch with manual redirect handling
     const res = await fetch(fetchTarget.toString(), { redirect: "manual" });
 
     let finalUrl = fetchTarget.toString();
 
-    // Google Maps shortlinks usually return 301, 302, or 303
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
       if (location) {
@@ -106,7 +119,6 @@ export async function GET(request: NextRequest) {
     let lat = null;
     let lng = null;
 
-    // Parse the final URL for coordinates
     const pMatch = finalUrl.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
     const aMatch = finalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
 

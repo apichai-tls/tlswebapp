@@ -1,12 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveRequestUser, buildJobAuthWhereClause } from "@/lib/server-auth";
 
 export async function GET(req: NextRequest) {
+  const { user } = await resolveRequestUser(req);
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized: Valid staff session required" }, { status: 401 });
+  }
+  if (!user.isActive) {
+    return NextResponse.json({ error: "Forbidden: Account is deactivated" }, { status: 403 });
+  }
+
   const { searchParams } = new URL(req.url);
   const start = searchParams.get("start");
   const end = searchParams.get("end");
-  const riderId = searchParams.get("riderId");
-  
+  const requestedRiderId = searchParams.get("riderId");
+  const role = (user.role || "").toLowerCase();
+
+  // Riders can only query their own historical jobs
+  if (role === "rider" && requestedRiderId && requestedRiderId !== user.id) {
+    return NextResponse.json({ error: "Forbidden: Riders can only view their own job history" }, { status: 403 });
+  }
+  const riderId = role === "rider" ? user.id : requestedRiderId;
+
   if (!start || !end) {
     return NextResponse.json({ error: "Missing start or end date" }, { status: 400 });
   }
@@ -24,24 +40,28 @@ export async function GET(req: NextRequest) {
       ],
     };
 
-    const whereClause: any = riderId
-      ? {
-          AND: [
-            dateRangeCondition,
-            {
-              OR: [
-                { pickupRiderId: riderId },
-                { deliveryRiderId: riderId },
-                { riderId: riderId },
-              ],
-            },
-          ],
-        }
-      : dateRangeCondition;
+    const andConditions: any[] = [dateRangeCondition];
+
+    if (riderId) {
+      andConditions.push({
+        OR: [
+          { pickupRiderId: riderId },
+          { deliveryRiderId: riderId },
+          { riderId: riderId },
+        ],
+      });
+    }
+
+    const authWhere = buildJobAuthWhereClause(user);
+    if (authWhere) {
+      andConditions.push(authWhere);
+    }
+
+    const whereClause: any = andConditions.length === 1 ? andConditions[0] : { AND: andConditions };
 
     const jobs = await prisma.job.findMany({
       where: whereClause,
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { updatedAt: "desc" },
       select: {
         id: true,
         type: true,
@@ -83,7 +103,7 @@ export async function GET(req: NextRequest) {
         remark: true,
         itemsJson: true,
         legsJson: true,
-        adminNotesJson: true,
+        adminNotesJson: role === "rider" ? false : true,
         bagImageUrl: true,
         billImageUrl: true,
         pickupProofImageUrl: true,
@@ -105,18 +125,18 @@ export async function GET(req: NextRequest) {
         refundId: true,
         refundedFromId: true,
         walletBalanceAfter: true,
-      }
+      },
     });
-    // Map Raw DB data back to the format expected by the frontend (consistent with /api/db)
-    const mappedJobs = jobs.map(j => ({
+
+    const mappedJobs = jobs.map((j) => ({
       ...j,
-      laundryTypes: j.laundryTypes ? j.laundryTypes.split(',') : [],
+      laundryTypes: j.laundryTypes ? j.laundryTypes.split(",") : [],
       items: j.itemsJson ? JSON.parse(j.itemsJson) : [],
       legs: j.legsJson ? JSON.parse(j.legsJson) : undefined,
       pickupCoords: { lat: j.pickupLat, lng: j.pickupLng },
       dropoffCoords: { lat: j.dropoffLat, lng: j.dropoffLng },
     }));
-    
+
     return NextResponse.json(mappedJobs);
   } catch (error) {
     console.error("Failed to fetch historical jobs:", error);

@@ -1,9 +1,28 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { resolveRequestUser } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 
 const SETTING_KEY = 'marketing_calendar_events';
+
+async function authorizeMarketingEventsRequest(req: Request, requireWrite = false) {
+  const { user } = await resolveRequestUser(req);
+  if (!user) {
+    return { error: 'Unauthorized: Valid staff session required', status: 401 };
+  }
+  if (!user.isActive) {
+    return { error: 'Forbidden: Account is deactivated', status: 403 };
+  }
+  const role = (user.role || '').toLowerCase();
+  if (role === 'rider') {
+    return { error: 'Forbidden: Riders do not have access to marketing events', status: 403 };
+  }
+  if (requireWrite && role === 'spectator') {
+    return { error: 'Forbidden: Spectator role has read-only access', status: 403 };
+  }
+  return { user, status: 200 };
+}
 
 function getDefaultEvents() {
   const now = new Date();
@@ -133,6 +152,11 @@ function getDefaultEvents() {
 
 // GET all marketing events
 export async function GET(req: Request) {
+  const auth = await authorizeMarketingEventsRequest(req, false);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const { searchParams } = new URL(req.url);
     const forceReset = searchParams.get('reset') === 'true';
@@ -145,7 +169,6 @@ export async function GET(req: Request) {
     }
 
     if (forceReset || !setting || !setting.value) {
-      // Seed default events if empty or reset requested
       const defaultEvents = getDefaultEvents();
       await prisma.setting.upsert({
         where: { key: SETTING_KEY },
@@ -159,7 +182,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ success: true, events });
   } catch (error: any) {
     console.error('Error fetching marketing events:', error);
-    // Fallback to default events in case DB is unreachable
     return NextResponse.json({
       success: true,
       events: getDefaultEvents(),
@@ -170,6 +192,11 @@ export async function GET(req: Request) {
 
 // POST create a new event
 export async function POST(req: Request) {
+  const auth = await authorizeMarketingEventsRequest(req, true);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const body = await req.json();
     const { event } = body;
@@ -227,6 +254,11 @@ export async function POST(req: Request) {
 
 // PUT update an event (or reorder/batch)
 export async function PUT(req: Request) {
+  const auth = await authorizeMarketingEventsRequest(req, true);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const body = await req.json();
     const { event, events: updatedAllEvents } = body;
@@ -295,6 +327,11 @@ export async function PUT(req: Request) {
 
 // DELETE an event
 export async function DELETE(req: Request) {
+  const auth = await authorizeMarketingEventsRequest(req, true);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');

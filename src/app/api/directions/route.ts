@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveRequestUser } from "@/lib/server-auth";
+import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
-// Decoder function for Google's Encoded Polyline Algorithm Format
 function decodePolyline(str: string, precision = 5) {
   let index = 0,
       lat = 0,
@@ -43,16 +44,30 @@ function decodePolyline(str: string, precision = 5) {
 }
 
 export async function GET(request: NextRequest) {
+  const { user } = await resolveRequestUser(request);
+  if (user && !user.isActive) {
+    return NextResponse.json({ error: "Forbidden: Account is deactivated" }, { status: 403 });
+  }
+  const authHeader = request.headers.get("authorization");
+  const hasApiKeyHeader = Boolean(request.headers.get("x-api-key") || request.headers.get("X-API-KEY"));
+  const isExternalAuthorized =
+    !user &&
+    ((hasApiKeyHeader && verifyServiceApiKey(request)) ||
+      (authHeader ? Boolean(verifyCustomerToken(authHeader)) : false));
+
+  if (!user && !isExternalAuthorized) {
+    return NextResponse.json({ error: "Unauthorized: Valid session required" }, { status: 401 });
+  }
+
   const searchParams = request.nextUrl.searchParams;
   const origin = searchParams.get("origin");
   const destination = searchParams.get("destination");
-  const providedKey = searchParams.get("key");
 
   if (!origin || !destination) {
     return NextResponse.json({ error: "origin and destination are required" }, { status: 400 });
   }
 
-  let apiKey = providedKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  let apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
     try {
@@ -64,28 +79,26 @@ export async function GET(request: NextRequest) {
   }
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
-    return NextResponse.json({ 
-      error: "Google Maps API Key is missing. Please add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to your .env.local file.",
+    return NextResponse.json({
+      error: "Google Maps API Key is missing.",
     }, { status: 500 });
   }
 
   try {
-    // Call Google Directions API avoiding tolls, requesting alternatives, motorcycle mode, and real-time departure_time
-    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&avoid=tolls&alternatives=true&mode=two_wheeler&departure_time=now&region=th&key=${apiKey}`;
+    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&avoid=tolls&alternatives=true&mode=two_wheeler&departure_time=now&region=th&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();
 
     if (data.status !== "OK") {
       console.error("Google Directions API Error:", data.status, data.error_message);
-      return NextResponse.json({ error: "Google Directions API failed", details: data }, { status: 500 });
+      return NextResponse.json({ error: "Google Directions API failed", status: data.status }, { status: 500 });
     }
 
     if (!data.routes || data.routes.length === 0) {
       return NextResponse.json({ error: "No routes found" }, { status: 404 });
     }
 
-    // Find the route with the shortest physical distance
     let shortestRoute = data.routes[0];
     let minDistance = shortestRoute.legs?.[0]?.distance?.value || Infinity;
 
@@ -103,14 +116,12 @@ export async function GET(request: NextRequest) {
 
     const distanceMeters = minDistance;
     const distanceKm = Math.round((distanceMeters / 1000) * 10) / 10;
-    
-    // Decode the polyline so the frontend can just draw it easily
     const encodedPolyline = shortestRoute.overview_polyline.points;
     const coordinates = decodePolyline(encodedPolyline);
 
     return NextResponse.json({
       distanceKm,
-      coordinates
+      coordinates,
     });
   } catch (error) {
     console.error("Directions API proxy error:", error);

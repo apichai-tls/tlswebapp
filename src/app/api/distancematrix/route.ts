@@ -1,19 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveRequestUser } from "@/lib/server-auth";
+import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  const { user } = await resolveRequestUser(request);
+  if (user && !user.isActive) {
+    return NextResponse.json({ error: "Forbidden: Account is deactivated" }, { status: 403 });
+  }
+  const authHeader = request.headers.get("authorization");
+  const hasApiKeyHeader = Boolean(request.headers.get("x-api-key") || request.headers.get("X-API-KEY"));
+  const isExternalAuthorized =
+    !user &&
+    ((hasApiKeyHeader && verifyServiceApiKey(request)) ||
+      (authHeader ? Boolean(verifyCustomerToken(authHeader)) : false));
+
+  if (!user && !isExternalAuthorized) {
+    return NextResponse.json({ error: "Unauthorized: Valid session required" }, { status: 401 });
+  }
+
   const searchParams = request.nextUrl.searchParams;
   const origins = searchParams.get("origins");
   const destinations = searchParams.get("destinations");
-  const providedKey = searchParams.get("key");
 
   if (!origins || !destinations) {
     return NextResponse.json({ error: "origins and destinations are required" }, { status: 400 });
   }
 
-  let apiKey = providedKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  let apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
     try {
@@ -25,24 +41,22 @@ export async function GET(request: NextRequest) {
   }
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
-    return NextResponse.json({ 
-      error: "Google Maps API Key is missing. Please add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to your .env.local file.",
+    return NextResponse.json({
+      error: "Google Maps API Key is missing.",
     }, { status: 500 });
   }
 
   try {
-    // Call Google Distance Matrix API avoiding tolls, motorcycle mode, and real-time departure_time
-    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origins}&destinations=${destinations}&avoid=tolls&mode=two_wheeler&departure_time=now&region=th&key=${apiKey}`;
+    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(origins)}&destinations=${encodeURIComponent(destinations)}&avoid=tolls&mode=two_wheeler&departure_time=now&region=th&key=${apiKey}`;
 
     const res = await fetch(url);
     const data = await res.json();
 
     if (data.status !== "OK") {
       console.error("Google Distance Matrix API Error:", data.status, data.error_message);
-      return NextResponse.json({ error: "Google Distance Matrix API failed", details: data }, { status: 500 });
+      return NextResponse.json({ error: "Google Distance Matrix API failed", status: data.status }, { status: 500 });
     }
 
-    // Extract the distances
     const distancesKm: number[] = [];
     if (data.rows) {
       for (const row of data.rows) {
@@ -62,7 +76,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      distancesKm
+      distancesKm,
     });
   } catch (error) {
     console.error("Distance Matrix API proxy error:", error);

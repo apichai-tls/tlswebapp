@@ -6,7 +6,7 @@ import {
   ensurePgListenerStarted,
   type RealtimeOrderEvent,
 } from '@/lib/realtime-bus';
-import { resolveRequestUser, canUserAccessJob } from '@/lib/server-auth';
+import { resolveRequestUser, canUserAccessJob, canAccessCustomerRecords } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,10 +14,17 @@ export const runtime = 'nodejs';
 export async function GET(request: NextRequest) {
   const { user, explicitCredentialsProvided } = await resolveRequestUser(request);
 
-  if (explicitCredentialsProvided && (!user || !user.isActive)) {
+  if (!user) {
     return NextResponse.json(
-      { error: 'Unauthorized or inactive staff account' },
-      { status: user && !user.isActive ? 403 : 401 }
+      { error: explicitCredentialsProvided ? 'Unauthorized: Invalid or expired staff session' : 'Unauthorized: Valid server-verified staff session required' },
+      { status: 401 }
+    );
+  }
+
+  if (!user.isActive) {
+    return NextResponse.json(
+      { error: 'Forbidden: This account has been deactivated (Resigned)' },
+      { status: 403 }
     );
   }
 
@@ -60,16 +67,23 @@ export async function GET(request: NextRequest) {
         serverTime: Date.now(),
         instanceId: busStatus.instanceId,
         pgConnected: busStatus.pgConnected,
-        userId: user?.id || null,
-        role: user?.role || 'guest',
-        allowedBranches: user?.allowedBranchIds || 'ALL',
+        userId: user.id,
+        role: user.role,
+        allowedBranches: user.allowedBranchIds,
       });
+
+      const canReceiveEvent = (ev: RealtimeOrderEvent) => {
+        if (ev.type === 'customer.updated') {
+          return canAccessCustomerRecords(user, ev.branchId || null);
+        }
+        return canUserAccessJob(user, ev);
+      };
 
       // Replay any buffered events missed since `sinceMs` that the user is authorized to receive
       if (sinceMs > 0) {
         const missedEvents = getBufferedOrderEventsSince(sinceMs);
         for (const ev of missedEvents) {
-          if (ev.type === 'customer.updated' || canUserAccessJob(user, ev)) {
+          if (canReceiveEvent(ev)) {
             sendFrame('order-update', ev, String(ev.revision));
           }
         }
@@ -77,7 +91,7 @@ export async function GET(request: NextRequest) {
 
       const unsubscribe = subscribeToOrderEvents((ev: RealtimeOrderEvent) => {
         if (isClosed) return;
-        if (ev.type === 'customer.updated' || canUserAccessJob(user, ev)) {
+        if (canReceiveEvent(ev)) {
           sendFrame('order-update', ev, String(ev.revision));
         }
       });

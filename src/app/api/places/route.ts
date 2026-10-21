@@ -1,30 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveRequestUser } from "@/lib/server-auth";
+import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
 export async function GET(request: NextRequest) {
+  const { user } = await resolveRequestUser(request);
+  if (user && !user.isActive) {
+    return NextResponse.json({ error: "Forbidden: Account is deactivated" }, { status: 403 });
+  }
+  const authHeader = request.headers.get("authorization");
+  const hasApiKeyHeader = Boolean(request.headers.get("x-api-key") || request.headers.get("X-API-KEY"));
+  const isExternalAuthorized =
+    !user &&
+    ((hasApiKeyHeader && verifyServiceApiKey(request)) ||
+      (authHeader ? Boolean(verifyCustomerToken(authHeader)) : false));
+
+  if (!user && !isExternalAuthorized) {
+    return NextResponse.json({ error: "Unauthorized: Valid session required" }, { status: 401 });
+  }
+
   const searchParams = request.nextUrl.searchParams;
   const query = searchParams.get("query");
-  const providedKey = searchParams.get("key");
 
   if (!query) {
     return NextResponse.json({ error: "Query parameter is required" }, { status: 400 });
   }
 
-  const apiKey = providedKey || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
-    return NextResponse.json({ 
-      error: "Google Maps API Key is missing. Please add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to your .env.local file.",
-      results: [] // Return empty results to gracefully degrade
+    return NextResponse.json({
+      error: "Google Maps API Key is missing.",
+      results: [],
     }, { status: 500 });
   }
 
   try {
-    // Detect language: if query contains Thai characters, use 'th', otherwise use 'en'
     const hasThaiCharacters = /[ก-๙]/.test(query);
     const language = hasThaiCharacters ? "th" : "en";
 
-    // We use the Places Text Search API
-    // Add location=13.7563,100.5018 (Bangkok) and radius=100000 (100km) to override Cloud Run's Singapore IP bias
     const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(
       query
     )}&location=13.7563,100.5018&radius=100000&region=th&language=${language}&key=${apiKey}`;
@@ -34,10 +47,9 @@ export async function GET(request: NextRequest) {
 
     if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
       console.error("Google Places API Error:", data.status, data.error_message);
-      return NextResponse.json({ error: "Google Places API failed", details: data }, { status: 500 });
+      return NextResponse.json({ error: "Google Places API failed", status: data.status }, { status: 500 });
     }
 
-    // Format the response to match what the frontend expects
     const formattedResults = (data.results || []).map((item: any) => ({
       placeId: item.place_id,
       name: item.name || item.formatted_address,

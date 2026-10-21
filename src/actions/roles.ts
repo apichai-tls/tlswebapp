@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { assertServerActionAuthorized } from "@/lib/server-auth";
 
 export interface RoleItem {
   id: string;
@@ -68,12 +69,13 @@ function safeRevalidatePath(path: string) {
 
 export async function getRoles(includeInactive = false) {
   try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+
     let list = await prisma.roleDefinition.findMany({
       where: includeInactive ? undefined : { isActive: true },
       orderBy: [{ order: "asc" }, { createdAt: "asc" }],
     });
 
-    // Auto-seed default 5 roles if table is empty
     if (list.length === 0) {
       for (const def of DEFAULT_ROLES) {
         await prisma.roleDefinition.upsert({
@@ -96,7 +98,6 @@ export async function getRoles(includeInactive = false) {
       });
     }
 
-    // Count active users in each role
     const users = await prisma.adminUser.findMany({
       where: { isActive: true },
       select: { role: true },
@@ -116,7 +117,7 @@ export async function getRoles(includeInactive = false) {
     return { success: true, data: enriched };
   } catch (error: any) {
     console.error("Failed to fetch roles:", error);
-    return { success: false, error: "Failed to load roles" };
+    return { success: false, error: error?.message || "Failed to load roles" };
   }
 }
 
@@ -128,6 +129,8 @@ export async function createRole(data: {
   order?: number;
 }) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const rawName = data.name.trim();
     if (!rawName) return { success: false, error: "Role name is required" };
 
@@ -176,6 +179,8 @@ export async function updateRole(
   }
 ) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const existing = await prisma.roleDefinition.findUnique({ where: { id } });
     if (!existing) return { success: false, error: "Role not found" };
 
@@ -200,6 +205,8 @@ export async function updateRole(
 
 export async function deleteRole(id: string) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+
     const existing = await prisma.roleDefinition.findUnique({ where: { id } });
     if (!existing) return { success: false, error: "Role not found" };
 

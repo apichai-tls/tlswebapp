@@ -1,9 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveRequestUser } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
 const SETTING_KEY = "marketing_tracking_links";
+
+async function authorizeMarketingRequest(req: Request, requireWrite = false) {
+  const { user } = await resolveRequestUser(req);
+  if (!user) {
+    return { error: "Unauthorized: Valid staff session required", status: 401 };
+  }
+  if (!user.isActive) {
+    return { error: "Forbidden: Account is deactivated", status: 403 };
+  }
+  const role = (user.role || "").toLowerCase();
+  if (role === "rider") {
+    return { error: "Forbidden: Riders do not have access to marketing links", status: 403 };
+  }
+  if (requireWrite && role === "spectator") {
+    return { error: "Forbidden: Spectator role has read-only access", status: 403 };
+  }
+  return { user, status: 200 };
+}
 
 export interface ClickLog {
   id: string;
@@ -114,6 +133,11 @@ function getDefaultLinks(): TrackingLinkItem[] {
 
 // GET all tracking links
 export async function GET(req: NextRequest) {
+  const auth = await authorizeMarketingRequest(req, false);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const { searchParams } = new URL(req.url);
     const forceReset = searchParams.get("reset") === "true";
@@ -145,6 +169,11 @@ export async function GET(req: NextRequest) {
 
 // POST create a new tracking link
 export async function POST(req: NextRequest) {
+  const auth = await authorizeMarketingRequest(req, true);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const body = await req.json();
     const { link } = body;
@@ -156,7 +185,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Format slug
     let rawSlug = link.slug ? link.slug.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "") : "";
     if (!rawSlug) {
       rawSlug = Math.random().toString(36).substring(2, 8);
@@ -179,7 +207,6 @@ export async function POST(req: NextRequest) {
         currentLinks = getDefaultLinks();
       }
 
-      // Check slug uniqueness
       let finalSlug = rawSlug;
       if (currentLinks.some((l) => l.slug.toLowerCase() === finalSlug.toLowerCase())) {
         finalSlug = `${finalSlug}-${Math.random().toString(36).substring(2, 5)}`;
@@ -221,6 +248,11 @@ export async function POST(req: NextRequest) {
 
 // PUT update an existing link
 export async function PUT(req: NextRequest) {
+  const auth = await authorizeMarketingRequest(req, true);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const body = await req.json();
     const { link } = body;
@@ -251,7 +283,6 @@ export async function PUT(req: NextRequest) {
         return { status: 404, error: "Link not found" as const };
       }
 
-      // Check if slug changed and is duplicate
       if (link.slug && link.slug !== links[index].slug) {
         const cleanSlug = link.slug.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "");
         const isDup = links.some((l) => l.id !== link.id && l.slug.toLowerCase() === cleanSlug);
@@ -288,6 +319,11 @@ export async function PUT(req: NextRequest) {
 
 // DELETE a link
 export async function DELETE(req: NextRequest) {
+  const auth = await authorizeMarketingRequest(req, true);
+  if (auth.error) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");

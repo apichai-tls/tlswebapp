@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/crypto";
-import { signStaffSessionToken } from "@/lib/server-auth";
+import { signStaffSessionToken, invalidateServerAuthCache, revokeSessionToken, resolveRequestUser } from "@/lib/server-auth";
 
 export async function POST(req: NextRequest) {
   try {
     const { email, password } = await req.json();
 
-    if (!email) {
-      return NextResponse.json({ success: false, error: "Email is required" }, { status: 400 });
+    if (!email || !password) {
+      return NextResponse.json({ success: false, error: "Email and password are required" }, { status: 400 });
     }
 
     const targetEmail = email.toLowerCase().trim();
@@ -18,57 +18,11 @@ export async function POST(req: NextRequest) {
     });
 
     if (!user) {
-      // Support built-in Rider accounts on server side so riders get server-signed session & HttpOnly cookie
-      const riderAccounts: Record<string, { id: string; pass: string }> = {
-        "rider1@tls.com": { id: "RIDER-01", pass: process.env.RIDER_DEFAULT_PASSWORD || "rider1234" },
-        "rider2@tls.com": { id: "RIDER-02", pass: process.env.RIDER_DEFAULT_PASSWORD || "rider1234" },
-        "rider3@tls.com": { id: "RIDER-03", pass: process.env.RIDER_DEFAULT_PASSWORD || "rider1234" },
-        "rider4@tls.com": { id: "RIDER-04", pass: process.env.RIDER_DEFAULT_PASSWORD || "rider1234" },
-      };
-      const matchedRider = riderAccounts[targetEmail];
-      if (matchedRider && password === matchedRider.pass) {
-        const dbRider = await prisma.rider.findUnique({ where: { id: matchedRider.id } });
-        if (dbRider && dbRider.isActive === false) {
-          return NextResponse.json({ success: false, error: "This rider account has been deactivated" }, { status: 403 });
-        }
-        const sessionToken = signStaffSessionToken({
-          id: matchedRider.id,
-          email: targetEmail,
-          role: "rider",
-          branchId: dbRider?.branchId || null,
-          area: null,
-        });
-        const res = NextResponse.json({
-          success: true,
-          user: {
-            id: matchedRider.id,
-            email: targetEmail,
-            name: dbRider?.name || matchedRider.id,
-            role: "rider",
-            permissions: [],
-            branchId: dbRider?.branchId || null,
-            sessionToken,
-          },
-        });
-        res.cookies.set("tls_session", sessionToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
-          path: "/",
-          maxAge: 60 * 60 * 18,
-        });
-        return res;
-      }
-
       return NextResponse.json({ success: false, error: "Invalid email or password" }, { status: 401 });
     }
 
     if (user.isActive === false) {
       return NextResponse.json({ success: false, error: "This account has been deactivated (Resigned)" }, { status: 403 });
-    }
-
-    if (!password) {
-      return NextResponse.json({ success: false, error: "Invalid email or password" }, { status: 401 });
     }
 
     const { isValid, shouldRehash } = verifyPassword(password, user.password);
@@ -103,6 +57,8 @@ export async function POST(req: NextRequest) {
       area: user.area || null,
     });
 
+    invalidateServerAuthCache(user.id);
+
     const res = NextResponse.json({
       success: true,
       user: {
@@ -124,27 +80,41 @@ export async function POST(req: NextRequest) {
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
-      maxAge: 60 * 60 * 18, // 18 hours
+      maxAge: 60 * 60 * 18,
     });
 
     return res;
   } catch (error: any) {
-    console.error("Login API error:", error);
-    return NextResponse.json(
-      { success: false, error: error.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("API login error:", error);
+    return NextResponse.json({ success: false, error: error.message || "Internal server error" }, { status: 500 });
   }
 }
 
-export async function DELETE() {
-  const res = NextResponse.json({ success: true });
-  res.cookies.set("tls_session", "", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: 0,
-  });
-  return res;
+export async function DELETE(req: NextRequest) {
+  try {
+    const authHeader = req.headers.get("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+    const cookieToken = req.cookies.get("tls_session")?.value || null;
+    const token = bearerToken || cookieToken;
+
+    const { user } = await resolveRequestUser(req);
+    await revokeSessionToken(token, user?.id || null);
+
+    const res = NextResponse.json({ success: true });
+    res.cookies.set("tls_session", "", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+    });
+    res.cookies.set("tls_user_id", "", {
+      path: "/",
+      maxAge: 0,
+      sameSite: "lax",
+    });
+    return res;
+  } catch (error: any) {
+    return NextResponse.json({ success: false, error: error.message || "Failed to log out" }, { status: 500 });
+  }
 }

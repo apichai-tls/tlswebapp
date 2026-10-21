@@ -15,10 +15,17 @@ export async function GET(
     }
 
     const { user, explicitCredentialsProvided } = await resolveRequestUser(request);
-    if (explicitCredentialsProvided && (!user || !user.isActive)) {
+    if (!user) {
       return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: user && !user.isActive ? 403 : 401 }
+        { error: explicitCredentialsProvided ? 'Unauthorized: Invalid or expired staff session' : 'Unauthorized: Valid server-verified staff session required' },
+        { status: 401 }
+      );
+    }
+
+    if (!user.isActive) {
+      return NextResponse.json(
+        { error: 'Forbidden: This account has been deactivated (Resigned)' },
+        { status: 403 }
       );
     }
 
@@ -33,7 +40,7 @@ export async function GET(
 
     if (!canUserAccessJob(user, job)) {
       return NextResponse.json(
-        { error: 'Forbidden: insufficient branch or role permissions for this order' },
+        { error: 'Forbidden: Insufficient branch or role permissions for this order' },
         { status: 403 }
       );
     }

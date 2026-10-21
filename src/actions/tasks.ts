@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { format } from "date-fns";
+import { assertServerActionAuthorized, canUserAccessJob } from "@/lib/server-auth";
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export type TaskStatus = "todo" | "in_progress" | "stuck" | "done";
@@ -91,7 +92,7 @@ export interface TasksInitialData {
 }
 
 export async function getTasksInitialData(
-  viewer?: {
+  _viewer?: {
     id?: string;
     role?: string;
     isDepartmentHead?: boolean;
@@ -102,10 +103,11 @@ export async function getTasksInitialData(
   }
 ): Promise<{ success: boolean; data?: TasksInitialData; error?: string }> {
   try {
-    const isAdmin = viewer?.role === "admin";
-    const isDeptHead = viewer?.isDepartmentHead === true;
-    const dept = viewer?.department;
-    const viewerId = viewer?.id;
+    const viewer = await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const isAdmin = viewer.role === "admin" || viewer.role === "superadmin";
+    const isDeptHead = viewer.isDepartmentHead === true;
+    const dept = viewer.department;
+    const viewerId = viewer.id;
 
     const baseWhereClause: any = {};
     if (!isAdmin && viewerId) {
@@ -173,21 +175,22 @@ export async function getTasksInitialData(
     };
   } catch (error: any) {
     console.error("Failed to fetch initial tasks data:", error);
-    return { success: false, error: "Failed to load tasks data" };
+    return { success: false, error: (error as any)?.message || "Failed to load tasks data" };
   }
 }
 
-export async function getArchivedTasks(viewer?: {
+export async function getArchivedTasks(_viewer?: {
   id?: string;
   role?: string;
   isDepartmentHead?: boolean;
   department?: string | null;
 }) {
   try {
-    const isAdmin = viewer?.role === "admin";
-    const isDeptHead = viewer?.isDepartmentHead === true;
-    const dept = viewer?.department;
-    const viewerId = viewer?.id;
+    const viewer = await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const isAdmin = viewer.role === "admin" || viewer.role === "superadmin";
+    const isDeptHead = viewer.isDepartmentHead === true;
+    const dept = viewer.department;
+    const viewerId = viewer.id;
 
     const baseWhereClause: any = { isArchived: true };
     if (!isAdmin && viewerId) {
@@ -217,12 +220,12 @@ export async function getArchivedTasks(viewer?: {
     return { success: true, data: tasks as TaskItem[] };
   } catch (error: any) {
     console.error("Failed to fetch archived tasks:", error);
-    return { success: false, error: "Failed to load archived tasks" };
+    return { success: false, error: (error as any)?.message || "Failed to load archived tasks" };
   }
 }
 
 export async function getTasks(
-  viewer?: {
+  _viewer?: {
     id?: string;
     role?: string;
     isDepartmentHead?: boolean;
@@ -233,10 +236,11 @@ export async function getTasks(
   }
 ) {
   try {
-    const isAdmin = viewer?.role === "admin";
-    const isDeptHead = viewer?.isDepartmentHead === true;
-    const dept = viewer?.department;
-    const viewerId = viewer?.id;
+    const viewer = await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    const isAdmin = viewer.role === "admin" || viewer.role === "superadmin";
+    const isDeptHead = viewer.isDepartmentHead === true;
+    const dept = viewer.department;
+    const viewerId = viewer.id;
 
     const whereClause: any = {};
     if (options?.includeArchived === false) {
@@ -270,7 +274,7 @@ export async function getTasks(
     return { success: true, data: tasks as TaskItem[] };
   } catch (error: any) {
     console.error("Failed to fetch tasks:", error);
-    return { success: false, error: "Failed to load tasks" };
+    return { success: false, error: (error as any)?.message || "Failed to load tasks" };
   }
 }
 
@@ -325,6 +329,7 @@ async function generateNextTaskIdWithTx(tx: any = prisma): Promise<string> {
 }
 
 export async function generateNextTaskId(): Promise<string> {
+  await assertServerActionAuthorized({ forbidRoles: ["rider"] });
   return generateNextTaskIdWithTx(prisma);
 }
 
@@ -342,6 +347,12 @@ export async function createTask(data: {
   createdByName: string;
 }) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    data = {
+      ...data,
+      createdById: authUser.id,
+      createdByName: authUser.name || authUser.email || data.createdByName || "Staff",
+    };
     const cleanAssigneeId = data.assignedToId && data.assignedToId.trim() !== "" ? data.assignedToId.trim() : null;
     const cleanAssigneeName = cleanAssigneeId ? (data.assignedToName?.trim() || null) : null;
     const effectiveDueDate = data.dueDate ? new Date(data.dueDate) : getAutoDueDate(data.priority);
@@ -428,7 +439,7 @@ export async function createTask(data: {
     return { success: true, data: task as TaskItem };
   } catch (error: any) {
     console.error("Failed to create task:", error);
-    return { success: false, error: "Failed to create task" };
+    return { success: false, error: (error as any)?.message || "Failed to create task" };
   }
 }
 
@@ -446,13 +457,19 @@ export async function updateTask(
     attachments?: TaskAttachment[];
     checklist?: TaskChecklistItem[];
   },
-  actor?: {
+  _actor?: {
     id: string;
     name: string;
     role?: string;
   }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = {
+      id: authUser.id,
+      name: authUser.name || authUser.email || "User",
+      role: authUser.role,
+    };
     const txRes = await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, id);
       const existing = await tx.task.findUnique({ where: { id } });
@@ -687,9 +704,11 @@ export async function updateTask(
 export async function addTaskAttachment(
   taskId: string,
   attachment: TaskAttachment,
-  actor?: { id: string; name: string }
+  _actor?: { id: string; name: string }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User" };
     return await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, taskId);
       const task = await tx.task.findUnique({
@@ -725,16 +744,18 @@ export async function addTaskAttachment(
     });
   } catch (error: any) {
     console.error("Failed to add task attachment:", error);
-    return { success: false, error: "Failed to add attachment" };
+    return { success: false, error: (error as any)?.message || "Failed to add attachment" };
   }
 }
 
 export async function deleteTaskAttachment(
   taskId: string,
   attachmentId: string,
-  actor?: { id: string; name: string }
+  _actor?: { id: string; name: string }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User" };
     return await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, taskId);
       const task = await tx.task.findUnique({
@@ -771,7 +792,7 @@ export async function deleteTaskAttachment(
     });
   } catch (error: any) {
     console.error("Failed to delete task attachment:", error);
-    return { success: false, error: "Failed to delete attachment" };
+    return { success: false, error: (error as any)?.message || "Failed to delete attachment" };
   }
 }
 
@@ -780,6 +801,12 @@ export async function addTaskNote(
   note: { text: string; userId: string; userName: string; attachments?: TaskAttachment[] }
 ) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    note = {
+      ...note,
+      userId: authUser.id,
+      userName: authUser.name || authUser.email || note.userName || "User",
+    };
     const txRes = await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, taskId);
       const task = await tx.task.findUnique({
@@ -880,7 +907,7 @@ export async function addTaskNote(
     return { success: true, data: result as TaskItem, note: newNote };
   } catch (error: any) {
     console.error("Failed to add task note:", error);
-    return { success: false, error: "Failed to add note" };
+    return { success: false, error: (error as any)?.message || "Failed to add note" };
   }
 }
 
@@ -889,6 +916,7 @@ export async function deleteTaskNote(
   noteId: string
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
     return await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, taskId);
       const task = await tx.task.findUnique({
@@ -908,12 +936,14 @@ export async function deleteTaskNote(
     });
   } catch (error: any) {
     console.error("Failed to delete task note:", error);
-    return { success: false, error: "Failed to delete note" };
+    return { success: false, error: (error as any)?.message || "Failed to delete note" };
   }
 }
 
-export async function deleteTask(id: string, actor?: { id: string; name: string; role?: string }) {
+export async function deleteTask(id: string, _actor?: { id: string; name: string; role?: string }) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User", role: authUser.role };
     const existing = await prisma.task.findUnique({ where: { id } });
     if (!existing) return { success: false, error: "Task not found" };
 
@@ -943,12 +973,13 @@ export async function deleteTask(id: string, actor?: { id: string; name: string;
     return { success: true };
   } catch (error: any) {
     console.error("Failed to delete task:", error);
-    return { success: false, error: "Failed to delete task" };
+    return { success: false, error: (error as any)?.message || "Failed to delete task" };
   }
 }
 
 export async function getLinkedJobDetails(jobId: string) {
   try {
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ["rider"] });
     const cleanId = jobId.trim();
     if (!cleanId) return { success: false, error: "No Job ID provided" };
 
@@ -961,6 +992,10 @@ export async function getLinkedJobDetails(jobId: string) {
       },
       select: {
         id: true,
+        branchId: true,
+        riderId: true,
+        pickupRiderId: true,
+        deliveryRiderId: true,
         customerName: true,
         customerPhone: true,
         status: true,
@@ -981,6 +1016,9 @@ export async function getLinkedJobDetails(jobId: string) {
     });
 
     if (!job) return { success: false, error: "Job not found" };
+    if (!canUserAccessJob(authUser, job)) {
+      return { success: false, error: "Forbidden: You do not have access to this job" };
+    }
     return { success: true, data: job };
   } catch (e: any) {
     console.error("Failed to fetch linked job details:", e);
@@ -990,9 +1028,11 @@ export async function getLinkedJobDetails(jobId: string) {
 
 export async function archiveTask(
   id: string,
-  actor: { id: string; name: string; role?: string }
+  _actor: { id: string; name: string; role?: string }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User", role: authUser.role };
     const txRes = await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, id);
       const task = await tx.task.findUnique({ where: { id } });
@@ -1053,9 +1093,11 @@ export async function archiveTask(
 
 export async function unarchiveTask(
   id: string,
-  actor: { id: string; name: string; role?: string }
+  _actor: { id: string; name: string; role?: string }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User", role: authUser.role };
     const txRes = await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, id);
       const task = await tx.task.findUnique({ where: { id } });
@@ -1114,9 +1156,11 @@ export async function unarchiveTask(
   }
 }
 
-export async function archiveAllDoneTasks(actor: { id: string; name: string; role?: string }) {
+export async function archiveAllDoneTasks(_actor: { id: string; name: string; role?: string }) {
   try {
-    const isAdmin = actor.role === "admin";
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User", role: authUser.role };
+    const isAdmin = actor.role === "admin" || actor.role === "superadmin";
     const whereClause: any = { status: "done", isArchived: false };
     if (!isAdmin && actor.id) {
       whereClause.OR = [
@@ -1188,9 +1232,11 @@ export async function toggleTaskChecklistItem(
   taskId: string,
   itemId: string,
   completed: boolean,
-  actor: { id: string; name: string; role?: string }
+  _actor: { id: string; name: string; role?: string }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User", role: authUser.role };
     return await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, taskId);
       const task = await tx.task.findUnique({ where: { id: taskId } });
@@ -1242,9 +1288,11 @@ export async function toggleTaskChecklistItem(
 export async function addChecklistItem(
   taskId: string,
   text: string,
-  actor: { id: string; name: string; role?: string }
+  _actor: { id: string; name: string; role?: string }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User", role: authUser.role };
     return await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, taskId);
       const task = await tx.task.findUnique({ where: { id: taskId } });
@@ -1296,9 +1344,11 @@ export async function addChecklistItem(
 export async function deleteChecklistItem(
   taskId: string,
   itemId: string,
-  actor: { id: string; name: string; role?: string }
+  _actor: { id: string; name: string; role?: string }
 ): Promise<{ success: boolean; data?: TaskItem; error?: string }> {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const actor = { id: authUser.id, name: authUser.name || authUser.email || "User", role: authUser.role };
     return await prisma.$transaction(async (tx) => {
       await lockTaskRowForUpdate(tx, taskId);
       const task = await tx.task.findUnique({ where: { id: taskId } });
@@ -1359,7 +1409,10 @@ export async function createTaxInvoiceTaskForJobAction(params: {
   error?: string;
 }> {
   try {
-    const { jobId, customerName, customerPhone, isCorporate, totalAmount, paymentChannel, branchName, createdById, createdByName } = params;
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const { jobId, customerName, customerPhone, isCorporate, totalAmount, paymentChannel, branchName } = params;
+    const createdById = authUser.id;
+    const createdByName = authUser.name || authUser.email || params.createdByName || "Staff";
     if (!jobId) return { success: false, error: "Missing jobId" };
 
     // 1. Check for duplicate task for this job

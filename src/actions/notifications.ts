@@ -1,7 +1,8 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { format, isToday, isPast, startOfDay, endOfDay } from "date-fns";
+import { format, isToday, startOfDay } from "date-fns";
+import { assertServerActionAuthorized } from "@/lib/server-auth";
 
 export interface AppNotification {
   id: string;
@@ -23,6 +24,8 @@ export async function createNotification(data: {
   type: "overdue" | "due_today" | "assigned" | "note" | "system" | "wallet_approval";
 }) {
   try {
+    await assertServerActionAuthorized({ requireWrite: true });
+
     const notif = await prisma.notification.create({
       data: {
         userId: data.userId,
@@ -40,14 +43,18 @@ export async function createNotification(data: {
   }
 }
 
-export async function getUserNotifications(userId: string, userRole?: string) {
+export async function getUserNotifications(userId: string, _userRole?: string) {
   try {
+    const authUser = await assertServerActionAuthorized();
+    const role = (authUser.role || "").toLowerCase();
+    const isAdmin = role === "admin" || role === "superadmin";
+    const effectiveUserId = isAdmin && userId ? userId : authUser.id;
+
     const todayStart = startOfDay(new Date());
-    const todayEnd = endOfDay(new Date());
 
     // 1. Fetch persistent DB notifications for this user
     const dbNotifs = await prisma.notification.findMany({
-      where: { userId },
+      where: { userId: effectiveUserId },
       orderBy: { createdAt: "desc" },
       take: 20,
     });
@@ -57,9 +64,9 @@ export async function getUserNotifications(userId: string, userRole?: string) {
       where: {
         isArchived: false,
         status: { not: "done" },
-        ...(userRole === "admin"
+        ...(isAdmin
           ? {}
-          : { OR: [{ assignedToId: { contains: userId } }, { createdById: userId }] }),
+          : { OR: [{ assignedToId: { contains: effectiveUserId } }, { createdById: effectiveUserId }] }),
       },
       select: {
         id: true,
@@ -80,10 +87,9 @@ export async function getUserNotifications(userId: string, userRole?: string) {
       const due = new Date(t.dueDate);
 
       if (isToday(due)) {
-        // Due Today alert
         dynamicAlerts.push({
           id: `due-today-${t.id}`,
-          userId,
+          userId: effectiveUserId,
           taskId: t.id,
           taskTitle: t.title,
           title: "Due Today ⏰",
@@ -93,10 +99,9 @@ export async function getUserNotifications(userId: string, userRole?: string) {
           createdAt: due.toISOString(),
         });
       } else if (due < todayStart) {
-        // Overdue alert
         dynamicAlerts.push({
           id: `overdue-${t.id}`,
-          userId,
+          userId: effectiveUserId,
           taskId: t.id,
           taskTitle: t.title,
           title: "Overdue Alert 🚨",
@@ -108,7 +113,6 @@ export async function getUserNotifications(userId: string, userRole?: string) {
       }
     });
 
-    // Map DB notifications to AppNotification
     const formattedDbNotifs: AppNotification[] = dbNotifs.map((n) => ({
       id: n.id,
       userId: n.userId,
@@ -120,15 +124,10 @@ export async function getUserNotifications(userId: string, userRole?: string) {
       createdAt: n.createdAt.toISOString(),
     }));
 
-    // Combine & deduplicate
     const combined = [...dynamicAlerts, ...formattedDbNotifs];
-
-    // Sort newest first
     combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const unreadCount = combined.filter((n) => !n.isRead).length;
-
-    // Overdue / Due Today specific counts for quick filter badges
     const overdueCount = dynamicAlerts.filter((a) => a.type === "overdue").length;
     const dueTodayCount = dynamicAlerts.filter((a) => a.type === "due_today").length;
 
@@ -147,13 +146,17 @@ export async function getUserNotifications(userId: string, userRole?: string) {
 
 export async function markNotificationAsRead(id: string) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true });
+
     if (id.startsWith("due-today-") || id.startsWith("overdue-")) {
-      // Dynamic alerts don't need DB update
       return { success: true };
     }
 
-    await prisma.notification.update({
-      where: { id },
+    const role = (authUser.role || "").toLowerCase();
+    const isAdmin = role === "admin" || role === "superadmin";
+
+    await prisma.notification.updateMany({
+      where: isAdmin ? { id } : { id, userId: authUser.id },
       data: { isRead: true },
     });
     return { success: true };
@@ -164,8 +167,13 @@ export async function markNotificationAsRead(id: string) {
 
 export async function markAllNotificationsAsRead(userId: string) {
   try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true });
+    const role = (authUser.role || "").toLowerCase();
+    const isAdmin = role === "admin" || role === "superadmin";
+    const effectiveUserId = isAdmin && userId ? userId : authUser.id;
+
     await prisma.notification.updateMany({
-      where: { userId, isRead: false },
+      where: { userId: effectiveUserId, isRead: false },
       data: { isRead: true },
     });
     return { success: true };

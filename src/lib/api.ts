@@ -90,11 +90,7 @@ export function getClientAuthUser(): {
   try {
     const raw = localStorage.getItem('authUser');
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed?.id && typeof document !== 'undefined' && !document.cookie.includes('tls_user_id=')) {
-      document.cookie = `tls_user_id=${encodeURIComponent(parsed.id)}; path=/; max-age=${60 * 60 * 20}; SameSite=Lax`;
-    }
-    return parsed;
+    return JSON.parse(raw);
   } catch {
     return null;
   }
@@ -103,9 +99,6 @@ export function getClientAuthUser(): {
 export function getClientAuthHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...(extra || {}) };
   const user = getClientAuthUser();
-  if (user?.id) {
-    headers['x-tls-user-id'] = String(user.id);
-  }
   if (user?.sessionToken) {
     headers['Authorization'] = `Bearer ${user.sessionToken}`;
   }
@@ -533,7 +526,6 @@ export function startRealtimeConnection(forceReconnect = false) {
 
   eventSourceUserId = currentUid;
   const params = new URLSearchParams();
-  if (currentUid) params.set('userId', currentUid);
   if (lastServerSyncMs > 0) params.set('since', String(lastServerSyncMs - 2000));
 
   const streamUrl = `/api/events/stream${params.toString() ? `?${params.toString()}` : ''}`;
@@ -832,27 +824,64 @@ export const api = {
 
     inFlightDeltaPromise = (async () => {
       try {
-        const effectiveSince =
+        const baseSince =
           sinceMs ?? (lastServerSyncMs > 0 ? Math.max(0, lastServerSyncMs - 3000) : Date.now() - 60_000);
-        const res = await fetch(`/api/jobs/delta?since=${encodeURIComponent(String(effectiveSince))}`, {
+        let totalJobsUpdated = 0;
+        let totalCustomersUpdated = 0;
+        let hasMoreJobs = true;
+        let hasMoreCustomers = true;
+        let jobCursor: { updatedAt: number; id: string } | null = null;
+        let custCursor: { updatedAt: number; id: string } | null = null;
+        let pageCount = 0;
+        let highestServerTime = lastServerSyncMs;
+        let completedCleanly = false;
+
+        // Multi-page delta recovery loop using stable composite cursors (updatedAt, id)
+        // Paginates jobs and customers independently and only advances the checkpoint when BOTH complete
+        while ((hasMoreJobs || hasMoreCustomers) && pageCount < 50) {
+          pageCount++;
+          const qs = new URLSearchParams();
+          qs.set('since', String(baseSince));
+          qs.set('limit', '250');
+          qs.set('custLimit', '100');
+
+          if (!hasMoreJobs) {
+            qs.set('skipJobs', '1');
+          } else if (jobCursor) {
+            qs.set('cursorUpdatedAt', String(jobCursor.updatedAt));
+            qs.set('cursorId', jobCursor.id);
+          }
+
+          if (!hasMoreCustomers) {
+            qs.set('skipCustomers', '1');
+          } else if (custCursor) {
+            qs.set('custCursorUpdatedAt', String(custCursor.updatedAt));
+            qs.set('custCursorId', custCursor.id);
+          }
+
+          const res = await fetch(`/api/jobs/delta?${qs.toString()}`, {
           headers: getClientAuthHeaders(),
         });
-        if (!res.ok) return { jobsUpdated: 0, customersUpdated: 0 };
+          if (!res.ok) {
+            completedCleanly = false;
+            break;
+          }
 
         const data = await res.json();
-        let jobsUpdated = 0;
-        let customersUpdated = 0;
+          let pageJobsUpdated = 0;
+          let pageCustomersUpdated = 0;
 
+          // 1. Order merging strictly by record ID (Map-based, preserving existing order)
         if (Array.isArray(data.jobs) && data.jobs.length > 0 && memoryDb) {
-          const nextJobs = [...memoryDb.jobs];
-          const indexById = new Map<string, number>();
-          nextJobs.forEach((j, idx) => indexById.set(j.id, idx));
+            const jobMap = new Map<string, Job>();
+            for (const j of memoryDb.jobs) {
+              jobMap.set(j.id, j);
+            }
 
           for (const rawJob of data.jobs) {
             const incomingRev = rawJob.updatedAt ? new Date(rawJob.updatedAt).getTime() : Date.now();
             const prevRev = lastSeenJobRevision.get(rawJob.id) || 0;
-            const existingIdx = indexById.get(rawJob.id);
-            const existingJob = existingIdx !== undefined ? nextJobs[existingIdx] : undefined;
+              const existingJob = jobMap.get(rawJob.id);
 
             const isPaymentAdvance =
               Boolean(existingJob && isJobShopSettled(rawJob) && !isJobShopSettled(existingJob));
@@ -871,55 +900,107 @@ export const api = {
               (normalized as any)._saveStatus = 'saved';
             }
 
-            if (existingIdx !== undefined) {
-              nextJobs[existingIdx] = normalized;
-            } else {
-              nextJobs.unshift(normalized);
-              indexById.set(normalized.id, 0);
-            }
-            jobsUpdated++;
+              jobMap.set(normalized.id, normalized);
+              pageJobsUpdated++;
           }
 
-          if (jobsUpdated > 0) {
-            memoryDb.jobs = nextJobs;
+            if (pageJobsUpdated > 0) {
+              memoryDb.jobs = Array.from(jobMap.values());
+              totalJobsUpdated += pageJobsUpdated;
           }
         }
 
+          // 2. Customer merging strictly by record ID
         if (Array.isArray(data.customers) && data.customers.length > 0 && memoryDb) {
           const parsedCustomers = JSON.parse(JSON.stringify(data.customers), dateReviver) as Customer[];
-          const nextCustomers = [...memoryDb.customers];
-          const custIndexById = new Map<string, number>();
-          nextCustomers.forEach((c, idx) => custIndexById.set(c.id, idx));
+            const custMap = new Map<string, Customer>();
+            for (const c of memoryDb.customers) {
+              custMap.set(c.id, c);
+            }
 
           for (const sc of parsedCustomers) {
-            const idx = custIndexById.get(sc.id);
-            if (idx !== undefined) {
-              nextCustomers[idx] = { ...nextCustomers[idx], ...sc };
+              const existing = custMap.get(sc.id);
+              if (existing) {
+                custMap.set(sc.id, { ...existing, ...sc });
             } else {
-              nextCustomers.unshift(sc);
-              custIndexById.set(sc.id, 0);
+                custMap.set(sc.id, sc);
             }
-            customersUpdated++;
+              pageCustomersUpdated++;
           }
 
-          if (customersUpdated > 0) {
-            memoryDb.customers = nextCustomers;
+            if (pageCustomersUpdated > 0) {
+              memoryDb.customers = Array.from(custMap.values());
+              totalCustomersUpdated += pageCustomersUpdated;
           }
         }
 
-        if (typeof data.serverTime === 'number' && data.serverTime > lastServerSyncMs) {
-          lastServerSyncMs = data.serverTime;
+          if (typeof data.serverTime === 'number' && data.serverTime > highestServerTime) {
+            highestServerTime = data.serverTime;
         }
-        realtimeState.lastSyncAt = Date.now();
 
         if (data.openShifts && onOpenShiftsSyncCallback) {
           onOpenShiftsSyncCallback(data.openShifts);
         }
 
-        if (jobsUpdated > 0) api.notify('jobs');
-        if (customersUpdated > 0) api.notify('customers');
+          const nextHasMoreJobs =
+            data.hasMoreJobs !== undefined ? Boolean(data.hasMoreJobs) : Boolean(data.hasMore && Array.isArray(data.jobs) && data.jobs.length > 0);
+          const nextHasMoreCustomers =
+            data.hasMoreCustomers !== undefined ? Boolean(data.hasMoreCustomers) : false;
 
-        return { jobsUpdated, customersUpdated };
+          if (nextHasMoreJobs) {
+            if (data.nextJobCursor && data.nextJobCursor.id) {
+              jobCursor = {
+                updatedAt: Number(data.nextJobCursor.updatedAt) || baseSince,
+                id: String(data.nextJobCursor.id),
+              };
+            } else if (Array.isArray(data.jobs) && data.jobs.length > 0) {
+              const lastJ = data.jobs[data.jobs.length - 1];
+              jobCursor = {
+                updatedAt: lastJ.updatedAt ? new Date(lastJ.updatedAt).getTime() : baseSince,
+                id: String(lastJ.id),
+              };
+            } else {
+              hasMoreJobs = false;
+            }
+          }
+          hasMoreJobs = nextHasMoreJobs && Boolean(jobCursor);
+
+          if (nextHasMoreCustomers) {
+            if (data.nextCustomerCursor && data.nextCustomerCursor.id) {
+              custCursor = {
+                updatedAt: Number(data.nextCustomerCursor.updatedAt) || baseSince,
+                id: String(data.nextCustomerCursor.id),
+              };
+            } else if (Array.isArray(data.customers) && data.customers.length > 0) {
+              const lastC = data.customers[data.customers.length - 1];
+              custCursor = {
+                updatedAt: lastC.updatedAt ? new Date(lastC.updatedAt).getTime() : baseSince,
+                id: String(lastC.id),
+              };
+            } else {
+              hasMoreCustomers = false;
+            }
+          }
+          hasMoreCustomers = nextHasMoreCustomers && Boolean(custCursor);
+
+          if (!hasMoreJobs && !hasMoreCustomers) {
+            completedCleanly = true;
+            break;
+          }
+        }
+
+        // Do NOT advance synchronization checkpoint if recovery stopped before completion
+        if (completedCleanly) {
+          if (highestServerTime > lastServerSyncMs) {
+            lastServerSyncMs = highestServerTime;
+          }
+          realtimeState.lastSyncAt = Date.now();
+        }
+
+        if (totalJobsUpdated > 0) api.notify('jobs');
+        if (totalCustomersUpdated > 0) api.notify('customers');
+
+        return { jobsUpdated: totalJobsUpdated, customersUpdated: totalCustomersUpdated };
       } catch (err) {
         console.error('[api.reconcileDelta] Error:', err);
         return { jobsUpdated: 0, customersUpdated: 0 };

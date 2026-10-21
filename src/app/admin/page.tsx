@@ -8347,6 +8347,31 @@ export default function AdminPage() {
             </div>
           </header>
 
+          {/* Persistent Offline / Reconnecting Alert Banner */}
+          {realtimeState.connectionStatus === 'disconnected' && (
+            <div className="bg-rose-500 text-white px-4 py-2 text-sm font-semibold flex items-center justify-between shadow-xs shrink-0 z-30">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
+                <span>⚠️ สัญญาณขาดการเชื่อมต่อ (Offline) — หน้าจอกำลังแสดงข้อมูลแคช การแก้ไขจะไม่ถูกบันทึกจนกว่าจะเชื่อมต่อสำเร็จ</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => api.reconcileDelta().catch(() => {})}
+                className="px-3 py-1 bg-white text-rose-700 rounded text-xs font-bold hover:bg-rose-50 transition cursor-pointer"
+              >
+                เชื่อมต่อใหม่ (Reconnect)
+              </button>
+            </div>
+          )}
+          {realtimeState.connectionStatus === 'reconnecting' && (
+            <div className="bg-amber-500 text-slate-950 px-4 py-2 text-sm font-semibold flex items-center justify-between shadow-xs shrink-0 z-30">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-slate-950 animate-pulse" />
+                <span>🔄 กำลังเชื่อมต่อระบบอัปเดตแบบเรียลไทม์ใหม่ (Reconnecting...) กรุณารอสักครู่</span>
+              </div>
+            </div>
+          )}
+
           {/* Dynamic Content Views */}
           {activeTab === "dashboard" && hasAccess("dashboard") && <AdminDashboard jobs={jobs} />}
           {activeTab === "jobs" && hasAccess("jobs") && (
