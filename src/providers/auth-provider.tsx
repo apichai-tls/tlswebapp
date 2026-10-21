@@ -3,7 +3,7 @@
 import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
 
 import { loginUser } from '@/actions/auth';
-import { startRealtimeConnection } from '@/lib/api';
+
 
 export interface User {
   id: string;
@@ -49,7 +49,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         if (typeof document !== 'undefined') {
           document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
         }
-        startRealtimeConnection();
+        import('@/lib/api').then(({ startRealtimeConnection }) => startRealtimeConnection()).catch(() => {});
       } catch (e) {
         console.error("Failed to parse auth user", e);
       }
@@ -93,7 +93,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (typeof document !== 'undefined') {
       document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
     }
-    startRealtimeConnection(true);
+    import('@/lib/api').then(({ startRealtimeConnection }) => startRealtimeConnection(true)).catch(() => {});
     return userData;
   };
 

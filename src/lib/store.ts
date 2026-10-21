@@ -931,7 +931,14 @@ export const poiStore = {
 };
 
 // Subscribe to scoped API changes so single-job updates only re-render jobStore subscribers
-api.subscribe((scope) => {
+const registerStoreApiSubscription = (cb: (scope?: string) => void) => {
+  try {
+    api.subscribe(cb);
+  } catch {
+    Promise.resolve().then(() => api.subscribe(cb));
+  }
+};
+registerStoreApiSubscription((scope) => {
   switch (scope) {
     case 'jobs':
       emitJobChange();
