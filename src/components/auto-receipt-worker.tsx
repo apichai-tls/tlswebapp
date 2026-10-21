@@ -218,6 +218,181 @@ export function AutoReceiptWorker() {
           processingRef.current.delete(jobId);
           isWorkingRef.current = false;
         }
+        return;
+      }
+
+      // 2. Safety net for missing Proforma (INV) image when proformaNumber is set on a recent job with laundry items
+      const pendingProformaJob = jobs.find((job) => {
+        if (!job.id || job.id === "DRAFT") return false;
+        if (processingRef.current.has(job.id)) return false;
+        const rawPf = cleanProformaNumber((job as any).proformaNumber || (job as any).proformaReceiptNumber);
+        if (!rawPf || rawPf === "DRAFT") return false;
+        const rev = (job as any).proformaRevision != null ? Number((job as any).proformaRevision) : 0;
+        const proformaKey = `proforma_${job.id}_${rawPf}_rev${rev}_${job.updatedAt || ""}`;
+        if (completedRef.current.has(proformaKey)) return false;
+
+        if (['cancel', 'return'].includes(job.status)) {
+          completedRef.current.add(proformaKey);
+          return false;
+        }
+
+        if (isAreaRestricted && userArea) {
+          const jobShop = shopLocations.find((s) => s.id === job.branchId);
+          if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
+            completedRef.current.add(proformaKey);
+            return false;
+          }
+        }
+
+        const jobUpdatedTime = job.updatedAt ? new Date(job.updatedAt).getTime() : 0;
+        const jobPaidTime = (job as any).shopPaidAt
+          ? new Date((job as any).shopPaidAt).getTime()
+          : jobUpdatedTime;
+
+        if (now - jobPaidTime > MAX_JOB_AGE_MS && now - jobUpdatedTime > MAX_JOB_AGE_MS) {
+          completedRef.current.add(proformaKey);
+          return false;
+        }
+
+        // Wait a 20-second grace period so the primary background capture in AdminPage finishes first
+        const latestActivityTime = Math.max(jobUpdatedTime, jobPaidTime);
+        if ((now - latestActivityTime) < 20000) return false;
+
+        let itemsArr: any[] = [];
+        try {
+          if (Array.isArray(job.items)) {
+            itemsArr = job.items;
+          } else if (typeof job.items === 'string') {
+            itemsArr = JSON.parse(job.items);
+          } else if ((job as any).itemsJson) {
+            itemsArr = JSON.parse((job as any).itemsJson);
+          }
+        } catch {}
+        const hasLaundryItems = itemsArr.some(
+          (item: any) => item.category !== "PACKAGE" && !String(item.name || "").toLowerCase().includes("package")
+        );
+        if (!hasLaundryItems) {
+          return false;
+        }
+
+        let bills: string[] = [];
+        try {
+          if (job.billImageUrl) {
+            const parsed = JSON.parse(job.billImageUrl);
+            bills = Array.isArray(parsed) ? parsed : [parsed];
+          }
+        } catch {}
+
+        const expectedFilename = `proforma-${rawPf}-rev${rev}.png`;
+        const hasProforma = bills.some(
+          (url) => typeof url === "string" && url.includes(expectedFilename)
+        );
+
+        if (hasProforma) {
+          completedRef.current.add(proformaKey);
+          return false;
+        }
+
+        return true;
+      });
+
+      if (pendingProformaJob) {
+        const jobId = pendingProformaJob.id;
+        const cleanPf = cleanProformaNumber((pendingProformaJob as any).proformaNumber || (pendingProformaJob as any).proformaReceiptNumber)!;
+        const rev = (pendingProformaJob as any).proformaRevision != null ? Number((pendingProformaJob as any).proformaRevision) : 0;
+        const filename = `proforma-${cleanPf}-rev${rev}.png`;
+        if (!markReceiptCaptureStarted(filename)) return;
+
+        isWorkingRef.current = true;
+        processingRef.current.add(jobId);
+
+        try {
+          const activeShop = shopLocations.find((s) => s.id === pendingProformaJob.branchId) || shopLocations[0];
+          const proformaAdminNotesJson = (() => {
+            try {
+              const raw = (pendingProformaJob as any).adminNotesJson;
+              if (!raw) return undefined;
+              const parsed = JSON.parse(raw);
+              delete parsed.payments;
+              return JSON.stringify(parsed);
+            } catch {
+              return undefined;
+            }
+          })();
+
+          const proformaData = formatJobToReceiptData({
+            ...pendingProformaJob,
+            isDraft: true,
+            isPaid: false,
+            isShopPaid: false,
+          } as any);
+          proformaData.isDraft = true;
+          proformaData.isPaid = false;
+          proformaData.autoCapture = true;
+          proformaData.proformaId = cleanPf;
+          proformaData.proformaRevision = rev;
+          proformaData.jobId = jobId;
+          proformaData.adminNotesJson = proformaAdminNotesJson;
+          proformaData.walletBalanceAfter = undefined;
+
+          const blob = isA5
+            ? await generateA5ReceiptImage(proformaData, activeShop)
+            : await generateThermalReceiptImage(proformaData, activeShop);
+
+          if (blob) {
+            const publicUrl = await uploadReceiptImage(blob, jobId, filename);
+
+            if (publicUrl) {
+              let existingBills: string[] = [];
+              try {
+                const currentJob = jobStore.getSnapshot().find((j) => j.id === jobId) || pendingProformaJob;
+                if (currentJob.billImageUrl) {
+                  const parsed = JSON.parse(currentJob.billImageUrl);
+                  existingBills = Array.isArray(parsed) ? parsed : [parsed];
+                }
+              } catch {}
+
+              const cleanFiltered = existingBills.filter((u: string) => !u.includes(filename));
+              const mergedBills = Array.from(new Set([publicUrl, ...cleanFiltered]));
+              mergedBills.sort((a, b) => {
+                const aIsPf = a.includes("proforma-");
+                const bIsPf = b.includes("proforma-");
+                if (aIsPf && !bIsPf) return -1;
+                if (!aIsPf && bIsPf) return 1;
+                if (aIsPf && bIsPf) {
+                  const aRev = parseInt((a.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                  const bRev = parseInt((b.match(/-rev(\d+)\.png/i) || [])[1] || "0", 10);
+                  return bRev - aRev;
+                }
+                const aIsRc = a.includes("receipt-");
+                const bIsRc = b.includes("receipt-");
+                if (aIsRc && !bIsRc) return 1;
+                if (!aIsRc && bIsRc) return -1;
+                return 0;
+              });
+              await jobStore.updateJobDetails(jobId, {
+                billImageUrl: JSON.stringify(mergedBills),
+              } as any);
+
+              console.log(`[AutoReceiptWorker] ✔ Auto-generated & attached missing proforma image (${filename}) for Job #${jobId}`);
+            } else {
+              clearReceiptCaptureLock(filename);
+            }
+          } else {
+            clearReceiptCaptureLock(filename);
+          }
+
+          if (completedRef.current.size > 500) {
+            completedRef.current.clear();
+          }
+          completedRef.current.add(`proforma_${jobId}_${cleanPf}_rev${rev}_${pendingProformaJob.updatedAt || ""}`);
+        } catch (err) {
+          clearReceiptCaptureLock(filename);
+          console.warn(`[AutoReceiptWorker] Failed to auto-generate proforma for Job #${jobId}:`, err);
+        } finally {
+          processingRef.current.delete(jobId);
+          isWorkingRef.current = false;
+        }
       }
     };
 

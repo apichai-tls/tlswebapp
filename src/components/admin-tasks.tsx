@@ -1664,7 +1664,7 @@ export function TaskFormModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onSave: (data: any) => Promise<void>;
+  onSave: (data: any) => Promise<any>;
   onArchive?: (id: string) => Promise<void>;
   onUnarchive?: (id: string) => Promise<void>;
   initialTask?: TaskItem | null;
@@ -1754,7 +1754,90 @@ export function TaskFormModal({
   }, [adminUsers]);
 
   const prevTaskIdRef = useRef<string | null>(null);
+  const originalTaskRef = useRef<TaskItem | null>(null);
   const lastFetchedJobIdRef = useRef<string | null>(null);
+
+  const parseAssigneesFromTask = (task: TaskItem | null | undefined): AdminUser[] => {
+    if (!task?.assignedToId) return [];
+    const ids = task.assignedToId.split(",").map((s) => s.trim()).filter(Boolean);
+    const names = task.assignedToName ? task.assignedToName.split(",").map((s) => s.trim()) : [];
+    return ids.map((id, index) => {
+      const found = adminUsers.find((u) => u.id === id);
+      if (found) return found;
+      return {
+        id,
+        name: names[index] || "Staff",
+        role: "staff",
+        area: null,
+        isActive: true,
+      };
+    });
+  };
+
+  const buildNormalizedTaskSnapshot = (task: TaskItem) => {
+    const initPriority = (task.priority as TaskPriority) ?? "medium";
+    const parsedAssignees = parseAssigneesFromTask(task);
+    const finalAssigneeId = parsedAssignees.length > 0 ? parsedAssignees.map((a) => a.id).join(",") : "";
+    const finalAssigneeName = parsedAssignees.length > 0 ? parsedAssignees.map((a) => a.name).join(", ") : "";
+    let parsedAtts: TaskAttachment[] = [];
+    let parsedCheck: TaskChecklistItem[] = [];
+    try {
+      parsedAtts = task.attachmentsJson ? JSON.parse(task.attachmentsJson) : [];
+    } catch {}
+    try {
+      parsedCheck = task.checklistJson ? JSON.parse(task.checklistJson) : [];
+    } catch {}
+
+    return {
+      title: (task.title ?? "").trim(),
+      description: (task.description ?? "").trim().slice(0, 100),
+      priority: initPriority,
+      status: (task.status as TaskStatus) ?? "todo",
+      jobId: (task.jobId ?? "").trim(),
+      assignedToId: finalAssigneeId,
+      assignedToName: finalAssigneeName,
+      dueDate: task.dueDate
+        ? format(new Date(task.dueDate), "yyyy-MM-dd")
+        : getAutoDueDateString(initPriority),
+      attachments: parsedAtts,
+      checklist: parsedCheck,
+    };
+  };
+
+  const applyTaskToForm = (task: TaskItem, fieldsToUpdate?: Set<string>) => {
+    const shouldSet = (field: string) => !fieldsToUpdate || fieldsToUpdate.has(field);
+    const initPriority = (task.priority as TaskPriority) ?? "medium";
+
+    if (shouldSet("title")) setTitle(task.title ?? "");
+    if (shouldSet("description")) setDescription(task.description ?? "");
+    if (shouldSet("priority")) setPriority(initPriority);
+    if (shouldSet("status")) setStatus((task.status as TaskStatus) ?? "todo");
+    if (shouldSet("jobId")) setJobId(task.jobId ?? "");
+    if (shouldSet("assignedToId") || shouldSet("assignedTo")) {
+      setSelectedAssignees(parseAssigneesFromTask(task));
+    }
+    if (shouldSet("dueDate")) {
+      setDueDate(
+        task.dueDate
+          ? format(new Date(task.dueDate), "yyyy-MM-dd")
+          : getAutoDueDateString(initPriority)
+      );
+    }
+    if (shouldSet("attachments")) {
+      try {
+        setAttachments(task.attachmentsJson ? JSON.parse(task.attachmentsJson) : []);
+      } catch {
+        setAttachments([]);
+      }
+    }
+    if (shouldSet("checklist")) {
+      try {
+        setChecklist(task.checklistJson ? JSON.parse(task.checklistJson) : []);
+      } catch {
+        setChecklist([]);
+      }
+    }
+  };
 
   useEffect(() => {
     if (open) {
@@ -1763,57 +1846,32 @@ export function TaskFormModal({
 
       if (isDifferentTask) {
         prevTaskIdRef.current = currentId;
-        const initPriority = (initialTask?.priority as TaskPriority) ?? "medium";
-        setTitle(initialTask?.title ?? "");
-        setDescription(initialTask?.description ?? "");
-        setPriority(initPriority);
-        setStatus((initialTask?.status as TaskStatus) ?? "todo");
-        setJobId(initialTask?.jobId ?? "");
-        
-        // Parse assignees list
-        if (initialTask?.assignedToId) {
-          const ids = initialTask.assignedToId.split(",").map((s) => s.trim()).filter(Boolean);
-          const names = initialTask.assignedToName ? initialTask.assignedToName.split(",").map((s) => s.trim()) : [];
-          const parsed = ids.map((id, index) => {
-            const found = adminUsers.find((u) => u.id === id);
-            if (found) return found;
-            return {
-              id,
-              name: names[index] || "Staff",
-              role: "staff",
-              area: null,
-              isActive: true,
-            };
-          });
-          setSelectedAssignees(parsed);
+        if (initialTask) {
+          originalTaskRef.current = { ...initialTask };
+          applyTaskToForm(initialTask);
         } else {
+          originalTaskRef.current = null;
+          const initPriority: TaskPriority = "medium";
+          setTitle("");
+          setDescription("");
+          setPriority(initPriority);
+          setStatus("todo");
+          setJobId("");
           setSelectedAssignees([]);
+          setDueDate(getAutoDueDateString(initPriority));
+          setAttachments([]);
+          setChecklist([]);
         }
-
-        setDueDate(
-          initialTask?.dueDate
-            ? format(new Date(initialTask.dueDate), "yyyy-MM-dd")
-            : getAutoDueDateString(initPriority)
-        );
         setAssigneeSearch("");
         setAssigneeDropdownOpen(false);
         lastFetchedJobIdRef.current = null;
         setLinkedJob(null);
-        try {
-          setAttachments(initialTask?.attachmentsJson ? JSON.parse(initialTask.attachmentsJson) : []);
-        } catch {
-          setAttachments([]);
-        }
-        try {
-          setChecklist(initialTask?.checklistJson ? JSON.parse(initialTask.checklistJson) : []);
-        } catch {
-          setChecklist([]);
-        }
         setNewChecklistText("");
         setMobileTab("info");
       }
     } else {
       prevTaskIdRef.current = null;
+      originalTaskRef.current = null;
       lastFetchedJobIdRef.current = null;
       setLinkedJob(null);
       setJobId("");
@@ -1826,20 +1884,27 @@ export function TaskFormModal({
   // Synchronize checklist and attachments in real-time when updated remotely
   useEffect(() => {
     if (open && initialTask) {
-      if (initialTask.checklistJson) {
+      if (initialTask.checklistJson !== undefined) {
         try {
-          const remoteChecklist = JSON.parse(initialTask.checklistJson);
+          const remoteChecklist = initialTask.checklistJson ? JSON.parse(initialTask.checklistJson) : [];
           setChecklist((prev) => {
             if (JSON.stringify(prev) !== JSON.stringify(remoteChecklist)) {
               return remoteChecklist;
             }
             return prev;
           });
+          if (originalTaskRef.current) {
+            originalTaskRef.current = {
+              ...originalTaskRef.current,
+              checklistJson: initialTask.checklistJson,
+              updatedAt: initialTask.updatedAt,
+            };
+          }
         } catch {}
       }
-      if (initialTask.attachmentsJson) {
+      if (initialTask.attachmentsJson !== undefined) {
         try {
-          const remoteAtts = JSON.parse(initialTask.attachmentsJson);
+          const remoteAtts = initialTask.attachmentsJson ? JSON.parse(initialTask.attachmentsJson) : [];
           setAttachments((prev) => {
             if (JSON.stringify(prev) !== JSON.stringify(remoteAtts)) {
               return remoteAtts;
@@ -1960,6 +2025,7 @@ export function TaskFormModal({
           role: currentUserRole,
         });
         if (res.success && res.data) {
+          originalTaskRef.current = { ...res.data };
           onUpdateTask(res.data);
         }
       } catch (err: any) {
@@ -1988,6 +2054,7 @@ export function TaskFormModal({
           role: currentUserRole,
         });
         if (res.success && res.data) {
+          originalTaskRef.current = { ...res.data };
           onUpdateTask(res.data);
           toast.success("Added sub-task");
         }
@@ -2009,6 +2076,7 @@ export function TaskFormModal({
           role: currentUserRole,
         });
         if (res.success && res.data) {
+          originalTaskRef.current = { ...res.data };
           onUpdateTask(res.data);
           toast.success("Removed sub-task");
         }
@@ -2022,22 +2090,72 @@ export function TaskFormModal({
     e.preventDefault();
     if (!title.trim()) { toast.error("Please enter a task title"); return; }
     setSaving(true);
-    const finalAssigneeId = selectedAssignees.length > 0 ? selectedAssignees.map((a) => a.id).join(",") : "";
-    const finalAssigneeName = selectedAssignees.length > 0 ? selectedAssignees.map((a) => a.name).join(", ") : "";
+    try {
+      const finalAssigneeId = selectedAssignees.length > 0 ? selectedAssignees.map((a) => a.id).join(",") : "";
+      const finalAssigneeName = selectedAssignees.length > 0 ? selectedAssignees.map((a) => a.name).join(", ") : "";
 
-    await onSave({
-      title,
-      description,
-      priority,
-      status,
-      jobId,
-      assignedToId: finalAssigneeId,
-      assignedToName: finalAssigneeName,
-      dueDate,
-      attachments,
-      checklist,
-    });
-    setSaving(false);
+      const fullPayload: Record<string, any> = {
+        title: title.trim(),
+        description: description.trim().slice(0, 100),
+        priority,
+        status,
+        jobId: jobId.trim(),
+        assignedToId: finalAssigneeId,
+        assignedToName: finalAssigneeName,
+        dueDate,
+        attachments,
+        checklist,
+      };
+
+      const baseTask = originalTaskRef.current || initialTask || null;
+      if (initialTask && baseTask) {
+        const baseline = buildNormalizedTaskSnapshot(baseTask);
+        const dirtyPayload: Record<string, any> = {};
+        const dirtyKeys: string[] = [];
+
+        for (const key of ["title", "description", "priority", "status", "jobId", "assignedToId", "dueDate", "attachments", "checklist"] as const) {
+          const isEqual =
+            key === "attachments" || key === "checklist"
+              ? JSON.stringify(fullPayload[key]) === JSON.stringify(baseline[key])
+              : (fullPayload[key] || "") === (baseline[key] || "");
+          if (!isEqual) {
+            dirtyPayload[key] = fullPayload[key];
+            dirtyKeys.push(key);
+            if (key === "assignedToId") {
+              dirtyPayload.assignedToName = fullPayload.assignedToName;
+            }
+          }
+        }
+
+        if (dirtyKeys.length === 0) {
+          toast.info("ไม่มีการเปลี่ยนแปลงข้อมูล");
+          onClose();
+          return;
+        }
+
+        dirtyPayload.expectedUpdatedAt = baseTask.updatedAt;
+        dirtyPayload.updatedAt = baseTask.updatedAt;
+
+        const res = await onSave(dirtyPayload);
+        if (res && res.isConflict && res.latestTask) {
+          const latest: TaskItem = res.latestTask;
+          const conflictSet = new Set<string>(res.conflictFields || []);
+          const dirtySet = new Set<string>(dirtyKeys);
+          const fieldsToRefresh = new Set<string>();
+          for (const key of ["title", "description", "priority", "status", "jobId", "assignedToId", "dueDate", "attachments", "checklist"]) {
+            if (!dirtySet.has(key) || conflictSet.has(key) || (key === "assignedToId" && conflictSet.has("assignedTo"))) {
+              fieldsToRefresh.add(key);
+            }
+          }
+          originalTaskRef.current = { ...latest };
+          applyTaskToForm(latest, fieldsToRefresh);
+        }
+      } else {
+        await onSave(fullPayload);
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -4750,8 +4868,15 @@ export function AdminTasks() {
         handleTaskUpdate(res.data);
         setModalOpen(false);
         setEditingTask(null);
+        return res;
       } else {
+        if (res.isConflict && res.latestTask) {
+          handleTaskUpdate(res.latestTask);
+          toast.error(res.error || "ข้อมูลถูกอัปเดตโดยผู้ใช้อื่น กรุณาตรวจสอบแล้วกดบันทึกอีกครั้ง", { duration: 7000 });
+          return res;
+        }
         toast.error(res.error || "Failed to update task");
+        return res;
       }
     } else {
       const res = await createTask({
@@ -4766,6 +4891,7 @@ export function AdminTasks() {
       } else {
         toast.error(res.error);
       }
+      return res;
     }
   };
 

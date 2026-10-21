@@ -49,5 +49,6 @@ test-results/
 *.sql
 test_log.ts
 public/uploads/
+storage/uploads/
 backups/
 scripts/clone_test_to_local.js

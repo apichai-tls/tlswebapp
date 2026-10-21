@@ -330,17 +330,34 @@ export function AdminSettings() {
     setIsModalOpen(true);
   };
 
-  const handleEdit = (list: PriceList) => {
+  const originalPriceListRef = useRef<{
+    baseName: string;
+    baseIsCorporate: boolean;
+    baseServicePrices: Record<string, number>;
+    baseCustomItems: PriceListItem[];
+  } | null>(null);
+
+  const originalShopRef = useRef<ShopLocation | null>(null);
+
+  const applyPriceListToForm = (list: PriceList) => {
     setEditingList(list);
     setName(list.name);
     const isCorp = Boolean(list.isCorporate || (list.customItems && list.customItems.length > 0));
     setIsCorporateCatalog(isCorp);
-    if (isCorp && list.customItems) {
-      setCustomItems([...list.customItems]);
-    } else {
-      setCustomItems([]);
-    }
-    setServicePrices({ ...list.servicePrices });
+    const clonedItems = isCorp && list.customItems ? list.customItems.map((it) => ({ ...it })) : [];
+    const clonedPrices = { ...(list.servicePrices || {}) };
+    setCustomItems(clonedItems);
+    setServicePrices(clonedPrices);
+    originalPriceListRef.current = {
+      baseName: list.name,
+      baseIsCorporate: isCorp,
+      baseServicePrices: { ...clonedPrices },
+      baseCustomItems: clonedItems.map((it) => ({ ...it })),
+    };
+  };
+
+  const handleEdit = (list: PriceList) => {
+    applyPriceListToForm(list);
     setIsModalOpen(true);
   };
 
@@ -351,7 +368,7 @@ export function AdminSettings() {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       toast.error("Please enter a name");
@@ -366,15 +383,24 @@ export function AdminSettings() {
       }
 
       if (editingList) {
-        priceListStore.updatePriceList(editingList.id, {
+        const baseSnap = originalPriceListRef.current;
+        const res = await priceListStore.updatePriceList(editingList.id, {
           name: name.trim(),
           isCorporate: true,
           customItems: validItems,
           servicePrices: {},
+          baseName: baseSnap?.baseName,
+          baseServicePrices: baseSnap?.baseServicePrices,
+          baseCustomItems: baseSnap?.baseCustomItems,
         });
+        if (res?.isConflict && res?.latestPriceList) {
+          applyPriceListToForm(res.latestPriceList);
+          toast.warning("แคตตาล็อกสัญญานี้ถูกแก้ไขโดยผู้ใช้อื่นเมื่อสักครู่ ระบบโหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบก่อนบันทึกอีกครั้ง");
+          return;
+        }
         toast.success("อัปเดตแคตตาล็อกสัญญา Corporate สำเร็จ");
       } else {
-        priceListStore.addPriceList({
+        await priceListStore.addPriceList({
           name: name.trim(),
           isCorporate: true,
           customItems: validItems,
@@ -394,15 +420,24 @@ export function AdminSettings() {
       }
 
       if (editingList) {
-        priceListStore.updatePriceList(editingList.id, {
+        const baseSnap = originalPriceListRef.current;
+        const res = await priceListStore.updatePriceList(editingList.id, {
           name: name.trim(),
           isCorporate: false,
           customItems: undefined,
           servicePrices: cleanedServicePrices,
+          baseName: baseSnap?.baseName,
+          baseServicePrices: baseSnap?.baseServicePrices,
+          baseCustomItems: baseSnap?.baseCustomItems,
         });
+        if (res?.isConflict && res?.latestPriceList) {
+          applyPriceListToForm(res.latestPriceList);
+          toast.warning("ตารางราคานี้ถูกแก้ไขโดยผู้ใช้อื่นเมื่อสักครู่ ระบบโหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบก่อนบันทึกอีกครั้ง");
+          return;
+        }
         toast.success("Price list updated");
       } else {
-        priceListStore.addPriceList({
+        await priceListStore.addPriceList({
           name: name.trim(),
           isCorporate: false,
           customItems: undefined,
@@ -482,6 +517,10 @@ export function AdminSettings() {
   }, [editingShop?.id]);
 
   const handleEditShop = (shop: ShopLocation) => {
+    originalShopRef.current = {
+      ...shop,
+      coords: shop.coords ? { ...shop.coords } : { lat: 13.736717, lng: 100.523186 },
+    };
     setEditingShop(shop);
     setShopName(shop.name);
     setShopAddress(shop.address);
@@ -498,6 +537,7 @@ export function AdminSettings() {
   };
 
   const handleAddShop = () => {
+    originalShopRef.current = null;
     setEditingShop(null);
     setShopName("");
     setShopAddress("");
@@ -541,7 +581,35 @@ export function AdminSettings() {
     };
     try {
       if (editingShop) {
-        await shopStore.updateShopLocation(editingShop.id, payload);
+        const orig = originalShopRef.current;
+        const dirtyPayload: Partial<ShopLocation> = {};
+        if (!orig) {
+          Object.assign(dirtyPayload, payload);
+        } else {
+          if (payload.name !== orig.name) dirtyPayload.name = payload.name;
+          if (payload.address !== orig.address) dirtyPayload.address = payload.address;
+          if (
+            payload.coords.lat !== orig.coords?.lat ||
+            payload.coords.lng !== orig.coords?.lng
+          ) {
+            dirtyPayload.coords = payload.coords;
+          }
+          if (Boolean(payload.noCommission) !== Boolean(orig.noCommission)) {
+            dirtyPayload.noCommission = payload.noCommission;
+          }
+          if (Boolean(payload.isPosEnabled) !== Boolean(orig.isPosEnabled)) {
+            dirtyPayload.isPosEnabled = payload.isPosEnabled;
+          }
+          if (payload.area !== (orig.area || "BKK")) dirtyPayload.area = payload.area;
+          if (payload.logoUrl !== (orig.logoUrl || null)) dirtyPayload.logoUrl = payload.logoUrl;
+          if (payload.phone !== (orig.phone || null)) dirtyPayload.phone = payload.phone;
+          if (payload.taxId !== (orig.taxId || null)) dirtyPayload.taxId = payload.taxId;
+          if (payload.addressFull !== (orig.addressFull || null)) dirtyPayload.addressFull = payload.addressFull;
+          if (payload.proformaQrUrl !== (orig.proformaQrUrl || null)) dirtyPayload.proformaQrUrl = payload.proformaQrUrl;
+        }
+        if (Object.keys(dirtyPayload).length > 0) {
+          await shopStore.updateShopLocation(editingShop.id, dirtyPayload);
+        }
         toast.success("Branch updated");
       } else {
         await shopStore.addShopLocation(payload);

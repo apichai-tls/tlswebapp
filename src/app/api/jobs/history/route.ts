@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
       OR: [
         { createdAt: { gte: startDate, lte: endDate } },
         { shopPaidAt: { gte: startDate, lte: endDate } },
+        { csoPaidAt: { gte: startDate, lte: endDate } },
       ],
     };
 

@@ -838,9 +838,17 @@ export const priceListStore = {
     emitPriceListChange();
     return newList;
   },
-  async updatePriceList(id: string, updates: Partial<PriceList>) {
-    await api.updatePriceList(id, updates);
+  async updatePriceList(
+    id: string,
+    updates: Partial<PriceList> & {
+      baseName?: string;
+      baseServicePrices?: Record<string, number>;
+      baseCustomItems?: PriceListItem[];
+    }
+  ) {
+    const res = await api.updatePriceList(id, updates);
     emitPriceListChange();
+    return res;
   },
   async deletePriceList(id: string) {
     await api.deletePriceList(id);

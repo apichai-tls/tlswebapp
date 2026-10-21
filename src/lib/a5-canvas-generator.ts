@@ -79,12 +79,23 @@ async function generateA5ReceiptImageInternal(
   try {
     // Run React render and font loading concurrently
     await Promise.all([
-      // Double-rAF: wait for 2 animation frames so React layout is fully committed
+      // Wait until React 18/19 concurrent root actually commits the child element with non-zero layout height
       new Promise<void>((resolve) => {
         root.render(
           React.createElement(A5ReceiptContent, { receiptData, activeShop, currentLanguage: "en" })
         );
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        const startWait = Date.now();
+        const checkCommitted = () => {
+          const el = wrapper.firstElementChild as HTMLElement | null;
+          if (el && el.offsetHeight > 0) {
+            requestAnimationFrame(() => setTimeout(resolve, 16));
+          } else if (Date.now() - startWait < 3000) {
+            setTimeout(checkCommitted, 16);
+          } else {
+            resolve();
+          }
+        };
+        setTimeout(checkCommitted, 16);
       }),
       fontReadyPromise,
     ]);

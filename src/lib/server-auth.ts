@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
 import { prisma } from '@/lib/prisma';
 import { dbCache } from '@/lib/db-cache';
@@ -18,14 +20,50 @@ export interface ServerAuthUser {
 }
 
 // ─── Cryptographic Session Secret Management ───────────────────────────────
-// Uses TLS_SESSION_SECRET or CRON_SECRET or BEAM_WEBHOOK_SECRET if configured.
-// If none is provided in the environment, generates a cryptographically strong
-// random secret per process instance so an attacker can NEVER guess a hardcoded secret.
-const globalForSecret = globalThis as unknown as {
-  __tlsDynamicSessionSecret?: string;
-};
+// Requires a shared session secret (TLS_SESSION_SECRET, CRON_SECRET, or BEAM_WEBHOOK_SECRET >= 16 chars)
+// across all instances. Random per-instance fallback is strictly prohibited so tokens
+// issued by one instance always verify on all other instances, and missing secret fails startup clearly.
+function loadDotEnvSecretOnceInDev(): void {
+  if (process.env.NODE_ENV === 'production') return;
+  if (
+    'TLS_SESSION_SECRET' in process.env ||
+    'CRON_SECRET' in process.env ||
+    'BEAM_WEBHOOK_SECRET' in process.env
+  ) {
+    return;
+  }
+  try {
+    const envPath = path.resolve(process.cwd(), '.env');
+    if (!fs.existsSync(envPath)) return;
+    const content = fs.readFileSync(envPath, 'utf8');
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eqIdx = line.indexOf('=');
+      if (eqIdx <= 0) continue;
+      const key = line.slice(0, eqIdx).trim();
+      if (
+        key === 'TLS_SESSION_SECRET' ||
+        key === 'CRON_SECRET' ||
+        key === 'BEAM_WEBHOOK_SECRET'
+      ) {
+        const val = line
+          .slice(eqIdx + 1)
+          .trim()
+          .replace(/^['"]|['"]$/g, '');
+        if (val && !(key in process.env)) {
+          process.env[key] = val;
+        }
+      }
+    }
+  } catch {
+    // Ignore file read errors; assertSessionSecretConfigured will enforce requirement
+  }
+}
 
-function getSessionSecret(): string {
+loadDotEnvSecretOnceInDev();
+
+export function assertSessionSecretConfigured(): string {
   const envSecret =
     process.env.TLS_SESSION_SECRET ||
     process.env.CRON_SECRET ||
@@ -35,13 +73,20 @@ function getSessionSecret(): string {
     return envSecret.trim();
   }
 
-  if (!globalForSecret.__tlsDynamicSessionSecret) {
-    globalForSecret.__tlsDynamicSessionSecret = crypto.randomBytes(32).toString('hex');
-  }
-  return globalForSecret.__tlsDynamicSessionSecret;
+  throw new Error(
+    'CRITICAL: Shared session secret (TLS_SESSION_SECRET) is missing or too short (minimum 16 characters required). Configure TLS_SESSION_SECRET before starting the server.'
+  );
 }
 
-const SESSION_TTL_MS = 18 * 60 * 60 * 1000; // 18 hours max session expiry
+function getSessionSecret(): string {
+  return assertSessionSecretConfigured();
+}
+
+if (process.env.NEXT_PHASE !== 'phase-production-build') {
+  assertSessionSecretConfigured();
+}
+
+export const SESSION_TTL_MS = 18 * 60 * 60 * 1000; // 18 hours max session expiry
 const USER_CACHE_TTL_MS = 30000;             // 30s cache for authoritative DB user lookup
 const BRANCH_CACHE_TTL_MS = 60000;           // 60s cache for branch locations
 
@@ -51,7 +96,6 @@ interface CachedUserEntry {
 }
 
 const REVOCATION_SETTING_KEY = 'auth_session_revocations';
-const REVOCATION_SYNC_TTL_MS = 15000;
 
 interface RevocationState {
   users: Record<string, number>;   // userId -> revokedBeforeMs
@@ -88,62 +132,118 @@ function pruneExpiredRevocations(now = Date.now()) {
   }
 }
 
-async function syncRevocationsFromDb(force = false): Promise<void> {
+export async function syncRevocationsFromDb(_force = false): Promise<void> {
   const now = Date.now();
-  if (!force && globalForAuth.__tlsRevocationSyncedAt && now - globalForAuth.__tlsRevocationSyncedAt < REVOCATION_SYNC_TTL_MS) {
-    return;
-  }
   globalForAuth.__tlsRevocationSyncedAt = now;
-  try {
-    const row = await prisma.setting.findUnique({ where: { key: REVOCATION_SETTING_KEY } });
-    if (row?.value) {
-      const parsed = JSON.parse(row.value) as Partial<RevocationState>;
-      if (parsed.tokens && typeof parsed.tokens === 'object') {
-        for (const [hash, exp] of Object.entries(parsed.tokens)) {
-          if (typeof exp === 'number' && exp > now) {
-            revokedTokensMap.set(hash, exp);
-          }
-        }
-      }
-      if (parsed.users && typeof parsed.users === 'object') {
-        for (const [uid, ts] of Object.entries(parsed.users)) {
-          if (typeof ts === 'number' && now - ts <= SESSION_TTL_MS) {
-            const existing = userRevokedBeforeMap.get(uid) || 0;
-            if (ts > existing) userRevokedBeforeMap.set(uid, ts);
-          }
+  const row = await prisma.setting.findUnique({ where: { key: REVOCATION_SETTING_KEY } });
+  if (row?.value) {
+    const parsed = JSON.parse(row.value) as Partial<RevocationState>;
+    if (parsed.tokens && typeof parsed.tokens === 'object') {
+      for (const [hash, exp] of Object.entries(parsed.tokens)) {
+        if (typeof exp === 'number' && exp > now) {
+          const existingExp = revokedTokensMap.get(hash) || 0;
+          if (exp > existingExp) revokedTokensMap.set(hash, exp);
         }
       }
     }
-  } catch {
-    // Ignore DB read errors during revocation sync
+    if (parsed.users && typeof parsed.users === 'object') {
+      for (const [uid, ts] of Object.entries(parsed.users)) {
+        if (typeof ts === 'number' && now - ts <= SESSION_TTL_MS) {
+          const existing = userRevokedBeforeMap.get(uid) || 0;
+          if (ts > existing) userRevokedBeforeMap.set(uid, ts);
+        }
+      }
+    }
   }
+  pruneExpiredRevocations(now);
 }
 
-async function persistRevocationsToDb(): Promise<void> {
+async function persistRevocationsToDb(delta?: {
+  users?: Record<string, number>;
+  tokens?: Record<string, number>;
+}): Promise<void> {
   const now = Date.now();
-  pruneExpiredRevocations(now);
-  const state: RevocationState = {
-    users: Object.fromEntries(userRevokedBeforeMap.entries()),
-    tokens: Object.fromEntries(revokedTokensMap.entries()),
-  };
-  try {
-    await prisma.setting.upsert({
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${REVOCATION_SETTING_KEY}))`;
+
+    const existingRow = await tx.setting.findUnique({
+      where: { key: REVOCATION_SETTING_KEY },
+    });
+
+    const mergedUsers: Record<string, number> = {};
+    const mergedTokens: Record<string, number> = {};
+
+    if (existingRow?.value) {
+      try {
+        const parsed = JSON.parse(existingRow.value) as Partial<RevocationState>;
+        if (parsed.users && typeof parsed.users === 'object') {
+          for (const [uid, ts] of Object.entries(parsed.users)) {
+            if (typeof ts === 'number' && Number.isFinite(ts) && now - ts <= SESSION_TTL_MS) {
+              mergedUsers[uid] = Math.max(mergedUsers[uid] || 0, ts);
+            }
+          }
+        }
+        if (parsed.tokens && typeof parsed.tokens === 'object') {
+          for (const [hash, exp] of Object.entries(parsed.tokens)) {
+            if (typeof exp === 'number' && Number.isFinite(exp) && exp > now) {
+              mergedTokens[hash] = Math.max(mergedTokens[hash] || 0, exp);
+            }
+          }
+        }
+      } catch {
+        // Recover cleanly if stored JSON was malformed
+      }
+    }
+
+    if (delta?.users) {
+      for (const [uid, ts] of Object.entries(delta.users)) {
+        if (typeof ts === 'number' && Number.isFinite(ts) && now - ts <= SESSION_TTL_MS) {
+          mergedUsers[uid] = Math.max(mergedUsers[uid] || 0, ts);
+        }
+      }
+    }
+
+    if (delta?.tokens) {
+      for (const [hash, exp] of Object.entries(delta.tokens)) {
+        if (typeof exp === 'number' && Number.isFinite(exp) && exp > now) {
+          mergedTokens[hash] = Math.max(mergedTokens[hash] || 0, exp);
+        }
+      }
+    }
+
+    const state: RevocationState = {
+      users: mergedUsers,
+      tokens: mergedTokens,
+    };
+
+    await tx.setting.upsert({
       where: { key: REVOCATION_SETTING_KEY },
       update: { value: JSON.stringify(state) },
       create: { key: REVOCATION_SETTING_KEY, value: JSON.stringify(state) },
     });
+
+    for (const [uid, ts] of Object.entries(mergedUsers)) {
+      const existing = userRevokedBeforeMap.get(uid) || 0;
+      if (ts > existing) userRevokedBeforeMap.set(uid, ts);
+    }
+    for (const [hash, exp] of Object.entries(mergedTokens)) {
+      const existing = revokedTokensMap.get(hash) || 0;
+      if (exp > existing) revokedTokensMap.set(hash, exp);
+    }
+    pruneExpiredRevocations(now);
     globalForAuth.__tlsRevocationSyncedAt = now;
-  } catch {
-    // Ignore persistence error if DB is unreachable
-  }
+  });
 }
 
 export async function revokeSessionToken(token?: string | null, userId?: string | null): Promise<void> {
   const now = Date.now();
+  const deltaTokens: Record<string, number> = {};
   if (token) {
     const verified = verifyStaffSessionToken(token);
     const exp = verified?.exp || now + SESSION_TTL_MS;
-    revokedTokensMap.set(hashSessionToken(token), exp);
+    const tokenHash = hashSessionToken(token);
+    revokedTokensMap.set(tokenHash, exp);
+    deltaTokens[tokenHash] = exp;
     if (!userId && verified?.id) {
       userId = verified.id;
     }
@@ -151,14 +251,15 @@ export async function revokeSessionToken(token?: string | null, userId?: string 
   if (userId) {
     invalidateServerAuthCache(userId);
   }
-  await persistRevocationsToDb();
+  await persistRevocationsToDb({ tokens: deltaTokens });
 }
 
 export async function revokeAllUserSessions(userId: string): Promise<void> {
   if (!userId) return;
-  userRevokedBeforeMap.set(userId, Date.now());
+  const now = Date.now();
+  userRevokedBeforeMap.set(userId, now);
   invalidateServerAuthCache(userId);
-  await persistRevocationsToDb();
+  await persistRevocationsToDb({ users: { [userId]: now } });
 }
 
 function isTokenRevoked(token: string, verified: { id: string; iat?: number }): boolean {
@@ -272,20 +373,36 @@ export function verifyStaffSessionToken(token: string): {
   iat: number;
   exp: number;
 } | null {
+  const secret = getSessionSecret();
   try {
+    if (!token || typeof token !== 'string') return null;
     const [data, sig] = token.split('.');
     if (!data || !sig) return null;
-    const secret = getSessionSecret();
     const expectedSig = crypto.createHmac('sha256', secret).update(data).digest('base64url');
     if (sig.length !== expectedSig.length) return null;
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
       return null;
     }
     const parsed = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
-    if (!parsed || !parsed.id) return null;
+    if (!parsed || typeof parsed.id !== 'string' || !parsed.id.trim()) return null;
 
-    // Enforce cryptographic session expiration
-    if (typeof parsed.exp === 'number' && Date.now() > parsed.exp) {
+    const now = Date.now();
+    // Require valid numeric iat and exp and enforce maximum session lifetime
+    if (
+      typeof parsed.iat !== 'number' ||
+      !Number.isFinite(parsed.iat) ||
+      parsed.iat <= 0 ||
+      parsed.iat > now + 60_000
+    ) {
+      return null;
+    }
+    if (
+      typeof parsed.exp !== 'number' ||
+      !Number.isFinite(parsed.exp) ||
+      parsed.exp <= parsed.iat ||
+      parsed.exp - parsed.iat > SESSION_TTL_MS ||
+      now > parsed.exp
+    ) {
       return null;
     }
 
@@ -428,7 +545,10 @@ interface ServerActionContextStore {
   internalSystemUser?: ServerAuthUser | null;
 }
 
-const serverActionAuthContext = new AsyncLocalStorage<ServerActionContextStore>();
+const serverActionAuthContext =
+  (globalForAuth as any).__tlsServerActionAuthContext ||
+  new AsyncLocalStorage<ServerActionContextStore>();
+(globalForAuth as any).__tlsServerActionAuthContext = serverActionAuthContext;
 
 /**
  * Runs a function within an explicit session token context (used by server-side test suites
@@ -662,6 +782,7 @@ export function canUserAccessJob(
     riderId?: string | null;
     pickupRiderId?: string | null;
     deliveryRiderId?: string | null;
+    previousRiderIds?: string[] | null;
     status?: string | null;
   }
 ): boolean {
@@ -673,7 +794,8 @@ export function canUserAccessJob(
     const isAssignedToRider =
       job.riderId === user.id ||
       job.pickupRiderId === user.id ||
-      job.deliveryRiderId === user.id;
+      job.deliveryRiderId === user.id ||
+      (Array.isArray(job.previousRiderIds) && job.previousRiderIds.includes(user.id));
     if (isAssignedToRider) return true;
 
     const isUnassignedPending =

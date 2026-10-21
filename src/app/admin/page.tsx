@@ -831,8 +831,8 @@ export default function AdminPage() {
   const deliveryUploaderRef = useRef<MultiImageUploaderRef>(null);
   const originalJobRef = useRef<Job | null>(null);
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     window.location.href = "/login";
   };
 
@@ -3245,47 +3245,13 @@ export default function AdminPage() {
             // Offload to microtask so it doesn't block dialog close
             Promise.resolve().then(async () => {
               try {
+                const { uploadReceiptImage, generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
                 const proformaBlob = systemSettings?.receiptPaperSize === "A5"
                   ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
-                  : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaCapData, activeShop);
+                  : await generateThermalReceiptImage(proformaCapData, activeShop);
                 if (proformaBlob) {
                   const proformaFilename = `proforma-${finalProformaNum}-rev${finalRevision}.png`;
-                  let proformaUrl: string | null = null;
-                  try {
-                    const signRes = await fetch("/api/upload-url", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        entityType: "job",
-                        entityId: targetEditingJobId,
-                        subType: "proofs",
-                        contentType: "image/png",
-                        filename: proformaFilename,
-                      }),
-                    });
-                    if (signRes.ok) {
-                      const signData = await signRes.json();
-                      if (signData.uploadUrl && signData.publicUrl) {
-                        const putRes = await fetch(signData.uploadUrl, {
-                          method: "PUT",
-                          headers: { "Content-Type": "image/png" },
-                          body: proformaBlob,
-                        });
-                        if (putRes.ok) proformaUrl = signData.publicUrl;
-                      }
-                    }
-                  } catch {
-                    // Fallback to local upload
-                    const file = new File([proformaBlob], proformaFilename, { type: "image/png" });
-                    const fd = new FormData();
-                    fd.append("file", file);
-                    fd.append("entityType", "jobs");
-                    fd.append("entityId", targetEditingJobId);
-                    fd.append("subType", "proofs");
-                    const localRes = await fetch("/api/upload-local", { method: "POST", body: fd });
-                    const localData = await localRes.json();
-                    if (localData.success && localData.publicUrl) proformaUrl = localData.publicUrl;
-                  }
+                  const proformaUrl = await uploadReceiptImage(proformaBlob, targetEditingJobId, proformaFilename);
                   if (proformaUrl) {
                     const capturedUrl = proformaUrl;
                     const cleanBase = finalProformaNum;
@@ -3601,46 +3567,13 @@ export default function AdminPage() {
           const capturedSavedJobId = savedJobId;
           Promise.resolve().then(async () => {
             try {
+              const { uploadReceiptImage, generateThermalReceiptImage } = await import("@/lib/thermal-canvas-generator");
               const proformaBlob = systemSettings?.receiptPaperSize === "A5"
                 ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(proformaCapData, activeShop)
-                : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(proformaCapData, activeShop);
+                : await generateThermalReceiptImage(proformaCapData, activeShop);
               if (proformaBlob) {
                 const proformaFilename = `proforma-${autoProformaNum}-rev0.png`;
-                let proformaUrl: string | null = null;
-                try {
-                  const signRes = await fetch("/api/upload-url", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      entityType: "job",
-                      entityId: capturedSavedJobId,
-                      subType: "proofs",
-                      contentType: "image/png",
-                      filename: proformaFilename,
-                    }),
-                  });
-                  if (signRes.ok) {
-                    const signData = await signRes.json();
-                    if (signData.uploadUrl && signData.publicUrl) {
-                      const putRes = await fetch(signData.uploadUrl, {
-                        method: "PUT",
-                        headers: { "Content-Type": "image/png" },
-                        body: proformaBlob,
-                      });
-                      if (putRes.ok) proformaUrl = signData.publicUrl;
-                    }
-                  }
-                } catch {
-                  const file = new File([proformaBlob], proformaFilename, { type: "image/png" });
-                  const fd = new FormData();
-                  fd.append("file", file);
-                  fd.append("entityType", "jobs");
-                  fd.append("entityId", capturedSavedJobId);
-                  fd.append("subType", "proofs");
-                  const localRes = await fetch("/api/upload-local", { method: "POST", body: fd });
-                  const localData = await localRes.json();
-                  if (localData.success && localData.publicUrl) proformaUrl = localData.publicUrl;
-                }
+                const proformaUrl = await uploadReceiptImage(proformaBlob, capturedSavedJobId, proformaFilename);
                 if (proformaUrl) {
                   const capturedUrl = proformaUrl;
                   const currentTargetJob = jobStore.getSnapshot().find(j => j.id === capturedSavedJobId);

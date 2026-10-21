@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
-import { resolveRequestUser, canUserAccessJob } from "@/lib/server-auth";
+import { resolveRequestUser, canUserAccessJob, canAccessCustomerRecords } from "@/lib/server-auth";
 import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
 const ALLOWED_ENTITY_TYPES = new Set([
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid entityId format" }, { status: 400 });
     }
 
-    // Enforce job-level authorization when staff/rider uploads to an existing job
+    // Enforce entity-level authorization when staff/rider uploads to an existing job, customer, or task
     if (user && (entityType === "job" || entityType === "jobs") && entityId !== "temp") {
       const targetJob = await prisma.job.findUnique({
         where: { id: entityId },
@@ -110,13 +110,43 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (user && (entityType === "customer" || entityType === "customers")) {
+      if (!canAccessCustomerRecords(user)) {
+        return NextResponse.json(
+          { error: "Forbidden: You are not authorized to upload customer files" },
+          { status: 403 }
+        );
+      }
+      if (entityId !== "temp") {
+        const targetCustomer = await prisma.customer.findUnique({
+          where: { id: entityId },
+          select: { id: true, branchId: true },
+        });
+        if (targetCustomer && !canAccessCustomerRecords(user, targetCustomer.branchId)) {
+          return NextResponse.json(
+            { error: "Forbidden: You do not have access to this customer branch" },
+            { status: 403 }
+          );
+        }
+      }
+    }
+
+    if (user && (entityType === "task" || entityType === "tasks")) {
+      if ((user.role || "").toLowerCase() === "rider") {
+        return NextResponse.json(
+          { error: "Forbidden: Riders are not permitted to upload task attachments" },
+          { status: 403 }
+        );
+      }
+    }
+
     const bytes = await file.arrayBuffer();
     if (bytes.byteLength > MAX_UPLOAD_BYTES) {
       return NextResponse.json({ error: "File exceeds maximum allowed size (15MB)" }, { status: 413 });
     }
     const buffer = Buffer.from(bytes);
 
-    // Save to public/uploads/entityType/subType/entityId-timestamp.ext
+    // Save to private storage/uploads/entityType/subType/entityId-timestamp.ext (strictly outside public/)
     const now = Date.now();
     let ext = "jpg";
     if (file.name && file.name.includes(".")) {
@@ -140,7 +170,7 @@ export async function POST(request: NextRequest) {
       ? baseFileName
       : `${entityId}-${now}.${normalizedExt}`;
 
-    const baseUploadsRoot = path.resolve(process.cwd(), "public", "uploads");
+    const baseUploadsRoot = path.resolve(process.cwd(), "storage", "uploads");
     const uploadDir = path.resolve(baseUploadsRoot, entityType, subType);
     const filePath = path.resolve(uploadDir, filename);
 

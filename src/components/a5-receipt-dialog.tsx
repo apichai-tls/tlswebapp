@@ -993,7 +993,7 @@ export function A5ReceiptContent({
                 <span>{receiptData.customerName}</span>
                 {(effectiveMemberId || isMember) && (
                   <span className="text-[10.5px] font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
-                    {effectiveMemberId 
+                    Member ID: {effectiveMemberId 
                       ? (effectiveMemberId.startsWith("#") ? effectiveMemberId : `#${effectiveMemberId}`)
                       : "MEMBER"}
                   </span>
@@ -1001,11 +1001,6 @@ export function A5ReceiptContent({
               </p>
               <div className="flex items-center gap-2 mt-0.5 text-xs text-neutral-600 font-mono">
                 <span>{receiptData.customerPhone}</span>
-                {(effectiveMemberId || isMember) && (
-                  <span className="font-bold text-indigo-700">
-                    • MEMBER ID: {effectiveMemberId ? (effectiveMemberId.startsWith("#") ? effectiveMemberId : `#${effectiveMemberId}`) : "MEMBER"}
-                  </span>
-                )}
               </div>
               {receiptData.deliveryAddress && (
                 <p className={`${isUltraCompact ? "text-[10px]" : "text-[11px]"} text-neutral-600 mt-0.5 leading-snug break-words`}>

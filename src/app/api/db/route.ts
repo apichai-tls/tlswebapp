@@ -15,6 +15,7 @@ import {
   canUserAccessJob,
   canAccessCustomerRecords,
   canAccessShifts,
+  canAccessFinancialData,
   type ServerAuthUser
 } from '@/lib/server-auth';
 
@@ -26,43 +27,99 @@ const CUSTOMERS_TTL_MS = 45000;       // 45s customer master data cache (invalid
 const MASTER_DATA_TTL_MS = 60000;     // 60s services, price lists, shop locations, settings cache
 const RIDER_EARNINGS_TTL_MS = 60000;  // 60s rider earnings aggregations cache
 
-function filterPayloadForUser(payload: any, user: ServerAuthUser): any {
+const INTERNAL_SETTING_KEYS = new Set(['auth_session_revocations']);
+
+export function filterPayloadForUser(payload: any, user: ServerAuthUser): any {
   const role = (user.role || '').toLowerCase();
+  const safeSettings: Record<string, string> = {};
+  if (payload.settings && typeof payload.settings === 'object') {
+    for (const [k, v] of Object.entries(payload.settings)) {
+      if (!INTERNAL_SETTING_KEYS.has(k)) {
+        safeSettings[k] = String(v);
+      }
+    }
+  }
 
-  // 1. Riders: Only assigned jobs (or pending unassigned in their branches), NO full customer DB, NO shifts, NO accounting
+  // 1. Riders: Only assigned jobs (or pending unassigned in their branches), own rider profile, NO full customer DB, NO shifts, NO other riders' earnings
   if (role === 'rider') {
+    const riderTargetId = (user as any).riderId || user.id;
     const filteredJobs = (payload.jobs || []).filter((j: any) => canUserAccessJob(user, j));
+    const filteredRiders = (payload.riders || []).filter((r: any) => r.id === user.id || r.id === riderTargetId);
     const ownEarnings = payload.riderEarnings ? {
-      lifetimeEarnings: (payload.riderEarnings.lifetimeEarnings || []).filter((r: any) => r.riderId === user.id),
-      monthEarnings: (payload.riderEarnings.monthEarnings || []).filter((r: any) => r.riderId === user.id),
-      completedJobsCounts: (payload.riderEarnings.completedJobsCounts || []).filter((r: any) => r.riderId === user.id),
-    } : null;
+      lifetimeEarnings: (payload.riderEarnings.lifetimeEarnings || []).filter((r: any) => r.riderId === user.id || r.riderId === riderTargetId),
+      monthEarnings: (payload.riderEarnings.monthEarnings || []).filter((r: any) => r.riderId === user.id || r.riderId === riderTargetId),
+      completedJobsCounts: (payload.riderEarnings.completedJobsCounts || []).filter((r: any) => r.riderId === user.id || r.riderId === riderTargetId),
+    } : undefined;
 
-    return {
+    const result: any = {
       ...payload,
       jobs: filteredJobs,
       customers: [], // Riders never receive the full customer database
+      riders: filteredRiders,
+      openShifts: [],
       cashierShifts: [],
-      riderEarnings: ownEarnings,
+      settings: safeSettings,
     };
+    if (ownEarnings !== undefined || 'riderEarnings' in payload) {
+      result.riderEarnings = ownEarnings ?? null;
+    }
+    return result;
   }
 
   // 2. Branch-Scoped Staff (Managers, Cashiers, Branch Ops)
-  if (user.allowedBranchIds !== 'ALL') {
+  const isFullBranchAccess =
+    user.allowedBranchIds === 'ALL' ||
+    (user.allowedBranchIds === undefined &&
+      (role === 'admin' ||
+        role === 'superadmin' ||
+        (!user.branchId && !user.area) ||
+        user.branchId === 'all' ||
+        user.area === 'ALL'));
+
+  if (!isFullBranchAccess) {
+    const allowedList = Array.isArray(user.allowedBranchIds)
+      ? user.allowedBranchIds
+      : user.branchId && user.branchId !== 'all'
+      ? [user.branchId]
+      : [];
     const filteredJobs = (payload.jobs || []).filter((j: any) => canUserAccessJob(user, j));
     const filteredCustomers = (payload.customers || []).filter((c: any) => canAccessCustomerRecords(user, c.branchId));
-    const filteredShifts = (payload.cashierShifts || []).filter((s: any) => canAccessShifts(user, s.branchId));
+    const filteredOpenShifts = (payload.openShifts || []).filter((s: any) => canAccessShifts(user, s.branchId));
+    const filteredCashierShifts = (payload.cashierShifts || []).filter((s: any) => canAccessShifts(user, s.branchId));
+    const hasFinAccess = canAccessFinancialData(user);
+    const filteredRiders = (payload.riders || [])
+      .filter((r: any) => !r.branchId || allowedList.includes(r.branchId))
+      .map((r: any) => (hasFinAccess ? r : { ...r, nationalId: null }));
 
-    return {
+    const result: any = {
       ...payload,
       jobs: filteredJobs,
       customers: filteredCustomers,
-      cashierShifts: filteredShifts,
+      riders: filteredRiders,
+      openShifts: filteredOpenShifts,
+      settings: safeSettings,
     };
+    if ('cashierShifts' in payload) {
+      result.cashierShifts = filteredCashierShifts;
+    }
+    return result;
   }
 
-  // 3. Full Access (Admin, Superadmin, HQ Accounting / Management)
-  return payload;
+  // 3. Full Branch Access (Admin, Superadmin, HQ Accounting / Management)
+  const filteredOpenShifts = canAccessShifts(user)
+    ? (payload.openShifts || []).filter((s: any) => canAccessShifts(user, s.branchId))
+    : [];
+  const result: any = {
+    ...payload,
+    openShifts: filteredOpenShifts,
+    settings: safeSettings,
+  };
+  if ('cashierShifts' in payload) {
+    result.cashierShifts = canAccessShifts(user)
+      ? (payload.cashierShifts || []).filter((s: any) => canAccessShifts(user, s.branchId))
+      : [];
+  }
+  return result;
 }
 
 export async function GET(request?: NextRequest) {

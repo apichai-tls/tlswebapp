@@ -20,7 +20,7 @@ export interface User {
 interface AuthContextType {
   user: User | null;
   login: (email: string, password?: string) => Promise<User>;
-  logout: () => void;
+  logout: () => Promise<void> | void;
   isLoading: boolean;
 }
 
@@ -97,7 +97,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return userData;
   };
 
-  const logout = () => {
+  const logout = async () => {
     setUser(null);
     localStorage.removeItem('authUser');
     localStorage.removeItem('lastLoginDate');
@@ -116,7 +116,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         })
         .catch(() => {});
     }
-    fetch('/api/auth/login', { method: 'DELETE' }).catch(() => {});
+    await fetch('/api/auth/login', { method: 'DELETE', keepalive: true, credentials: 'same-origin' }).catch(() => {});
   };
 
   return (

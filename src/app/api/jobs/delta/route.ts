@@ -4,6 +4,7 @@ import { JOB_SELECT_FIELDS, primeJobCache, sanitizeCustomerRecord } from '@/lib/
 import {
   resolveRequestUser,
   buildJobAuthWhereClause,
+  canUserAccessJob,
   canAccessCustomerRecords,
   canAccessShifts
 } from '@/lib/server-auth';
@@ -167,6 +168,21 @@ export async function GET(request: NextRequest) {
                 status: true,
               },
             }),
+        !isInitialPage || (user.role || '').toLowerCase() !== 'rider'
+          ? Promise.resolve(null)
+          : prisma.job
+              .findMany({
+                where: {
+                  status: { notIn: ['completed', 'cancel'] },
+                  OR: [
+                    { riderId: user.id },
+                    { pickupRiderId: user.id },
+                    { deliveryRiderId: user.id },
+                  ],
+                },
+                select: { id: true },
+              })
+              .then((rows) => rows.map((r) => r.id)),
       ]).finally(() => {
         inFlightDeltaQueries.delete(bucketKey);
       });
@@ -174,16 +190,21 @@ export async function GET(request: NextRequest) {
       inFlightDeltaQueries.set(bucketKey, queryPromise);
     }
 
-    const [jobsRaw, customersRaw, openShifts] = await queryPromise;
+    const [jobsRaw, customersRaw, openShiftsRaw, activeRiderJobIds] = await queryPromise;
 
     const hasMoreJobs = !skipJobs && jobsRaw.length > limit;
-    const pageJobsRaw = hasMoreJobs ? jobsRaw.slice(0, limit) : jobsRaw;
+    const pageJobsRaw = (hasMoreJobs ? jobsRaw.slice(0, limit) : jobsRaw).filter((j: any) =>
+      canUserAccessJob(user, j)
+    );
 
     const hasMoreCustomers = !skipCustomers && customersRaw.length > custLimit;
-    const pageCustomersRaw = hasMoreCustomers ? customersRaw.slice(0, custLimit) : customersRaw;
+    const pageCustomersRaw = (hasMoreCustomers ? customersRaw.slice(0, custLimit) : customersRaw).filter(
+      (c: any) => canAccessCustomerRecords(user, c.branchId)
+    );
 
     const jobs = pageJobsRaw.map((j: any) => primeJobCache(j));
     const customers = pageCustomersRaw.map((c: any) => sanitizeCustomerRecord(c));
+    const openShifts = (openShiftsRaw || []).filter((s: any) => canAccessShifts(user, s.branchId));
 
     const lastJob = pageJobsRaw.length > 0 ? pageJobsRaw[pageJobsRaw.length - 1] : null;
     const nextJobCursor =
@@ -220,6 +241,7 @@ export async function GET(request: NextRequest) {
         jobs,
         customers,
         openShifts,
+        ...(Array.isArray(activeRiderJobIds) ? { activeRiderJobIds } : {}),
         maxRevision,
         hasMore,
         hasMoreJobs,

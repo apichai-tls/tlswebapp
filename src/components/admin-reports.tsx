@@ -57,8 +57,9 @@ function normalizeReportChannelName(name?: string | null): string {
   const trimmed = name.trim();
   const lower = trimmed.toLowerCase();
   if (lower === "cash" || lower === "cash / cod" || lower === "cash/cod") return "Cash / COD";
-  if (lower === "transfer" || lower === "promptpay" || lower === "โอน" || lower === "โอนเงิน") return "Transfer";
-  if (lower === "credit card" || lower === "card" || lower === "บัตรเครดิต") return "Credit Card";
+  if (lower === "promptpay" || lower === "prompt pay" || lower.includes("promptpay") || lower.includes("พร้อมเพย์")) return "PromptPay";
+  if (lower === "transfer" || lower === "โอน" || lower === "โอนเงิน") return "Transfer";
+  if (lower === "credit card" || lower === "credit_card" || lower === "card" || lower === "บัตรเครดิต") return "Credit Card";
   if (lower === "deduct member" || lower === "wallet" || lower === "credit") return "Deduct Member";
   if (lower === "hq/credit" || lower === "hq credit") return "HQ/Credit";
   if (lower.includes("beam") || lower.includes("gateway")) return "Beam Gateway";
@@ -73,7 +74,8 @@ function getChannelBadgeStyle(channelName: string) {
       textColor: "text-emerald-500 dark:text-emerald-400",
     };
   }
-  if (lower.includes("transfer") || lower.includes("promptpay") || lower.includes("โอน")) {
+  if (lower.includes("promptpay") || lower.includes("พร้อมเพย์")) return { barColor: "bg-blue-500", textColor: "text-blue-500 dark:text-blue-400" };
+  if (lower.includes("transfer") || lower.includes("โอน")) {
     return {
       barColor: "bg-indigo-500",
       textColor: "text-indigo-500 dark:text-indigo-400",

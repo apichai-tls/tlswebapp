@@ -25,8 +25,6 @@ import {
 } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ReportsWalletApprovals } from "@/components/reports-wallet-approvals";
-import { AdminLegacyMembers } from "@/components/admin-legacy-members";
-import rawLegacyMembers from "@/data/legacy-members.json";
 import { getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { type ReceiptData } from "@/components/thermal-receipt-dialog";
 import { isWalletExpired, isJobFullyPaid, isValidPhoneNumber, findMatchingCustomer, normalizePhone, matchCustomerSearch, formatBaht } from "@/lib/utils";
@@ -197,7 +195,7 @@ export function AdminCRM({
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates" | "legacy_members">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "vip" | "member" | "corporate" | "balance" | "expired_wallets" | "topup_history" | "customer_report" | "wallet_approvals" | "duplicates">("all");
   const [selectedBrand, setSelectedBrand] = useState<"all" | "that_laundry_shop" | "noname_laundry">("all");
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -1679,17 +1677,6 @@ export function AdminCRM({
                 )}
               </button>
             )}
-            <button
-              onClick={() => setActiveTab("customer_report")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "customer_report"
-                  ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <FileText size={14} className={activeTab === "customer_report" ? "text-white" : "text-indigo-600"} />
-              Customer Report
-            </button>
             {isAdmin && (
               <button
                 type="button"
@@ -1711,27 +1698,10 @@ export function AdminCRM({
                 )}
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => setActiveTab("legacy_members")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                activeTab === "legacy_members"
-                  ? "bg-slate-900 text-white shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Archive size={14} className={activeTab === "legacy_members" ? "text-white" : "text-slate-600"} />
-              <span>Legacy Members (สมาชิกเดิม)</span>
-              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
-                activeTab === "legacy_members" ? "bg-white text-slate-900" : "bg-slate-100 text-slate-700 border border-slate-200"
-              }`}>
-                {rawLegacyMembers.length}
-              </span>
-            </button>
           </div>
 
-          {/* Search bar inside the bar (shown when not on customer report, wallet approvals, or legacy members) */}
-          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "legacy_members" && (
+          {/* Search bar inside the bar (shown when not on customer report or wallet approvals) */}
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && (
             <div className="relative w-full lg:w-80">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
               <Input 
@@ -2787,8 +2757,6 @@ export function AdminCRM({
               )}
             </div>
           )
-        ) : activeTab === "legacy_members" ? (
-          <AdminLegacyMembers />
         ) : (
           <div className="overflow-x-auto">
             <Table>
@@ -3054,20 +3022,6 @@ export function AdminCRM({
                                 </Button>
                               )}
 
-                              {/* Customer Report / Statement button */}
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                className="h-8 w-8 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors rounded-lg"
-                                title="Customer Report / Statement"
-                                onClick={() => {
-                                  setSelectedCustomerForReport(customer);
-                                  setActiveTab("customer_report");
-                                }}
-                              >
-                                <FileText size={15} />
-                              </Button>
-
                               {/* View detail button */}
                               <Button 
                                 variant="ghost" 
@@ -3116,7 +3070,7 @@ export function AdminCRM({
         )}
 
         {/* Pagination Controls */}
-        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && activeTab !== "legacy_members" && totalItems > 0 && (
+        {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && totalItems > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>

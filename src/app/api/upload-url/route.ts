@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateGcsPath, generateUploadUrl, bucketName } from '@/lib/gcs';
 import { prisma } from '@/lib/prisma';
-import { resolveRequestUser, canUserAccessJob } from '@/lib/server-auth';
+import { resolveRequestUser, canUserAccessJob, canAccessCustomerRecords } from '@/lib/server-auth';
 import { verifyCustomerToken, verifyServiceApiKey } from '@/lib/external-api-auth';
 
 const ALLOWED_EXTENSIONS = new Set([
@@ -85,17 +85,19 @@ export async function POST(request: NextRequest) {
           ? 'rider'
           : cleanEntityType === 'tasks'
             ? 'task'
-            : ['job', 'rider', 'system', 'task'].includes(cleanEntityType)
-              ? cleanEntityType
-              : 'system'
-    ) as 'job' | 'rider' | 'system' | 'task';
+            : cleanEntityType === 'customers'
+              ? 'customer'
+              : ['job', 'rider', 'system', 'task', 'customer'].includes(cleanEntityType)
+                ? cleanEntityType
+                : 'system'
+    ) as 'job' | 'rider' | 'system' | 'task' | 'customer';
 
     const cleanEntityId = String(entityId).trim();
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(cleanEntityId)) {
       return NextResponse.json({ error: 'Invalid entityId format' }, { status: 400 });
     }
 
-    // Enforce job-level authorization when staff/rider uploads to an existing job
+    // Enforce entity-level authorization when staff/rider uploads to an existing job, customer, or task
     if (user && normalizedGcsEntityType === 'job' && cleanEntityId !== 'temp') {
       const targetJob = await prisma.job.findUnique({
         where: { id: cleanEntityId },
@@ -111,6 +113,36 @@ export async function POST(request: NextRequest) {
       if (targetJob && !canUserAccessJob(user, targetJob)) {
         return NextResponse.json(
           { error: 'Forbidden: You are not authorized to upload files for this job' },
+          { status: 403 }
+        );
+      }
+    }
+
+    if (user && normalizedGcsEntityType === 'customer') {
+      if (!canAccessCustomerRecords(user)) {
+        return NextResponse.json(
+          { error: 'Forbidden: You are not authorized to upload customer files' },
+          { status: 403 }
+        );
+      }
+      if (cleanEntityId !== 'temp') {
+        const targetCustomer = await prisma.customer.findUnique({
+          where: { id: cleanEntityId },
+          select: { id: true, branchId: true },
+        });
+        if (targetCustomer && !canAccessCustomerRecords(user, targetCustomer.branchId)) {
+          return NextResponse.json(
+            { error: 'Forbidden: You do not have access to this customer branch' },
+            { status: 403 }
+          );
+        }
+      }
+    }
+
+    if (user && normalizedGcsEntityType === 'task') {
+      if ((user.role || '').toLowerCase() === 'rider') {
+        return NextResponse.json(
+          { error: 'Forbidden: Riders are not permitted to upload task attachments' },
           { status: 403 }
         );
       }

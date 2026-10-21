@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -213,146 +213,271 @@ export function AdminCustomerDialog({
     isLocal: true 
   })), [pois]);
 
-  useEffect(() => {
-    if (open) {
-      if (customer) {
-        setName(customer.name || "");
-        setNickName(customer.nickName || "");
-        setGender(customer.gender || "Rather not say");
-        setDob(customer.dob || "");
-        setCustomerTier(
-          customer.isCorporate || customer.tier === "corporate"
-            ? "corporate"
-            : customer.isVIP || customer.tier === "vip"
-            ? "vip"
-            : customer.isMember || customer.tier === "member"
-            ? "member"
-            : "standard"
-        );
+  const originalCustomerRef = useRef<Customer | null>(null);
+  const loadedCustomerIdRef = useRef<string | null>(null);
 
-        // Dual Phone resolution on Dialog Open:
-        const rawP = customer.phone && customer.phone.trim() !== "-" && customer.phone.trim() !== "--" ? customer.phone.trim() : "";
-        const rawSec = customer.secondaryPhone && customer.secondaryPhone.trim() !== "-" && customer.secondaryPhone.trim() !== "--" ? customer.secondaryPhone.trim() : "";
+  const resolveDualPhonesFromCustomer = (cust: Customer) => {
+    const rawP = cust.phone && cust.phone.trim() !== "-" && cust.phone.trim() !== "--" ? cust.phone.trim() : "";
+    const rawSec = cust.secondaryPhone && cust.secondaryPhone.trim() !== "-" && cust.secondaryPhone.trim() !== "--" ? cust.secondaryPhone.trim() : "";
 
-        let resolvedThai = "";
-        let resolvedIntl = "";
-        let resolvedIsWhatsapp = customer.isWhatsapp || false;
-        let resolvedIsSecWhatsapp = customer.isSecondaryWhatsapp || false;
+    let resolvedThai = "";
+    let resolvedIntl = "";
+    let resolvedIsWhatsapp = cust.isWhatsapp || false;
+    let resolvedIsSecWhatsapp = cust.isSecondaryWhatsapp || false;
 
-        if (isThaiPhoneNumber(rawP)) {
-          resolvedThai = normalizeThaiPhone(rawP);
-          if (rawSec && rawSec !== rawP) {
-            resolvedIntl = rawSec;
-          }
-        } else if (rawSec && isThaiPhoneNumber(rawSec)) {
-          resolvedThai = normalizeThaiPhone(rawSec);
-          if (rawP && rawP !== rawSec) {
-            resolvedIntl = rawP;
-          }
-          resolvedIsWhatsapp = customer.isSecondaryWhatsapp || false;
-          resolvedIsSecWhatsapp = customer.isWhatsapp || false;
-        } else if (rawP) {
-          // Customer has only an international/foreign phone in customer.phone
-          resolvedIntl = rawP;
-          resolvedIsSecWhatsapp = customer.isWhatsapp || false;
-        } else if (rawSec) {
-          resolvedIntl = rawSec;
-        }
-
-        setPhone(resolvedThai);
-        setIsWhatsapp(resolvedIsWhatsapp);
-        if (resolvedIntl) {
-          const { countryCode, nationalNumber } = parseFullPhone(resolvedIntl);
-          setIntlCountryCode(countryCode || "+1");
-          setSecondaryPhone(nationalNumber || resolvedIntl);
-        } else {
-          setIntlCountryCode("+1");
-          setSecondaryPhone("");
-        }
-        setIsSecondaryWhatsapp(resolvedIsSecWhatsapp);
-        setWhatsappId(customer.whatsappId || "");
-        setLineId(customer.lineId || "");
-        setEmail(customer.email || "");
-        setInitialPin(customer.passwordHash || "");
-
-        setAddress(customer.defaultAddress && customer.defaultAddress !== "--" ? customer.defaultAddress : "");
-        setRoomNo(customer.roomNo || "");
-        setCoords(customer.defaultCoords || { lat: 13.736717, lng: 100.523186 });
-        setAddressLabel("Hotel");
-        setCustomAddressLabel("");
-        setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
-        setLeaveWithJuristic(true);
-
-        const hasTax = Boolean(customer.taxId || customer.companyName);
-        setRequiresTaxInvoice(hasTax);
-        setCompanyName(customer.companyName || "");
-        setTaxId(customer.taxId || "");
-        setTaxBranch("Head Office (สำนักงานใหญ่)");
-        setTaxBillingAddress(customer.defaultAddress && customer.defaultAddress !== "--" ? customer.defaultAddress : "");
-
-        setRemark(customer.remark || "");
-        setBrand(customer.brand || "that_laundry_shop");
-        setSourceSystem(customer.sourceSystem || "web_booking");
-        setIsCorporate(customer.isCorporate || false);
-        setMemberId(customer.memberId || "");
-        setBranchId(customer.branchId || "");
-        setMemberStartDate(customer.memberStartDate ? new Date(customer.memberStartDate).toISOString().split("T")[0] : "");
-        setMemberExpiryDate(customer.memberExpiryDate ? new Date(customer.memberExpiryDate).toISOString().split("T")[0] : "");
-        setPriceListId(customer.priceListId || "regular");
-        setCustomerVatType((customer.vatType as any) || "default");
-        setCorporateCommissionType((customer.corporateCommissionType as any) || "default");
-        setCorporatePickupCommission(customer.corporatePickupCommission || 0);
-        setCorporateDeliveryCommission(customer.corporateDeliveryCommission || 0);
-        setCorporateCommissionRatePerKm(customer.corporateCommissionRatePerKm || 0);
-        setSelectedLocation(null);
-      } else {
-        // Reset all states cleanly - no mock defaults
-        setName("");
-        setNickName("");
-        setGender("Rather not say");
-        setDob("");
-        setCustomerTier("standard");
-
-        setPhone("");
-        setIsWhatsapp(true);
-        setSecondaryPhone("");
-        setIntlCountryCode("+1");
-        setIsSecondaryWhatsapp(false);
-        setWhatsappId("");
-        setLineId("");
-        setEmail("");
-        setInitialPin("");
-
-        setAddressLabel("Hotel");
-        setCustomAddressLabel("");
-        setAddress("");
-        setRoomNo("");
-        setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
-        setLeaveWithJuristic(true);
-        setCoords({ lat: 13.736717, lng: 100.523186 });
-
-        setRequiresTaxInvoice(false);
-        setCompanyName("");
-        setTaxId("");
-        setTaxBranch("Head Office (สำนักงานใหญ่)");
-        setTaxBillingAddress("");
-
-        setRemark("");
-        setBrand("that_laundry_shop");
-        setSourceSystem("web_booking");
-        setIsCorporate(false);
-        setMemberId("");
-        setBranchId("");
-        setMemberStartDate("");
-        setMemberExpiryDate("");
-        setPriceListId("regular");
-        setCustomerVatType("default");
-        setCorporateCommissionType("default");
-        setCorporatePickupCommission(0);
-        setCorporateDeliveryCommission(0);
-        setCorporateCommissionRatePerKm(0);
-        setSelectedLocation(null);
+    if (isThaiPhoneNumber(rawP)) {
+      resolvedThai = normalizeThaiPhone(rawP);
+      if (rawSec && rawSec !== rawP) {
+        resolvedIntl = rawSec;
       }
+    } else if (rawSec && isThaiPhoneNumber(rawSec)) {
+      resolvedThai = normalizeThaiPhone(rawSec);
+      if (rawP && rawP !== rawSec) {
+        resolvedIntl = rawP;
+      }
+      resolvedIsWhatsapp = cust.isSecondaryWhatsapp || false;
+      resolvedIsSecWhatsapp = cust.isWhatsapp || false;
+    } else if (rawP) {
+      resolvedIntl = rawP;
+      resolvedIsSecWhatsapp = cust.isWhatsapp || false;
+    } else if (rawSec) {
+      resolvedIntl = rawSec;
+    }
+
+    let resolvedCountryCode = "+1";
+    let resolvedSecNational = "";
+    if (resolvedIntl) {
+      const { countryCode, nationalNumber } = parseFullPhone(resolvedIntl);
+      resolvedCountryCode = countryCode || "+1";
+      resolvedSecNational = nationalNumber || resolvedIntl;
+    }
+
+    let cleanP = resolvedThai.trim();
+    if (cleanP && isThaiPhoneNumber(cleanP)) {
+      cleanP = normalizeThaiPhone(cleanP);
+    }
+    let finalSecP = resolvedSecNational.trim();
+    if (finalSecP && !finalSecP.startsWith("+") && resolvedCountryCode) {
+      const code = resolvedCountryCode.trim().startsWith("+") ? resolvedCountryCode.trim() : `+${resolvedCountryCode.trim()}`;
+      finalSecP = `${code} ${finalSecP}`;
+    }
+
+    let targetPrimaryPhone = cleanP;
+    let targetSecondaryPhone: string | null = finalSecP || null;
+    if (!targetPrimaryPhone && targetSecondaryPhone) {
+      targetPrimaryPhone = targetSecondaryPhone;
+      targetSecondaryPhone = null;
+    } else if (targetPrimaryPhone && targetSecondaryPhone && targetPrimaryPhone === targetSecondaryPhone) {
+      targetSecondaryPhone = null;
+    }
+
+    return {
+      resolvedThai,
+      resolvedCountryCode,
+      resolvedSecNational,
+      resolvedIsWhatsapp,
+      resolvedIsSecWhatsapp,
+      targetPrimaryPhone: targetPrimaryPhone || "-",
+      targetSecondaryPhone,
+    };
+  };
+
+  const buildNormalizedSnapshot = (cust: Customer) => {
+    const resolvedTier: "member" | "vip" | "standard" | "corporate" =
+      cust.isCorporate || cust.tier === "corporate"
+        ? "corporate"
+        : cust.isVIP || cust.tier === "vip"
+        ? "vip"
+        : cust.isMember || cust.tier === "member"
+        ? "member"
+        : "standard";
+    const isCorpBool = resolvedTier === "corporate" || Boolean(cust.isCorporate);
+    const isMemBool = resolvedTier === "member" || resolvedTier === "vip" || Boolean((cust.memberId || "").trim());
+    const isVipBool = resolvedTier === "vip";
+    const phones = resolveDualPhonesFromCustomer(cust);
+    const cleanRoom = (cust.roomNo || "").trim();
+    const hasTax = Boolean(cust.taxId || cust.companyName);
+    const commType = (cust.corporateCommissionType as any) || "default";
+
+    return {
+      name: (cust.name || "").trim().toUpperCase(),
+      phone: phones.targetPrimaryPhone,
+      brand: cust.brand || "that_laundry_shop",
+      nickName: (cust.nickName || "").trim() || null,
+      gender: cust.gender || "Rather not say",
+      secondaryPhone: phones.targetSecondaryPhone,
+      isSecondaryWhatsapp: phones.resolvedIsSecWhatsapp,
+      roomNo: cleanRoom || null,
+      sourceSystem: cust.sourceSystem || "web_booking",
+      defaultAddress: (cust.defaultAddress && cust.defaultAddress !== "--" ? cust.defaultAddress : "").trim(),
+      defaultCoords: cust.defaultCoords || { lat: 13.736717, lng: 100.523186 },
+      priceListId: cust.priceListId || "regular",
+      vatType: (cust.vatType as any) || "default",
+      email: (cust.email || "").trim() || null,
+      lineId: (cust.lineId || "").trim() || null,
+      whatsappId: (cust.whatsappId || "").trim() || null,
+      language: cust.language || "th",
+      remark: (cust.remark || "").trim() || null,
+      secondaryAddress: cleanRoom ? `Room ${cleanRoom}` : (cust.secondaryAddress || null),
+      dob: (cust.dob || "").trim() || null,
+      taxId: hasTax ? (cust.taxId || "").trim() || null : null,
+      companyName: hasTax ? (cust.companyName || "").trim() || null : null,
+      isVIP: isVipBool,
+      isCorporate: isCorpBool,
+      corporateCommissionType: isCorpBool ? commType : "default",
+      corporatePickupCommission: isCorpBool && commType === "fixed" ? Number(cust.corporatePickupCommission) || 0 : 0,
+      corporateDeliveryCommission: isCorpBool && commType === "fixed" ? Number(cust.corporateDeliveryCommission) || 0 : 0,
+      corporateCommissionRatePerKm: isCorpBool && commType === "custom_km" ? Number(cust.corporateCommissionRatePerKm) || 0 : 0,
+      tier: resolvedTier,
+      isMember: isMemBool,
+      branchId: (cust.branchId || "").trim() || null,
+      isWhatsapp: phones.resolvedIsWhatsapp,
+      passwordHash: (cust.passwordHash || "").trim() || undefined,
+      memberId: isMemBool ? (cust.memberId || "").trim() || null : null,
+      memberStartDate: isMemBool && cust.memberStartDate ? new Date(cust.memberStartDate).toISOString().split("T")[0] : null,
+      memberExpiryDate: isMemBool && cust.memberExpiryDate ? new Date(cust.memberExpiryDate).toISOString().split("T")[0] : null,
+    };
+  };
+
+  const applyCustomerToForm = (cust: Customer, fieldsToUpdate?: Set<string>) => {
+    const shouldSet = (field: string) => !fieldsToUpdate || fieldsToUpdate.has(field);
+    const phones = resolveDualPhonesFromCustomer(cust);
+
+    if (shouldSet("name")) setName(cust.name || "");
+    if (shouldSet("nickName")) setNickName(cust.nickName || "");
+    if (shouldSet("gender")) setGender(cust.gender || "Rather not say");
+    if (shouldSet("dob")) setDob(cust.dob || "");
+    if (shouldSet("tier") || shouldSet("isCorporate") || shouldSet("isVIP") || shouldSet("isMember")) {
+      setCustomerTier(
+        cust.isCorporate || cust.tier === "corporate"
+          ? "corporate"
+          : cust.isVIP || cust.tier === "vip"
+          ? "vip"
+          : cust.isMember || cust.tier === "member"
+          ? "member"
+          : "standard"
+      );
+    }
+    if (shouldSet("phone")) setPhone(phones.resolvedThai);
+    if (shouldSet("isWhatsapp")) setIsWhatsapp(phones.resolvedIsWhatsapp);
+    if (shouldSet("secondaryPhone")) {
+      setIntlCountryCode(phones.resolvedCountryCode);
+      setSecondaryPhone(phones.resolvedSecNational);
+    }
+    if (shouldSet("isSecondaryWhatsapp")) setIsSecondaryWhatsapp(phones.resolvedIsSecWhatsapp);
+    if (shouldSet("whatsappId")) setWhatsappId(cust.whatsappId || "");
+    if (shouldSet("lineId")) setLineId(cust.lineId || "");
+    if (shouldSet("email")) setEmail(cust.email || "");
+    if (shouldSet("passwordHash")) setInitialPin(cust.passwordHash || "");
+
+    if (shouldSet("defaultAddress")) {
+      setAddress(cust.defaultAddress && cust.defaultAddress !== "--" ? cust.defaultAddress : "");
+      setTaxBillingAddress(cust.defaultAddress && cust.defaultAddress !== "--" ? cust.defaultAddress : "");
+    }
+    if (shouldSet("roomNo")) setRoomNo(cust.roomNo || "");
+    if (shouldSet("defaultCoords") || shouldSet("defaultLat") || shouldSet("defaultLng")) {
+      setCoords(cust.defaultCoords || { lat: 13.736717, lng: 100.523186 });
+    }
+    if (!fieldsToUpdate) {
+      setAddressLabel("Hotel");
+      setCustomAddressLabel("");
+      setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
+      setLeaveWithJuristic(true);
+      setTaxBranch("Head Office (สำนักงานใหญ่)");
+      setSelectedLocation(null);
+    }
+
+    if (shouldSet("taxId") || shouldSet("companyName")) {
+      const hasTax = Boolean(cust.taxId || cust.companyName);
+      setRequiresTaxInvoice(hasTax);
+      if (shouldSet("companyName")) setCompanyName(cust.companyName || "");
+      if (shouldSet("taxId")) setTaxId(cust.taxId || "");
+    }
+
+    if (shouldSet("remark")) setRemark(cust.remark || "");
+    if (shouldSet("brand")) setBrand(cust.brand || "that_laundry_shop");
+    if (shouldSet("sourceSystem")) setSourceSystem(cust.sourceSystem || "web_booking");
+    if (shouldSet("isCorporate")) setIsCorporate(cust.isCorporate || false);
+    if (shouldSet("memberId")) setMemberId(cust.memberId || "");
+    if (shouldSet("branchId")) setBranchId(cust.branchId || "");
+    if (shouldSet("memberStartDate")) {
+      setMemberStartDate(cust.memberStartDate ? new Date(cust.memberStartDate).toISOString().split("T")[0] : "");
+    }
+    if (shouldSet("memberExpiryDate")) {
+      setMemberExpiryDate(cust.memberExpiryDate ? new Date(cust.memberExpiryDate).toISOString().split("T")[0] : "");
+    }
+    if (shouldSet("priceListId")) setPriceListId(cust.priceListId || "regular");
+    if (shouldSet("vatType")) setCustomerVatType((cust.vatType as any) || "default");
+    if (shouldSet("corporateCommissionType")) setCorporateCommissionType((cust.corporateCommissionType as any) || "default");
+    if (shouldSet("corporatePickupCommission")) setCorporatePickupCommission(cust.corporatePickupCommission || 0);
+    if (shouldSet("corporateDeliveryCommission")) setCorporateDeliveryCommission(cust.corporateDeliveryCommission || 0);
+    if (shouldSet("corporateCommissionRatePerKm")) setCorporateCommissionRatePerKm(cust.corporateCommissionRatePerKm || 0);
+  };
+
+  useEffect(() => {
+    if (!open) {
+      loadedCustomerIdRef.current = null;
+      originalCustomerRef.current = null;
+      return;
+    }
+    const targetKey = customer ? customer.id : "__new__";
+    // Prevent background customer list refreshes from wiping out the user's in-progress form edits
+    if (loadedCustomerIdRef.current === targetKey) {
+      return;
+    }
+    loadedCustomerIdRef.current = targetKey;
+
+    if (customer) {
+      originalCustomerRef.current = { ...customer };
+      applyCustomerToForm(customer);
+    } else {
+      originalCustomerRef.current = null;
+      // Reset all states cleanly - no mock defaults
+      setName("");
+      setNickName("");
+      setGender("Rather not say");
+      setDob("");
+      setCustomerTier("standard");
+
+      setPhone("");
+      setIsWhatsapp(true);
+      setSecondaryPhone("");
+      setIntlCountryCode("+1");
+      setIsSecondaryWhatsapp(false);
+      setWhatsappId("");
+      setLineId("");
+      setEmail("");
+      setInitialPin("");
+
+      setAddressLabel("Hotel");
+      setCustomAddressLabel("");
+      setAddress("");
+      setRoomNo("");
+      setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
+      setLeaveWithJuristic(true);
+      setCoords({ lat: 13.736717, lng: 100.523186 });
+
+      setRequiresTaxInvoice(false);
+      setCompanyName("");
+      setTaxId("");
+      setTaxBranch("Head Office (สำนักงานใหญ่)");
+      setTaxBillingAddress("");
+
+      setRemark("");
+      setBrand("that_laundry_shop");
+      setSourceSystem("web_booking");
+      setIsCorporate(false);
+      setMemberId("");
+      setBranchId("");
+      setMemberStartDate("");
+      setMemberExpiryDate("");
+      setPriceListId("regular");
+      setCustomerVatType("default");
+      setCorporateCommissionType("default");
+      setCorporatePickupCommission(0);
+      setCorporateDeliveryCommission(0);
+      setCorporateCommissionRatePerKm(0);
+      setSelectedLocation(null);
     }
   }, [open, customer]);
 
@@ -404,6 +529,15 @@ export function AdminCustomerDialog({
       }
 
       const updated = await customerStore.updateCustomer(customer.id, updates);
+      if (updated && originalCustomerRef.current) {
+        originalCustomerRef.current = {
+          ...originalCustomerRef.current,
+          creditBalance: updated.creditBalance,
+          isMember: updated.isMember,
+          memberExpiryDate: updated.memberExpiryDate,
+          updatedAt: updated.updatedAt,
+        };
+      }
 
       // Sync with parent customer dialog state
       setMemberExpiryDate(adjustExpiryDate);
@@ -494,21 +628,31 @@ export function AdminCustomerDialog({
         return;
       }
 
+      const baseCust = originalCustomerRef.current || customer || null;
+      const baseline = baseCust ? buildNormalizedSnapshot(baseCust) : null;
+      const tierOrPriceListChanged =
+        !baseline ||
+        customerTier !== baseline.tier ||
+        isMemberBool !== baseline.isMember ||
+        priceListId !== baseline.priceListId;
+
       let finalPriceListId = priceListId;
-      if (customerTier === "corporate") {
-        if (priceListId === "regular" || !priceListId) {
-          const corpPl = priceLists.find(p => p.name.toLowerCase().includes("corporate") || p.name.toLowerCase().includes("b2b"));
-          if (corpPl) finalPriceListId = corpPl.id;
-        }
-      } else if (isMemberBool) {
-        if (priceListId === "regular" || !priceListId) {
-          const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
-          if (ml) finalPriceListId = ml.id;
-        }
-      } else {
-        if (priceListId === "regular" || !priceListId) {
-          const rl = priceLists.find(p => p.isDefault);
-          if (rl) finalPriceListId = rl.id;
+      if (tierOrPriceListChanged) {
+        if (customerTier === "corporate") {
+          if (priceListId === "regular" || !priceListId) {
+            const corpPl = priceLists.find(p => p.name.toLowerCase().includes("corporate") || p.name.toLowerCase().includes("b2b"));
+            if (corpPl) finalPriceListId = corpPl.id;
+          }
+        } else if (isMemberBool) {
+          if (priceListId === "regular" || !priceListId) {
+            const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
+            if (ml) finalPriceListId = ml.id;
+          }
+        } else {
+          if (priceListId === "regular" || !priceListId) {
+            const rl = priceLists.find(p => p.isDefault);
+            if (rl) finalPriceListId = rl.id;
+          }
         }
       }
 
@@ -525,7 +669,7 @@ export function AdminCustomerDialog({
         targetSecondaryPhone = null;
       }
 
-      const customerData = {
+      const customerData: Record<string, any> = {
         name: name.trim().toUpperCase(),
         phone: targetPrimaryPhone || "-",
         brand,
@@ -542,7 +686,7 @@ export function AdminCustomerDialog({
         email: email.trim() || null,
         lineId: lineId.trim() || null,
         whatsappId: whatsappId.trim() || null,
-        language: "th",
+        language: baseCust?.language || "th",
         remark: remark.trim() || null,
         secondaryAddress: roomNo.trim() ? `Room ${roomNo.trim()}` : null,
         dob: dob.trim() || null,
@@ -562,22 +706,80 @@ export function AdminCustomerDialog({
         memberId: isMemberBool ? memberId.trim() || null : null,
         memberStartDate: isMemberBool && memberStartDate ? memberStartDate : null,
         memberExpiryDate: isMemberBool && memberExpiryDate ? memberExpiryDate : null,
-        updatedAt: customer ? customer.updatedAt : undefined,
+        updatedAt: baseCust ? baseCust.updatedAt : undefined,
+        expectedUpdatedAt: baseCust ? baseCust.updatedAt : undefined,
         actorId: user?.id || null,
         actorName: user?.name || user?.email || "Staff",
         actorRole: user?.role,
       };
 
-      if (customer) {
-        const updated = await customerStore.updateCustomer(customer.id, customerData);
-        if (updated?.memberId && !customer.memberId) {
-          toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ — ได้รับรหัสสมาชิก: ${updated.memberId}`, { duration: 6000 });
-        } else {
-          toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ`);
+      if (customer && baseline) {
+        const areValsEqual = (k: string, a: any, b: any) => {
+          if (k === "defaultCoords") {
+            if (!a && !b) return true;
+            if (!a || !b) return false;
+            return Math.abs(Number(a.lat) - Number(b.lat)) < 0.00001 && Math.abs(Number(a.lng) - Number(b.lng)) < 0.00001;
+          }
+          if ((a === null || a === undefined || a === "") && (b === null || b === undefined || b === "")) {
+            return true;
+          }
+          return a === b;
+        };
+
+        const dirtyPayload: Record<string, any> = {};
+        const dirtyKeys: string[] = [];
+        for (const key of Object.keys(baseline)) {
+          if (!areValsEqual(key, customerData[key], (baseline as any)[key])) {
+            dirtyPayload[key] = customerData[key];
+            dirtyKeys.push(key);
+          }
         }
-        if (onSaved) onSaved({ ...customer, ...customerData, memberId: updated?.memberId || customerData.memberId } as Customer);
+
+        if (dirtyKeys.length === 0) {
+          toast.info("ไม่มีการเปลี่ยนแปลงข้อมูล");
+          if (onSaved) onSaved(baseCust as Customer);
+          onOpenChange(false);
+          return;
+        }
+
+        dirtyPayload.updatedAt = baseCust?.updatedAt;
+        dirtyPayload.expectedUpdatedAt = baseCust?.updatedAt;
+        dirtyPayload.actorId = customerData.actorId;
+        dirtyPayload.actorName = customerData.actorName;
+        dirtyPayload.actorRole = customerData.actorRole;
+
+        try {
+          const updated = await customerStore.updateCustomer(customer.id, dirtyPayload);
+          if (updated) {
+            originalCustomerRef.current = { ...updated };
+          }
+          if (updated?.memberId && !customer.memberId) {
+            toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ — ได้รับรหัสสมาชิก: ${updated.memberId}`, { duration: 6000 });
+          } else {
+            toast.success(`อัปเดตข้อมูลลูกค้า ${name} สำเร็จ`);
+          }
+          if (onSaved) onSaved((updated || { ...customer, ...dirtyPayload }) as Customer);
+        } catch (updateErr: any) {
+          if (updateErr?.isConflict && updateErr?.latestCustomer) {
+            const latest: Customer = updateErr.latestCustomer;
+            const conflictFieldsSet = new Set<string>(updateErr.conflictFields || []);
+            const dirtySet = new Set<string>(dirtyKeys);
+            const fieldsToRefresh = new Set<string>();
+            for (const key of Object.keys(baseline)) {
+              if (!dirtySet.has(key) || conflictFieldsSet.has(key)) {
+                fieldsToRefresh.add(key);
+              }
+            }
+            if (conflictFieldsSet.has("defaultLat") || conflictFieldsSet.has("defaultLng")) {
+              fieldsToRefresh.add("defaultCoords");
+            }
+            originalCustomerRef.current = { ...latest };
+            applyCustomerToForm(latest, fieldsToRefresh);
+          }
+          throw updateErr;
+        }
       } else {
-        const newCustomer = await customerStore.addCustomer(customerData);
+        const newCustomer = await customerStore.addCustomer(customerData as any);
         // Create initial address record in CustomerAddress table
         if (newCustomer?.id && address.trim()) {
           try {
@@ -603,7 +805,7 @@ export function AdminCustomerDialog({
       }
       onOpenChange(false);
     } catch (e: any) {
-      toast.error(e.message || "Failed to save customer");
+      toast.error(e.message || "Failed to save customer", { duration: e?.isConflict ? 7000 : 4000 });
     } finally {
       setIsSaving(false);
     }

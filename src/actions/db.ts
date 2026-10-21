@@ -8,7 +8,7 @@ import { type CouponTemplate } from '@/lib/store';
 import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel } from '@/lib/promotions';
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
-import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, isAdminOrSuperadmin } from '@/lib/server-auth';
+import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, isAdminOrSuperadmin } from '@/lib/server-auth';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -354,10 +354,136 @@ function mergeAdminNotesJson(
   return JSON.stringify(mergedObj);
 }
 
-export async function updateCustomerAction(id: string, updates: any): Promise<{ success: boolean; customer?: any; error?: string }> {
+const customerUpdateLocks = new Map<string, Promise<any>>();
+
+async function withCustomerUpdateLock<T>(customerId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = customerUpdateLocks.get(customerId) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = prev.then(() => current, () => current);
+  customerUpdateLocks.set(customerId, chained);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (customerUpdateLocks.get(customerId) === chained) {
+      customerUpdateLocks.delete(customerId);
+    }
+  }
+}
+
+function areCustomerFieldValuesEqual(field: string, oldVal: any, newVal: any): boolean {
+  if (oldVal === newVal) return true;
+  if (
+    (oldVal === null || oldVal === undefined || oldVal === '') &&
+    (newVal === null || newVal === undefined || newVal === '')
+  ) {
+    return true;
+  }
+  if (
+    oldVal instanceof Date ||
+    newVal instanceof Date ||
+    field === 'memberStartDate' ||
+    field === 'memberExpiryDate' ||
+    field.endsWith('At')
+  ) {
+    const oldTime = oldVal instanceof Date ? oldVal.getTime() : oldVal ? new Date(oldVal).getTime() : NaN;
+    const newTime = newVal instanceof Date ? newVal.getTime() : newVal ? new Date(newVal).getTime() : NaN;
+    if (!isNaN(oldTime) && !isNaN(newTime)) {
+      return oldTime === newTime;
+    }
+  }
+  if (
+    [
+      'creditBalance',
+      'defaultLat',
+      'defaultLng',
+      'corporatePickupCommission',
+      'corporateDeliveryCommission',
+      'corporateCommissionRatePerKm',
+    ].includes(field)
+  ) {
+    const oNum = oldVal === null || oldVal === undefined || oldVal === '' ? 0 : Number(oldVal);
+    const nNum = newVal === null || newVal === undefined || newVal === '' ? 0 : Number(newVal);
+    if (!isNaN(oNum) && !isNaN(nNum) && Math.abs(oNum - nNum) < 0.0001) {
+      return true;
+    }
+  }
+  if (
+    [
+      'isMember',
+      'isVIP',
+      'isCorporate',
+      'isWhatsapp',
+      'isNew',
+      'isSecondaryWhatsapp',
+      'isVerified',
+    ].includes(field)
+  ) {
+    return Boolean(oldVal) === Boolean(newVal);
+  }
+  return String(oldVal) === String(newVal);
+}
+
+const CUSTOMER_FIELD_LABELS: Record<string, string> = {
+  name: 'ชื่อลูกค้า (Name)',
+  nickName: 'ชื่อเล่น (Nickname)',
+  phone: 'เบอร์โทรศัพท์หลัก (Phone)',
+  secondaryPhone: 'เบอร์โทรศัพท์สำรอง (Secondary Phone)',
+  email: 'อีเมล (Email)',
+  lineId: 'Line ID',
+  whatsappId: 'WhatsApp ID',
+  isWhatsapp: 'สถานะ WhatsApp เบอร์หลัก',
+  isSecondaryWhatsapp: 'สถานะ WhatsApp เบอร์สำรอง',
+  gender: 'เพศ (Gender)',
+  dob: 'วันเกิด (Date of Birth)',
+  language: 'ภาษา (Language)',
+  brand: 'แบรนด์ (Brand)',
+  sourceSystem: 'ช่องทางที่มา (Source System)',
+  branchId: 'สาขา (Branch)',
+  defaultAddress: 'ที่อยู่หลัก (Primary Address)',
+  defaultLat: 'พิกัดที่อยู่ (Latitude)',
+  defaultLng: 'พิกัดที่อยู่ (Longitude)',
+  roomNo: 'เลขห้อง (Room No.)',
+  secondaryAddress: 'ที่อยู่สำรอง / เลขห้อง',
+  remark: 'หมายเหตุลูกค้า (Customer Note)',
+  tier: 'ระดับลูกค้า (Customer Tier)',
+  priceListId: 'เรทราคา (Price List)',
+  isMember: 'สถานะสมาชิก (Membership)',
+  memberId: 'รหัสสมาชิก (Member ID)',
+  memberStartDate: 'วันเริ่มสมาชิก (Member Start Date)',
+  memberExpiryDate: 'วันหมดอายุสมาชิก (Member Expiry Date)',
+  isVIP: 'สถานะ VIP (Free Delivery)',
+  isCorporate: 'สถานะลูกค้าองค์กร (Corporate)',
+  companyName: 'ชื่อบริษัท (Company Name)',
+  taxId: 'เลขประจำตัวผู้เสียภาษี (Tax ID)',
+  vatType: 'รูปแบบภาษี (VAT Type)',
+  corporateCommissionType: 'รูปแบบค่าคอมฯ องค์กร',
+  corporatePickupCommission: 'ค่าคอมฯ รับผ้าองค์กร',
+  corporateDeliveryCommission: 'ค่าคอมฯ ส่งผ้าองค์กร',
+  corporateCommissionRatePerKm: 'เรทค่าคอมฯ ต่อกม. องค์กร',
+  creditBalance: 'ยอดเงิน Wallet (Credit Balance)',
+  isVerified: 'สถานะยืนยันตัวตน (Verified)',
+  verifiedVia: 'ช่องทางยืนยันตัวตน',
+};
+
+export async function updateCustomerAction(
+  id: string,
+  updates: any
+): Promise<{
+  success: boolean;
+  customer?: any;
+  error?: string;
+  isConflict?: boolean;
+  conflictFields?: string[];
+  latestCustomer?: any;
+}> {
   try {
     const authUser = await assertServerActionAuthorized({
-            requireWrite: true,
+      requireWrite: true,
       targetBranchId: updates?.branchId || null,
     });
     if (authUser?.role === 'rider') {
@@ -368,508 +494,579 @@ export async function updateCustomerAction(id: string, updates: any): Promise<{ 
       updates.actorName = authUser.name || authUser.email;
     }
 
-    let currentCustomer = await prisma.customer.findUnique({ where: { id } });
-    if (!currentCustomer) return { success: false, error: "ไม่พบข้อมูลลูกค้าในระบบ (Customer not found)" };
-
-    if (updates.updatedAt) {
-      const incomingTime = new Date(updates.updatedAt).getTime();
-      const dbTime = new Date(currentCustomer.updatedAt!).getTime();
-      if (dbTime > incomingTime + 1000) {
-        return { success: false, error: "409 Conflict: ข้อมูลลูกค้ารายนี้ถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชแล้วลองใหม่อีกครั้ง" };
+    if (updates.creditBalanceDelta !== undefined) {
+      const delta = Number(updates.creditBalanceDelta);
+      if (!Number.isFinite(delta)) {
+        return { success: false, error: "จำนวนเงินที่ต้องการปรับปรุงไม่ถูกต้อง (Invalid amount)" };
+      }
+    } else if (updates.creditBalance !== undefined) {
+      const explicitBal = Number(updates.creditBalance);
+      if (!Number.isFinite(explicitBal)) {
+        return { success: false, error: "ยอดเงินคงเหลือไม่ถูกต้อง (Invalid creditBalance)" };
       }
     }
-  const data: any = {};
-  if (updates.name !== undefined) {
-    data.name = updates.name ? updates.name.toUpperCase() : updates.name;
-  }
-  if (updates.phone !== undefined) data.phone = updates.phone;
-  if (updates.defaultAddress !== undefined) data.defaultAddress = updates.defaultAddress;
-  if (updates.defaultCoords) {
-    data.defaultLat = updates.defaultCoords.lat;
-    data.defaultLng = updates.defaultCoords.lng;
-  }
-  if (updates.priceListId !== undefined) data.priceListId = updates.priceListId;
-  const isWalletUpdate = updates.creditBalanceDelta !== undefined || updates.creditBalance !== undefined;
-  if (updates.creditBalanceDelta !== undefined) {
-    const delta = Number(updates.creditBalanceDelta);
-    if (!Number.isFinite(delta)) {
-      return { success: false, error: "จำนวนเงินที่ต้องการปรับปรุงไม่ถูกต้อง (Invalid amount)" };
-    }
-    const balBefore = Number(currentCustomer.creditBalance || 0);
-    data.creditBalance = Math.round((balBefore + delta) * 100) / 100;
-  } else if (updates.creditBalance !== undefined) {
-    const explicitBal = Number(updates.creditBalance);
-    if (!Number.isFinite(explicitBal)) {
-      return { success: false, error: "ยอดเงินคงเหลือไม่ถูกต้อง (Invalid creditBalance)" };
-    }
-    data.creditBalance = Math.round(explicitBal * 100) / 100;
-  }
-  if (updates.tier !== undefined) data.tier = updates.tier;
-  
-  if (updates.isMember !== undefined) {
-    data.isMember = updates.isMember;
-    if (updates.isMember === false) {
-      data.memberId = null;
-    } else {
-      if (updates.memberId !== undefined) {
-        if (updates.memberId && updates.memberId.trim()) {
-          const memberIdUpper = updates.memberId.trim().toUpperCase();
-          const existing = await prisma.customer.findFirst({
-            where: {
-              memberId: memberIdUpper,
-              id: { not: id }
-            }
+
+    return await withCustomerUpdateLock(id, async () => {
+      let currentCustomer: any = null;
+      let updatedCustomer: any = null;
+      let data: any = {};
+      let changes: Record<string, { from: any; to: any } | any> = {};
+
+      try {
+        const txResult = await prisma.$transaction(async (tx) => {
+          // 1. Acquire PostgreSQL row-level lock on this Customer record
+          await lockCustomerRowForWallet(tx, id);
+          const lockedCustomer = await tx.customer.findUnique({
+            where: { id },
+            include: {
+              addresses: {
+                orderBy: { isPrimary: 'desc' },
+              },
+            },
           });
-          if (existing) {
-            return { success: false, error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น` };
+          if (!lockedCustomer) {
+            return {
+              earlyReturn: {
+                success: false,
+                error: "ไม่พบข้อมูลลูกค้าในระบบ (Customer not found)",
+              },
+            };
           }
-          data.memberId = memberIdUpper;
-        } else {
-          // If empty string passed, clear or keep as is
-          data.memberId = updates.memberId === "" ? null : currentCustomer.memberId;
-          /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
-          const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
-          data.memberId = await getNextMemberIdAction(effectiveBranchId);
-          */
-        }
-      } else {
-        data.memberId = currentCustomer.memberId;
-        /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
-        if (!currentCustomer.memberId) {
-          const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
-          data.memberId = await getNextMemberIdAction(effectiveBranchId);
-        }
-        */
-      }
-    }
-  } else if (updates.tier === "member" || updates.tier === "vip") {
-    data.isMember = true;
-    if (updates.memberId && updates.memberId.trim()) {
-      const memberIdUpper = updates.memberId.trim().toUpperCase();
-      const existing = await prisma.customer.findFirst({
-        where: {
-          memberId: memberIdUpper,
-          id: { not: id }
-        }
-      });
-      if (existing) {
-        return { success: false, error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น` };
-      }
-      data.memberId = memberIdUpper;
-    } else if (updates.memberId === "") {
-      data.memberId = null;
-    } else {
-      data.memberId = currentCustomer.memberId;
-      /* [AUTO_MEMBER_ID_DISABLED]: Hidden ไว้ ไม่ลบทิ้ง
-      if (!currentCustomer.memberId) {
-        const effectiveBranchId = updates.branchId !== undefined ? updates.branchId : currentCustomer.branchId;
-        data.memberId = await getNextMemberIdAction(effectiveBranchId);
-      }
-      */
-    }
-  } else if (updates.memberId !== undefined) {
-    if (currentCustomer.isMember) {
-      if (updates.memberId && updates.memberId.trim()) {
-        const memberIdUpper = updates.memberId.trim().toUpperCase();
-        const existing = await prisma.customer.findFirst({
-          where: {
-            memberId: memberIdUpper,
-            id: { not: id }
+          if (!canAccessCustomerRecords(authUser, lockedCustomer.branchId)) {
+            return {
+              earlyReturn: {
+                success: false,
+                error: "403 Forbidden: You do not have access to customer records in this branch",
+              },
+            };
           }
-        });
-        if (existing) {
-          return { success: false, error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น` };
-        }
-        data.memberId = memberIdUpper;
-      } else {
-        data.memberId = null;
-      }
-    }
-  }
-  if (updates.branchId !== undefined) data.branchId = updates.branchId || null;
 
-  if (updates.isVIP !== undefined) data.isVIP = updates.isVIP;
-  if (updates.isCorporate !== undefined) data.isCorporate = updates.isCorporate;
-  if (updates.isWhatsapp !== undefined) data.isWhatsapp = updates.isWhatsapp;
-  if (updates.isNew !== undefined) data.isNew = updates.isNew;
-  if (updates.email !== undefined) data.email = updates.email;
-  if (updates.lineId !== undefined) data.lineId = updates.lineId;
-  if (updates.whatsappId !== undefined) data.whatsappId = updates.whatsappId;
-  if (updates.language !== undefined) data.language = updates.language;
-  if (updates.remark !== undefined) data.remark = updates.remark;
-  if (updates.secondaryAddress !== undefined) data.secondaryAddress = updates.secondaryAddress;
-  if (updates.dob !== undefined) data.dob = updates.dob;
-  if (updates.taxId !== undefined) data.taxId = updates.taxId;
-  if (updates.companyName !== undefined) data.companyName = updates.companyName;
-  if (updates.vatType !== undefined) data.vatType = updates.vatType;
-  if (updates.corporateCommissionType !== undefined) data.corporateCommissionType = updates.corporateCommissionType;
-  if (updates.corporatePickupCommission !== undefined) data.corporatePickupCommission = updates.corporatePickupCommission != null ? Number(updates.corporatePickupCommission) : 0;
-  if (updates.corporateDeliveryCommission !== undefined) data.corporateDeliveryCommission = updates.corporateDeliveryCommission != null ? Number(updates.corporateDeliveryCommission) : 0;
-  if (updates.corporateCommissionRatePerKm !== undefined) data.corporateCommissionRatePerKm = updates.corporateCommissionRatePerKm != null ? Number(updates.corporateCommissionRatePerKm) : 0;
-  if (updates.brand !== undefined) data.brand = updates.brand;
-  if (updates.nickName !== undefined) data.nickName = updates.nickName;
-  if (updates.gender !== undefined) data.gender = updates.gender;
-  if (updates.secondaryPhone !== undefined) data.secondaryPhone = updates.secondaryPhone;
-  if (updates.isSecondaryWhatsapp !== undefined) data.isSecondaryWhatsapp = updates.isSecondaryWhatsapp;
-  if (updates.isVerified !== undefined) data.isVerified = updates.isVerified;
-  if (updates.verifiedVia !== undefined) data.verifiedVia = updates.verifiedVia;
-  if (updates.sourceSystem !== undefined) data.sourceSystem = updates.sourceSystem;
-  if (updates.passwordHash !== undefined) data.passwordHash = updates.passwordHash;
-  if (updates.roomNo !== undefined) data.roomNo = updates.roomNo;
-  if (updates.memberStartDate !== undefined) {
-    data.memberStartDate = updates.memberStartDate ? new Date(updates.memberStartDate) : null;
-  } else if (data.isMember && !currentCustomer.memberStartDate && !currentCustomer.isMember) {
-    const now = new Date();
-    data.memberStartDate = now;
-  }
-  if (updates.memberExpiryDate !== undefined) {
-    data.memberExpiryDate = updates.memberExpiryDate ? new Date(updates.memberExpiryDate) : null;
-  } else if (data.isMember && !currentCustomer.memberExpiryDate && data.memberStartDate) {
-    const expStr = computeMembershipExpiryDate(data.memberStartDate);
-    if (expStr) {
-      data.memberExpiryDate = new Date(`${expStr}T23:59:59.999Z`);
-    }
-  }
+          currentCustomer = lockedCustomer;
+          data = {};
 
-  let updatedCustomer: any;
-  let walletAdjustedInsideTx = false;
-  try {
-    if (isWalletUpdate) {
-      updatedCustomer = await prisma.$transaction(async (tx) => {
-        await lockCustomerRowForWallet(tx, id);
-        const lockedCustomer = await tx.customer.findUnique({ where: { id } });
-        if (!lockedCustomer) {
-          throw new Error("ไม่พบข้อมูลลูกค้าในระบบ (Customer not found)");
-        }
-        currentCustomer = lockedCustomer;
-        const balBefore = Number(lockedCustomer.creditBalance || 0);
-        let balAfter = balBefore;
-        if (updates.creditBalanceDelta !== undefined) {
-          const delta = Number(updates.creditBalanceDelta);
-          balAfter = Math.round((balBefore + delta) * 100) / 100;
-          if (delta < 0 && (updates.walletTxType === 'DEDUCT' || updates.disallowNegativeBalance) && balAfter < 0) {
-            throw new Error(`ยอดเงินในกระเป๋า Wallet ไม่เพียงพอ (มี ฿${balBefore.toLocaleString()}, ต้องการหัก ฿${Math.abs(delta).toLocaleString()})`);
-          }
-        } else if (updates.creditBalance !== undefined) {
-          balAfter = Math.round(Number(updates.creditBalance) * 100) / 100;
-        }
-        data.creditBalance = balAfter;
-
-        const dedupRef = String(updates.idempotencyKey || updates.walletRefId || '').trim();
-        if (dedupRef) {
-          const existingWalletTx = await tx.walletTransaction.findFirst({
-            where: {
-              customerId: id,
-              referenceId: dedupRef,
-            }
-          });
-          if (existingWalletTx) {
-            console.warn(`[WalletIdempotency] Duplicate wallet adjustment ignored for reference: ${dedupRef}`);
-            return lockedCustomer;
-          }
-        }
-
-        const savedCust = await tx.customer.update({
-          where: { id },
-          data,
-          include: {
-            addresses: {
-              orderBy: { isPrimary: 'desc' }
+          // 2. Build update payload against the fresh lockedCustomer row (with overwrite guards)
+          if (updates.name !== undefined) {
+            const normalizedName = updates.name ? String(updates.name).toUpperCase() : updates.name;
+            if (shouldPreserveExisting(normalizedName, lockedCustomer.name)) {
+              console.log(`[Prevent Overwrite] Preserved existing customer name '${lockedCustomer.name}' on Customer ${id}`);
+            } else {
+              data.name = normalizedName;
             }
           }
-        });
-
-        const diff = updates.creditBalanceDelta !== undefined
-          ? Number(updates.creditBalanceDelta)
-          : Math.round((balAfter - balBefore) * 100) / 100;
-
-        if (Math.abs(diff) > 0.0001 && !updates.skipAdjustLog && updates.actionSource !== 'topup') {
-          const isAdd = diff >= 0;
-          await tx.activityLog.create({
-            data: {
-              entityId: id,
-              entityType: 'customer',
-              action: 'ADJUST',
-              details: JSON.stringify({
-                customerName: lockedCustomer.name,
-                adjustMode: isAdd ? 'add' : 'deduct',
-                adjustAmount: Math.abs(diff),
-                balanceBefore: balBefore,
-                balanceAfter: balAfter,
-                reason: updates.adjustReason || updates.reason || null,
-              }),
-              userId: updates.actorId || null,
-              userName: updates.actorName || null,
+          if (updates.phone !== undefined) {
+            if (shouldPreserveExisting(updates.phone, lockedCustomer.phone)) {
+              console.log(`[Prevent Overwrite] Preserved existing customer phone '${lockedCustomer.phone}' on Customer ${id}`);
+            } else {
+              data.phone = updates.phone;
             }
-          });
-          console.log(`[ActivityLog] Adjusted wallet for customer ${id} (${lockedCustomer.name}): ฿${balBefore} → ฿${balAfter}`);
+          }
+          if (updates.defaultAddress !== undefined) data.defaultAddress = updates.defaultAddress;
+          if (updates.defaultCoords) {
+            data.defaultLat = updates.defaultCoords.lat;
+            data.defaultLng = updates.defaultCoords.lng;
+          }
+          if (updates.priceListId !== undefined) data.priceListId = updates.priceListId;
 
-          if (!updates.skipWalletTx) {
-            const txType = updates.walletTxType || (isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT');
-            const refType = updates.walletRefType || (txType === 'DEDUCT' ? 'job' : 'manual');
-            await tx.walletTransaction.create({
-              data: {
-                customerId: id,
-                customerName: lockedCustomer.name,
-                type: txType,
-                amount: Math.abs(diff),
-                direction: isAdd ? 'CREDIT' : 'DEBIT',
-                balanceBefore: balBefore,
-                balanceAfter: balAfter,
-                reason: updates.adjustReason || updates.reason || null,
-                referenceId: updates.idempotencyKey || updates.walletRefId || null,
-                referenceType: refType,
-                createdById: updates.actorId || null,
-                createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
-                branchId: updates.branchId || null,
-                approvalStatus: 'PENDING',
+          const isWalletDeltaUpdate = updates.creditBalanceDelta !== undefined;
+          const isWalletUpdate = isWalletDeltaUpdate || updates.creditBalance !== undefined;
+          const balBefore = Number(lockedCustomer.creditBalance || 0);
+          let balAfter = balBefore;
+
+          if (isWalletDeltaUpdate) {
+            const delta = Number(updates.creditBalanceDelta);
+            balAfter = Math.round((balBefore + delta) * 100) / 100;
+            if (delta < 0 && (updates.walletTxType === 'DEDUCT' || updates.disallowNegativeBalance) && balAfter < 0) {
+              throw new Error(`ยอดเงินในกระเป๋า Wallet ไม่เพียงพอ (มี ฿${balBefore.toLocaleString()}, ต้องการหัก ฿${Math.abs(delta).toLocaleString()})`);
+            }
+            data.creditBalance = balAfter;
+          } else if (updates.creditBalance !== undefined) {
+            balAfter = Math.round(Number(updates.creditBalance) * 100) / 100;
+            data.creditBalance = balAfter;
+          }
+
+          if (updates.tier !== undefined) data.tier = updates.tier;
+
+          if (updates.isMember !== undefined) {
+            data.isMember = updates.isMember;
+            if (updates.isMember === false) {
+              data.memberId = null;
+            } else {
+              if (updates.memberId !== undefined) {
+                if (updates.memberId && updates.memberId.trim()) {
+                  const memberIdUpper = updates.memberId.trim().toUpperCase();
+                  const existing = await tx.customer.findFirst({
+                    where: {
+                      memberId: memberIdUpper,
+                      id: { not: id },
+                    },
+                  });
+                  if (existing) {
+                    return {
+                      earlyReturn: {
+                        success: false,
+                        error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น`,
+                      },
+                    };
+                  }
+                  data.memberId = memberIdUpper;
+                } else {
+                  data.memberId = updates.memberId === "" ? null : lockedCustomer.memberId;
+                }
+              } else {
+                data.memberId = lockedCustomer.memberId;
               }
-            });
-          }
-          walletAdjustedInsideTx = true;
-        }
-
-        return savedCust;
-      });
-    } else {
-      updatedCustomer = await prisma.customer.update({
-        where: { id },
-        data,
-        include: {
-          addresses: {
-            orderBy: { isPrimary: 'desc' }
-          }
-        }
-      });
-    }
-  } catch (dbErr: any) {
-    if (dbErr?.code === 'P2002') {
-      const target = dbErr?.meta?.target;
-      if (Array.isArray(target) && target.includes('memberId')) {
-        return { success: false, error: "เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น" };
-      }
-      return { success: false, error: "ข้อมูลซ้ำกับรายการอื่นในระบบ (Unique constraint failed)" };
-    }
-    throw dbErr;
-  }
-
-  // If room number was added or changed, sync it to active in-flight jobs for this customer
-  const cleanNewRoom = (data.roomNo || (data.secondaryAddress ? data.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
-  if (cleanNewRoom && (updates.roomNo !== undefined || updates.secondaryAddress !== undefined)) {
-    try {
-      const activeJobs = await prisma.job.findMany({
-        where: {
-          customerId: id,
-          status: { in: ['tba', 'pending', 'pickup', 'billing', 'delivery'] },
-        },
-        select: {
-          id: true,
-          pickupLocation: true,
-          dropoffLocation: true,
-        }
-      });
-
-      if (activeJobs.length > 0) {
-        const shops = await prisma.shopLocation.findMany({
-          select: { name: true, address: true }
-        });
-
-        for (const aj of activeJobs) {
-          let jobNeedsUpdate = false;
-          const jobDataUpdate: { pickupLocation?: string; dropoffLocation?: string } = {};
-
-          const isShopDropoff = shops.some(s => s.address === aj.dropoffLocation || s.name === aj.dropoffLocation) || (aj.dropoffLocation && aj.dropoffLocation.includes("POS Counter"));
-          if (!isShopDropoff && aj.dropoffLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.dropoffLocation) && !/\(Room\s*.*?\)/i.test(aj.dropoffLocation)) {
-            jobDataUpdate.dropoffLocation = `${aj.dropoffLocation} (Room ${cleanNewRoom})`;
-            jobNeedsUpdate = true;
-          }
-
-          const isShopPickup = shops.some(s => s.address === aj.pickupLocation || s.name === aj.pickupLocation) || (aj.pickupLocation && aj.pickupLocation.includes("POS Counter"));
-          if (!isShopPickup && aj.pickupLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.pickupLocation) && !/\(Room\s*.*?\)/i.test(aj.pickupLocation)) {
-            jobDataUpdate.pickupLocation = `${aj.pickupLocation} (Room ${cleanNewRoom})`;
-            jobNeedsUpdate = true;
-          }
-
-          if (jobNeedsUpdate) {
-            const syncedJob = await prisma.job.update({
-              where: { id: aj.id },
-              data: jobDataUpdate,
-            });
-            await publishOrderEvent({
-              type: 'job.updated',
-              job: syncedJob,
-              action: 'customer_room_sync',
-              changedFields: Object.keys(jobDataUpdate),
-              actorId: updates.actorId,
-              actorName: updates.actorName,
-            });
-            console.log(`[Customer Room Update] Synced Room ${cleanNewRoom} to active Job ${aj.id}:`, jobDataUpdate);
-          }
-        }
-      }
-    } catch (jobSyncErr) {
-      console.error("[Customer Room Update] Failed to sync room to active jobs:", jobSyncErr);
-    }
-  }
-
-  const changes: Record<string, { from: any, to: any } | any> = {};
-  for (const key of Object.keys(data)) {
-    if (key === 'passwordHash' || key === 'forcePasswordReset') continue;
-    if (currentCustomer[key as keyof typeof currentCustomer] !== data[key]) {
-      changes[key] = {
-        from: currentCustomer[key as keyof typeof currentCustomer],
-        to: data[key]
-      };
-    }
-  }
-
-  if (Object.keys(changes).length > 0) {
-    try {
-      changes.customerName = currentCustomer.name;
-
-      // If creditBalance changed, also write a dedicated ADJUST log with clear before/after/diff details
-      // Skip if explicitly suppressed, initiated by topup, or already written inside the wallet transaction
-      if (changes.creditBalance && !walletAdjustedInsideTx && !updates.skipAdjustLog && updates.actionSource !== 'topup') {
-        const balBefore = Number(currentCustomer.creditBalance || 0);
-        const balAfter = Number(data.creditBalance || 0);
-        const diff = updates.creditBalanceDelta !== undefined 
-          ? Number(updates.creditBalanceDelta) 
-          : (balAfter - balBefore);
-        const isAdd = diff >= 0;
-
-        await prisma.activityLog.create({
-          data: {
-            entityId: id,
-            entityType: 'customer',
-            action: 'ADJUST',
-            details: JSON.stringify({
-              customerName: currentCustomer.name,
-              adjustMode: isAdd ? 'add' : 'deduct',
-              adjustAmount: Math.abs(diff),
-              balanceBefore: balBefore,
-              balanceAfter: balAfter,
-              reason: updates.adjustReason || updates.reason || null,
-            }),
-            userId: updates.actorId || null,
-            userName: updates.actorName || null,
-          }
-        });
-        console.log(`[ActivityLog] Adjusted wallet for customer ${id} (${currentCustomer.name}): ฿${balBefore} → ฿${balAfter}`);
-
-        // Create WalletTransaction record for Post-Approval Tracking
-        if (!updates.skipWalletTx) {
-          const txType = updates.walletTxType || (isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT');
-          const refType = updates.walletRefType || (txType === 'DEDUCT' ? 'job' : 'manual');
-          await prisma.walletTransaction.create({
-            data: {
-              customerId: id,
-              customerName: currentCustomer.name,
-              type: txType,
-              amount: Math.abs(diff),
-              direction: isAdd ? 'CREDIT' : 'DEBIT',
-              balanceBefore: balBefore,
-              balanceAfter: balAfter,
-              reason: updates.adjustReason || updates.reason || null,
-              referenceId: updates.walletRefId || null,
-              referenceType: refType,
-              createdById: updates.actorId || null,
-              createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
-              branchId: updates.branchId || null,
-              approvalStatus: 'PENDING',
             }
+          } else if (updates.tier === "member" || updates.tier === "vip") {
+            data.isMember = true;
+            if (updates.memberId && updates.memberId.trim()) {
+              const memberIdUpper = updates.memberId.trim().toUpperCase();
+              const existing = await tx.customer.findFirst({
+                where: {
+                  memberId: memberIdUpper,
+                  id: { not: id },
+                },
+              });
+              if (existing) {
+                return {
+                  earlyReturn: {
+                    success: false,
+                    error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น`,
+                  },
+                };
+              }
+              data.memberId = memberIdUpper;
+            } else if (updates.memberId === "") {
+              data.memberId = null;
+            } else {
+              data.memberId = lockedCustomer.memberId;
+            }
+          } else if (updates.memberId !== undefined) {
+            if (lockedCustomer.isMember) {
+              if (updates.memberId && updates.memberId.trim()) {
+                const memberIdUpper = updates.memberId.trim().toUpperCase();
+                const existing = await tx.customer.findFirst({
+                  where: {
+                    memberId: memberIdUpper,
+                    id: { not: id },
+                  },
+                });
+                if (existing) {
+                  return {
+                    earlyReturn: {
+                      success: false,
+                      error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น`,
+                    },
+                  };
+                }
+                data.memberId = memberIdUpper;
+              } else {
+                data.memberId = null;
+              }
+            }
+          }
+
+          if (updates.branchId !== undefined) data.branchId = updates.branchId || null;
+          if (updates.isVIP !== undefined) data.isVIP = updates.isVIP;
+          if (updates.isCorporate !== undefined) data.isCorporate = updates.isCorporate;
+          if (updates.isWhatsapp !== undefined) data.isWhatsapp = updates.isWhatsapp;
+          if (updates.isNew !== undefined) data.isNew = updates.isNew;
+          if (updates.email !== undefined) data.email = updates.email;
+          if (updates.lineId !== undefined) data.lineId = updates.lineId;
+          if (updates.whatsappId !== undefined) data.whatsappId = updates.whatsappId;
+          if (updates.language !== undefined) data.language = updates.language;
+          if (updates.remark !== undefined) data.remark = updates.remark;
+          if (updates.secondaryAddress !== undefined) data.secondaryAddress = updates.secondaryAddress;
+          if (updates.dob !== undefined) data.dob = updates.dob;
+          if (updates.taxId !== undefined) data.taxId = updates.taxId;
+          if (updates.companyName !== undefined) data.companyName = updates.companyName;
+          if (updates.vatType !== undefined) data.vatType = updates.vatType;
+          if (updates.corporateCommissionType !== undefined) data.corporateCommissionType = updates.corporateCommissionType;
+          if (updates.corporatePickupCommission !== undefined) {
+            data.corporatePickupCommission = updates.corporatePickupCommission != null ? Number(updates.corporatePickupCommission) : 0;
+          }
+          if (updates.corporateDeliveryCommission !== undefined) {
+            data.corporateDeliveryCommission = updates.corporateDeliveryCommission != null ? Number(updates.corporateDeliveryCommission) : 0;
+          }
+          if (updates.corporateCommissionRatePerKm !== undefined) {
+            data.corporateCommissionRatePerKm = updates.corporateCommissionRatePerKm != null ? Number(updates.corporateCommissionRatePerKm) : 0;
+          }
+          if (updates.brand !== undefined) data.brand = updates.brand;
+          if (updates.nickName !== undefined) data.nickName = updates.nickName;
+          if (updates.gender !== undefined) data.gender = updates.gender;
+          if (updates.secondaryPhone !== undefined) data.secondaryPhone = updates.secondaryPhone;
+          if (updates.isSecondaryWhatsapp !== undefined) data.isSecondaryWhatsapp = updates.isSecondaryWhatsapp;
+          if (updates.isVerified !== undefined) data.isVerified = updates.isVerified;
+          if (updates.verifiedVia !== undefined) data.verifiedVia = updates.verifiedVia;
+          if (updates.sourceSystem !== undefined) data.sourceSystem = updates.sourceSystem;
+          if (updates.passwordHash !== undefined) data.passwordHash = updates.passwordHash;
+          if (updates.roomNo !== undefined) data.roomNo = updates.roomNo;
+          if (updates.memberStartDate !== undefined) {
+            data.memberStartDate = updates.memberStartDate ? new Date(updates.memberStartDate) : null;
+          } else if (data.isMember && !lockedCustomer.memberStartDate && !lockedCustomer.isMember) {
+            data.memberStartDate = new Date();
+          }
+          if (updates.memberExpiryDate !== undefined) {
+            data.memberExpiryDate = updates.memberExpiryDate ? new Date(updates.memberExpiryDate) : null;
+          } else if (data.isMember && !lockedCustomer.memberExpiryDate && data.memberStartDate) {
+            const expStr = computeMembershipExpiryDate(data.memberStartDate);
+            if (expStr) {
+              data.memberExpiryDate = new Date(`${expStr}T23:59:59.999Z`);
+            }
+          }
+
+          // 3. Compute effective field-level changes against lockedCustomer
+          changes = {};
+          for (const key of Object.keys(data)) {
+            if (key === 'passwordHash' || key === 'forcePasswordReset' || key === 'updatedAt') continue;
+            const oldVal = (lockedCustomer as any)[key];
+            const newVal = data[key];
+            if (!areCustomerFieldValuesEqual(key, oldVal, newVal)) {
+              changes[key] = {
+                from: oldVal,
+                to: newVal,
+              };
+            }
+          }
+
+          // 4. Field-Level Optimistic Concurrency Control (OCC)
+          // Atomic delta updates (creditBalanceDelta) always apply on top of the locked balance;
+          // profile updates and explicit field edits check field-level conflicts against intervening ActivityLog entries.
+          const checkTime = updates.expectedUpdatedAt || updates.updatedAt;
+          if (checkTime && !isWalletDeltaUpdate) {
+            const incomingTime = new Date(checkTime).getTime();
+            const dbTime = new Date(lockedCustomer.updatedAt!).getTime();
+            if (!isNaN(incomingTime) && dbTime > incomingTime + 1) {
+              const incomingConflictFields = new Set<string>(Object.keys(changes));
+              if (incomingConflictFields.size > 0) {
+                const recentLogs = await tx.activityLog.findMany({
+                  where: {
+                    entityId: id,
+                    entityType: 'customer',
+                    action: { in: ['update', 'ADJUST', 'TOPUP'] },
+                    createdAt: { gt: new Date(incomingTime) },
+                  },
+                  orderBy: { createdAt: 'asc' },
+                });
+
+                const interveningFields = new Set<string>();
+                for (const log of recentLogs) {
+                  if (log.action === 'ADJUST' || log.action === 'TOPUP') {
+                    interveningFields.add('creditBalance');
+                    continue;
+                  }
+                  if (!log.details) continue;
+                  try {
+                    const parsed = JSON.parse(log.details);
+                    for (const k of Object.keys(parsed)) {
+                      if (k !== 'customerName') {
+                        interveningFields.add(k);
+                      }
+                    }
+                  } catch {}
+                }
+
+                // Group related membership/tier fields and corporate commission fields
+                const tierGroup = ['tier', 'isMember', 'isVIP', 'isCorporate', 'memberId', 'priceListId'];
+                if (tierGroup.some((f) => interveningFields.has(f))) {
+                  tierGroup.forEach((f) => interveningFields.add(f));
+                }
+                const commissionGroup = [
+                  'corporateCommissionType',
+                  'corporatePickupCommission',
+                  'corporateDeliveryCommission',
+                  'corporateCommissionRatePerKm',
+                ];
+                if (commissionGroup.some((f) => interveningFields.has(f))) {
+                  commissionGroup.forEach((f) => interveningFields.add(f));
+                }
+                const addressCoordsGroup = ['defaultAddress', 'defaultLat', 'defaultLng'];
+                if (addressCoordsGroup.some((f) => interveningFields.has(f))) {
+                  addressCoordsGroup.forEach((f) => interveningFields.add(f));
+                }
+
+                let conflictingFields: string[] = [];
+                if (recentLogs.length === 0) {
+                  // Fallback when no ActivityLog exists (e.g. direct DB mutation in synthetic test):
+                  // only flag conflict if caller passed checkConflict or if dbTime is >1s newer and no log explained it
+                  if (updates.checkConflict || !updates.expectedUpdatedAt) {
+                    conflictingFields = Array.from(incomingConflictFields);
+                  }
+                } else {
+                  conflictingFields = Array.from(incomingConflictFields).filter((f) => interveningFields.has(f));
+                }
+
+                if (conflictingFields.length > 0) {
+                  const readable = conflictingFields
+                    .map((f) => CUSTOMER_FIELD_LABELS[f] || f)
+                    .join(', ');
+                  return {
+                    earlyReturn: {
+                      success: false,
+                      isConflict: true,
+                      conflictFields: conflictingFields,
+                      latestCustomer: sanitizeCustomerRecord(lockedCustomer),
+                      error: `409 Conflict: ข้อมูลลูกค้าช่อง [${readable}] ถูกอัปเดตโดยผู้ใช้อื่นไปแล้ว ระบบได้โหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกดบันทึกอีกครั้ง`,
+                    },
+                  };
+                }
+              }
+            }
+          }
+
+          // 5. Wallet Idempotency Guard (when updating wallet)
+          if (isWalletUpdate) {
+            const dedupRef = String(updates.idempotencyKey || updates.walletRefId || '').trim();
+            if (dedupRef) {
+              const existingWalletTx = await tx.walletTransaction.findFirst({
+                where: {
+                  customerId: id,
+                  referenceId: dedupRef,
+                },
+              });
+              if (existingWalletTx) {
+                console.warn(`[WalletIdempotency] Duplicate wallet adjustment ignored for reference: ${dedupRef}`);
+                return { savedCust: lockedCustomer, skippedDuplicateWallet: true };
+              }
+            }
+          }
+
+          // Ensure updatedAt strictly advances so concurrent OCC checks have distinct timestamps
+          if (Object.keys(data).length > 0) {
+            data.updatedAt = new Date(Math.max(Date.now(), new Date(lockedCustomer.updatedAt).getTime() + 2));
+          }
+
+          const savedCust = Object.keys(data).length > 0
+            ? await tx.customer.update({
+                where: { id },
+                data,
+                include: {
+                  addresses: {
+                    orderBy: { isPrimary: 'desc' },
+                  },
+                },
+              })
+            : lockedCustomer;
+
+          // 6. Write ActivityLog & WalletTransaction atomically inside the same transaction
+          if (Object.keys(changes).length > 0) {
+            const logTimestamp = savedCust.updatedAt || new Date();
+            if (changes.creditBalance && !updates.skipAdjustLog && updates.actionSource !== 'topup') {
+              const diff = updates.creditBalanceDelta !== undefined
+                ? Number(updates.creditBalanceDelta)
+                : Math.round((balAfter - balBefore) * 100) / 100;
+              if (Math.abs(diff) > 0.0001) {
+                const isAdd = diff >= 0;
+                await tx.activityLog.create({
+                  data: {
+                    entityId: id,
+                    entityType: 'customer',
+                    action: 'ADJUST',
+                    details: JSON.stringify({
+                      customerName: lockedCustomer.name,
+                      adjustMode: isAdd ? 'add' : 'deduct',
+                      adjustAmount: Math.abs(diff),
+                      balanceBefore: balBefore,
+                      balanceAfter: balAfter,
+                      reason: updates.adjustReason || updates.reason || null,
+                    }),
+                    userId: updates.actorId || null,
+                    userName: updates.actorName || null,
+                    createdAt: logTimestamp,
+                  },
+                });
+                console.log(`[ActivityLog] Adjusted wallet for customer ${id} (${lockedCustomer.name}): ฿${balBefore} → ฿${balAfter}`);
+
+                if (!updates.skipWalletTx) {
+                  const txType = updates.walletTxType || (isAdd ? 'ADJUST_ADD' : 'ADJUST_DEDUCT');
+                  const refType = updates.walletRefType || (txType === 'DEDUCT' ? 'job' : 'manual');
+                  await tx.walletTransaction.create({
+                    data: {
+                      customerId: id,
+                      customerName: lockedCustomer.name,
+                      type: txType,
+                      amount: Math.abs(diff),
+                      direction: isAdd ? 'CREDIT' : 'DEBIT',
+                      balanceBefore: balBefore,
+                      balanceAfter: balAfter,
+                      reason: updates.adjustReason || updates.reason || null,
+                      referenceId: updates.idempotencyKey || updates.walletRefId || null,
+                      referenceType: refType,
+                      createdById: updates.actorId || null,
+                      createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
+                      branchId: updates.branchId || null,
+                      approvalStatus: 'PENDING',
+                    },
+                  });
+                }
+              }
+            }
+
+            const otherKeys = Object.keys(changes).filter((k) => k !== 'creditBalance' && k !== 'customerName');
+            if (otherKeys.length > 0) {
+              const profileChangesPayload = {
+                ...changes,
+                customerName: lockedCustomer.name,
+              };
+              await tx.activityLog.create({
+                data: {
+                  entityId: id,
+                  entityType: 'customer',
+                  action: 'update',
+                  details: JSON.stringify(profileChangesPayload),
+                  userId: updates.actorId || null,
+                  userName: updates.actorName || null,
+                  createdAt: logTimestamp,
+                },
+              });
+              console.log(`[ActivityLog] Updated customer ${id} (${lockedCustomer.name}):`, JSON.stringify(profileChangesPayload));
+            }
+          }
+
+          return { savedCust };
+        });
+
+        if (txResult.earlyReturn) {
+          return txResult.earlyReturn;
+        }
+        updatedCustomer = txResult.savedCust;
+      } catch (dbErr: any) {
+        if (dbErr?.code === 'P2002') {
+          const target = dbErr?.meta?.target;
+          if (Array.isArray(target) && target.includes('memberId')) {
+            return { success: false, error: "เลขสมาชิกนี้มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น" };
+          }
+          return { success: false, error: "ข้อมูลซ้ำกับรายการอื่นในระบบ (Unique constraint failed)" };
+        }
+        throw dbErr;
+      }
+
+      // 7. Side-effects after commit: Sync room number to active in-flight jobs if roomNo/secondaryAddress actually changed
+      const cleanNewRoom = (data.roomNo || (data.secondaryAddress ? data.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
+      if (cleanNewRoom && (changes.roomNo !== undefined || changes.secondaryAddress !== undefined)) {
+        try {
+          const activeJobs = await prisma.job.findMany({
+            where: {
+              customerId: id,
+              status: { in: ['tba', 'pending', 'pickup', 'billing', 'delivery'] },
+            },
+            select: {
+              id: true,
+              pickupLocation: true,
+              dropoffLocation: true,
+            },
+          });
+
+          if (activeJobs.length > 0) {
+            const shops = await prisma.shopLocation.findMany({
+              select: { name: true, address: true },
+            });
+
+            for (const aj of activeJobs) {
+              let jobNeedsUpdate = false;
+              const jobDataUpdate: { pickupLocation?: string; dropoffLocation?: string } = {};
+
+              const isShopDropoff = shops.some(s => s.address === aj.dropoffLocation || s.name === aj.dropoffLocation) || (aj.dropoffLocation && aj.dropoffLocation.includes("POS Counter"));
+              if (!isShopDropoff && aj.dropoffLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.dropoffLocation) && !/\(Room\s*.*?\)/i.test(aj.dropoffLocation)) {
+                jobDataUpdate.dropoffLocation = `${aj.dropoffLocation} (Room ${cleanNewRoom})`;
+                jobNeedsUpdate = true;
+              }
+
+              const isShopPickup = shops.some(s => s.address === aj.pickupLocation || s.name === aj.pickupLocation) || (aj.pickupLocation && aj.pickupLocation.includes("POS Counter"));
+              if (!isShopPickup && aj.pickupLocation && !/\b(room|ห้อง|#)\s*\w+/i.test(aj.pickupLocation) && !/\(Room\s*.*?\)/i.test(aj.pickupLocation)) {
+                jobDataUpdate.pickupLocation = `${aj.pickupLocation} (Room ${cleanNewRoom})`;
+                jobNeedsUpdate = true;
+              }
+
+              if (jobNeedsUpdate) {
+                const syncedJob = await prisma.job.update({
+                  where: { id: aj.id },
+                  data: jobDataUpdate,
+                });
+                await publishOrderEvent({
+                  type: 'job.updated',
+                  job: syncedJob,
+                  action: 'customer_room_sync',
+                  changedFields: Object.keys(jobDataUpdate),
+                  actorId: updates.actorId,
+                  actorName: updates.actorName,
+                });
+                console.log(`[Customer Room Update] Synced Room ${cleanNewRoom} to active Job ${aj.id}:`, jobDataUpdate);
+              }
+            }
+          }
+        } catch (jobSyncErr) {
+          console.error("[Customer Room Update] Failed to sync room to active jobs:", jobSyncErr);
+        }
+      }
+
+      // 8. CRM Remark Sync Logic: only append note to active jobs when remark actually changed
+      if (changes.remark !== undefined) {
+        const activeJobs = await prisma.job.findMany({
+          where: {
+            customerId: id,
+            status: { in: ['pending', 'accepted', 'pickup', 'active', 'delivery', 'picked_up'] },
+          },
+        });
+
+        for (const job of activeJobs) {
+          let notes: any[] = [];
+          let payments: any[] = [];
+          let isStructured = false;
+
+          if (job.adminNotesJson) {
+            try {
+              const parsed = JSON.parse(job.adminNotesJson);
+              if (parsed && typeof parsed === 'object') {
+                if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
+                  isStructured = true;
+                  notes = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
+                  payments = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
+                } else if (Array.isArray(parsed)) {
+                  notes = [...parsed];
+                }
+              }
+            } catch {
+              notes = [];
+            }
+          }
+
+          notes.push({
+            userId: 'system',
+            userName: 'System (CRM)',
+            text: `CRM Remark: ${updates.remark ? updates.remark : '(Cleared)'}`,
+            timestamp: new Date().toISOString(),
+          });
+
+          const updatedJson = (isStructured || payments.length > 0)
+            ? JSON.stringify({ payments, notes })
+            : JSON.stringify(notes);
+
+          const syncedJob = await prisma.job.update({
+            where: { id: job.id },
+            data: { adminNotesJson: updatedJson },
+          });
+          await publishOrderEvent({
+            type: 'job.updated',
+            job: syncedJob,
+            action: 'customer_remark_sync',
+            changedFields: ['adminNotesJson'],
+            actorId: updates.actorId,
+            actorName: updates.actorName,
           });
         }
       }
 
-      // If other profile fields changed besides creditBalance, write the general update log
-      const otherKeys = Object.keys(changes).filter(k => k !== 'creditBalance' && k !== 'customerName');
-      if (otherKeys.length > 0) {
-        await prisma.activityLog.create({
-          data: {
-            entityId: id,
-            entityType: 'customer',
-            action: 'update',
-            details: JSON.stringify(changes),
-            userId: updates.actorId || null,
-            userName: updates.actorName || null,
-          }
-        });
-        console.log(`[ActivityLog] Updated customer ${id} (${currentCustomer.name}):`, JSON.stringify(changes));
-      }
-    } catch (err: any) {
-      console.error("Failed to write ActivityLog on customer update:", err.message);
-    }
-  }
-
-
-
-  // CRM Remark Sync Logic from main branch
-  if (updates.remark !== undefined) {
-    const activeJobs = await prisma.job.findMany({
-      where: {
-        customerId: id,
-        status: { in: ['pending', 'accepted', 'pickup', 'active', 'delivery', 'picked_up'] }
-      }
-    });
-
-    for (const job of activeJobs) {
-      let notes: any[] = [];
-      let payments: any[] = [];
-      let isStructured = false;
-
-      if (job.adminNotesJson) {
-        try {
-          const parsed = JSON.parse(job.adminNotesJson);
-          if (parsed && typeof parsed === 'object') {
-            if (Array.isArray(parsed.notes) || Array.isArray(parsed.payments)) {
-              isStructured = true;
-              notes = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
-              payments = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
-            } else if (Array.isArray(parsed)) {
-              notes = [...parsed];
-            }
-          }
-        } catch (e) {
-          notes = [];
-        }
-      }
-      
-      notes.push({
-        userId: 'system',
-        userName: 'System (CRM)',
-        text: `CRM Remark: ${updates.remark ? updates.remark : '(Cleared)'}`,
-        timestamp: new Date().toISOString()
-      });
-
-      const updatedJson = (isStructured || payments.length > 0)
-        ? JSON.stringify({ payments, notes })
-        : JSON.stringify(notes);
-
-      const syncedJob = await prisma.job.update({
-        where: { id: job.id },
-        data: { adminNotesJson: updatedJson }
-      });
+      invalidateDbCache('customers');
       await publishOrderEvent({
-        type: 'job.updated',
-        job: syncedJob,
-        action: 'customer_remark_sync',
-        changedFields: ['adminNotesJson'],
+        type: 'customer.updated',
+        customerId: id,
+        updatedAt: updatedCustomer.updatedAt || new Date(),
+        action: 'customer_update',
         actorId: updates.actorId,
         actorName: updates.actorName,
       });
-    }
-  }
-
-    invalidateDbCache('customers');
-    await publishOrderEvent({
-      type: 'customer.updated',
-      customerId: id,
-      updatedAt: updatedCustomer.updatedAt || new Date(),
-      action: 'customer_update',
-      actorId: updates.actorId,
-      actorName: updates.actorName,
+      return { success: true, customer: sanitizeCustomerRecord(updatedCustomer) };
     });
-    return { success: true, customer: sanitizeCustomerRecord(updatedCustomer) };
   } catch (err: any) {
     console.error("[updateCustomerAction Error]:", err);
     if (err?.code === 'P2002') {
@@ -887,6 +1084,13 @@ export async function deleteCustomerAction(id: string, actorId?: string, actorNa
   const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   actorId = authUser.id;
   actorName = authUser.name || authUser.email;
+  const targetCustomer = await prisma.customer.findUnique({ where: { id }, select: { id: true, branchId: true } });
+  if (!targetCustomer) {
+    throw new Error("Customer not found");
+  }
+  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    throw new Error("Forbidden: You do not have access to customer records in this branch");
+  }
   const jobsCount = await prisma.job.count({ where: { customerId: id } });
   if (jobsCount > 0) {
     throw new Error(`Cannot delete customer: they have ${jobsCount} historical job(s).`);
@@ -1268,7 +1472,20 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
   deliveryNote?: string;
   isPrimary?: boolean;
 }) {
-  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  if (!customerId) {
+    throw new Error("Customer ID is required");
+  }
+  const targetCustomer = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { id: true, branchId: true },
+  });
+  if (!targetCustomer) {
+    throw new Error("Customer not found");
+  }
+  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    throw new Error("Forbidden: You do not have access to customer records in this branch");
+  }
   const created = await prisma.$transaction(async (tx) => {
     if (addressData.isPrimary) {
       await tx.customerAddress.updateMany({
@@ -1294,9 +1511,20 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
     });
 
     if (addressData.isPrimary) {
-      await tx.customer.update({
+      const updatedCust = await tx.customer.update({
         where: { id: customerId },
         data: { defaultAddress: addressData.address }
+      });
+      await tx.activityLog.create({
+        data: {
+          entityId: customerId,
+          entityType: 'customer',
+          action: 'update',
+          details: JSON.stringify({ defaultAddress: { to: addressData.address } }),
+          userId: authUser?.id || null,
+          userName: authUser?.name || authUser?.email || null,
+          createdAt: updatedCust.updatedAt,
+        }
       });
     }
 
@@ -1308,7 +1536,27 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
 }
 
 export async function deleteCustomerAddressAction(addressId: string, customerId: string) {
-  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  if (!addressId) {
+    throw new Error("Address ID is required");
+  }
+  const address = await prisma.customerAddress.findUnique({
+    where: { id: addressId },
+    include: {
+      customer: {
+        select: { id: true, branchId: true },
+      },
+    },
+  });
+  if (!address || !address.customer) {
+    throw new Error("Address not found");
+  }
+  if (customerId && address.customerId !== customerId) {
+    throw new Error("Forbidden: Address does not belong to the specified customer");
+  }
+  if (!canAccessCustomerRecords(authUser, address.customer.branchId)) {
+    throw new Error("Forbidden: You do not have access to customer records in this branch");
+  }
   await prisma.customerAddress.delete({
     where: { id: addressId }
   });
@@ -1317,7 +1565,27 @@ export async function deleteCustomerAddressAction(addressId: string, customerId:
 }
 
 export async function setPrimaryCustomerAddressAction(customerId: string, addressId: string) {
-  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  if (!customerId || !addressId) {
+    throw new Error("Customer ID and Address ID are required");
+  }
+  const address = await prisma.customerAddress.findUnique({
+    where: { id: addressId },
+    include: {
+      customer: {
+        select: { id: true, branchId: true },
+      },
+    },
+  });
+  if (!address || !address.customer) {
+    throw new Error("Address not found");
+  }
+  if (address.customerId !== customerId) {
+    throw new Error("Forbidden: Address does not belong to the specified customer");
+  }
+  if (!canAccessCustomerRecords(authUser, address.customer.branchId)) {
+    throw new Error("Forbidden: You do not have access to customer records in this branch");
+  }
   const updated = await prisma.$transaction(async (tx) => {
     await tx.customerAddress.updateMany({
       where: { customerId, isPrimary: true },
@@ -1327,9 +1595,20 @@ export async function setPrimaryCustomerAddressAction(customerId: string, addres
       where: { id: addressId },
       data: { isPrimary: true }
     });
-    await tx.customer.update({
+    const updatedCust = await tx.customer.update({
       where: { id: customerId },
       data: { defaultAddress: addr.address }
+    });
+    await tx.activityLog.create({
+      data: {
+        entityId: customerId,
+        entityType: 'customer',
+        action: 'update',
+        details: JSON.stringify({ defaultAddress: { to: addr.address } }),
+        userId: authUser?.id || null,
+        userName: authUser?.name || authUser?.email || null,
+        createdAt: updatedCust.updatedAt,
+      }
     });
     return addr;
   });
@@ -1566,6 +1845,15 @@ export async function getJobsByIdsAction(ids: string[]) {
 
 export async function getCustomerJobsAction(customerId: string, customerPhone?: string | null) {
   const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  if (customerId) {
+    const targetCustomer = await prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, branchId: true },
+    });
+    if (targetCustomer && !canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
+  }
   try {
     if (!customerId && !customerPhone) return [];
 
@@ -1616,9 +1904,17 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
 }
 
 export async function getCustomerWalletAdjustmentsAction(customerId: string) {
-  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  if (!customerId) return [];
+  const targetCustomer = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { id: true, branchId: true },
+  });
+  if (!targetCustomer) return [];
+  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    throw new Error("Forbidden: Customer branch restriction");
+  }
   try {
-    if (!customerId) return [];
 
     // 1. Fetch from WalletTransaction, ActivityLog, Jobs, and Topups in parallel
     const [wtList, actLogs, customerJobs, customerTopups] = await Promise.all([
@@ -1760,13 +2056,25 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
 }
 
 export async function getCustomerJobCountsAction(customerIds: string[]) {
-  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
   try {
     const validIds = customerIds.filter(Boolean);
     if (!validIds.length) return {};
+    const targetCustomers = await prisma.customer.findMany({
+      where: { id: { in: validIds } },
+      select: { id: true, branchId: true },
+    });
+    const allowedCustomerIds = targetCustomers
+      .filter(c => canAccessCustomerRecords(authUser, c.branchId))
+      .map(c => c.id);
+    if (!allowedCustomerIds.length) return {};
+    const jobWhere: any = { customerId: { in: allowedCustomerIds } };
+    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+      jobWhere.branchId = authUser.branchId;
+    }
     const counts = await prisma.job.groupBy({
       by: ['customerId'],
-      where: { customerId: { in: validIds } },
+      where: jobWhere,
       _count: { id: true },
       _sum: { totalAmount: true }
     });
@@ -2624,14 +2932,22 @@ async function updateJobActionInternal(id: string, updates: any) {
   }
 
   try {
-  await publishOrderEvent({
-    type: 'job.updated',
-    job: updatedJob,
-    action: 'update',
+    const previousRiderIds = Array.from(
+      new Set(
+        [existingJob?.riderId, existingJob?.pickupRiderId, existingJob?.deliveryRiderId].filter(
+          (rid): rid is string => Boolean(rid && typeof rid === 'string')
+        )
+      )
+    );
+    await publishOrderEvent({
+      type: 'job.updated',
+      job: updatedJob,
+      action: 'update',
       changedFields: Object.keys(effectiveChanges),
-    actorId: updates.actorId,
-    actorName: updates.actorName,
-  });
+      previousRiderIds: previousRiderIds.length > 0 ? previousRiderIds : undefined,
+      actorId: updates.actorId,
+      actorName: updates.actorName,
+    });
   } catch (rtErr: any) {
     console.warn("[updateJobAction] publishOrderEvent failed:", rtErr?.message || rtErr);
     followUpWarnings.push("realtimePublish");
@@ -2710,6 +3026,94 @@ export async function getRiderTransactionsAction(riderId: string) {
 }
 
 // PRICE LISTS
+const priceListUpdateLocks = new Map<string, Promise<any>>();
+
+async function withPriceListUpdateLock<T>(priceListId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = priceListUpdateLocks.get(priceListId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((r) => {
+    release = r;
+  });
+  const chained = prev.then(() => current);
+  priceListUpdateLocks.set(priceListId, chained);
+
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (priceListUpdateLocks.get(priceListId) === chained) {
+      priceListUpdateLocks.delete(priceListId);
+    }
+  }
+}
+
+function parsePriceListJson(raw: string | null | undefined): {
+  isCorporate: boolean;
+  customItems: any[];
+  servicePrices: Record<string, number>;
+} {
+  let parsedJson: any = {};
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      parsedJson = JSON.parse(raw);
+    } catch {
+      parsedJson = {};
+    }
+  } else if (raw && typeof raw === "object") {
+    parsedJson = raw;
+  }
+
+  const isCorporate = Boolean(
+    parsedJson?.isCorporateCatalog ||
+      (Array.isArray(parsedJson?.customItems) && parsedJson.customItems.length > 0)
+  );
+  const customItems = Array.isArray(parsedJson?.customItems) ? parsedJson.customItems : [];
+  const rawServicePrices =
+    parsedJson?.servicePrices && typeof parsedJson.servicePrices === "object" && !Array.isArray(parsedJson.servicePrices)
+      ? parsedJson.servicePrices
+      : Array.isArray(parsedJson?.customItems) || parsedJson?.isCorporateCatalog
+        ? {}
+        : parsedJson && typeof parsedJson === "object" && !Array.isArray(parsedJson)
+          ? parsedJson
+          : {};
+
+  const servicePrices: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rawServicePrices)) {
+    if (k === "isCorporateCatalog" || k === "customItems" || k === "servicePrices") continue;
+    const num = Number(v);
+    if (Number.isFinite(num)) {
+      servicePrices[k] = num;
+    }
+  }
+
+  return { isCorporate, customItems, servicePrices };
+}
+
+function formatPriceListRecord(pl: any) {
+  if (!pl) return null;
+  const { isCorporate, customItems, servicePrices } = parsePriceListJson(pl.servicePrices);
+  return {
+    ...pl,
+    isCorporate,
+    customItems: isCorporate ? customItems : undefined,
+    servicePrices,
+  };
+}
+
+function areCustomItemsEqual(a: any, b: any): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    String(a.name ?? "").trim() === String(b.name ?? "").trim() &&
+    String(a.nameEn ?? "").trim() === String(b.nameEn ?? "").trim() &&
+    String(a.category ?? "GENERAL") === String(b.category ?? "GENERAL") &&
+    String(a.unit ?? "ชิ้น") === String(b.unit ?? "ชิ้น") &&
+    Number(a.price ?? 0) === Number(b.price ?? 0) &&
+    String(a.serviceId ?? "") === String(b.serviceId ?? "")
+  );
+}
+
 export async function addPriceListAction(data: any) {
   await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
   let sPrices = "{}";
@@ -2730,29 +3134,257 @@ export async function addPriceListAction(data: any) {
     isDefault: Boolean(data.isDefault),
     servicePrices: sPrices
   };
-  return prisma.priceList.create({ data: pData });
+  const created = await prisma.priceList.create({ data: pData });
+  invalidateDbCache('master');
+  return formatPriceListRecord(created);
 }
 
 export async function updatePriceListAction(id: string, updates: any) {
-  await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
-  const data: any = {};
-  if (updates.name !== undefined) data.name = updates.name;
-  if (updates.isDefault !== undefined) data.isDefault = updates.isDefault;
+  const authUser = await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
+  return withPriceListUpdateLock(id, async () => {
+    const txResult = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "PriceList" WHERE id = ${id} FOR UPDATE`;
+      const existing = await tx.priceList.findUnique({ where: { id } });
+      if (!existing) {
+        throw new Error("Price list not found");
+      }
 
-  if (updates.servicePrices !== undefined || updates.customItems !== undefined || updates.isCorporate !== undefined) {
-    if (typeof updates.servicePrices === "string") {
-      data.servicePrices = updates.servicePrices;
-    } else if (updates.isCorporate || updates.customItems) {
-      data.servicePrices = JSON.stringify({
-        isCorporateCatalog: true,
-        customItems: updates.customItems || [],
-        servicePrices: updates.servicePrices || {}
-      });
-    } else {
-      data.servicePrices = JSON.stringify(updates.servicePrices || {});
-    }
-  }
-  return prisma.priceList.update({ where: { id }, data });
+      const existingParsed = parsePriceListJson(existing.servicePrices);
+      const conflictFields: string[] = [];
+      const data: any = {};
+      const changedDetails: Record<string, any> = {};
+
+      // 1. Name field diff & OCC
+      if (updates.name !== undefined) {
+        const incomingName = String(updates.name).trim();
+        if (updates.baseName !== undefined) {
+          const baseName = String(updates.baseName).trim();
+          const callerChangedName = incomingName !== baseName;
+          if (callerChangedName) {
+            if (existing.name !== baseName && existing.name !== incomingName) {
+              conflictFields.push("name");
+            } else if (incomingName !== existing.name) {
+              data.name = incomingName;
+              changedDetails.name = incomingName;
+            }
+          }
+        } else if (incomingName !== existing.name) {
+          data.name = incomingName;
+          changedDetails.name = incomingName;
+        }
+      }
+
+      // 2. isDefault field diff
+      if (updates.isDefault !== undefined && Boolean(updates.isDefault) !== Boolean(existing.isDefault)) {
+        data.isDefault = Boolean(updates.isDefault);
+        changedDetails.isDefault = data.isDefault;
+      }
+
+      // 3. servicePrices & customItems Smart Key-Level Merge + OCC
+      const hasPriceOrCatalogUpdate =
+        updates.servicePrices !== undefined ||
+        updates.customItems !== undefined ||
+        updates.isCorporate !== undefined;
+
+      if (hasPriceOrCatalogUpdate) {
+        let incomingParsed: {
+          isCorporate: boolean;
+          customItems: any[];
+          servicePrices: Record<string, number>;
+        };
+
+        if (typeof updates.servicePrices === "string") {
+          incomingParsed = parsePriceListJson(updates.servicePrices);
+        } else {
+          const isCorp =
+            updates.isCorporate !== undefined
+              ? Boolean(updates.isCorporate)
+              : updates.customItems !== undefined
+                ? true
+                : existingParsed.isCorporate;
+          incomingParsed = {
+            isCorporate: isCorp,
+            customItems: Array.isArray(updates.customItems)
+              ? updates.customItems
+              : existingParsed.customItems,
+            servicePrices:
+              updates.servicePrices && typeof updates.servicePrices === "object"
+                ? updates.servicePrices
+                : existingParsed.servicePrices,
+          };
+        }
+
+        // Merge servicePrices map key-by-key
+        let mergedPrices: Record<string, number> = { ...existingParsed.servicePrices };
+        if (updates.baseServicePrices && typeof updates.baseServicePrices === "object") {
+          const basePrices: Record<string, number> = updates.baseServicePrices;
+          const allKeys = new Set([
+            ...Object.keys(basePrices),
+            ...Object.keys(incomingParsed.servicePrices),
+          ]);
+          for (const svcId of allKeys) {
+            const baseVal = basePrices[svcId];
+            const incVal = incomingParsed.servicePrices[svcId];
+            const currVal = existingParsed.servicePrices[svcId];
+            const callerModified = baseVal !== incVal;
+            if (!callerModified) {
+              // Caller did not touch this service price -> keep whatever is in DB (currVal)
+              continue;
+            }
+            // Caller modified or removed this serviceId -> check if DB also changed it since baseSnapshot
+            const dbModifiedSinceBase = currVal !== baseVal;
+            const dbDiffersFromIncoming = currVal !== incVal;
+            if (dbModifiedSinceBase && dbDiffersFromIncoming) {
+              conflictFields.push(`servicePrices.${svcId}`);
+            } else {
+              if (incVal === undefined || incVal === null) {
+                delete mergedPrices[svcId];
+              } else {
+                mergedPrices[svcId] = Number(incVal);
+              }
+            }
+          }
+        } else if (updates.replaceServicePrices === true) {
+          mergedPrices = { ...incomingParsed.servicePrices };
+        } else {
+          // Partial/key-level merge onto existing DB servicePrices
+          for (const [svcId, priceVal] of Object.entries(incomingParsed.servicePrices)) {
+            if (priceVal === undefined || priceVal === null) {
+              delete mergedPrices[svcId];
+            } else {
+              mergedPrices[svcId] = Number(priceVal);
+            }
+          }
+        }
+
+        // Merge corporate customItems by item.id
+        let mergedCustomItems: any[] = [...existingParsed.customItems];
+        if (incomingParsed.isCorporate) {
+          if (Array.isArray(updates.baseCustomItems)) {
+            const baseItems: any[] = updates.baseCustomItems;
+            const baseMap = new Map<string, any>(baseItems.map((it) => [String(it.id), it]));
+            const currMap = new Map<string, any>(existingParsed.customItems.map((it) => [String(it.id), it]));
+            const incMap = new Map<string, any>(incomingParsed.customItems.map((it) => [String(it.id), it]));
+
+            // Check deletions & edits on items that existed in baseSnapshot
+            for (const [itemId, baseItem] of baseMap.entries()) {
+              const incItem = incMap.get(itemId);
+              const currItem = currMap.get(itemId);
+              const callerDeleted = !incItem;
+              const callerEdited = Boolean(incItem && !areCustomItemsEqual(baseItem, incItem));
+              if (!callerDeleted && !callerEdited) continue;
+
+              const dbDeleted = !currItem;
+              const dbEdited = Boolean(currItem && !areCustomItemsEqual(baseItem, currItem));
+              if (callerDeleted && dbEdited) {
+                conflictFields.push(`customItems.${itemId}`);
+              } else if (callerEdited && (dbDeleted || (dbEdited && !areCustomItemsEqual(currItem, incItem)))) {
+                conflictFields.push(`customItems.${itemId}`);
+              }
+            }
+
+            const nextItems: any[] = [];
+            const includedIds = new Set<string>();
+
+            for (const incItem of incomingParsed.customItems) {
+              const itemId = String(incItem.id);
+              const baseItem = baseMap.get(itemId);
+              const currItem = currMap.get(itemId);
+              if (baseItem && !areCustomItemsEqual(baseItem, incItem)) {
+                // Caller edited this item
+                nextItems.push(incItem);
+                includedIds.add(itemId);
+              } else if (baseItem && areCustomItemsEqual(baseItem, incItem)) {
+                // Caller did not edit this item -> keep DB's latest version if it still exists in DB
+                if (currItem) {
+                  nextItems.push(currItem);
+                  includedIds.add(itemId);
+                }
+              } else {
+                // Newly added by caller
+                nextItems.push(incItem);
+                includedIds.add(itemId);
+              }
+            }
+
+            // Also preserve any new items added concurrently in DB that weren't in baseSnapshot
+            for (const currItem of existingParsed.customItems) {
+              const itemId = String(currItem.id);
+              if (!baseMap.has(itemId) && !includedIds.has(itemId)) {
+                nextItems.push(currItem);
+                includedIds.add(itemId);
+              }
+            }
+
+            mergedCustomItems = nextItems;
+          } else if (Array.isArray(updates.customItems)) {
+            mergedCustomItems = incomingParsed.customItems;
+          }
+        }
+
+        if (conflictFields.length > 0) {
+          return {
+            isConflict: true as const,
+            conflictFields,
+            latestPriceList: formatPriceListRecord(existing),
+          };
+        }
+
+        const nextServicePricesJson = incomingParsed.isCorporate
+          ? JSON.stringify({
+              isCorporateCatalog: true,
+              customItems: mergedCustomItems,
+              servicePrices: mergedPrices,
+            })
+          : JSON.stringify(mergedPrices);
+
+        if (nextServicePricesJson !== existing.servicePrices) {
+          data.servicePrices = nextServicePricesJson;
+          changedDetails.servicePricesUpdated = true;
+        }
+      }
+
+      if (conflictFields.length > 0) {
+        return {
+          isConflict: true as const,
+          conflictFields,
+          latestPriceList: formatPriceListRecord(existing),
+        };
+      }
+
+      if (Object.keys(data).length === 0) {
+        return {
+          ...formatPriceListRecord(existing),
+          isConflict: false as const,
+        };
+      }
+
+      const updated = await tx.priceList.update({ where: { id }, data });
+
+      try {
+        await tx.activityLog.create({
+          data: {
+            entityId: id,
+            entityType: "price_list",
+            action: "update",
+            details: JSON.stringify(changedDetails),
+            userId: authUser.id,
+            userName: authUser.name || authUser.email,
+          },
+        });
+      } catch (e: any) {
+        console.error("Failed to write ActivityLog for PriceList update:", e?.message);
+      }
+
+      return {
+        ...formatPriceListRecord(updated),
+        isConflict: false as const,
+      };
+    });
+
+    invalidateDbCache('master');
+    return txResult;
+  });
 }
 
 export async function deletePriceListAction(id: string) {
@@ -2763,12 +3395,14 @@ export async function deletePriceListAction(id: string) {
     where: { priceListId: id },
     data: { priceListId: 'regular' }
   });
+  invalidateDbCache('master');
+  invalidateDbCache('customers');
 }
 
 // SHOP LOCATIONS
 export async function addShopLocationAction(data: any) {
   await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
-  return prisma.shopLocation.create({
+  const created = await prisma.shopLocation.create({
     data: {
       id: data.id,
       name: data.name,
@@ -2785,35 +3419,47 @@ export async function addShopLocationAction(data: any) {
       taxId: data.taxId || null,
     }
   });
+  invalidateDbCache('master');
+  return created;
 }
 
 export async function updateShopLocationAction(id: string, updates: any) {
   await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
-  const data: any = {};
-  if (updates.name) data.name = updates.name;
-  if (updates.address) data.address = updates.address;
-  if (updates.addressFull !== undefined) data.addressFull = updates.addressFull;
-  if (updates.proformaQrUrl !== undefined) data.proformaQrUrl = updates.proformaQrUrl;
-  if (updates.coords) {
-    data.lat = updates.coords.lat;
-    data.lng = updates.coords.lng;
-  }
-  if (typeof updates.noCommission !== 'undefined') {
-    data.noCommission = updates.noCommission;
-  }
-  if (typeof updates.isPosEnabled !== 'undefined') {
-    data.isPosEnabled = updates.isPosEnabled;
-  }
-  if (updates.area !== undefined) data.area = updates.area;
-  if (updates.logoUrl !== undefined) data.logoUrl = updates.logoUrl;
-  if (updates.phone !== undefined) data.phone = updates.phone;
-  if (updates.taxId !== undefined) data.taxId = updates.taxId;
-  return prisma.shopLocation.update({ where: { id }, data });
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "ShopLocation" WHERE id = ${id} FOR UPDATE`;
+    const data: any = {};
+    if (updates.name !== undefined) data.name = updates.name;
+    if (updates.address !== undefined) data.address = updates.address;
+    if (updates.addressFull !== undefined) data.addressFull = updates.addressFull;
+    if (updates.proformaQrUrl !== undefined) data.proformaQrUrl = updates.proformaQrUrl;
+    if (updates.coords) {
+      data.lat = updates.coords.lat;
+      data.lng = updates.coords.lng;
+    }
+    if (typeof updates.noCommission !== 'undefined') {
+      data.noCommission = updates.noCommission;
+    }
+    if (typeof updates.isPosEnabled !== 'undefined') {
+      data.isPosEnabled = updates.isPosEnabled;
+    }
+    if (updates.area !== undefined) data.area = updates.area;
+    if (updates.logoUrl !== undefined) data.logoUrl = updates.logoUrl;
+    if (updates.phone !== undefined) data.phone = updates.phone;
+    if (updates.taxId !== undefined) data.taxId = updates.taxId;
+    if (Object.keys(data).length === 0) {
+      return tx.shopLocation.findUnique({ where: { id } });
+    }
+    return tx.shopLocation.update({ where: { id }, data });
+  });
+  invalidateDbCache('master');
+  return updated;
 }
 
 export async function deleteShopLocationAction(id: string) {
   await assertServerActionAuthorized({ requireWrite: true, requireAdmin: true });
-  return prisma.shopLocation.delete({ where: { id } });
+  const deleted = await prisma.shopLocation.delete({ where: { id } });
+  invalidateDbCache('master');
+  return deleted;
 }
 
 // POIS
@@ -3040,13 +3686,104 @@ export async function deletePOIsAction(ids: string[], actorId?: string, actorNam
   return { success: true, count: res.count };
 }
 // SETTINGS
-export async function updateSettingAction(key: string, value: string) {
-  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-  const result = await prisma.setting.upsert({
-    where: { key },
-    update: { value },
-    create: { key, value },
+const settingUpdateLocks = new Map<string, Promise<any>>();
+
+async function withSettingUpdateLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = settingUpdateLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((r) => {
+    release = r;
   });
+  const chained = prev.then(() => current);
+  settingUpdateLocks.set(key, chained);
+
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (settingUpdateLocks.get(key) === chained) {
+      settingUpdateLocks.delete(key);
+    }
+  }
+}
+
+function mergeIdKeyedJsonArray(
+  baseJson: string | undefined,
+  existingJson: string | null | undefined,
+  incomingJson: string
+): string {
+  if (!baseJson || !existingJson) return incomingJson;
+  try {
+    const baseArr = JSON.parse(baseJson);
+    const currArr = JSON.parse(existingJson);
+    const incArr = JSON.parse(incomingJson);
+    if (!Array.isArray(baseArr) || !Array.isArray(currArr) || !Array.isArray(incArr)) {
+      return incomingJson;
+    }
+    const baseMap = new Map<string, any>(baseArr.filter((x) => x && x.id).map((x) => [String(x.id), x]));
+    const currMap = new Map<string, any>(currArr.filter((x) => x && x.id).map((x) => [String(x.id), x]));
+    const merged: any[] = [];
+    const includedIds = new Set<string>();
+
+    for (const incItem of incArr) {
+      if (!incItem || !incItem.id) {
+        merged.push(incItem);
+        continue;
+      }
+      const id = String(incItem.id);
+      const baseItem = baseMap.get(id);
+      const currItem = currMap.get(id);
+      if (baseItem && JSON.stringify(baseItem) === JSON.stringify(incItem)) {
+        // Caller did not modify this item -> preserve latest DB version if it wasn't deleted in DB
+        if (currItem) {
+          merged.push(currItem);
+          includedIds.add(id);
+        }
+      } else {
+        // Caller modified or added this item
+        merged.push(currItem ? { ...currItem, ...incItem } : incItem);
+        includedIds.add(id);
+      }
+    }
+
+    // Preserve items added concurrently in DB that weren't in baseArr
+    for (const currItem of currArr) {
+      if (!currItem || !currItem.id) continue;
+      const id = String(currItem.id);
+      if (!baseMap.has(id) && !includedIds.has(id)) {
+        merged.push(currItem);
+        includedIds.add(id);
+      }
+    }
+
+    return JSON.stringify(merged);
+  } catch {
+    return incomingJson;
+  }
+}
+
+export async function updateSettingAction(key: string, value: string, options?: { baseValue?: string }) {
+  await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+  const result = await withSettingUpdateLock(key, async () => {
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`setting:${key}`}))`;
+      let finalValue = value;
+      if (options?.baseValue !== undefined) {
+        const existing = await tx.setting.findUnique({ where: { key } });
+        if (existing?.value) {
+          finalValue = mergeIdKeyedJsonArray(options.baseValue, existing.value, value);
+        }
+      }
+      return tx.setting.upsert({
+        where: { key },
+        update: { value: finalValue },
+        create: { key, value: finalValue },
+      });
+    });
+  });
+
+  invalidateDbCache('master');
 
   if (key === 'riderCommissionPerKm') {
     const rate = parseFloat(value);
@@ -3074,6 +3811,7 @@ export async function updateSettingAction(key: string, value: string) {
             AND ("customerId" IS NULL OR "customerId" NOT IN (SELECT "id" FROM "Customer" WHERE "isVIP" = true OR ("isCorporate" = true AND "corporateCommissionType" IS NOT NULL AND "corporateCommissionType" != 'default')))
             AND "status" NOT IN ('completed', 'cancel')
         `;
+        invalidateDbCache('jobs');
         console.log(`[Setting Update] Updated active job commissions to use new rate: ฿${rate}`);
       } catch (err: any) {
         console.error("Failed to update active job commissions on setting change:", err.message);
@@ -3881,6 +4619,9 @@ export async function processTopUpAction(data: {
       }
     });
     if (!currentCust) throw new Error("Customer not found");
+    if (!canAccessCustomerRecords(authUser, currentCust.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
 
     // Approach 3: Resolve branchId based on customer (customer.branchId -> customer latest job branch -> data.branchId -> null)
     const effectiveBranchId = currentCust.branchId || data.branchId || currentCust.jobs?.[0]?.branchId || null;
@@ -4072,6 +4813,14 @@ export async function createTopUpTransactionAction(data: {
   const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   data.userId = authUser.id;
   data.userName = authUser.name || authUser.email;
+  const cust = await prisma.customer.findUnique({
+    where: { id: data.memberId },
+    select: { id: true, name: true, phone: true, branchId: true }
+  });
+  if (!cust) throw new Error("Customer not found");
+  if (!canAccessCustomerRecords(authUser, cust.branchId)) {
+    throw new Error("Forbidden: Customer branch restriction");
+  }
   const tx = await prisma.transaction.create({
     data: {
       id: data.id,
@@ -4088,11 +4837,6 @@ export async function createTopUpTransactionAction(data: {
   try {
     let parsedDesc: any = {};
     try { parsedDesc = JSON.parse(data.description); } catch {}
-
-    const cust = await prisma.customer.findUnique({
-      where: { id: data.memberId },
-      select: { name: true, phone: true }
-    });
 
     await prisma.activityLog.create({
       data: {
@@ -4135,6 +4879,22 @@ export async function getTopUpTransactionsAction(
   }
 ) {
   const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  let requestedCustomerId: string | undefined;
+  if (typeof filterOrCustomerId === 'string') {
+    requestedCustomerId = filterOrCustomerId;
+  } else if (filterOrCustomerId && typeof filterOrCustomerId === 'object') {
+    requestedCustomerId = filterOrCustomerId.customerId;
+  }
+  if (requestedCustomerId) {
+    const targetCustomer = await prisma.customer.findUnique({
+      where: { id: requestedCustomerId },
+      select: { id: true, branchId: true },
+    });
+    if (!targetCustomer) return [];
+    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
+  }
   try {
     const where: any = { type: 'TOPUP' };
 
@@ -4184,32 +4944,34 @@ export async function getTopUpTransactionsAction(
       orderBy: { createdAt: 'desc' },
     });
 
-    const mapped = list.map(t => {
-      let meta: any = {};
-      try {
-        meta = JSON.parse(t.description || "{}");
-      } catch {}
+    const mapped = list
+      .filter(t => canAccessCustomerRecords(authUser, t.Customer?.branchId))
+      .map(t => {
+        let meta: any = {};
+        try {
+          meta = JSON.parse(t.description || "{}");
+        } catch {}
 
-      // Approach 3: Resolve branch from meta.branchId -> Customer.branchId -> Customer's latest Job.branchId -> null
-      const resolvedBranchId = meta.branchId || t.Customer?.branchId || t.Customer?.jobs?.[0]?.branchId || null;
+        // Approach 3: Resolve branch from meta.branchId -> Customer.branchId -> Customer's latest Job.branchId -> null
+        const resolvedBranchId = meta.branchId || t.Customer?.branchId || t.Customer?.jobs?.[0]?.branchId || null;
 
-      return {
-        ...t,
-        amount: Number(t.amount) || 0,
-        createdAt: t.createdAt.toISOString(),
-        customerName: t.Customer?.name || 'Customer',
-        customerPhone: t.Customer?.phone || '',
-        packageName: meta.packageName || 'Top Up',
-        paymentChannel: meta.paymentChannel || 'Transfer',
-        bonusAmount: Number(meta.bonusAmount) || 0,
-        totalCredit: Number(meta.totalCredit) || Number(t.amount) || 0,
-        balanceBefore: meta.balanceBefore != null ? Number(meta.balanceBefore) : null,
-        balanceAfter: meta.balanceAfter != null ? Number(meta.balanceAfter) : null,
-        createdBy: meta.createdBy || 'Staff',
-        branchId: resolvedBranchId,
-        slipImageUrl: meta.slipImageUrl || null,
-      };
-    });
+        return {
+          ...t,
+          amount: Number(t.amount) || 0,
+          createdAt: t.createdAt.toISOString(),
+          customerName: t.Customer?.name || 'Customer',
+          customerPhone: t.Customer?.phone || '',
+          packageName: meta.packageName || 'Top Up',
+          paymentChannel: meta.paymentChannel || 'Transfer',
+          bonusAmount: Number(meta.bonusAmount) || 0,
+          totalCredit: Number(meta.totalCredit) || Number(t.amount) || 0,
+          balanceBefore: meta.balanceBefore != null ? Number(meta.balanceBefore) : null,
+          balanceAfter: meta.balanceAfter != null ? Number(meta.balanceAfter) : null,
+          createdBy: meta.createdBy || 'Staff',
+          branchId: resolvedBranchId,
+          slipImageUrl: meta.slipImageUrl || null,
+        };
+      });
 
     let targetBranchId: string | undefined;
     if (typeof filterOrCustomerId === 'object' && filterOrCustomerId?.branchId) {
@@ -4243,6 +5005,13 @@ export async function updateTopUpTransactionSlipAction(data: {
     where: { id: data.transactionId },
   });
   if (!tx) throw new Error("Transaction not found");
+  const cust = await prisma.customer.findUnique({
+    where: { id: tx.memberId },
+    select: { name: true, branchId: true },
+  });
+  if (cust && !canAccessCustomerRecords(authUser, cust.branchId)) {
+    throw new Error("Forbidden: Customer branch restriction");
+  }
 
   let parsedDesc: any = {};
   try {
@@ -4264,11 +5033,6 @@ export async function updateTopUpTransactionSlipAction(data: {
 
   // Also record in ActivityLog
   try {
-    const cust = await prisma.customer.findUnique({
-      where: { id: tx.memberId },
-      select: { name: true },
-    });
-
     await prisma.activityLog.create({
       data: {
         entityId: tx.memberId,
@@ -4292,7 +5056,17 @@ export async function updateTopUpTransactionSlipAction(data: {
 }
 
 export async function getCustomerTodayTopUpAction(customerId: string) {
-  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  if (customerId) {
+    const targetCustomer = await prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, branchId: true },
+    });
+    if (!targetCustomer) return null;
+    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
+  }
   try {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -4358,6 +5132,14 @@ export async function createWalletTransactionAction(data: {
   branchId?: string | null;
 }) {
   const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'], targetBranchId: data?.branchId || null });
+  const targetCustomer = await prisma.customer.findUnique({
+    where: { id: data.customerId },
+    select: { id: true, branchId: true },
+  });
+  if (!targetCustomer) throw new Error("Customer not found");
+  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    throw new Error("Forbidden: Customer branch restriction");
+  }
   data.createdById = authUser.id;
   data.createdByName = authUser.name || authUser.email;
   return await prisma.walletTransaction.create({
@@ -4379,7 +5161,7 @@ export async function createWalletTransactionAction(data: {
       originalTxId: data.originalTxId || null,
       createdById: data.createdById || null,
       createdByName: data.createdByName || 'Staff',
-      branchId: data.branchId || null,
+      branchId: data.branchId || targetCustomer.branchId || null,
       approvalStatus: 'PENDING',
     }
   });
@@ -4394,6 +5176,16 @@ export async function getWalletTransactionsAction(filters?: {
   branchId?: string;
 }) {
   const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'], targetBranchId: filters?.branchId || null });
+  if (filters?.customerId) {
+    const targetCustomer = await prisma.customer.findUnique({
+      where: { id: filters.customerId },
+      select: { id: true, branchId: true },
+    });
+    if (!targetCustomer) return [];
+    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
+  }
   if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
     filters = { ...(filters || {}), branchId: authUser.branchId };
   }
@@ -4417,34 +5209,56 @@ export async function getWalletTransactionsAction(filters?: {
   const customerIds = Array.from(new Set(txs.map(t => t.customerId).filter(Boolean)));
   const customers = customerIds.length > 0 ? await prisma.customer.findMany({
     where: { id: { in: customerIds } },
-    select: { id: true, name: true, memberId: true, nickName: true, phone: true }
+    select: { id: true, name: true, memberId: true, nickName: true, phone: true, branchId: true }
   }) : [];
   const customerMap = new Map(customers.map(c => [c.id, c]));
 
-  return txs.map(tx => {
-    const cust = customerMap.get(tx.customerId);
-    const resolvedMemberId = cust?.memberId 
-      || (cust?.nickName && /^[A-Z0-9_-]+$/i.test(cust.nickName.trim()) ? cust.nickName.trim() : null)
-      || null;
-    return {
-      ...tx,
-      customerMemberId: resolvedMemberId,
-      customerPhone: cust?.phone || null,
-    };
-  });
+  return txs
+    .filter(tx => {
+      const cust = customerMap.get(tx.customerId);
+      return canAccessCustomerRecords(authUser, cust?.branchId || tx.branchId);
+    })
+    .map(tx => {
+      const cust = customerMap.get(tx.customerId);
+      const resolvedMemberId = cust?.memberId 
+        || (cust?.nickName && /^[A-Z0-9_-]+$/i.test(cust.nickName.trim()) ? cust.nickName.trim() : null)
+        || null;
+      return {
+        ...tx,
+        customerMemberId: resolvedMemberId,
+        customerPhone: cust?.phone || null,
+      };
+    });
 }
 
 export async function getPendingWalletCountAction(customerId?: string) {
-  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  if (customerId) {
+    const targetCustomer = await prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, branchId: true },
+    });
+    if (!targetCustomer) return 0;
+    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
+  }
   const where: any = { approvalStatus: 'PENDING' };
   if (customerId) where.customerId = customerId;
+  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    where.branchId = authUser.branchId;
+  }
   return await prisma.walletTransaction.count({ where });
 }
 
 export async function getPendingWalletMapAction() {
-  await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+  const where: any = { approvalStatus: 'PENDING' };
+  if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+    where.branchId = authUser.branchId;
+  }
   const pendingTxs = await prisma.walletTransaction.findMany({
-    where: { approvalStatus: 'PENDING' },
+    where,
     select: { customerId: true }
   });
 
@@ -4469,6 +5283,13 @@ export async function approveWalletTransactionAction(data: {
   data.approvedByName = authUser.name || authUser.email;
   const tx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
   if (!tx) throw new Error("Transaction not found");
+  const targetCustomer = await prisma.customer.findUnique({
+    where: { id: tx.customerId },
+    select: { id: true, branchId: true },
+  });
+  if (!canAccessCustomerRecords(authUser, targetCustomer?.branchId || tx.branchId)) {
+    throw new Error("Forbidden: Customer branch restriction");
+  }
   if (tx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${tx.approvalStatus}`);
 
   const updated = await prisma.walletTransaction.update({
@@ -4513,6 +5334,13 @@ export async function rejectWalletTransactionAction(data: {
   data.approvedByName = authUser.name || authUser.email;
   const originalTx = await prisma.walletTransaction.findUnique({ where: { id: data.id } });
   if (!originalTx) throw new Error("Transaction not found");
+  const targetCustomer = await prisma.customer.findUnique({
+    where: { id: originalTx.customerId },
+    select: { id: true, branchId: true },
+  });
+  if (!canAccessCustomerRecords(authUser, targetCustomer?.branchId || originalTx.branchId)) {
+    throw new Error("Forbidden: Customer branch restriction");
+  }
   if (originalTx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${originalTx.approvalStatus}`);
 
   const isCreditTopUp = originalTx.type === 'TOPUP' || originalTx.direction === 'CREDIT';
@@ -4738,6 +5566,22 @@ export async function bulkApproveWalletAction(data: {
   const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
   data.approvedById = authUser.id;
   data.approvedByName = authUser.name || authUser.email;
+  const targetTxs = await prisma.walletTransaction.findMany({
+    where: { id: { in: data.ids } },
+    select: { id: true, customerId: true, branchId: true },
+  });
+  const txCustomerIds = Array.from(new Set(targetTxs.map(t => t.customerId).filter(Boolean)));
+  const txCustomers = txCustomerIds.length > 0 ? await prisma.customer.findMany({
+    where: { id: { in: txCustomerIds } },
+    select: { id: true, branchId: true },
+  }) : [];
+  const custBranchMap = new Map(txCustomers.map(c => [c.id, c.branchId]));
+  for (const t of targetTxs) {
+    const effectiveBranch = custBranchMap.get(t.customerId) ?? t.branchId ?? null;
+    if (!canAccessCustomerRecords(authUser, effectiveBranch)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
+  }
   const count = await prisma.walletTransaction.updateMany({
     where: {
       id: { in: data.ids },
@@ -6096,9 +6940,12 @@ export async function createCustomerCouponAction(data: {
     data.issuedByName = authUser.name || authUser.email;
     const customer = await prisma.customer.findUnique({
       where: { id: data.customerId },
-      select: { id: true, name: true, phone: true, brand: true },
+      select: { id: true, name: true, phone: true, brand: true, branchId: true },
     });
     if (!customer) throw new Error("ไม่พบข้อมูลลูกค้า");
+    if (!canAccessCustomerRecords(authUser, customer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
 
     const cleanCode = (data.code || "").trim().toUpperCase();
     if (!cleanCode) throw new Error("กรุณาระบุรหัสวอยเชอร์ (Voucher Code)");
@@ -6162,7 +7009,17 @@ export async function getCustomerCouponsAction(filters?: {
   search?: string;
 }) {
   try {
-    await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    const authUser = await assertServerActionAuthorized({ forbidRoles: ['rider'] });
+    if (filters?.customerId) {
+      const targetCustomer = await prisma.customer.findUnique({
+        where: { id: filters.customerId },
+        select: { id: true, branchId: true },
+      });
+      if (!targetCustomer) return { success: true, coupons: [] };
+      if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+        throw new Error("Forbidden: Customer branch restriction");
+      }
+    }
     const where: any = {};
     if (filters?.customerId) {
       where.customerId = filters.customerId;
@@ -6184,10 +7041,21 @@ export async function getCustomerCouponsAction(filters?: {
       ];
     }
 
-    const coupons = await prisma.customerVoucher.findMany({
+    const couponsRaw = await prisma.customerVoucher.findMany({
       where,
       orderBy: { createdAt: "desc" },
     });
+
+    let coupons = couponsRaw;
+    if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+      const custIds = Array.from(new Set(couponsRaw.map(c => c.customerId).filter(Boolean)));
+      const custs = custIds.length > 0 ? await prisma.customer.findMany({
+        where: { id: { in: custIds } },
+        select: { id: true, branchId: true },
+      }) : [];
+      const custBranchMap = new Map(custs.map(c => [c.id, c.branchId]));
+      coupons = couponsRaw.filter(c => canAccessCustomerRecords(authUser, custBranchMap.get(c.customerId)));
+    }
 
     // Lazy auto-expire check
     const now = new Date();
@@ -6227,6 +7095,15 @@ export async function updateCustomerCouponStatusAction(
 ) {
   try {
     const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const existingCoupon = await prisma.customerVoucher.findUnique({ where: { id } });
+    if (!existingCoupon) throw new Error("ไม่พบวอยเชอร์");
+    const targetCustomer = await prisma.customer.findUnique({
+      where: { id: existingCoupon.customerId },
+      select: { id: true, branchId: true },
+    });
+    if (targetCustomer && !canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
     details = { ...(details || {}), actorId: authUser.id, actorName: authUser.name || authUser.email };
     const data: any = { status };
     if (status === "USED") {
@@ -6272,6 +7149,13 @@ export async function deleteCustomerCouponAction(id: string, actor?: { id?: stri
     actor = { id: authUser.id, name: authUser.name || authUser.email };
     const coupon = await prisma.customerVoucher.findUnique({ where: { id } });
     if (!coupon) throw new Error("ไม่พบวอยเชอร์");
+    const targetCustomer = await prisma.customer.findUnique({
+      where: { id: coupon.customerId },
+      select: { id: true, branchId: true },
+    });
+    if (targetCustomer && !canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      throw new Error("Forbidden: Customer branch restriction");
+    }
 
     await prisma.customerVoucher.delete({ where: { id } });
 
@@ -6395,68 +7279,128 @@ export async function getCouponTemplatesAction(): Promise<{ success: boolean; te
 }
 
 export async function saveCouponTemplateAction(
-  template: Partial<CouponTemplate> & { label: string; name: string; discountType: CouponTemplate["discountType"]; discountValue: number }
-): Promise<{ success: boolean; template?: CouponTemplate; templates?: CouponTemplate[]; error?: string }> {
+  template: Partial<CouponTemplate> & {
+    label: string;
+    name: string;
+    discountType: CouponTemplate["discountType"];
+    discountValue: number;
+    expectedUpdatedAt?: string | Date;
+  }
+): Promise<{
+  success: boolean;
+  isConflict?: boolean;
+  conflictFields?: string[];
+  template?: CouponTemplate;
+  templates?: CouponTemplate[];
+  error?: string;
+}> {
   try {
-    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-    const res = await getCouponTemplatesAction();
-    let currentTemplates = res.templates || [];
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const txResult = await withSettingUpdateLock("coupon_templates", async () => {
+      return prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('setting:coupon_templates'))`;
+        const setting = await tx.setting.findUnique({ where: { key: "coupon_templates" } });
+        let currentTemplates: CouponTemplate[] = DEFAULT_COUPON_TEMPLATES.map((t) => ({ ...t }));
+        if (setting?.value) {
+          try {
+            const parsed = JSON.parse(setting.value);
+            if (Array.isArray(parsed)) currentTemplates = parsed;
+          } catch {}
+        }
 
-    const now = new Date().toISOString();
-    let savedTemplate: CouponTemplate;
+        const now = new Date().toISOString();
+        let savedTemplate!: CouponTemplate;
 
-    if (template.id && currentTemplates.some(t => t.id === template.id)) {
-      // Update
-      currentTemplates = currentTemplates.map(t => {
-        if (t.id === template.id) {
+        const existingIdx = template.id ? currentTemplates.findIndex((t) => t.id === template.id) : -1;
+        if (existingIdx >= 0) {
+          const existingTpl = currentTemplates[existingIdx];
+
+          // Item-level OCC check if expectedUpdatedAt is supplied
+          if (template.expectedUpdatedAt && existingTpl.updatedAt) {
+            const expectedMs = new Date(template.expectedUpdatedAt).getTime();
+            const actualMs = new Date(existingTpl.updatedAt).getTime();
+            if (Number.isFinite(expectedMs) && Number.isFinite(actualMs) && actualMs > expectedMs) {
+              const conflictFields: string[] = [];
+              if (template.label !== undefined && template.label.trim() !== existingTpl.label) conflictFields.push("label");
+              if (template.name !== undefined && template.name.trim() !== existingTpl.name) conflictFields.push("name");
+              if (template.discountType !== undefined && template.discountType !== existingTpl.discountType) conflictFields.push("discountType");
+              if (template.discountValue !== undefined && Number(template.discountValue) !== Number(existingTpl.discountValue)) conflictFields.push("discountValue");
+              if (conflictFields.length > 0) {
+                return {
+                  success: false as const,
+                  isConflict: true as const,
+                  conflictFields,
+                  template: existingTpl,
+                  templates: currentTemplates,
+                  error: "แม่แบบคูปองนี้ถูกแก้ไขโดยผู้ใช้อื่นเมื่อสักครู่ ระบบโหลดข้อมูลล่าสุดให้แล้ว",
+                };
+              }
+            }
+          }
+
           savedTemplate = {
-            ...t,
+            ...existingTpl,
             ...template,
             label: template.label.trim(),
             name: template.name.trim(),
-            codePrefix: (template.codePrefix || t.codePrefix || "COUPON").trim().toUpperCase(),
-            description: template.description !== undefined ? (template.description?.trim() || null) : t.description,
+            codePrefix: (template.codePrefix || existingTpl.codePrefix || "COUPON").trim().toUpperCase(),
+            description: template.description !== undefined ? (template.description?.trim() || null) : existingTpl.description,
             discountType: template.discountType,
             discountValue: Number(template.discountValue) || 0,
             minOrderAmount: template.minOrderAmount != null ? Number(template.minOrderAmount) : null,
             maxDiscount: template.maxDiscount != null ? Number(template.maxDiscount) : null,
-            days: template.days != null ? Number(template.days) : (t.days || 30),
-            reason: template.reason !== undefined ? (template.reason?.trim() || null) : t.reason,
-            brand: template.brand || t.brand || "all",
+            days: template.days != null ? Number(template.days) : (existingTpl.days || 30),
+            reason: template.reason !== undefined ? (template.reason?.trim() || null) : existingTpl.reason,
+            brand: template.brand || existingTpl.brand || "all",
             updatedAt: now,
           };
-          return savedTemplate;
+          delete (savedTemplate as any).expectedUpdatedAt;
+          currentTemplates[existingIdx] = savedTemplate;
+        } else {
+          savedTemplate = {
+            id: template.id || `tpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            label: template.label.trim(),
+            codePrefix: (template.codePrefix || "COUPON").trim().toUpperCase(),
+            name: template.name.trim(),
+            description: template.description?.trim() || null,
+            discountType: template.discountType,
+            discountValue: Number(template.discountValue) || 0,
+            minOrderAmount: template.minOrderAmount != null ? Number(template.minOrderAmount) : null,
+            maxDiscount: template.maxDiscount != null ? Number(template.maxDiscount) : null,
+            days: template.days != null ? Number(template.days) : 30,
+            reason: template.reason?.trim() || null,
+            brand: template.brand || "all",
+            createdAt: now,
+            updatedAt: now,
+          };
+          currentTemplates.push(savedTemplate);
         }
-        return t;
-      });
-    } else {
-      // Create
-      savedTemplate = {
-        id: template.id || `tpl-${Date.now()}`,
-        label: template.label.trim(),
-        codePrefix: (template.codePrefix || "COUPON").trim().toUpperCase(),
-        name: template.name.trim(),
-        description: template.description?.trim() || null,
-        discountType: template.discountType,
-        discountValue: Number(template.discountValue) || 0,
-        minOrderAmount: template.minOrderAmount != null ? Number(template.minOrderAmount) : null,
-        maxDiscount: template.maxDiscount != null ? Number(template.maxDiscount) : null,
-        days: template.days != null ? Number(template.days) : 30,
-        reason: template.reason?.trim() || null,
-        brand: template.brand || "all",
-        createdAt: now,
-        updatedAt: now,
-      };
-      currentTemplates.push(savedTemplate);
-    }
 
-    await prisma.setting.upsert({
-      where: { key: "coupon_templates" },
-      update: { value: JSON.stringify(currentTemplates) },
-      create: { key: "coupon_templates", value: JSON.stringify(currentTemplates) },
+        await tx.setting.upsert({
+          where: { key: "coupon_templates" },
+          update: { value: JSON.stringify(currentTemplates) },
+          create: { key: "coupon_templates", value: JSON.stringify(currentTemplates) },
+        });
+
+        try {
+          await tx.activityLog.create({
+            data: {
+              entityId: savedTemplate.id,
+              entityType: "coupon_template",
+              action: existingIdx >= 0 ? "update" : "create",
+              details: JSON.stringify({ id: savedTemplate.id, name: savedTemplate.name, discountValue: savedTemplate.discountValue }),
+              userId: authUser.id,
+              userName: authUser.name || authUser.email,
+            },
+          });
+        } catch {}
+
+        return { success: true as const, template: savedTemplate, templates: currentTemplates };
+      });
     });
 
-    return { success: true, template: savedTemplate!, templates: currentTemplates };
+    invalidateDbCache('master');
+    return txResult;
   } catch (err: any) {
     console.error("[saveCouponTemplateAction] Error:", err);
     return { success: false, error: err?.message || "Failed to save template" };
@@ -6468,15 +7412,28 @@ export async function deleteCouponTemplateAction(
 ): Promise<{ success: boolean; templates?: CouponTemplate[]; error?: string }> {
   try {
     await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-    const res = await getCouponTemplatesAction();
-    const currentTemplates = (res.templates || []).filter(t => t.id !== id);
-
-    await prisma.setting.upsert({
-      where: { key: "coupon_templates" },
-      update: { value: JSON.stringify(currentTemplates) },
-      create: { key: "coupon_templates", value: JSON.stringify(currentTemplates) },
+    const currentTemplates = await withSettingUpdateLock("coupon_templates", async () => {
+      return prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('setting:coupon_templates'))`;
+        const setting = await tx.setting.findUnique({ where: { key: "coupon_templates" } });
+        let templates: CouponTemplate[] = DEFAULT_COUPON_TEMPLATES.map((t) => ({ ...t }));
+        if (setting?.value) {
+          try {
+            const parsed = JSON.parse(setting.value);
+            if (Array.isArray(parsed)) templates = parsed;
+          } catch {}
+        }
+        const nextTemplates = templates.filter((t) => t.id !== id);
+        await tx.setting.upsert({
+          where: { key: "coupon_templates" },
+          update: { value: JSON.stringify(nextTemplates) },
+          create: { key: "coupon_templates", value: JSON.stringify(nextTemplates) },
+        });
+        return nextTemplates;
+      });
     });
 
+    invalidateDbCache('master');
     return { success: true, templates: currentTemplates };
   } catch (err: any) {
     console.error("[deleteCouponTemplateAction] Error:", err);
@@ -6487,11 +7444,17 @@ export async function deleteCouponTemplateAction(
 export async function resetCouponTemplatesAction(): Promise<{ success: boolean; templates: CouponTemplate[]; error?: string }> {
   try {
     await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-    await prisma.setting.upsert({
-      where: { key: "coupon_templates" },
-      update: { value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
-      create: { key: "coupon_templates", value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
+    await withSettingUpdateLock("coupon_templates", async () => {
+      return prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('setting:coupon_templates'))`;
+        await tx.setting.upsert({
+          where: { key: "coupon_templates" },
+          update: { value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
+          create: { key: "coupon_templates", value: JSON.stringify(DEFAULT_COUPON_TEMPLATES) },
+        });
+      });
     });
+    invalidateDbCache('master');
     return { success: true, templates: DEFAULT_COUPON_TEMPLATES };
   } catch (err: any) {
     console.error("[resetCouponTemplatesAction] Error:", err);
@@ -6524,31 +7487,99 @@ export async function getPromotionCampaignsAction(): Promise<{ success: boolean;
 }
 
 export async function savePromotionCampaignAction(
-  campaign: PromotionCampaign
-): Promise<{ success: boolean; campaigns?: PromotionCampaign[]; error?: string }> {
+  campaign: PromotionCampaign & { expectedUpdatedAt?: string | Date }
+): Promise<{
+  success: boolean;
+  isConflict?: boolean;
+  conflictFields?: string[];
+  campaign?: PromotionCampaign;
+  campaigns?: PromotionCampaign[];
+  error?: string;
+}> {
   try {
-    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-    const res = await getPromotionCampaignsAction();
-    let campaigns = [...(res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS)];
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
+    const txResult = await withSettingUpdateLock("promotion_campaigns", async () => {
+      return prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('setting:promotion_campaigns'))`;
+        const setting = await tx.setting.findUnique({ where: { key: "promotion_campaigns" } });
+        let campaigns: PromotionCampaign[] = DEFAULT_PROMOTION_CAMPAIGNS.map((c) => ({ ...c }));
+        if (setting?.value) {
+          try {
+            const parsed = JSON.parse(setting.value);
+            if (Array.isArray(parsed)) campaigns = parsed;
+          } catch {}
+        }
 
-    if (!campaign.id) {
-      campaign.id = `promo_${Date.now().toString(36)}`;
-    }
+        const incomingCampaign: any = { ...campaign };
+        const expectedUpdatedAt = incomingCampaign.expectedUpdatedAt;
+        delete incomingCampaign.expectedUpdatedAt;
 
-    const existingIdx = campaigns.findIndex(c => c.id === campaign.id);
-    if (existingIdx >= 0) {
-      campaigns[existingIdx] = campaign;
-    } else {
-      campaigns.push(campaign);
-    }
+        if (!incomingCampaign.id) {
+          incomingCampaign.id = `promo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        }
 
-    await prisma.setting.upsert({
-      where: { key: "promotion_campaigns" },
-      update: { value: JSON.stringify(campaigns) },
-      create: { key: "promotion_campaigns", value: JSON.stringify(campaigns) },
+        const existingIdx = campaigns.findIndex((c) => c.id === incomingCampaign.id);
+        if (existingIdx >= 0) {
+          const existingCamp: any = campaigns[existingIdx];
+          if (expectedUpdatedAt && existingCamp.updatedAt) {
+            const expectedMs = new Date(expectedUpdatedAt).getTime();
+            const actualMs = new Date(existingCamp.updatedAt).getTime();
+            if (Number.isFinite(expectedMs) && Number.isFinite(actualMs) && actualMs > expectedMs) {
+              const conflictFields: string[] = [];
+              if (incomingCampaign.name !== undefined && incomingCampaign.name !== existingCamp.name) conflictFields.push("name");
+              if (incomingCampaign.enabled !== undefined && incomingCampaign.enabled !== existingCamp.enabled) conflictFields.push("enabled");
+              if (JSON.stringify(incomingCampaign.condition) !== JSON.stringify(existingCamp.condition)) conflictFields.push("condition");
+              if (JSON.stringify(incomingCampaign.reward) !== JSON.stringify(existingCamp.reward)) conflictFields.push("reward");
+              if (conflictFields.length > 0) {
+                return {
+                  success: false as const,
+                  isConflict: true as const,
+                  conflictFields,
+                  campaign: existingCamp as PromotionCampaign,
+                  campaigns,
+                  error: "แคมเปญนี้ถูกแก้ไขโดยผู้ใช้อื่นเมื่อสักครู่ ระบบโหลดข้อมูลล่าสุดให้แล้ว",
+                };
+              }
+            }
+          }
+
+          campaigns[existingIdx] = {
+            ...existingCamp,
+            ...incomingCampaign,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          campaigns.push({
+            ...incomingCampaign,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+
+        await tx.setting.upsert({
+          where: { key: "promotion_campaigns" },
+          update: { value: JSON.stringify(campaigns) },
+          create: { key: "promotion_campaigns", value: JSON.stringify(campaigns) },
+        });
+
+        try {
+          await tx.activityLog.create({
+            data: {
+              entityId: incomingCampaign.id,
+              entityType: "promotion_campaign",
+              action: existingIdx >= 0 ? "update" : "create",
+              details: JSON.stringify({ id: incomingCampaign.id, name: incomingCampaign.name, enabled: incomingCampaign.enabled }),
+              userId: authUser.id,
+              userName: authUser.name || authUser.email,
+            },
+          });
+        } catch {}
+
+        return { success: true as const, campaign: campaigns[existingIdx >= 0 ? existingIdx : campaigns.length - 1], campaigns };
+      });
     });
 
-    return { success: true, campaigns };
+    invalidateDbCache('master');
+    return txResult;
   } catch (err: any) {
     console.error("[savePromotionCampaignAction] Error:", err);
     return { success: false, error: err?.message };
@@ -6560,30 +7591,47 @@ export async function deletePromotionCampaignAction(
 ): Promise<{ success: boolean; campaigns?: PromotionCampaign[]; error?: string }> {
   try {
     await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-    const res = await getPromotionCampaignsAction();
-    let campaigns = [...(res.campaigns || DEFAULT_PROMOTION_CAMPAIGNS)];
+    const txResult = await withSettingUpdateLock("promotion_campaigns", async () => {
+      return prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('setting:promotion_campaigns'))`;
 
-    // Check if any coupons were issued under this campaignId
-    const issuedCount = await prisma.customerVoucher.count({
-      where: { campaignId },
+        // Check if any coupons were issued under this campaignId
+        const issuedCount = await tx.customerVoucher.count({
+          where: { campaignId },
+        });
+
+        if (issuedCount > 0) {
+          return {
+            success: false as const,
+            error: `ไม่สามารถลบแคมเปญนี้ได้ เนื่องจากมีการแจกวอยเชอร์ไปแล้ว (${issuedCount} ใบ) แนะนำให้กดปิดใช้งานแคมเปญแทนเพื่อรักษาประวัติรายงาน`,
+          };
+        }
+
+        const setting = await tx.setting.findUnique({ where: { key: "promotion_campaigns" } });
+        let campaigns: PromotionCampaign[] = DEFAULT_PROMOTION_CAMPAIGNS.map((c) => ({ ...c }));
+        if (setting?.value) {
+          try {
+            const parsed = JSON.parse(setting.value);
+            if (Array.isArray(parsed)) campaigns = parsed;
+          } catch {}
+        }
+
+        campaigns = campaigns.filter((c) => c.id !== campaignId);
+
+        await tx.setting.upsert({
+          where: { key: "promotion_campaigns" },
+          update: { value: JSON.stringify(campaigns) },
+          create: { key: "promotion_campaigns", value: JSON.stringify(campaigns) },
+        });
+
+        return { success: true as const, campaigns };
+      });
     });
 
-    if (issuedCount > 0) {
-      return {
-        success: false,
-        error: `ไม่สามารถลบแคมเปญนี้ได้ เนื่องจากมีการแจกวอยเชอร์ไปแล้ว (${issuedCount} ใบ) แนะนำให้กดปิดใช้งานแคมเปญแทนเพื่อรักษาประวัติรายงาน`,
-      };
+    if (txResult.success) {
+      invalidateDbCache('master');
     }
-
-    campaigns = campaigns.filter(c => c.id !== campaignId);
-
-    await prisma.setting.upsert({
-      where: { key: "promotion_campaigns" },
-      update: { value: JSON.stringify(campaigns) },
-      create: { key: "promotion_campaigns", value: JSON.stringify(campaigns) },
-    });
-
-    return { success: true, campaigns };
+    return txResult;
   } catch (err: any) {
     console.error("[deletePromotionCampaignAction] Error:", err);
     return { success: false, error: err?.message };

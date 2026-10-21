@@ -61,17 +61,17 @@ function LoginForm() {
       
       const redirectPath = searchParams.get("redirect");
       if (redirectPath) {
-        router.push(redirectPath);
+        window.location.href = redirectPath;
       } else {
         // If it's a native platform and NOT a rider, default to /billing (BILL APK)
         import("@capacitor/core").then(({ Capacitor }) => {
           if (Capacitor.isNativePlatform() && user.role !== "rider") {
             router.push("/billing");
           } else {
-            router.push(user.role === "rider" ? "/rider" : "/admin");
+            window.location.href = user.role === "rider" ? "/rider" : "/admin";
           }
         }).catch(() => {
-          router.push(user.role === "rider" ? "/rider" : "/admin");
+          window.location.href = user.role === "rider" ? "/rider" : "/admin";
         });
       }
     } catch (error: any) {

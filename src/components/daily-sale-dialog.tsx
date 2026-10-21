@@ -27,9 +27,11 @@ import {
   Layers, 
   UserCheck, 
   X,
-  ExternalLink
+  ExternalLink,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react";
-import { format, isSameDay, startOfDay, endOfDay, subDays } from "date-fns";
+import { format, isSameDay, startOfDay, endOfDay, subDays, addDays } from "date-fns";
 import Papa from "papaparse";
 import { toast } from "sonner";
 import { getTopUpTransactionsAction } from "@/actions/db";
@@ -40,7 +42,7 @@ import {
   formatLocationWithRoom 
 } from "@/lib/utils";
 import { getUserAssignedBranchIds, getCleanBranchName } from "@/components/branch-filter-dropdown";
-import type { Job, Customer } from "@/lib/store";
+import { jobStore, type Job, type Customer } from "@/lib/store";
 
 export interface DailySaleDialogProps {
   isOpen: boolean;
@@ -96,7 +98,7 @@ export function DailySaleDialog({
   onViewJob,
 }: DailySaleDialogProps) {
   const [targetDate, setTargetDate] = useState<Date>(new Date());
-  const [activeDateTab, setActiveDateTab] = useState<"today" | "yesterday">("today");
+  const [activeDateTab, setActiveDateTab] = useState<"today" | "yesterday" | "custom">("today");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState<"all" | "job" | "topup">("all");
   const [filterChannel, setFilterChannel] = useState<string>("all");
@@ -130,16 +132,19 @@ export function DailySaleDialog({
 
   const targetBranchIdSet = useMemo(() => new Set(targetBranchIds), [targetBranchIds]);
 
-  // Load Top-up transactions when target date changes or dialog opens
+  // Load Top-up transactions & historical jobs when target date changes or dialog opens
   const fetchTopups = useCallback(async (date: Date) => {
     try {
       setIsLoadingTopups(true);
-      const start = startOfDay(date).toISOString();
-      const end = endOfDay(date).toISOString();
-      const res = await getTopUpTransactionsAction({
-        startDate: start,
-        endDate: end,
-      });
+      const startDateObj = startOfDay(date);
+      const endDateObj = endOfDay(date);
+      const [res] = await Promise.all([
+        getTopUpTransactionsAction({
+          startDate: startDateObj.toISOString(),
+          endDate: endDateObj.toISOString(),
+        }),
+        jobStore.fetchHistoricalJobs(startDateObj, endDateObj),
+      ]);
       setTopups(Array.isArray(res) ? res : []);
     } catch (err: any) {
       console.error("[DailySaleDialog] Failed to fetch topups:", err);
@@ -154,6 +159,20 @@ export function DailySaleDialog({
       fetchTopups(targetDate);
     }
   }, [isOpen, targetDate, fetchTopups]);
+
+  const applyCustomDate = (newDate: Date) => {
+    if (isNaN(newDate.getTime())) return;
+    const today = new Date();
+    const yesterday = subDays(today, 1);
+    setTargetDate(newDate);
+    if (isSameDay(newDate, today)) {
+      setActiveDateTab("today");
+    } else if (isSameDay(newDate, yesterday)) {
+      setActiveDateTab("yesterday");
+    } else {
+      setActiveDateTab("custom");
+    }
+  };
 
   const handleSelectDateTab = (tab: "today" | "yesterday") => {
     setActiveDateTab(tab);
@@ -439,46 +458,46 @@ export function DailySaleDialog({
   const branchDisplayLabel = useMemo(() => {
     if (isAreaRestricted) {
       if (userAssignedBranchIds.length === 1) {
-        return branchMap.get(userAssignedBranchIds[0]) || "สาขาที่รับผิดชอบ";
+        return branchMap.get(userAssignedBranchIds[0]) || "Assigned Branch";
       }
-      return `สาขาที่รับผิดชอบ (${userAssignedBranchIds.length} สาขา)`;
+      return `Assigned (${userAssignedBranchIds.length} Branches)`;
     }
     if (selectedBranchIds.length > 0 && selectedBranchIds.length < shopLocations.length) {
       return selectedBranchIds.map(id => branchMap.get(id) || id).join(", ");
     }
-    return "ทุกสาขา (All Branches)";
+    return "All Branches";
   }, [isAreaRestricted, userAssignedBranchIds, selectedBranchIds, shopLocations.length, branchMap]);
 
   return (
     <Dialog open={isOpen} onOpenChange={open => !open && onClose()}>
       <DialogContent className="max-w-5xl w-full max-h-[92vh] flex flex-col p-0 gap-0 overflow-hidden bg-slate-50 border-slate-200 shadow-2xl">
         {/* Header */}
-        <DialogHeader className="p-4 sm:p-5 bg-white border-b border-slate-200 shrink-0">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
+        <DialogHeader className="p-4 sm:px-5 sm:py-4 bg-white border-b border-slate-200 shrink-0 pr-10">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shrink-0">
                   <Banknote size={18} />
                 </div>
-                <div>
-                  <DialogTitle className="text-lg sm:text-xl font-black text-slate-900 flex items-center gap-2">
-                    Daily Sales Summary
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-bold border border-indigo-100">
-                      {format(targetDate, "dd MMMM yyyy")}
+                <div className="min-w-0">
+                  <DialogTitle className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2 flex-wrap">
+                    <span className="whitespace-nowrap">Daily Sales Summary</span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-bold border border-indigo-100 whitespace-nowrap">
+                      {format(targetDate, "dd MMM yyyy")}
                     </span>
                   </DialogTitle>
                   <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
-                    <span className="flex items-center gap-1 font-semibold text-slate-700">
+                    <span className="flex items-center gap-1 font-semibold text-slate-700 whitespace-nowrap">
                       <Store size={12} className="text-indigo-500" />
                       {branchDisplayLabel}
                     </span>
                     <span>•</span>
-                    <span className="text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                    <span className="text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200 whitespace-nowrap">
                       Shop Paid
                     </span>
                     <span>•</span>
-                    <span className="text-slate-500 font-medium">
-                      ไม่รวมลูกค้า Corporate
+                    <span className="text-slate-500 font-medium whitespace-nowrap">
+                      Excl. Corporate
                     </span>
                   </div>
                 </div>
@@ -486,29 +505,66 @@ export function DailySaleDialog({
             </div>
 
             {/* Quick Actions & Date Switcher */}
-            <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
-              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-bold">
+            <div className="flex items-center gap-2 shrink-0 self-end lg:self-auto flex-wrap justify-end">
+              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-bold h-8 items-center">
                 <button
                   type="button"
                   onClick={() => handleSelectDateTab("today")}
-                  className={`px-3 py-1.5 rounded-md transition-all cursor-pointer font-bold ${
+                  className={`px-2.5 h-7 rounded-md transition-all cursor-pointer font-bold whitespace-nowrap ${
                     activeDateTab === "today"
-                      ? "bg-white text-slate-900 shadow-sm"
+                      ? "bg-white text-slate-900 shadow-xs"
                       : "text-slate-500 hover:text-slate-800"
                   }`}
                 >
-                  วันนี้ (Today)
+                  Today
                 </button>
                 <button
                   type="button"
                   onClick={() => handleSelectDateTab("yesterday")}
-                  className={`px-3 py-1.5 rounded-md transition-all cursor-pointer font-bold ${
+                  className={`px-2.5 h-7 rounded-md transition-all cursor-pointer font-bold whitespace-nowrap ${
                     activeDateTab === "yesterday"
-                      ? "bg-white text-slate-900 shadow-sm"
+                      ? "bg-white text-slate-900 shadow-xs"
                       : "text-slate-500 hover:text-slate-800"
                   }`}
                 >
-                  เมื่อวาน (Yesterday)
+                  Yesterday
+                </button>
+              </div>
+
+              {/* Historical Date Picker & Day Stepper */}
+              <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white shadow-2xs h-8 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => applyCustomDate(subDays(targetDate, 1))}
+                  className="h-full px-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer border-r border-slate-100"
+                  title="Previous Day"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <div className="relative flex items-center px-2 h-full">
+                  <CalendarDays size={13} className="text-indigo-600 mr-1.5 shrink-0 pointer-events-none" />
+                  <input
+                    type="date"
+                    value={format(targetDate, "yyyy-MM-dd")}
+                    max={format(new Date(), "yyyy-MM-dd")}
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      const [y, m, d] = e.target.value.split("-").map(Number);
+                      if (y && m && d) {
+                        applyCustomDate(new Date(y, m - 1, d));
+                      }
+                    }}
+                    className="text-xs font-bold text-slate-800 bg-transparent border-none outline-none cursor-pointer h-full"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={isSameDay(targetDate, new Date())}
+                  onClick={() => applyCustomDate(addDays(targetDate, 1))}
+                  className="h-full px-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer border-l border-slate-100"
+                  title="Next Day"
+                >
+                  <ChevronRight size={14} />
                 </button>
               </div>
 
@@ -555,16 +611,16 @@ export function DailySaleDialog({
             <div className="col-span-2 sm:col-span-3 lg:col-span-1 bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-xs flex flex-col justify-between">
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
                 <ShoppingBag size={13} className="text-slate-400" />
-                ยอดขายรวม (Total)
+                Total Sales
               </span>
               <div className="mt-2">
                 <div className="text-2xl font-black text-slate-900 tracking-tight">
                   ฿{Math.round(stats.totalRevenue).toLocaleString()}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5">
-                  <span className="font-semibold text-slate-700">{stats.jobCount} งานซัก</span>
+                  <span className="font-semibold text-slate-700">{stats.jobCount} Jobs</span>
                   <span>•</span>
-                  <span className="font-semibold text-purple-700">{stats.topupCount} เติมเงิน</span>
+                  <span className="font-semibold text-purple-700">{stats.topupCount} Top-ups</span>
                 </div>
               </div>
             </div>
@@ -573,14 +629,14 @@ export function DailySaleDialog({
             <div className="bg-emerald-50/70 p-3.5 rounded-xl border border-emerald-200/80 shadow-xs flex flex-col justify-between">
               <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
                 <Banknote size={13} className="text-emerald-600" />
-                เงินสด (Cash)
+                Cash
               </span>
               <div className="mt-2">
                 <div className="text-xl font-black text-emerald-800">
                   ฿{Math.round(stats.cashTotal).toLocaleString()}
                 </div>
                 <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">
-                  ยอดสดในลิ้นชักหน้าร้าน
+                  Cash in Drawer / COD
                 </div>
               </div>
             </div>
@@ -589,7 +645,7 @@ export function DailySaleDialog({
             <div className="bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-200/80 shadow-xs flex flex-col justify-between">
               <span className="text-[11px] font-bold text-indigo-800 uppercase tracking-wider flex items-center gap-1.5">
                 <ArrowUpRight size={13} className="text-indigo-600" />
-                เงินโอน (Transfer)
+                Transfer
               </span>
               <div className="mt-2">
                 <div className="text-xl font-black text-indigo-900">
@@ -605,14 +661,14 @@ export function DailySaleDialog({
             <div className="bg-sky-50/70 p-3.5 rounded-xl border border-sky-200/80 shadow-xs flex flex-col justify-between">
               <span className="text-[11px] font-bold text-sky-800 uppercase tracking-wider flex items-center gap-1.5">
                 <CreditCard size={13} className="text-sky-600" />
-                บัตรเครดิต (Card)
+                Card
               </span>
               <div className="mt-2">
                 <div className="text-xl font-black text-sky-900">
                   ฿{Math.round(stats.cardTotal).toLocaleString()}
                 </div>
                 <div className="text-[10px] text-sky-700 font-semibold mt-0.5">
-                  รูดบัตร EDC / ออนไลน์
+                  EDC / Credit Card
                 </div>
               </div>
             </div>
@@ -621,14 +677,14 @@ export function DailySaleDialog({
             <div className="bg-purple-50/70 p-3.5 rounded-xl border border-purple-200/80 shadow-xs flex flex-col justify-between">
               <span className="text-[11px] font-bold text-purple-800 uppercase tracking-wider flex items-center gap-1.5">
                 <Wallet size={13} className="text-purple-600" />
-                หักสมาชิก (Deduct)
+                Member Deduct
               </span>
               <div className="mt-2">
                 <div className="text-xl font-black text-purple-900">
                   ฿{Math.round(stats.memberDeductTotal).toLocaleString()}
                 </div>
                 <div className="text-[10px] text-purple-700 font-semibold mt-0.5">
-                  หักจากแพ็กเกจล่วงหน้า
+                  Prepaid Wallet Credit
                 </div>
               </div>
             </div>
@@ -647,7 +703,7 @@ export function DailySaleDialog({
                     : "text-slate-500 hover:text-slate-800"
                 }`}
               >
-                ทั้งหมด ({allItems.length})
+                All ({allItems.length})
               </button>
               <button
                 type="button"
@@ -658,7 +714,7 @@ export function DailySaleDialog({
                     : "text-slate-500 hover:text-slate-800"
                 }`}
               >
-                งานซัก ({stats.jobCount})
+                Jobs ({stats.jobCount})
               </button>
               <button
                 type="button"
@@ -669,7 +725,7 @@ export function DailySaleDialog({
                     : "text-slate-500 hover:text-slate-800"
                 }`}
               >
-                เติมเงิน ({stats.topupCount})
+                Top-ups ({stats.topupCount})
               </button>
             </div>
 
@@ -680,17 +736,17 @@ export function DailySaleDialog({
                 onChange={e => setFilterChannel(e.target.value)}
                 className="h-8 text-xs border border-slate-200 rounded-lg px-2.5 bg-white font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
               >
-                <option value="all">ทุกช่องทางชำระ</option>
-                <option value="Cash / COD">เงินสด (Cash)</option>
-                <option value="Transfer">เงินโอน (Transfer)</option>
-                <option value="Credit Card">บัตรเครดิต (Card)</option>
-                <option value="Deduct Member">หักสมาชิก (Deduct)</option>
+                <option value="all">All Channels</option>
+                <option value="Cash / COD">Cash / COD</option>
+                <option value="Transfer">Transfer</option>
+                <option value="Credit Card">Credit Card</option>
+                <option value="Deduct Member">Member Deduct</option>
               </select>
 
               <div className="relative flex-1 sm:w-56">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={13} />
                 <Input
-                  placeholder="ค้นหาบิล, ลูกค้า, เบอร์..."
+                  placeholder="Search bill, customer, phone..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   className="pl-8 h-8 text-xs bg-slate-50 border-slate-200"
@@ -705,14 +761,14 @@ export function DailySaleDialog({
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold sticky top-0 z-10">
                   <tr>
-                    <th className="py-2.5 px-3">เวลา</th>
-                    <th className="py-2.5 px-3">ประเภท</th>
-                    <th className="py-2.5 px-3">เลขที่บิล / Ref</th>
-                    <th className="py-2.5 px-3">ลูกค้า</th>
-                    <th className="py-2.5 px-3">ช่องทางชำระ</th>
-                    <th className="py-2.5 px-3 text-right">ยอดเงิน</th>
-                    <th className="py-2.5 px-3">สาขา</th>
-                    {onViewJob && <th className="py-2.5 px-3 text-center">ดูงาน</th>}
+                    <th className="py-2.5 px-3">Time</th>
+                    <th className="py-2.5 px-3">Type</th>
+                    <th className="py-2.5 px-3">Bill / Ref</th>
+                    <th className="py-2.5 px-3">Customer</th>
+                    <th className="py-2.5 px-3">Channel</th>
+                    <th className="py-2.5 px-3 text-right">Amount</th>
+                    <th className="py-2.5 px-3">Branch</th>
+                    {onViewJob && <th className="py-2.5 px-3 text-center">View</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -720,8 +776,8 @@ export function DailySaleDialog({
                     <tr>
                       <td colSpan={onViewJob ? 8 : 7} className="py-12 text-center text-slate-400">
                         <ShoppingBag size={28} className="mx-auto text-slate-300 mb-2" />
-                        <p className="font-semibold text-slate-600">ไม่พบรายการชำระเงินหน้าร้านตามเงื่อนไขที่เลือก</p>
-                        <p className="text-[11px] text-slate-400 mt-0.5">ระบบจะแสดงเฉพาะงานที่เป็น Shop Paid และเติมเงินของสาขาที่รับผิดชอบ</p>
+                        <p className="font-semibold text-slate-600">No store payment transactions found for the selected date</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Showing Shop Paid orders and Top-up transactions for selected branches</p>
                       </td>
                     </tr>
                   ) : (
@@ -796,7 +852,7 @@ export function DailySaleDialog({
                                     onClose();
                                   }}
                                   className="h-6 w-6 p-0 text-slate-400 hover:text-indigo-600"
-                                  title="ดูรายละเอียดงาน"
+                                  title="View Job Details"
                                 >
                                   <ExternalLink size={12} />
                                 </Button>
@@ -816,10 +872,10 @@ export function DailySaleDialog({
             {/* Table Footer */}
             <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
               <span className="font-semibold">
-                แสดงผล {filteredDisplayItems.length} จากทั้งหมด {allItems.length} รายการ
+                Showing {filteredDisplayItems.length} of {allItems.length} transactions
               </span>
               <div className="flex items-center gap-3 font-bold text-slate-800">
-                <span>ยอดรวมในตาราง:</span>
+                <span>Table Total:</span>
                 <span className="text-base text-indigo-700 font-black">
                   ฿{Math.round(filteredDisplayItems.reduce((sum, it) => sum + (it.amount || 0), 0)).toLocaleString()}
                 </span>
@@ -831,14 +887,14 @@ export function DailySaleDialog({
         {/* Footer */}
         <DialogFooter className="p-3 bg-white border-t border-slate-200 shrink-0 flex items-center justify-between">
           <div className="text-[11px] text-slate-400 hidden sm:block">
-            * ระบบกรองเฉพาะรายการที่หน้าร้านรับชำระ (Shop Paid) และตัดลูกค้า Corporate ออกอัตโนมัติ
+            * Filtered to Shop Paid orders only (Corporate customers excluded automatically)
           </div>
           <Button
             variant="secondary"
             onClick={onClose}
             className="h-8 px-4 text-xs font-bold rounded-lg cursor-pointer"
           >
-            ปิดหน้าต่าง (Close)
+            Close
           </Button>
         </DialogFooter>
       </DialogContent>

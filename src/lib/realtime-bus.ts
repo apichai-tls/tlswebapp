@@ -19,6 +19,7 @@ export interface RealtimeOrderEvent {
   riderId?: string | null;
   pickupRiderId?: string | null;
   deliveryRiderId?: string | null;
+  previousRiderIds?: string[];
   action?: string;
   changedFields?: string[];
   actorId?: string | null;
@@ -328,6 +329,7 @@ export async function publishOrderEvent(params: {
   riderId?: string | null;
   pickupRiderId?: string | null;
   deliveryRiderId?: string | null;
+  previousRiderIds?: string[];
   action?: string;
   changedFields?: string[];
   actorId?: string | null;
@@ -368,6 +370,7 @@ export async function publishOrderEvent(params: {
         params.deliveryRiderId !== undefined
           ? params.deliveryRiderId
           : rawJob?.deliveryRiderId ?? null,
+      previousRiderIds: params.previousRiderIds,
       action: params.action || 'update',
       changedFields: params.changedFields,
       actorId: params.actorId || null,

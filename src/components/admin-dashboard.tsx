@@ -322,12 +322,22 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
         taskData,
         { id: currentUserId, name: currentUserName, role: user?.role }
       );
-      if (res.success) {
+      if (res.success && res.data) {
         toast.success("Task updated successfully");
+        setTasks((prev) => prev.map((t) => (t.id === res.data!.id ? res.data! : t)));
         setModalOpen(false);
+        setEditingTask(null);
         loadData();
+        return res;
       } else {
+        if (res.isConflict && res.latestTask) {
+          setTasks((prev) => prev.map((t) => (t.id === res.latestTask!.id ? res.latestTask! : t)));
+          setEditingTask(res.latestTask);
+          toast.error(res.error || "ข้อมูลถูกอัปเดตโดยผู้ใช้อื่น กรุณาตรวจสอบแล้วกดบันทึกอีกครั้ง", { duration: 7000 });
+          return res;
+        }
         toast.error(res.error || "Failed to update task");
+        return res;
       }
     }
   };

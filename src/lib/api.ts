@@ -1,5 +1,5 @@
 import * as dbActions from '@/actions/db';
-import { getServiceSKU, type Customer, type Job, type Rider, type ServiceItem, type PriceList, type ShopLocation } from './store';
+import { getServiceSKU, type Customer, type Job, type Rider, type ServiceItem, type PriceList, type PriceListItem, type ShopLocation } from './store';
 
 const DB_KEY = 'that_laundry_shop_db';
 
@@ -403,7 +403,11 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
         });
 
         const serverJobIds = new Set(parsed.jobs.map((j: any) => j.id));
-        const extraMemJobs = memoryDb.jobs.filter((j) => !serverJobIds.has(j.id));
+        const extraMemJobs = memoryDb.jobs.filter((j) => {
+          if (serverJobIds.has(j.id)) return false;
+          if ((pendingJobSaves.get(j.id) || 0) > 0) return true;
+          return j.status === 'completed' || j.status === 'cancel';
+        });
         parsed.jobs = [...parsed.jobs, ...extraMemJobs];
       }
 
@@ -910,6 +914,31 @@ export const api = {
           }
         }
 
+          // 1b. For Rider clients: prune any active job in memory that was reassigned away from this rider
+          if (Array.isArray(data.activeRiderJobIds) && memoryDb) {
+            const currentUser = getClientAuthUser();
+            const riderId = currentUser?.id;
+            if (riderId && (currentUser?.role || '').toLowerCase() === 'rider') {
+              const activeSet = new Set<string>(data.activeRiderJobIds);
+              const beforeLen = memoryDb.jobs.length;
+              memoryDb.jobs = memoryDb.jobs.filter((j) => {
+                if (j.status === 'completed' || j.status === 'cancel') return true;
+                if ((pendingJobSaves.get(j.id) || 0) > 0) return true;
+                const isAssignedLocally =
+                  j.pickupRiderId === riderId ||
+                  j.deliveryRiderId === riderId ||
+                  j.riderId === riderId;
+                if (isAssignedLocally && !activeSet.has(j.id)) {
+                  return false;
+                }
+                return true;
+              });
+              if (memoryDb.jobs.length !== beforeLen) {
+                totalJobsUpdated += beforeLen - memoryDb.jobs.length;
+              }
+            }
+          }
+
           // 2. Customer merging strictly by record ID
         if (Array.isArray(data.customers) && data.customers.length > 0 && memoryDb) {
           const parsedCustomers = JSON.parse(JSON.stringify(data.customers), dateReviver) as Customer[];
@@ -1134,7 +1163,33 @@ export const api = {
     const res = await dbActions.updateCustomerAction(id, updates);
     if (res && typeof res === 'object' && 'success' in res) {
       if (!res.success) {
-        throw new Error((res as any).error || "เกิดข้อผิดพลาดในการบันทึกข้อมูลลูกค้า");
+        const err: any = new Error((res as any).error || "เกิดข้อผิดพลาดในการบันทึกข้อมูลลูกค้า");
+        if ((res as any).isConflict) {
+          err.isConflict = true;
+          err.conflictFields = (res as any).conflictFields || [];
+        }
+        if ((res as any).latestCustomer) {
+          const latest = (res as any).latestCustomer;
+          let syncedLatest: Customer | null = null;
+          db.customers = db.customers.map(c => {
+            if (c.id === id) {
+              const merged: Customer = {
+                ...c,
+                ...latest,
+                defaultCoords:
+                  latest.defaultLat != null && latest.defaultLng != null
+                    ? { lat: latest.defaultLat, lng: latest.defaultLng }
+                    : c.defaultCoords,
+              };
+              syncedLatest = merged;
+              return merged;
+            }
+            return c;
+          });
+          err.latestCustomer = syncedLatest || latest;
+          api.notify('customers');
+        }
+        throw err;
       }
     }
     const savedCustomer = (res && typeof res === 'object' && 'customer' in res) ? (res as any).customer : res;
@@ -1145,12 +1200,11 @@ export const api = {
         const u: Customer = { 
           ...c, 
           ...updates,
-          name: savedCustomer.name,
-          memberId: savedCustomer.memberId,
-          creditBalance: savedCustomer.creditBalance,
-          isMember: savedCustomer.isMember,
-          isVIP: savedCustomer.isVIP,
-          isCorporate: savedCustomer.isCorporate,
+          ...savedCustomer,
+          defaultCoords:
+            savedCustomer?.defaultLat != null && savedCustomer?.defaultLng != null
+              ? { lat: savedCustomer.defaultLat, lng: savedCustomer.defaultLng }
+              : updates.defaultCoords ?? c.defaultCoords,
           tier: (savedCustomer.tier as any) || updates.tier || c.tier,
           corporateCommissionType: (savedCustomer as any).corporateCommissionType ?? updates.corporateCommissionType ?? c.corporateCommissionType,
           corporatePickupCommission: (savedCustomer as any).corporatePickupCommission ?? updates.corporatePickupCommission ?? c.corporatePickupCommission,
@@ -1779,20 +1833,64 @@ export const api = {
     return newList;
   },
 
-  async updatePriceList(id: string, updates: Partial<PriceList>): Promise<PriceList> {
-    
+  async updatePriceList(
+    id: string,
+    updates: Partial<PriceList> & {
+      baseName?: string;
+      baseServicePrices?: Record<string, number>;
+      baseCustomItems?: PriceListItem[];
+    }
+  ): Promise<PriceList & { isConflict?: boolean; conflictFields?: string[]; latestPriceList?: PriceList }> {
     const db = initDb();
-    let updatedList: PriceList | null = null;
-    db.priceLists = db.priceLists.map(p => {
-      if (p.id === id) {
-        updatedList = { ...p, ...updates };
-        return updatedList;
-      }
-      return p;
-    });
-    if (!updatedList) throw new Error("Price list not found");
-    await dbActions.updatePriceListAction(id, updates);
-    return updatedList;
+    const existing = db.priceLists.find((p) => p.id === id);
+    if (!existing) throw new Error("Price list not found");
+
+    // Optimistic update on local cache
+    const optimistic: PriceList = {
+      ...existing,
+      ...(updates.name !== undefined ? { name: updates.name } : {}),
+      ...(updates.isDefault !== undefined ? { isDefault: updates.isDefault } : {}),
+      ...(updates.isCorporate !== undefined ? { isCorporate: updates.isCorporate } : {}),
+      ...(updates.customItems !== undefined ? { customItems: updates.customItems } : {}),
+      ...(updates.servicePrices !== undefined ? { servicePrices: updates.servicePrices } : {}),
+    };
+    db.priceLists = db.priceLists.map((p) => (p.id === id ? optimistic : p));
+
+    const res: any = await dbActions.updatePriceListAction(id, updates);
+    if (res?.isConflict && res?.latestPriceList) {
+      const latest: PriceList = {
+        ...existing,
+        ...res.latestPriceList,
+      };
+      db.priceLists = db.priceLists.map((p) => (p.id === id ? latest : p));
+      api.notify('priceLists');
+      return {
+        ...latest,
+        isConflict: true,
+        conflictFields: res.conflictFields || [],
+        latestPriceList: latest,
+      };
+    }
+
+    if (res && res.id) {
+      const authoritative: PriceList = {
+        ...optimistic,
+        id: res.id,
+        name: res.name ?? optimistic.name,
+        isDefault: res.isDefault ?? optimistic.isDefault,
+        isCorporate: res.isCorporate ?? optimistic.isCorporate,
+        customItems: res.customItems !== undefined ? res.customItems : optimistic.customItems,
+        servicePrices:
+          res.servicePrices && typeof res.servicePrices === "object"
+            ? res.servicePrices
+            : optimistic.servicePrices,
+      };
+      db.priceLists = db.priceLists.map((p) => (p.id === id ? authoritative : p));
+      api.notify('priceLists');
+      return { ...authoritative, isConflict: false };
+    }
+
+    return { ...optimistic, isConflict: false };
   },
 
   async deletePriceList(id: string): Promise<void> {
@@ -1865,11 +1963,14 @@ export const api = {
     return initDb().settings;
   },
 
-  async updateSetting(key: string, value: string): Promise<Record<string, string>> {
-    
+  async updateSetting(key: string, value: string, options?: { baseValue?: string }): Promise<Record<string, string>> {
     const db = initDb();
+    const prevValue = options?.baseValue !== undefined ? options.baseValue : db.settings[key];
     db.settings = { ...db.settings, [key]: value };
-    await dbActions.updateSettingAction(key, value);
+    const res = await dbActions.updateSettingAction(key, value, prevValue !== undefined ? { baseValue: prevValue } : undefined);
+    if (res && typeof res.value === "string") {
+      db.settings = { ...db.settings, [key]: res.value };
+    }
     return db.settings;
   },
 

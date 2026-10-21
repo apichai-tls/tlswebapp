@@ -19,9 +19,9 @@ export const bucketName = process.env.GCS_BUCKET_NAME || 'tls-images-test';
  * Structure: jobs/{YYYY}/{MM}/{DD}/{jobId}/{type}/filename-{timestamp}.jpg
  */
 export function generateGcsPath(
-  entityType: 'job' | 'rider' | 'system' | 'task',
+  entityType: 'job' | 'rider' | 'system' | 'task' | 'customer',
   entityId: string,
-  subType?: 'bags' | 'proofs' | 'bills' | 'avatars' | 'attachments' | 'notes',
+  subType?: 'bags' | 'proofs' | 'bills' | 'avatars' | 'attachments' | 'notes' | 'slips',
   extension: string = 'jpg',
   customFileName?: string
 ): string {
@@ -42,6 +42,11 @@ export function generateGcsPath(
       return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/${customFileName}`;
     }
     return `jobs/${year}/${month}/${day}/${entityId}/${typeFolder}/img-${timestamp}-${randomSuffix}.${extension}`;
+  }
+
+  if (entityType === 'customer') {
+    const folder = subType || 'slips';
+    return `customers/${year}/${month}/${day}/${entityId}/${folder}/file-${timestamp}-${randomSuffix}.${extension}`;
   }
 
   if (entityType === 'task') {

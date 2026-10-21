@@ -1,12 +1,9 @@
 import crypto from 'crypto'
 
 function getJwtSecret(): string {
-  const secret = process.env.EXTERNAL_JWT_SECRET
-  if (secret && secret.trim()) return secret.trim()
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('EXTERNAL_JWT_SECRET environment variable is required in production')
-  }
-  return 'dev-only-external-jwt-secret-not-for-prod'
+  const secret = process.env.EXTERNAL_JWT_SECRET || process.env.TLS_SESSION_SECRET || process.env.CRON_SECRET
+  if (secret && secret.trim().length >= 16) return secret.trim()
+  throw new Error('EXTERNAL_JWT_SECRET or TLS_SESSION_SECRET environment variable (>= 16 chars) is required')
 }
 
 function getExternalApiKey(): string | null {
@@ -87,8 +84,22 @@ export function verifyCustomerToken(tokenString: string): {
     if (!crypto.timingSafeEqual(Buffer.from(expectedSig), Buffer.from(signature))) return null
 
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf-8'))
-    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
-      return null // Expired
+    const nowSec = Math.floor(Date.now() / 1000)
+    const maxCustomerTtlSec = 30 * 24 * 60 * 60
+    if (
+      !payload ||
+      !payload.customerId ||
+      typeof payload.iat !== 'number' ||
+      !Number.isFinite(payload.iat) ||
+      payload.iat <= 0 ||
+      payload.iat > nowSec + 60 ||
+      typeof payload.exp !== 'number' ||
+      !Number.isFinite(payload.exp) ||
+      payload.exp <= payload.iat ||
+      payload.exp - payload.iat > maxCustomerTtlSec ||
+      payload.exp < nowSec
+    ) {
+      return null // Expired or missing/invalid iat/exp
     }
 
     return {

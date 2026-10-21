@@ -192,9 +192,13 @@ function BillingJobCard({
       const compressed = await compressImage(pendingPhoto.file, 1600, 0.85, pendingPhoto.rotation);
 
       // 1) Get signed upload URL
+      const { getClientAuthHeaders } = await import("@/lib/api");
       const res = await fetch("/api/upload-url", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...getClientAuthHeaders(),
+        },
         body: JSON.stringify({
           entityType: "job",
           entityId: job.id,
@@ -213,22 +217,26 @@ function BillingJobCard({
       });
       if (!put.ok) throw new Error("Upload failed");
 
-      // 3) Save to Job immediately
+      // 3) Mark as active in session BEFORE optimistic update so card stays mounted,
+      //    and never re-adds to sessionUploadedJobIds after Finish Upload is clicked
+      if (onUpload) onUpload();
+
       const newUrls = [...billUrls, publicUrl];
-      await jobStore.updateJobDetails(job.id, {
+      const savedJob = await jobStore.updateJobDetails(job.id, {
         billImageUrl: JSON.stringify(newUrls),
         actorId: user?.id,
         actorName: user?.name || user?.email,
         actorRole: user?.role
       } as any);
+      if ((savedJob as any)?._saveStatus === "failed") {
+        throw new Error("Failed to save bill photo to database");
+      }
       setBillUrls(newUrls);
       toast.success("Bill uploaded successfully ✅");
       
       // Cleanup
       URL.revokeObjectURL(pendingPhoto.previewUrl);
       setPendingPhoto(null);
-      
-      if (onUpload) onUpload();
     } catch (err) {
       console.error("Upload error:", err);
       toast.error("Upload failed. Please try again.");
@@ -586,8 +594,8 @@ export default function BillingPage() {
     return user.permissions?.includes(key);
   };
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     window.location.href = "/login";
   };
 
@@ -702,7 +710,7 @@ export default function BillingPage() {
     });
   }, []);
 
-  // Filter: show all jobs that do not have a bill number entered (only in billing, delivery, or completed status)
+  // Filter: show all jobs that do not have a bill uploaded yet (only in billing, delivery, or completed status)
   const billingJobs = jobs
     .filter((j) => {
       // Only allow billing, delivery, and completed statuses
@@ -711,11 +719,6 @@ export default function BillingPage() {
 
       // Hide if the user manually finished it in this session
       if (hiddenJobIds.includes(j.id)) return false;
-
-      // Hide jobs that already have a bill number entered
-      if (j.billNo && j.billNo.trim() !== "") {
-        return false;
-      }
 
       // Hide jobs that already have bill uploaded (unless uploaded in this active session)
       const hasUploadedBills = parseBillUrls(j.billImageUrl).length > 0;
