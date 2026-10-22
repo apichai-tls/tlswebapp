@@ -6,6 +6,7 @@ import { Logo } from "@/components/logo";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, shopStore, type Job } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
+import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { toast } from "sonner";
 import {
   Camera,
@@ -731,7 +732,11 @@ export default function BillingPage() {
       if (new Date(j.createdAt) < cutOffDate) return false;
 
       // Filter by user's Area if they have a restricted area (e.g. BKK, PTY)
-      if (user?.area && user.area !== 'ALL') {
+      if (user && user.role !== 'admin' && ((user.area && user.area !== 'ALL') || (user.branchId && user.branchId !== 'all' && user.branchId !== 'ALL')) && shopLocations.length > 0) {
+        const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+        if (!j.branchId || !allowedIds.includes(j.branchId)) return false;
+      }
+      if ((false as boolean) && user?.area && user.area !== 'ALL') {
         const branch = shopLocations.find(s => s.id === j.branchId);
         if (branch?.area !== user.area) return false;
       }

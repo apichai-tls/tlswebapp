@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useJobs } from "@/lib/use-jobs";
 import { useAuth } from "@/providers/auth-provider";
+import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { format } from "date-fns";
 import {
   Dialog,
@@ -60,7 +61,11 @@ export function AdminVerify({ onEditJob }: { onEditJob?: (job: Job) => void }) {
 
   const verifications = jobs.filter(j => {
     if (j.status !== "pending") return false;
-    if (isAreaRestricted && userArea) {
+    if (isAreaRestricted && shopLocations.length > 0) {
+      const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+      if (!j.branchId || !allowedIds.includes(j.branchId)) return false;
+    }
+    if ((false as boolean) && isAreaRestricted && userArea) {
       const branch = shopLocations.find(s => s.id === j.branchId);
       if (!branch || (branch.area || "").toUpperCase() !== userArea) return false;
     }

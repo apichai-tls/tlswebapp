@@ -511,7 +511,16 @@ function AdminPageContent() {
     }
   }, [user, shopLocations]);
 
-  const updateClosestStoreAsync = async (coords: LatLng, address?: string) => {
+  const isRealCustomerCoords = (coords: LatLng | null | undefined, addr?: string | null) => {
+    const t = (addr || "").trim();
+    if (t === "--" || t === "-") return false;
+    if (!coords || !coords.lat || !coords.lng) return false;
+    if (Math.abs(Number(coords.lat) - 13.736717) < 0.00001 && Math.abs(Number(coords.lng) - 100.523186) < 0.00001) return false;
+    return true;
+  };
+
+  const updateClosestStoreAsync = async (coords: LatLng | null | undefined, address?: string) => {
+    if (!isRealCustomerCoords(coords, address) || !coords) return;
     try {
       const closestId = await getClosestShopByRoute(coords, shopLocations, address);
       if (closestId) {
@@ -5100,13 +5109,15 @@ function AdminPageContent() {
                                   setPromoError(null);
                                   
                                    // Always sync address from CRM when customer is selected
-                                   setPickupLoc(c.defaultAddress);
+                                   const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? c.defaultAddress : "";
+                                   const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
+                                   setPickupLoc(cleanCustAddr);
                                   setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-                                  setPickupCoords(c.defaultCoords);
+                                  setPickupCoords(validCustCoords);
                                   
-                                  setDeliveryLoc(c.defaultAddress);
+                                  setDeliveryLoc(cleanCustAddr);
                                   setDeliveryRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-                                  setDeliveryCoords(c.defaultCoords);
+                                  setDeliveryCoords(validCustCoords);
                                   
                                   setIsDeliveryDirty(false);
                                   setIsFreeDelivery(false);
@@ -8396,13 +8407,15 @@ function AdminPageContent() {
             setPromoError(null);
             
             // Always sync address from CRM when customer is selected
-            setPickupLoc(c.defaultAddress);
+            const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? c.defaultAddress : "";
+            const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
+            setPickupLoc(cleanCustAddr);
             setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-            setPickupCoords(c.defaultCoords);
+            setPickupCoords(validCustCoords);
             
-            setDeliveryLoc(c.defaultAddress);
+            setDeliveryLoc(cleanCustAddr);
             setDeliveryRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
-            setDeliveryCoords(c.defaultCoords);
+            setDeliveryCoords(validCustCoords);
             
             setIsDeliveryDirty(false);
             setIsFreeDelivery(false);

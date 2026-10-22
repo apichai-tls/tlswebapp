@@ -1577,7 +1577,7 @@ export const api = {
     const optimisticJob: Job = {
       ...existingJob,
       ...cleanUpdates,
-      updatedAt: existingJob.updatedAt || new Date(),
+      updatedAt: new Date(),
     };
     (optimisticJob as any)._saveStatus = 'saving';
 
@@ -1746,7 +1746,7 @@ export const api = {
     const updatedJob: Job = {
       ...existingJob,
       ...cleanUpdates,
-      updatedAt: existingJob.updatedAt || new Date(),
+      updatedAt: new Date(),
     };
     (updatedJob as any)._saveStatus = 'saving';
     const newJobs = [...db.jobs];

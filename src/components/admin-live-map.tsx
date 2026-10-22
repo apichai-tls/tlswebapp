@@ -8,6 +8,8 @@ import { useRiders } from "@/lib/use-riders";
 import { shopStore, riderStore, type Rider } from "@/lib/store";
 import { useSyncExternalStore } from "react";
 import { useAuth } from "@/providers/auth-provider";
+import { authFetch } from "@/lib/api";
+import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 
 // Helper to create a custom div icon with the rider's avatar
 function createAvatarIcon(rider: Rider) {
@@ -90,6 +92,8 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [isMounted, setIsMounted] = useState(false);
+  const [selectedRegion, setSelectedRegion] = useState<string>("bangkok");
+  const [hasAutoCentered, setHasAutoCentered] = useState(false);
   const [mapCenter, setMapCenter] = useState<[number, number]>([13.736717, 100.523186]); // Default Bangkok
 
   useEffect(() => {
@@ -102,7 +106,7 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
 
     const pollRiderLocations = async () => {
       try {
-        const res = await fetch("/api/rider-location");
+        const res = await authFetch("/api/rider-location");
         if (!res.ok) return;
         const freshRiders = await res.json();
         if (!isSubscribed || !Array.isArray(freshRiders)) return;
@@ -130,16 +134,48 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
     };
   }, []);
 
-  // Filter riders by area (manager scope)
+  // Filter riders by user's assigned branches/area (manager/staff scope)
+
+  const isBranchRestricted = Boolean(
+    user &&
+    user.role !== "admin" &&
+    ((user.area && user.area !== "ALL") || (user.branchId && user.branchId !== "all" && user.branchId !== "ALL"))
+  );
+
+  const allowedBranchIds = useMemo(
+    () => new Set(getUserAssignedBranchIds(user, shopLocations)),
+    [user, shopLocations]
+  );
+
+  // Auto-center map to the user's assigned branch or region on initial load
+  useEffect(() => {
+    if (hasAutoCentered || !user || shopLocations.length === 0) return;
+    setHasAutoCentered(true);
+    if (!isBranchRestricted) return;
+
+    const assignedShops = shopLocations.filter((s) => allowedBranchIds.has(s.id));
+    if (assignedShops.length === 1) {
+      const shop = assignedShops[0];
+      setSelectedRegion(shop.id);
+      setMapCenter([shop.coords.lat, shop.coords.lng]);
+    } else if (assignedShops.length > 0 && assignedShops.every((s) => (s.area || "").toUpperCase() === "PTY")) {
+      setSelectedRegion("pattaya");
+      setMapCenter([12.9236, 100.8825]);
+    }
+  }, [hasAutoCentered, user, shopLocations, isBranchRestricted, allowedBranchIds]);
+
   const filteredRiders = useMemo(() => {
-    if (user?.role === 'manager' && user.area && user.area !== 'ALL') {
+    if (isBranchRestricted && shopLocations.length > 0) {
+      return riders.filter((r) => Boolean(r.branchId && allowedBranchIds.has(r.branchId)));
+    }
+    if ((false as boolean) && user?.role === 'manager' && user.area && user.area !== 'ALL') {
       return riders.filter(r => {
         const branch = shopLocations.find(s => s.id === r.branchId);
         return branch?.area === user.area;
       });
     }
     return riders;
-  }, [riders, user?.role, user?.area, shopLocations]);
+  }, [riders, isBranchRestricted, allowedBranchIds, shopLocations.length, user?.role, user?.area, shopLocations]);
 
   // Compute active riders with fallback to assigned branch coordinates if GPS is missing or mock (13.73, 100.53)
   const activeRiders = useMemo(() => {
@@ -193,9 +229,11 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
       <div className={`absolute z-[1000] pointer-events-auto ${minimal ? 'top-2 right-2' : 'top-4 right-4 sm:right-6'} bg-white/95 px-2 py-1.5 sm:px-3 sm:py-2 rounded-xl shadow-lg border border-slate-200/60 flex items-center gap-2`}>
         {!minimal && <label className="text-[10px] sm:text-xs font-bold text-slate-700 uppercase tracking-widest hidden md:block">Region Focus</label>}
         <select 
+          value={selectedRegion}
           className="text-xs sm:text-sm border border-slate-200 rounded px-1.5 py-0.5 sm:px-2 sm:py-1 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer text-slate-700 font-semibold"
           onChange={(e) => {
             const val = e.target.value;
+            setSelectedRegion(val);
             if (val === "bangkok") setMapCenter([13.736717, 100.523186]);
             else if (val === "pattaya") setMapCenter([12.9236, 100.8825]);
             else {

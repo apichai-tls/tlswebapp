@@ -111,7 +111,19 @@ export function AdminCustomerDialog({
   const [roomNo, setRoomNo] = useState("");
   const [district, setDistrict] = useState("Watthana (Thonglor, Ekkamai, Phrom Phong)");
   const [leaveWithJuristic, setLeaveWithJuristic] = useState(true);
-  const [coords, setCoords] = useState({ lat: 13.736717, lng: 100.523186 });
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const isWalkInAddress = (addr: string | null | undefined) => {
+    const t = (addr || "").trim();
+    return t === "--" || t === "-";
+  };
+  const isValidPinnedCoords = (c: { lat?: number | null; lng?: number | null } | null | undefined): c is { lat: number; lng: number } => {
+    if (!c || c.lat === null || c.lat === undefined || c.lng === null || c.lng === undefined) return false;
+    const lat = Number(c.lat);
+    const lng = Number(c.lng);
+    if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) return false;
+    if (Math.abs(lat - 13.736717) < 0.00001 && Math.abs(lng - 100.523186) < 0.00001) return false;
+    return true;
+  };
   const [selectedLocation, setSelectedLocation] = useState<{name: string; address: string; lat: number; lng: number; placeId?: string; isLocal?: boolean} | null>(null);
 
   // Company Tax Details
@@ -309,8 +321,8 @@ export function AdminCustomerDialog({
       isSecondaryWhatsapp: phones.resolvedIsSecWhatsapp,
       roomNo: cleanRoom || null,
       sourceSystem: cust.sourceSystem || "web_booking",
-      defaultAddress: (cust.defaultAddress && cust.defaultAddress !== "--" ? cust.defaultAddress : "").trim(),
-      defaultCoords: cust.defaultCoords || { lat: 13.736717, lng: 100.523186 },
+      defaultAddress: (cust.defaultAddress || "").trim(),
+      defaultCoords: isValidPinnedCoords(cust.defaultCoords) ? cust.defaultCoords : { lat: 0, lng: 0 },
       priceListId: cust.priceListId || "regular",
       vatType: (cust.vatType as any) || "default",
       email: (cust.email || "").trim() || null,
@@ -371,12 +383,12 @@ export function AdminCustomerDialog({
     if (shouldSet("passwordHash")) setInitialPin(cust.passwordHash || "");
 
     if (shouldSet("defaultAddress")) {
-      setAddress(cust.defaultAddress && cust.defaultAddress !== "--" ? cust.defaultAddress : "");
+      setAddress(cust.defaultAddress || "");
       setTaxBillingAddress(cust.defaultAddress && cust.defaultAddress !== "--" ? cust.defaultAddress : "");
     }
     if (shouldSet("roomNo")) setRoomNo(cust.roomNo || "");
     if (shouldSet("defaultCoords") || shouldSet("defaultLat") || shouldSet("defaultLng")) {
-      setCoords(cust.defaultCoords || { lat: 13.736717, lng: 100.523186 });
+      setCoords(isValidPinnedCoords(cust.defaultCoords) ? cust.defaultCoords : null);
     }
     if (!fieldsToUpdate) {
       setAddressLabel("Hotel");
@@ -455,7 +467,8 @@ export function AdminCustomerDialog({
       setRoomNo("");
       setDistrict("Watthana (Thonglor, Ekkamai, Phrom Phong)");
       setLeaveWithJuristic(true);
-      setCoords({ lat: 13.736717, lng: 100.523186 });
+      setCoords(null);
+      setSelectedLocation(null);
 
       setRequiresTaxInvoice(false);
       setCompanyName("");
@@ -587,7 +600,16 @@ export function AdminCustomerDialog({
       return;
     }
     if (!address.trim()) {
-      toast.error("กรุณาระบุที่อยู่จัดส่ง (Delivery Address is required)");
+      toast.error("กรุณาระบุที่อยู่จัดส่ง หรือระบุ -- สำหรับลูกค้า Walk-in (Delivery Address is required)");
+      return;
+    }
+    const baseCustForCheck = originalCustomerRef.current || customer || null;
+    const isAddressUnchangedOnEdit = Boolean(
+      baseCustForCheck &&
+      address.trim() === (baseCustForCheck.defaultAddress || "").trim()
+    );
+    if (!isWalkInAddress(address) && !isAddressUnchangedOnEdit && (!selectedLocation || !isValidPinnedCoords(coords))) {
+      toast.error("กรุณาคลิกเลือกสถานที่จากรายการค้นหา (POI หรือ Google Maps) เพื่อระบุพิกัดแผนที่ (หรือพิมพ์ -- สำหรับลูกค้า Walk-in)");
       return;
     }
 
@@ -680,7 +702,13 @@ export function AdminCustomerDialog({
         roomNo: roomNo.trim() || null,
         sourceSystem,
         defaultAddress: address.trim(),
-        defaultCoords: coords,
+        defaultCoords: isWalkInAddress(address)
+          ? { lat: 0, lng: 0 }
+          : (isValidPinnedCoords(coords)
+              ? coords
+              : (baseCust && address.trim() === (baseCust.defaultAddress || "").trim() && isValidPinnedCoords(baseCust.defaultCoords)
+                  ? baseCust.defaultCoords
+                  : { lat: 0, lng: 0 })),
         priceListId: finalPriceListId,
         vatType: customerVatType,
         email: email.trim() || null,
@@ -1595,7 +1623,11 @@ export function AdminCustomerDialog({
                     placeholder="e.g. The Estelle Phrom Phong, 8 Sukhumvit 26" 
                     value={address} 
                     localData={localDataForSearch} 
-                    onChange={setAddress}
+                    onChange={(val) => {
+                      setAddress(val);
+                      setSelectedLocation(null);
+                      setCoords(null);
+                    }}
                     onSelectLocation={(loc) => { 
                       setCoords({ lat: loc.lat, lng: loc.lng }); 
                       setSelectedLocation(loc); 
@@ -1629,7 +1661,16 @@ export function AdminCustomerDialog({
                   )}
                 </div>
                 {!address.trim() && (
-                  <p className="text-[10px] text-rose-500 mt-1 font-medium">* กรุณาระบุที่อยู่สำหรับจัดส่ง</p>
+                  <p className="text-[10px] text-rose-500 mt-1 font-medium">* กรุณาระบุที่อยู่สำหรับจัดส่ง และคลิกเลือกสถานที่จากรายการ (หากเป็นลูกค้า Walk-in ไม่มีที่อยู่ ให้พิมพ์ --)</p>
+                )}
+                {address.trim() && isWalkInAddress(address) && (
+                  <p className="text-[10px] text-slate-500 mt-1 font-medium">✓ ลูกค้าหน้าร้าน (Walk-in / ไม่ระบุที่อยู่จัดส่ง)</p>
+                )}
+                {address.trim() && !isWalkInAddress(address) && isValidPinnedCoords(coords) && (
+                  <p className="text-[10px] text-emerald-600 mt-1 font-bold">✓ ปักหมุดพิกัดแผนที่แล้ว ({coords.lat.toFixed(5)}, {coords.lng.toFixed(5)})</p>
+                )}
+                {address.trim() && !isWalkInAddress(address) && !isValidPinnedCoords(coords) && (!customer || address.trim() !== (customer.defaultAddress || "").trim()) && (
+                  <p className="text-[10px] text-amber-600 mt-1 font-bold">⚠️ กรุณาคลิกเลือกสถานที่จากรายการ Dropdown (POI หรือกดปุ่มค้นหาบน Google Maps) เพื่อยืนยันพิกัดแผนที่ (หากเป็นลูกค้า Walk-in ให้พิมพ์ --)</p>
                 )}
               </div>
 

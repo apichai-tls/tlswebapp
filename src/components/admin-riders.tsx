@@ -54,6 +54,7 @@ import { createPortal } from "react-dom";
 import { useRiders } from "@/lib/use-riders";
 import { useJobs } from "@/lib/use-jobs";
 import { useAuth } from "@/providers/auth-provider";
+import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { toast } from "sonner";
 import Image from "next/image";
 import Link from "next/link";
@@ -76,6 +77,12 @@ export function AdminRiders() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [tempId, setTempId] = useState<string>("");
   const [viewMode, setViewMode] = useState<"active" | "resigned">("active");
+
+  const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  if (user && user.role !== "admin" && ((user.area && user.area !== "ALL") || (user.branchId && user.branchId !== "all" && user.branchId !== "ALL")) && shops.length > 0) {
+    const allowedIds = new Set(getUserAssignedBranchIds(user, shops));
+    riders = riders.filter((r) => Boolean(r.branchId && allowedIds.has(r.branchId)));
+  }
 
   const activeRiders = riders.filter(r => r.isActive !== false);
   const resignedRiders = riders.filter(r => r.isActive === false);
@@ -108,10 +115,10 @@ export function AdminRiders() {
   const [branchId, setBranchId] = useState("");
   const [color, setColor] = useState("#3b82f6");
 
-  const shops = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
+  // shops and area filter moved above activeRiders
 
   // Area Filter for Riders
-  if (user?.role === 'manager' && user.area) {
+  if ((false as boolean) && user?.role === 'manager' && user.area) {
     riders = riders.filter(r => {
       const branch = shops.find(s => s.id === r.branchId);
       return branch?.area === user.area;

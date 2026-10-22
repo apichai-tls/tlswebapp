@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useAuth } from "@/providers/auth-provider";
+import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { jobStore, shopStore, settingsStore, customerStore, type Job } from "@/lib/store";
 import { formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
 import { generateThermalReceiptImage, uploadReceiptImage } from "@/lib/thermal-canvas-generator";
@@ -46,7 +47,11 @@ export function AutoReceiptWorker() {
       const unpaidBeamJob = jobs.find((job) => {
         if (!job.id || job.id === "DRAFT" || job.isPaid || job.isShopPaid) return false;
         if (['cancel', 'return', 'completed'].includes(job.status)) return false;
-        if (isAreaRestricted && userArea) {
+        if (isAreaRestricted && shopLocations.length > 0) {
+          const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+          if (!job.branchId || !allowedIds.includes(job.branchId)) return false;
+        }
+        if ((false as boolean) && isAreaRestricted && userArea) {
           const jobShop = shopLocations.find((s) => s.id === job.branchId);
           if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) return false;
         }
@@ -90,7 +95,11 @@ export function AutoReceiptWorker() {
           return false;
         }
 
-        if (isAreaRestricted && userArea) {
+        if (isAreaRestricted && shopLocations.length > 0) {
+          const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+          if (!job.branchId || !allowedIds.includes(job.branchId)) return false;
+        }
+        if ((false as boolean) && isAreaRestricted && userArea) {
           const jobShop = shopLocations.find((s) => s.id === job.branchId);
           if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
             completedRef.current.add(receiptKey);
@@ -236,7 +245,11 @@ export function AutoReceiptWorker() {
           return false;
         }
 
-        if (isAreaRestricted && userArea) {
+        if (isAreaRestricted && shopLocations.length > 0) {
+          const allowedIds = getUserAssignedBranchIds(user, shopLocations);
+          if (!job.branchId || !allowedIds.includes(job.branchId)) return false;
+        }
+        if ((false as boolean) && isAreaRestricted && userArea) {
           const jobShop = shopLocations.find((s) => s.id === job.branchId);
           if (!jobShop || (jobShop.area || "").toUpperCase() !== userArea) {
             completedRef.current.add(proformaKey);

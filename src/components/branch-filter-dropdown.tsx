@@ -287,13 +287,29 @@ export function getUserAssignedBranchIds(
 
   const ids = new Set<string>();
 
-  if (user.branchId && branches.some((b) => b.id === user.branchId)) {
-    ids.add(user.branchId);
+    if (user.branchId && user.branchId !== "all" && user.branchId !== "ALL") {
+      const matched = branches.find((b) => b.id === user.branchId || b.id.toLowerCase() === user.branchId!.toLowerCase());
+      if (matched) ids.add(matched.id);
+    }
+    if (false) {
+  // matched above
   }
 
   if (user.area) {
     const parts = user.area.split(",").map((p) => p.trim());
     for (const part of parts) {
+      if (!part) continue;
+      if (part.toUpperCase() === "ALL") return branches.map((b) => b.id);
+      const matchedById = branches.find((b) => b.id === part || b.id.toLowerCase() === part.toLowerCase());
+      if (matchedById) {
+        ids.add(matchedById.id);
+      } else {
+        branches
+          .filter((b) => (b.area || "BKK").toUpperCase() === part.toUpperCase())
+          .forEach((b) => ids.add(b.id));
+      }
+      // legacy branch/area checks replaced above
+      if (false) {
       if (branches.some((b) => b.id === part)) {
         ids.add(part);
       } else if (part.toUpperCase() === "BKK") {
@@ -309,6 +325,7 @@ export function getUserAssignedBranchIds(
   }
 
   // Strictly return only assigned branches; never fall back to all branches for restricted users
+      }
   return Array.from(ids);
 }
 

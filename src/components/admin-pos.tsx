@@ -87,6 +87,7 @@ import { format } from "date-fns";
 import { useSyncExternalStore } from "react";
 import { useCustomers } from "@/lib/use-customers";
 import { useAuth } from "@/providers/auth-provider";
+import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { useJobs } from "@/lib/use-jobs";
 import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
@@ -1087,8 +1088,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   
   const shops = useMemo(() => {
     if (!user) return [];
-    if (!user.area || user.area === 'ALL') return allShops;
-    return allShops.filter(shop => shop.area === user.area);
+    if ((!user.area || user.area === 'ALL') && (!user.branchId || user.branchId === 'all' || user.branchId === 'ALL')) return allShops;
+    if (user.role === 'admin') return allShops;
+    const allowedIds = new Set(getUserAssignedBranchIds(user, allShops));
+    return allShops.filter(shop => allowedIds.has(shop.id));
+    // returned above
   }, [allShops, user]);
 
   const [activeBranchId, setActiveBranchId] = useState<string>("");

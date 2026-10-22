@@ -1349,7 +1349,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             if (isPinnedA && !isPinnedB) return -1;
                             if (!isPinnedA && isPinnedB) return 1;
                           }
-                          return 0;
+                          const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+                          const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+                          return timeB - timeA;
                         })
                         .map(job => {
                         let durationMin = null;

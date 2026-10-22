@@ -323,6 +323,18 @@ export function resolveAllowedBranchIds(
       if (part.toUpperCase() === 'ALL') {
         return 'ALL';
       }
+      const matchedById = branches.find((b) => b.id === part || b.id.toLowerCase() === part.toLowerCase());
+      if (matchedById) {
+        ids.add(matchedById.id);
+      } else {
+        branches
+          .filter((b) => (b.area || 'BKK').toUpperCase() === part.toUpperCase())
+          .forEach((b) => ids.add(b.id));
+      }
+      if (false) {
+      if (part.toUpperCase() === 'ALL') {
+        return 'ALL';
+      }
       if (branches.some((b) => b.id === part)) {
         ids.add(part);
       } else if (part.toUpperCase() === 'BKK') {
@@ -337,6 +349,7 @@ export function resolveAllowedBranchIds(
     }
   }
 
+      }
   return Array.from(ids);
 }
 

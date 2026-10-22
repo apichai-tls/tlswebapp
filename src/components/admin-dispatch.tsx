@@ -5,6 +5,7 @@ import { useJobs } from "@/lib/use-jobs";
 import { useRiders } from "@/lib/use-riders";
 import { jobStore, shopStore, type Job } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
+import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
 import { useSyncExternalStore } from "react";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
@@ -63,8 +64,10 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
   const { user } = useAuth();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   
-  const isAreaRestricted = Boolean(user && user.role !== 'admin' && user.area && user.area !== 'ALL');
-  const userArea = (user?.area && user.area !== 'ALL') ? user.area.toUpperCase() : null;
+  const isAreaRestricted = Boolean(user && user.role !== 'admin' && ((user.area && user.area !== 'ALL') || (user.branchId && user.branchId !== 'all' && user.branchId !== 'ALL')));
+  const allowedBranchIds = useMemo(() => new Set(getUserAssignedBranchIds(user, shopLocations)), [user, shopLocations]);
+  const userArea = (user?.area && user.area !== 'ALL') ? user.area : (user?.branchId && user.branchId !== 'all' ? user.branchId : null);
+  // userArea resolved above
 
   const [filterArea, setFilterArea] = useState<string>(() => userArea || "ALL");
 
@@ -108,10 +111,14 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     const activeRiders = allRiders.filter(r => r.branchId && r.isActive !== false);
     if (effectiveArea === "ALL") return activeRiders;
     return activeRiders.filter(r => {
-      const branch = shopLocations.find(s => s.id === r.branchId);
-      return branch?.area === effectiveArea;
+    const branch = shopLocations.find(s => s.id === r.branchId);
+    if (isAreaRestricted && shopLocations.length > 0) {
+      return Boolean(r.branchId && allowedBranchIds.has(r.branchId));
+    }
+    return (branch?.area || '').toUpperCase() === effectiveArea.toUpperCase() || r.branchId === effectiveArea;
+      // returned above
     });
-  }, [allRiders, effectiveArea, shopLocations]);
+  }, [allRiders, effectiveArea, shopLocations, isAreaRestricted, allowedBranchIds]);
 
   // Selectable riders for reassigning (filtered active riders + currently assigned rider if resigned)
   const reassignOptions = useMemo(() => {
@@ -154,7 +161,11 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     if (effectiveArea !== "ALL") {
       jobs = jobs.filter(j => {
         const branch = shopLocations.find(s => s.id === j.branchId);
-        return branch?.area === effectiveArea;
+        if (isAreaRestricted && shopLocations.length > 0) {
+          return Boolean(j.branchId && allowedBranchIds.has(j.branchId));
+        }
+        return (branch?.area || '').toUpperCase() === effectiveArea.toUpperCase() || j.branchId === effectiveArea;
+        // returned above
       });
     }
     
@@ -217,7 +228,7 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
     });
 
     return calendarEvents;
-  }, [allJobs, selectedRiderIds, showCompleted, effectiveArea, shopLocations, user]);
+  }, [allJobs, selectedRiderIds, showCompleted, effectiveArea, shopLocations, user, isAreaRestricted, allowedBranchIds]);
 
   const onEventDrop = async ({ event, start, end }: any) => {
     const e = event as CalendarEvent;
@@ -395,6 +406,11 @@ export const AdminDispatch = React.memo(function AdminDispatch({ onEditJob }: { 
                 {!isAreaRestricted && <option value="ALL">All Areas</option>}
                 {(!isAreaRestricted || userArea === "BKK") && <option value="BKK">BKK</option>}
                 {(!isAreaRestricted || userArea === "PTY") && <option value="PTY">PTY</option>}
+                {isAreaRestricted && userArea && userArea !== "BKK" && userArea !== "PTY" && (
+                  <option value={userArea}>
+                    {shopLocations.filter(s => allowedBranchIds.has(s.id)).map(s => s.name).join(", ") || userArea}
+                  </option>
+                )}
               </select>
             </div>
             <div className="flex items-center gap-2 pr-4 border-r border-slate-200 shrink-0">
