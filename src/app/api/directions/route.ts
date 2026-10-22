@@ -62,20 +62,27 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const origin = searchParams.get("origin");
   const destination = searchParams.get("destination");
+  const providedKey = searchParams.get("key")?.trim();
 
   if (!origin || !destination) {
     return NextResponse.json({ error: "origin and destination are required" }, { status: 400 });
   }
 
-  let apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  let apiKey = providedKey && providedKey !== "YOUR_API_KEY_HERE" ? providedKey : "";
 
-  if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
+  if (!apiKey) {
     try {
       const setting = await prisma.setting.findUnique({ where: { key: "googleMapsApiKey" } });
-      if (setting?.value) apiKey = setting.value;
+      if (setting?.value && setting.value.trim() && setting.value.trim() !== "YOUR_API_KEY_HERE") {
+        apiKey = setting.value.trim();
+      }
     } catch (e) {
       console.warn("Could not load Google API key from DB:", e);
     }
+  }
+
+  if (!apiKey) {
+    apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() || "";
   }
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {

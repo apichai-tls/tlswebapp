@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 import { resolveRequestUser } from "@/lib/server-auth";
 import { verifyCustomerToken, verifyServiceApiKey } from "@/lib/external-api-auth";
 
@@ -20,12 +21,28 @@ export async function GET(request: NextRequest) {
 
   const searchParams = request.nextUrl.searchParams;
   const query = searchParams.get("query");
+  const providedKey = searchParams.get("key")?.trim();
 
   if (!query) {
     return NextResponse.json({ error: "Query parameter is required" }, { status: 400 });
   }
 
-  const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  let apiKey = providedKey && providedKey !== "YOUR_API_KEY_HERE" ? providedKey : "";
+
+  if (!apiKey) {
+    try {
+      const setting = await prisma.setting.findUnique({ where: { key: "googleMapsApiKey" } });
+      if (setting?.value && setting.value.trim() && setting.value.trim() !== "YOUR_API_KEY_HERE") {
+        apiKey = setting.value.trim();
+      }
+    } catch (e) {
+      console.warn("Could not load Google API key from DB:", e);
+    }
+  }
+
+  if (!apiKey) {
+    apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() || "";
+  }
 
   if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
     return NextResponse.json({

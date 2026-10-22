@@ -1,4 +1,5 @@
 import { settingsStore, poiStore, getClosestShopId, getDirectDistance, type ShopLocation, type LatLng } from "@/lib/store";
+import { authFetch } from "@/lib/api";
 import { getShopIdByZipCode } from "./zipcode-mapping";
 
 export interface SearchResult {
@@ -19,25 +20,28 @@ export async function searchLocation(query: string, forceGoogle = false): Promis
 
   const lowerQuery = query.toLowerCase().replace(/\u200b/g, '');
 
-  // 1. Search Local POIs First
-  const allPois = poiStore.getSnapshot();
-  const localMatches = allPois.filter(poi => {
-    const safeName = poi.name.toLowerCase().replace(/\u200b/g, '');
-    const safeAddress = poi.address.toLowerCase().replace(/\u200b/g, '');
-    return safeName.includes(lowerQuery) || safeAddress.includes(lowerQuery);
-  });
+  // 1. Search Local POIs First (skip when forceGoogle=true since LocationInput already renders localResults)
+  let results: SearchResult[] = [];
+  if (!forceGoogle) {
+    const allPois = poiStore.getSnapshot();
+    const localMatches = allPois.filter(poi => {
+      const safeName = poi.name.toLowerCase().replace(/\u200b/g, '');
+      const safeAddress = poi.address.toLowerCase().replace(/\u200b/g, '');
+      return safeName.includes(lowerQuery) || safeAddress.includes(lowerQuery);
+    });
 
-  let results: SearchResult[] = localMatches.map(poi => ({
-    placeId: poi.id,
-    name: `⭐ ${poi.name}`, // Add star to indicate local saved POI
-    address: poi.address,
-    lat: poi.coords.lat,
-    lng: poi.coords.lng,
-  }));
+    results = localMatches.map(poi => ({
+      placeId: poi.id,
+      name: `⭐ ${poi.name}`, // Add star to indicate local saved POI
+      address: poi.address,
+      lat: poi.coords.lat,
+      lng: poi.coords.lng,
+    }));
 
-  // If we found enough local matches, return them immediately
-  if (results.length >= 10) {
-    return results.slice(0, 10);
+    // If we found enough local matches, return them immediately
+    if (results.length >= 10) {
+      return results.slice(0, 10);
+    }
   }
 
   // 2. Fallback to Google Maps API (if enabled, or forced by manual button click)
@@ -49,7 +53,7 @@ export async function searchLocation(query: string, forceGoogle = false): Promis
     }
 
     const apiKey = settings.googleMapsApiKey || "";
-    const res = await fetch(`/api/places?query=${encodeURIComponent(query)}&key=${encodeURIComponent(apiKey)}`);
+    const res = await authFetch(`/api/places?query=${encodeURIComponent(query)}&key=${encodeURIComponent(apiKey)}`);
     const data = await res.json();
     
     if (data.error) {
@@ -57,7 +61,7 @@ export async function searchLocation(query: string, forceGoogle = false): Promis
       return results;
     }
 
-    const googleResults = data as SearchResult[];
+    const googleResults = Array.isArray(data) ? (data as SearchResult[]) : [];
     for (const gRes of googleResults) {
       if (!results.some(r => r.name === gRes.name || r.name === `⭐ ${gRes.name}`)) {
         results.push(gRes);
@@ -89,7 +93,7 @@ export async function getRoute(pickup: LatLng, dropoff: LatLng): Promise<RouteRe
         const origin = `${pickup.lat},${pickup.lng}`;
         const destination = `${dropoff.lat},${dropoff.lng}`;
         
-        const res = await fetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
+        const res = await authFetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
         if (res.ok) {
           const data = await res.json();
           
@@ -159,7 +163,7 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
       const destinations = `${targetCoords.lat},${targetCoords.lng}`;
 
       try {
-        const res = await fetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}&key=${encodeURIComponent(apiKey)}`);
+        const res = await authFetch(`/api/distancematrix?origins=${origins}&destinations=${destinations}&key=${encodeURIComponent(apiKey)}`);
         const data = await res.json();
 
         if (!data.error && data.distancesKm) {
@@ -185,7 +189,7 @@ export async function getClosestShopByRoute(targetCoords: LatLng, shops: ShopLoc
         try {
           const origin = `${shop.coords.lat},${shop.coords.lng}`;
           const destination = `${targetCoords.lat},${targetCoords.lng}`;
-          const res = await fetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
+          const res = await authFetch(`/api/directions?origin=${origin}&destination=${destination}&key=${encodeURIComponent(apiKey)}`);
           const data = await res.json();
           if (data && !data.error && typeof data.distanceKm === "number") {
             return { id: shop.id, dist: data.distanceKm };

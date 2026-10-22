@@ -285,7 +285,8 @@ export function AdminSettings() {
       setIsVerifyingKey(true);
       try {
         // Test the API key by making a simple request
-        const res = await fetch(`/api/places?query=test&key=${encodeURIComponent(googleApiKey)}`);
+        const { authFetch } = await import("@/lib/api");
+        const res = await authFetch(`/api/places?query=test&key=${encodeURIComponent(googleApiKey.trim())}`);
         const data = await res.json();
         
         if (!res.ok || data.error) {
