@@ -96,6 +96,18 @@ export function getClientAuthUser(): {
   }
 }
 
+export function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const existingHeaders =
+    init?.headers instanceof Headers
+      ? Object.fromEntries(init.headers.entries())
+      : (init?.headers as Record<string, string> | undefined);
+  return fetch(input, {
+    ...init,
+    credentials: init?.credentials || 'same-origin',
+    headers: getClientAuthHeaders(existingHeaders),
+  });
+}
+
 export function getClientAuthHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...(extra || {}) };
   const user = getClientAuthUser();
