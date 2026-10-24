@@ -158,14 +158,14 @@ function LoginForm() {
       <Button 
         type="submit" 
         disabled={isSubmitting}
-        className="w-full h-12 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-medium shadow-md transition-all group border-none text-base mt-4"
+        className="w-full h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-sm shadow-indigo-600/20 transition-all group border-none text-base mt-4 cursor-pointer"
       >
         {isSubmitting ? (
           <Loader2 className="animate-spin" size={20} />
         ) : (
           <>
             Sign In
-            <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform opacity-70" size={18} />
+            <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform opacity-80" size={18} />
           </>
         )}
       </Button>
@@ -176,21 +176,22 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-white font-sans selection:bg-indigo-100 selection:text-indigo-900">
+    <div className="min-h-screen relative flex items-center justify-center bg-slate-50 px-4 py-12 font-sans selection:bg-indigo-100 selection:text-indigo-900 overflow-hidden">
+      <div className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[720px] h-[420px] rounded-full bg-gradient-to-tr from-indigo-200/40 via-sky-100/30 to-transparent blur-3xl" />
       <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-        className="w-full max-w-md px-8 py-10"
+        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+        className="relative z-10 w-full max-w-md rounded-3xl border border-slate-200/80 bg-white/95 backdrop-blur-xl px-8 py-10 shadow-xl shadow-slate-900/5"
       >
-        <div className="flex justify-center mb-10">
-          <Logo className="h-28" />
+        <div className="flex justify-center mb-8">
+          <Logo className="h-24" />
         </div>
 
-        <div className="text-center mb-10 space-y-2">
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Sign in to your account</h1>
-          <p className="text-sm text-slate-500">
-            Welcome back to That Laundry Shop.
+        <div className="text-center mb-8 space-y-1.5">
+          <h1 className="text-2xl font-black tracking-tight text-slate-900">Sign in to your account</h1>
+          <p className="text-xs sm:text-sm font-medium text-slate-500">
+            Welcome back to That Laundry Shop Workspace
           </p>
         </div>
 
@@ -198,7 +199,7 @@ export default function LoginPage() {
           <LoginForm />
         </Suspense>
 
-        <div className="mt-12 text-center">
+        <div className="mt-8 pt-6 border-t border-slate-100 text-center">
           <p className="text-xs font-medium text-slate-400">
             &copy; {new Date().getFullYear()} That Laundry Shop.
           </p>

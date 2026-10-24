@@ -675,31 +675,31 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
           <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
             {/* Table (Left — 3 cols) */}
             <motion.div
-              className="xl:col-span-3 rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col min-h-[500px]"
+              className="xl:col-span-3 rounded-2xl border border-slate-200/80 bg-white shadow-2xs overflow-hidden flex flex-col min-h-[500px]"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.5, delay: 0.2 }}
             >
-              <div className="px-5 pt-5 pb-3 border-b border-slate-100 flex flex-col md:flex-row md:items-end justify-between gap-4">
+              <div className="px-5 pt-5 pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                   <h2 className="text-base font-bold text-slate-900">Today's Timeline</h2>
-                  <p className="text-sm text-slate-500 mt-0.5">Categorized by operational status</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Categorized by operational status</p>
                 </div>
 
                 {/* Custom Interactive Tabs */}
-                <div className="flex p-1 bg-slate-100/80 rounded-lg">
+                <div className="flex p-1 bg-slate-100/90 rounded-xl border border-slate-200/60">
                   {(["all", "pending", "active", "completed"] as const).map((tab) => (
                     <button
                       key={tab}
                       onClick={() => setActiveTab(tab)}
-                      className={`relative px-4 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                        activeTab === tab ? "text-slate-900" : "text-slate-500 hover:text-slate-800"
+                      className={`relative px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                        activeTab === tab ? "text-indigo-700 font-bold" : "text-slate-500 hover:text-slate-800"
                       }`}
                     >
                       {activeTab === tab && (
                         <motion.div
                           layoutId="dashboardTab"
-                          className="absolute inset-0 bg-white rounded-md shadow-sm border border-slate-200/50"
+                          className="absolute inset-0 bg-white rounded-lg shadow-2xs border border-slate-200/60"
                           transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
                           style={{ zIndex: 0 }}
                         />
@@ -712,13 +712,13 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
 
               <div className="overflow-x-auto flex-1">
                 <Table>
-                  <TableHeader className="bg-slate-50/50 sticky top-0 backdrop-blur-md">
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-[100px] text-xs font-semibold text-slate-500">Order ID</TableHead>
-                      <TableHead className="text-xs font-semibold text-slate-500">Customer</TableHead>
-                      <TableHead className="text-xs font-semibold text-slate-500">Status</TableHead>
-                      <TableHead className="text-xs font-semibold text-slate-500">Time</TableHead>
-                      <TableHead className="text-right text-xs font-semibold text-slate-500">Amount</TableHead>
+                  <TableHeader className="bg-slate-50/70 sticky top-0 backdrop-blur-md">
+                    <TableRow className="hover:bg-transparent border-slate-100">
+                      <TableHead className="w-[110px] text-[11px] font-bold uppercase tracking-wider text-slate-400">Order ID</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Customer</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Status</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Time</TableHead>
+                      <TableHead className="text-right text-[11px] font-bold uppercase tracking-wider text-slate-400">Amount</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -738,39 +738,39 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
                               initial="initial"
                               animate="animate"
                               exit="exit"
-                              className="group cursor-pointer hover:bg-slate-50/80 transition-colors border-b border-slate-100 last:border-0"
+                              className="group cursor-pointer hover:bg-indigo-50/30 transition-colors border-b border-slate-100/80 last:border-0"
                               onClick={() => setSelectedJobId(job.id)}
                             >
-                              <TableCell className="font-mono text-xs font-semibold text-slate-900 group-hover:text-indigo-600 transition-colors">
+                              <TableCell className="font-mono text-xs font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">
                                 #{job.id}
                               </TableCell>
                               <TableCell>
                                 <div className="flex flex-col">
                                   <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="text-xs font-medium text-slate-900">{job.customerName}</span>
+                                    <span className="text-xs font-semibold text-slate-900">{job.customerName}</span>
                                     {getJobCustomerInfo(job).isCorp && (
-                                      <Badge variant="outline" className="bg-amber-50 text-amber-800 border-amber-200 text-[9px] py-0 px-1 font-bold flex items-center gap-0.5 shrink-0">
+                                      <Badge variant="outline" className="bg-amber-50 text-amber-800 border-amber-200 text-[9px] py-0 px-1.5 font-bold flex items-center gap-0.5 shrink-0">
                                         <Building size={9} />
                                         <span>{getJobCustomerInfo(job).companyName || (currentLanguage === "en" ? "Corporate" : "องค์กร")}</span>
                                       </Badge>
                                     )}
                                   </div>
-                                  <span className="text-[10px] text-slate-400 font-mono">{job.customerPhone}</span>
+                                  <span className="text-[11px] text-slate-400 font-mono">{job.customerPhone}</span>
                                 </div>
                               </TableCell>
                               <TableCell>
                                 <Badge
                                   variant="outline"
-                                  className={`gap-1.5 px-2 py-0.5 text-[10px] font-medium transition-all ${status.className}`}
+                                  className={`gap-1.5 px-2.5 py-0.5 text-[10px] font-semibold rounded-full transition-all ${status.className}`}
                                 >
                                   {icon}
                                   {status.label}
                                 </Badge>
                               </TableCell>
-                              <TableCell className="text-slate-500 text-xs">
+                              <TableCell className="text-slate-500 text-xs font-medium">
                                 {format(new Date(job.createdAt), "HH:mm")}
                               </TableCell>
-                              <TableCell className="text-right font-medium text-slate-900 text-xs">
+                              <TableCell className="text-right font-bold text-slate-900 text-xs">
                                 ฿{job.totalAmount?.toLocaleString() || "0"}
                               </TableCell>
                             </motion.tr>
@@ -795,22 +795,22 @@ export function AdminDashboard({ jobs }: { jobs: Job[] }) {
 
             {/* Map (Right — 2 cols) */}
             <motion.div
-              className="xl:col-span-2 rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col min-h-[500px]"
+              className="xl:col-span-2 rounded-2xl border border-slate-200/80 bg-white shadow-2xs overflow-hidden flex flex-col min-h-[500px]"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.5, delay: 0.2 }}
             >
-              <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
                 <div>
                   <h2 className="text-base font-bold text-slate-900">Live Rider Fleet</h2>
-                  <p className="text-sm text-slate-500 mt-0.5">Real-time GPS positions & hubs</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Real-time GPS positions & hubs</p>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200/70">
                   <span className="relative flex h-2 w-2">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
-                  <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Active</span>
+                  <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest">Active</span>
                 </div>
               </div>
               <div className="flex-1 relative bg-slate-100">
@@ -887,30 +887,36 @@ function StatCard({
   onClick?: () => void;
 }) {
   const colorMap = {
-    slate: active ? "bg-slate-100 border-slate-300 shadow-sm" : "bg-slate-50 text-slate-600 border-slate-200",
-    indigo: active ? "bg-indigo-100 border-indigo-300 shadow-sm" : "bg-indigo-50 text-indigo-700 border-indigo-100",
-    teal: active ? "bg-teal-100 border-teal-300 shadow-sm" : "bg-teal-50 text-teal-700 border-teal-100",
+    slate: active
+      ? "bg-white border-amber-400 ring-2 ring-amber-500/15 shadow-sm"
+      : "bg-white border-slate-200/80 hover:border-slate-300 shadow-2xs",
+    indigo: active
+      ? "bg-white border-indigo-500 ring-2 ring-indigo-500/15 shadow-sm"
+      : "bg-white border-slate-200/80 hover:border-indigo-200 shadow-2xs",
+    teal: active
+      ? "bg-white border-emerald-500 ring-2 ring-emerald-500/15 shadow-sm"
+      : "bg-white border-slate-200/80 hover:border-emerald-200 shadow-2xs",
   };
   const iconBgMap = {
-    slate: "bg-slate-200 text-slate-700",
-    indigo: "bg-indigo-100 text-indigo-700",
-    teal: "bg-teal-100 text-teal-700",
+    slate: "bg-amber-50 text-amber-600 border-amber-200/60",
+    indigo: "bg-indigo-50 text-indigo-600 border-indigo-200/60",
+    teal: "bg-emerald-50 text-emerald-600 border-emerald-200/60",
   };
 
   return (
     <motion.div
       variants={rowVariant}
-      whileHover={{ scale: 1.02, y: -2 }}
-      whileTap={{ scale: 0.98 }}
+      whileHover={{ y: -2 }}
+      whileTap={{ scale: 0.99 }}
       onClick={onClick}
-      transition={{ type: "spring", stiffness: 300, damping: 20 }}
-      className={`rounded-xl border p-5 ${colorMap[color]} flex items-center gap-4 cursor-pointer transition-colors`}
+      transition={{ type: "spring", stiffness: 300, damping: 22 }}
+      className={`rounded-2xl border p-5 ${colorMap[color]} flex items-center justify-between gap-4 cursor-pointer transition-all`}
     >
-      <div className={`rounded-lg p-2.5 shadow-sm ${iconBgMap[color]} bg-white border border-slate-100`}>{icon}</div>
-      <div>
-        <p className="text-2xl font-bold text-slate-900">{count}</p>
-        <p className="text-sm font-semibold opacity-80">{label}</p>
+      <div className="space-y-1">
+        <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</p>
+        <p className="text-3xl font-black text-slate-900 tracking-tight">{count}</p>
       </div>
+      <div className={`rounded-xl p-3 border ${iconBgMap[color]}`}>{icon}</div>
     </motion.div>
   );
 }

@@ -134,6 +134,14 @@
   z-index: 10 !important;
 }
 
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @media print { 
   /* Hides normal layout only when NOT printing a report */
   body:not(.printing-report) > *:not(.print-root) { 

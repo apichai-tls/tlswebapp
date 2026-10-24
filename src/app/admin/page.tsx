@@ -62,7 +62,7 @@ import AdminFeeCalculator from "@/components/admin-fee-calculator";
 import AdminPoiManager from "@/components/admin-poi-manager";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
-import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction } from "@/actions/db";
+import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction } from "@/actions/db";
 import { createTaxInvoiceTaskForJobAction } from "@/actions/tasks";
 import { useRiders } from "@/lib/use-riders";
 import {
@@ -133,6 +133,13 @@ import {
   Check,
   Ticket,
   Split,
+  Send,
+  History,
+  UserCheck,
+  Copy,
+  ChevronUp,
+  ChevronDown,
+  Columns,
 } from "lucide-react";
 
 import Link from "next/link";
@@ -410,6 +417,7 @@ function AdminPageContent() {
   editingJobIdRef.current = editingJobId;
   const activeJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
   const [showJobLogs, setShowJobLogs] = useState(false);
+  const [modalLayoutCols, setModalLayoutCols] = useState<"4" | "2">("4");
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editingSubStatus, setEditingSubStatus] = useState<"billing" | "wash" | "dry" | "iron" | "ready" | null>(null);
   const [laundryTypes, setLaundryTypes] = useState<string[]>([]);
@@ -465,6 +473,48 @@ function AdminPageContent() {
       active = false;
     };
   }, [selectedProfileCustomer?.id]);
+
+  // Customer Past Transactions State
+  const [dbCustomerJobs, setDbCustomerJobs] = useState<any[]>([]);
+  const [isLoadingCustomerJobs, setIsLoadingCustomerJobs] = useState(false);
+  const [pastJobIndex, setPastJobIndex] = useState(0);
+  const [expandedPastJobIds, setExpandedPastJobIds] = useState<Record<string, boolean>>({});
+
+  // Fetch full customer jobs on-demand from DB when customer changes or modal opens
+  useEffect(() => {
+    const custId = selectedProfileCustomer?.id;
+    const custPhone = customerPhone || selectedProfileCustomer?.phone;
+    const cleanPhone = (custPhone || "").replace(/\D/g, "");
+    if (!custId && cleanPhone.length < 8) {
+      setDbCustomerJobs([]);
+      setPastJobIndex(0);
+      return;
+    }
+
+    let isCancelled = false;
+    setIsLoadingCustomerJobs(true);
+    getCustomerJobsAction(custId || "", custPhone)
+      .then((resJobs) => {
+        if (!isCancelled && Array.isArray(resJobs)) {
+          setDbCustomerJobs(resJobs);
+        }
+      })
+      .catch((err) => {
+        console.error("[AdminModal] Failed to fetch customer past jobs:", err);
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingCustomerJobs(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedProfileCustomer?.id, selectedProfileCustomer?.phone, customerPhone]);
+
+  useEffect(() => {
+    setPastJobIndex(0);
+    setExpandedPastJobIds({});
+  }, [selectedProfileCustomer?.id, editingJobId]);
   
   // Auto-sync selectedProfileCustomer with latest customerStore state when credit balance or member status changes
   useEffect(() => {
@@ -491,6 +541,7 @@ function AdminPageContent() {
   const [isPickup, setIsPickup] = useState(true);
   const [isDelivery, setIsDelivery] = useState(true);
   const [isWalkIn, setIsWalkIn] = useState(false);
+  const [differentDeliveryAddress, setDifferentDeliveryAddress] = useState(false);
   const [isDeliveryDirty, setIsDeliveryDirty] = useState(false); // Track if user manually changed delivery
   const [isStuck, setIsStuck] = useState(false);
 
@@ -704,19 +755,19 @@ function AdminPageContent() {
     if (editingJobId) {
       try {
         const existingJob = jobs.find(j => j.id === editingJobId);
-        let existingPayments: any[] = [];
+        let parsedObj: Record<string, any> | null = null;
         if (existingJob?.adminNotesJson) {
           try {
             const parsed = JSON.parse(existingJob.adminNotesJson);
-            if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments)) {
-              existingPayments = parsed.payments;
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              parsedObj = { ...parsed };
             }
           } catch {}
         }
 
         let updatedJson: string | undefined = undefined;
-        if (existingPayments.length > 0) {
-          updatedJson = JSON.stringify({ payments: existingPayments, notes: filteredLogs });
+        if (parsedObj) {
+          updatedJson = JSON.stringify({ ...parsedObj, notes: filteredLogs });
         } else if (filteredLogs.length > 0) {
           updatedJson = JSON.stringify(filteredLogs);
         }
@@ -1482,6 +1533,114 @@ function AdminPageContent() {
   const visibleCategories = useMemo(() => {
     return categories.filter(cat => cat !== 'PACKAGE');
   }, [categories]);
+
+  // Merged Customer Past Transactions (DB + in-memory store)
+  const customerPastJobs = useMemo<any[]>(() => {
+    const targetId = selectedProfileCustomer?.id || (editingJobId && activeJob?.customerId);
+    const targetPhone = (customerPhone || selectedProfileCustomer?.phone || activeJob?.customerPhone || "").trim();
+    const targetName = (customerName || selectedProfileCustomer?.name || activeJob?.customerName || "").trim();
+    const cleanTargetPhone = targetPhone.replace(/\D/g, "");
+
+    if (!targetId && cleanTargetPhone.length < 8 && !targetName) return [];
+
+    const jobMap: Record<string, any> = {};
+
+    // 1. Add DB-fetched customer jobs
+    dbCustomerJobs.forEach((j: any) => {
+      if (editingJobId && j.id === editingJobId) return;
+      jobMap[j.id] = j;
+    });
+
+    // 2. Add in-memory store jobs (fresher or uncommitted)
+    jobs.filter((j: any) => {
+      if (editingJobId && j.id === editingJobId) return false;
+      if (targetId && j.customerId && j.customerId === targetId) return true;
+      if (cleanTargetPhone.length >= 8 && j.customerPhone) {
+        const cleanJ = j.customerPhone.replace(/\D/g, "");
+        if (cleanJ === cleanTargetPhone || (cleanJ.length >= 8 && cleanTargetPhone.endsWith(cleanJ)) || (cleanTargetPhone.length >= 8 && cleanJ.endsWith(cleanTargetPhone))) {
+          return true;
+        }
+      }
+      if (targetName && targetName.length > 2 && j.customerName) {
+        if (j.customerName.trim().toLowerCase() === targetName.toLowerCase()) return true;
+      }
+      return false;
+    }).forEach((j: any) => {
+      jobMap[j.id] = j;
+    });
+
+    return (Object.values(jobMap) as any[]).sort((a: any, b: any) => {
+      const timeA = new Date(a.createdAt || a.scheduledAt || a.date || 0).getTime();
+      const timeB = new Date(b.createdAt || b.scheduledAt || b.date || 0).getTime();
+      return timeB - timeA;
+    });
+  }, [dbCustomerJobs, jobs, editingJobId, activeJob, selectedProfileCustomer, customerPhone, customerName]);
+
+  const currentPastJob: any = customerPastJobs[pastJobIndex] || customerPastJobs[0] || null;
+
+  const pastItems = useMemo(() => {
+    if (!currentPastJob) return [];
+    if (Array.isArray(currentPastJob.items) && currentPastJob.items.length > 0) {
+      return currentPastJob.items;
+    }
+    if (currentPastJob.itemsJson) {
+      try {
+        const parsed = JSON.parse(currentPastJob.itemsJson);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }, [currentPastJob]);
+
+  const handleCopyPastItems = (itemsToCopy: any[], pastJob: any) => {
+    if (isPaidJob || isCartLocked) {
+      toast.error(currentLanguage === "en" ? "Cannot modify items on a paid/locked order" : "ไม่สามารถแก้ไขรายการของออเดอร์ที่ชำระเงินแล้ว");
+      return;
+    }
+    if (!itemsToCopy || itemsToCopy.length === 0) {
+      toast.error(currentLanguage === "en" ? "No items found in this past transaction" : "ไม่พบรายการสินค้าในประวัติคำสั่งนี้");
+      return;
+    }
+
+    const mappedNewItems: any[] = itemsToCopy.map((pi: any, idx: number) => {
+      const catalogItem = services.find(si => 
+        (pi.serviceId && si.id === pi.serviceId) ||
+        (si.name && pi.name && si.name.trim().toLowerCase() === pi.name.trim().toLowerCase())
+      ) || dialogCorporateServices.find(si => 
+        (pi.serviceId && si.id === pi.serviceId) ||
+        (si.name && pi.name && si.name.trim().toLowerCase() === pi.name.trim().toLowerCase())
+      );
+
+      const price = typeof pi.price === 'number' ? pi.price : (catalogItem ? getServicePrice(catalogItem, selectedProfileCustomer, customerPriceListId) : 0);
+      const quantity = typeof pi.quantity === 'number' && pi.quantity > 0 ? pi.quantity : 1;
+
+      return {
+        id: catalogItem?.id || pi.serviceId || `copied-${Date.now()}-${idx}`,
+        name: pi.name || catalogItem?.name || "Laundry Item",
+        price,
+        quantity,
+        unit: pi.unit || catalogItem?.unit || "piece",
+        category: pi.category || catalogItem?.category || "Wash & Fold",
+        basePrice: catalogItem?.price || price,
+      };
+    });
+
+    setDialogCart(mappedNewItems);
+    const totalSum = mappedNewItems.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0);
+    setLaundryPrice(totalSum);
+
+    if (pastJob.serviceSpeed && (pastJob.serviceSpeed === "standard" || pastJob.serviceSpeed === "express_50" || pastJob.serviceSpeed === "express_100")) {
+      handleServiceOrSpeedChange(serviceType, pastJob.serviceSpeed as any, serviceWeight);
+    }
+
+    toast.success(
+      currentLanguage === "en" 
+        ? `Copied ${mappedNewItems.length} items from past order #${formatJobDisplayId(pastJob.id)}` 
+        : `คัดลอก ${mappedNewItems.length} รายการจากออเดอร์ #${formatJobDisplayId(pastJob.id)} สำเร็จ`
+    );
+  };
   // Clean up isNew flags when the Edit Job dialog closes without saving
   useEffect(() => {
     if (!dialogOpen && editingJobId && !showReceipt && !isSubmitting) {
@@ -1490,27 +1649,27 @@ function AdminPageContent() {
         if (currentJob && currentJob.adminNotesJson) {
           try {
             const parsed = JSON.parse(currentJob.adminNotesJson);
-            let existingPayments: any[] = [];
             let notesArr: any[] = [];
+            const isObj = Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed));
 
             if (Array.isArray(parsed)) {
               notesArr = parsed;
-            } else if (parsed && typeof parsed === "object") {
-              if (Array.isArray(parsed.payments)) existingPayments = parsed.payments;
-              if (Array.isArray(parsed.notes)) notesArr = parsed.notes;
+            } else if (isObj && Array.isArray(parsed.notes)) {
+              notesArr = parsed.notes;
             }
+
+            // Only update if at least one note actually had the temporary `isNew` flag
+            const hasNewFlag = notesArr.some((n: any) => Boolean(n && n.isNew));
+            if (!hasNewFlag) return;
 
             const cleaned = notesArr.map((n: any) => {
               const { isNew, ...rest } = n;
               return rest;
             });
 
-            let updatedJson: string | undefined = undefined;
-            if (existingPayments.length > 0) {
-              updatedJson = JSON.stringify({ payments: existingPayments, notes: cleaned });
-            } else if (cleaned.length > 0) {
-              updatedJson = JSON.stringify(cleaned);
-            }
+            const updatedJson = isObj
+              ? JSON.stringify({ ...parsed, notes: cleaned })
+              : JSON.stringify(cleaned);
 
             if (currentJob.adminNotesJson !== updatedJson) {
               await jobStore.updateJobDetails(editingJobId, { 
@@ -1538,6 +1697,7 @@ function AdminPageContent() {
     setPickupRoom("");
     setDeliveryLoc("");
     setDeliveryRoom("");
+    setDifferentDeliveryAddress(false);
     setIsDeliveryDirty(false);
     setIsFreeDelivery(false);
     setIsStuck(false);
@@ -1580,6 +1740,8 @@ function AdminPageContent() {
     setPromoError(null);
     setShowDialogDiscount(false);
     setDialogDiscountPercent(0);
+    setDbCustomerJobs([]);
+    setPastJobIndex(0);
   };
 
   const resetDialogForm = () => {
@@ -1619,6 +1781,8 @@ function AdminPageContent() {
     setIsDetailLoading(false);
     setEditingSubStatus(null);
     setCustomerName("");
+    setDbCustomerJobs([]);
+    setPastJobIndex(0);
     setCustomerPhone("");
     setCustomerSearchQuery("");
     setSelectedProfileCustomer(null);
@@ -1629,6 +1793,7 @@ function AdminPageContent() {
     setDeliveryLoc("");
     setDeliveryRoom("");
     setDeliveryCoords(null);
+    setDifferentDeliveryAddress(false);
     setIsPickup(true);
     setIsDelivery(true);
     setIsWalkIn(false);
@@ -2138,6 +2303,13 @@ function AdminPageContent() {
     setDeliveryRoom(d.room || custRoom || "");
     if (isDeliveryService && job.dropoffCoords) setDeliveryCoords(job.dropoffCoords);
     else setDeliveryCoords(null);
+    const isDifferentAddr = Boolean(
+      isPickupService && 
+      isDeliveryService && 
+      (p.base.trim().toLowerCase() !== d.base.trim().toLowerCase() || (p.room || "").trim() !== (d.room || "").trim())
+    );
+    setDifferentDeliveryAddress(isDifferentAddr);
+    setIsDeliveryDirty(isDifferentAddr);
     setPickupDist(job.pickupDistance || 0);
     setDeliveryDist(job.deliveryDistance || 0);
     const isExp50 = job.remark?.includes("Express 50%");
@@ -2855,6 +3027,11 @@ function AdminPageContent() {
           notes: cleanLogs,
           isTaxInvoiceRequested,
         };
+        if (editingSubStatus && ['wash', 'dry', 'iron', 'ready'].includes(editingSubStatus)) {
+          notesObj.kanbanStage = 'process';
+        } else if (editingSubStatus === 'billing') {
+          notesObj.kanbanStage = 'billing';
+        }
         if (finalPayments.length > 0) {
           notesObj.payments = finalPayments;
         }
@@ -4142,7 +4319,7 @@ function AdminPageContent() {
     <>
       <AnimatePresence mode="wait">
         <motion.div
-        className="flex min-h-screen"
+        className="flex min-h-screen bg-slate-50/70"
         variants={pageVariants}
         initial="initial"
         animate="animate"
@@ -4150,10 +4327,12 @@ function AdminPageContent() {
         key="admin-page"
       >
         {/* Sidebar */}
-        <aside className={`hidden lg:flex flex-col border-r border-slate-200 bg-white transition-all duration-300 sticky top-0 h-screen z-20 ${isSidebarCollapsed ? "w-[72px]" : "w-64"}`}>
-          <div className="flex h-20 items-center justify-center border-b border-slate-100 px-4 overflow-hidden">
+        <aside className={`hidden lg:flex flex-col border-r border-slate-200/80 bg-white/95 backdrop-blur-xl transition-all duration-300 sticky top-0 h-screen z-20 shadow-[1px_0_12px_-4px_rgba(15,23,42,0.04)] ${isSidebarCollapsed ? "w-[76px]" : "w-64"}`}>
+          <div className="flex h-16 items-center justify-center border-b border-slate-100/90 px-4 overflow-hidden shrink-0">
             {isSidebarCollapsed ? (
-              <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center font-black text-white text-xl">T</div>
+              <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-indigo-700 rounded-xl flex items-center justify-center font-black text-white text-lg shadow-sm shadow-indigo-500/20">
+                T
+              </div>
             ) : (
               <Logo />
             )}
@@ -4161,270 +4340,440 @@ function AdminPageContent() {
           
           <button 
             onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
-            className="absolute -right-4 top-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-full p-1.5 text-slate-500 hover:text-indigo-600 hover:border-indigo-200 shadow-md z-10 transition-transform"
+            className="absolute -right-3 top-5 bg-white border border-slate-200/90 rounded-full p-1 text-slate-400 hover:text-indigo-600 hover:border-indigo-200 shadow-sm z-30 transition-all cursor-pointer hover:scale-105"
             title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
           >
-            {isSidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+            {isSidebarCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
           </button>
 
-          <nav className="flex-1 px-3 py-6 space-y-1 overflow-y-auto overflow-x-hidden hide-scrollbar">
-            {hasAccess("dashboard") && (
-              <motion.a
-                href="#dashboard"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("dashboard"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Dashboard"
-              >
-                <LayoutDashboard size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Dashboard</span>}
-              </motion.a>
-            )}
-            
-            {hasAccess("services") && (
-              <motion.a
-                href="#services"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("services"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "services" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Service Menu"
-              >
-                <Tag size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Service Menu</span>}
-              </motion.a>
-            )}
+          <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto overflow-x-hidden hide-scrollbar">
+            {/* Group 1: Operations */}
+            {(hasAccess("dashboard") || hasAccess("jobs") || hasAccess("pos") || hasAccess("billing") || hasAccess("tasks")) && (
+              <div className="space-y-1">
+                {!isSidebarCollapsed ? (
+                  <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none">
+                    Operations
+                  </p>
+                ) : (
+                  <div className="mx-3 my-1 border-t border-slate-100" />
+                )}
 
-            {hasAccess("pos") && (
-              <motion.a
-                href="#pos"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("pos"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="POS"
-              >
-                <CreditCard size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">POS</span>}
-              </motion.a>
-            )}
-
-            {hasAccess("jobs") && (
-              <motion.a
-                href="#jobs"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("jobs"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="All Jobs"
-              >
-                <Package size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">All Jobs</span>}
-              </motion.a>
-            )}
-
-
-
-            {hasAccess("customers") && (
-              <motion.a
-                href="#customers"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("customers"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Customers (CRM)"
-              >
-                <div className="relative shrink-0">
-                  <Users size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                  {isSidebarCollapsed && canApproveWallet && pendingWalletMap.total > 0 && (
-                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse border border-white" />
-                  )}
-                </div>
-                {!isSidebarCollapsed && (
-                  <div className="flex items-center justify-between flex-1 min-w-0">
-                    <span className="truncate">Customers (CRM)</span>
-                    {canApproveWallet && pendingWalletMap.total > 0 && (
-                      <span className="ml-auto px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-white animate-pulse">
-                        {pendingWalletMap.total}
-                      </span>
+                {hasAccess("dashboard") && (
+                  <motion.a
+                    href="#dashboard"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("dashboard"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "dashboard"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Dashboard"
+                  >
+                    {activeTab === "dashboard" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
                     )}
-                  </div>
+                    <LayoutDashboard size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "dashboard" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Dashboard</span>}
+                  </motion.a>
                 )}
-              </motion.a>
-            )}
-            
-            {hasAccess("dispatch") && (
-              <motion.a
-                href="#dispatch"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("dispatch"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Dispatch Schedule"
-              >
-                <CalendarClock size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Dispatch Schedule</span>}
-              </motion.a>
-            )}
 
+                {hasAccess("jobs") && (
+                  <motion.a
+                    href="#jobs"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("jobs"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "jobs"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="All Jobs"
+                  >
+                    {activeTab === "jobs" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Package size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "jobs" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">All Jobs</span>}
+                  </motion.a>
+                )}
 
+                {hasAccess("pos") && (
+                  <motion.a
+                    href="#pos"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("pos"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "pos"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="POS Terminal"
+                  >
+                    {activeTab === "pos" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <CreditCard size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "pos" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">POS Terminal</span>}
+                  </motion.a>
+                )}
 
+                {hasAccess("billing") && (
+                  <Link 
+                    href="/billing" 
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer text-slate-600 hover:text-slate-900 hover:bg-slate-100/70`}
+                    title="Billing & Verification"
+                  >
+                    <Camera size={isSidebarCollapsed ? 20 : 17} className="shrink-0 text-slate-400 group-hover:text-slate-700 transition-colors" />
+                    {!isSidebarCollapsed && <span className="truncate">Billing</span>}
+                  </Link>
+                )}
 
-
-            {hasAccess("billing") && (
-              <Link 
-                href="/billing" 
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
-                title="Billing"
-              >
-                <Camera size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Billing</span>}
-              </Link>
-            )}
-
-            {hasAccess("riders") && (
-              <motion.a
-                href="#riders"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("riders"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Riders"
-              >
-                <Truck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Riders</span>}
-              </motion.a>
-            )}
-
-            {hasAccess("map") && (
-              <motion.a
-                href="#map"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("map"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Live Map"
-              >
-                <Map size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Live Map</span>}
-              </motion.a>
-            )}
-            
-            {hasAccess("calculator") && (
-              <button onClick={() => handleTabChange("calculator")} className="block w-full text-left">
-                <motion.div
-                  whileHover={{ x: 2 }}
-                  className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "calculator" || activeTab === "pois" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                  title="Distance Calculator"
+                <motion.a
+                  href="#tasks"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("tasks"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "tasks"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Tasks"
                 >
-                  <Calculator size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                  {!isSidebarCollapsed && <span className="truncate">Distance Calculator</span>}
-                </motion.div>
-              </button>
+                  {activeTab === "tasks" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <ClipboardCheck size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "tasks" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
+                </motion.a>
+              </div>
             )}
 
-            {hasAccess("settings") && (
-              <motion.a
-                href="#settings"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("settings"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Settings"
-              >
-                <Settings size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Settings</span>}
-              </motion.a>
+            {/* Group 2: Sales & CRM */}
+            {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing")) && (
+              <div className="space-y-1">
+                {!isSidebarCollapsed ? (
+                  <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none">
+                    Sales & CRM
+                  </p>
+                ) : (
+                  <div className="mx-3 my-1 border-t border-slate-100" />
+                )}
+
+                {hasAccess("customers") && (
+                  <motion.a
+                    href="#customers"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("customers"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "customers"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Customers (CRM)"
+                  >
+                    {activeTab === "customers" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <div className="relative shrink-0">
+                      <Users size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "customers" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                      {isSidebarCollapsed && canApproveWallet && pendingWalletMap.total > 0 && (
+                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse border border-white" />
+                      )}
+                    </div>
+                    {!isSidebarCollapsed && (
+                      <div className="flex items-center justify-between flex-1 min-w-0">
+                        <span className="truncate">Customers (CRM)</span>
+                        {canApproveWallet && pendingWalletMap.total > 0 && (
+                          <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500 text-white animate-pulse">
+                            {pendingWalletMap.total}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </motion.a>
+                )}
+
+                {hasAccess("services") && (
+                  <motion.a
+                    href="#services"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("services"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "services"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Service Menu"
+                  >
+                    {activeTab === "services" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Tag size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "services" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Service Menu</span>}
+                  </motion.a>
+                )}
+
+                {hasAccess("marketing") && (
+                  <motion.a
+                    href="#marketing"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("marketing"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "marketing"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Marketing & Promos"
+                  >
+                    {activeTab === "marketing" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Megaphone size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "marketing" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Marketing & Promos</span>}
+                  </motion.a>
+                )}
+              </div>
             )}
 
-            {hasAccess("activity-logs") && (
-              <motion.a
-                href="#activity-logs"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("activity-logs"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "activity-logs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Activity Logs"
-              >
-                <ClipboardList size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
-              </motion.a>
+            {/* Group 3: Fleet & Map */}
+            {(hasAccess("dispatch") || hasAccess("riders") || hasAccess("map") || hasAccess("calculator")) && (
+              <div className="space-y-1">
+                {!isSidebarCollapsed ? (
+                  <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none">
+                    Fleet & Map
+                  </p>
+                ) : (
+                  <div className="mx-3 my-1 border-t border-slate-100" />
+                )}
+
+                {hasAccess("dispatch") && (
+                  <motion.a
+                    href="#dispatch"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("dispatch"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "dispatch"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Dispatch Schedule"
+                  >
+                    {activeTab === "dispatch" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <CalendarClock size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "dispatch" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Dispatch Schedule</span>}
+                  </motion.a>
+                )}
+
+                {hasAccess("riders") && (
+                  <motion.a
+                    href="#riders"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("riders"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "riders"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Riders"
+                  >
+                    {activeTab === "riders" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Truck size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "riders" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Riders</span>}
+                  </motion.a>
+                )}
+
+                {hasAccess("map") && (
+                  <motion.a
+                    href="#map"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("map"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "map"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Live Map"
+                  >
+                    {activeTab === "map" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Map size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "map" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Live Map</span>}
+                  </motion.a>
+                )}
+
+                {hasAccess("calculator") && (
+                  <button onClick={() => handleTabChange("calculator")} className="block w-full text-left">
+                    <motion.div
+                      whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                      className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                        activeTab === "calculator" || activeTab === "pois"
+                          ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                      }`}
+                      title="Distance Calculator"
+                    >
+                      {(activeTab === "calculator" || activeTab === "pois") && !isSidebarCollapsed && (
+                        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                      )}
+                      <Calculator size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "calculator" || activeTab === "pois" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                      {!isSidebarCollapsed && <span className="truncate">Distance Calculator</span>}
+                    </motion.div>
+                  </button>
+                )}
+              </div>
             )}
 
-            {hasAccess("reports") && (
+            {/* Group 4: Management */}
+            <div className="space-y-1">
+              {!isSidebarCollapsed ? (
+                <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none">
+                  Management
+                </p>
+              ) : (
+                <div className="mx-3 my-1 border-t border-slate-100" />
+              )}
+
+              {hasAccess("reports") && (
+                <motion.a
+                  href="#reports"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("reports"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "reports"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Reports & Analytics"
+                >
+                  {activeTab === "reports" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <BarChart3 size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "reports" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("activity-logs") && (
+                <motion.a
+                  href="#activity-logs"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("activity-logs"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "activity-logs"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Activity Logs"
+                >
+                  {activeTab === "activity-logs" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <ClipboardList size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "activity-logs" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Activity Logs</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("users") && (
+                <motion.a
+                  href="#users"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("users"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "users"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Manage Users"
+                >
+                  {activeTab === "users" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <ShieldCheck size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "users" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Manage Users</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("settings") && (
+                <motion.a
+                  href="#settings"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("settings"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "settings"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Settings"
+                >
+                  {activeTab === "settings" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <Settings size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "settings" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Settings</span>}
+                </motion.a>
+              )}
+
               <motion.a
-                href="#reports"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("reports"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "reports" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Reports & Analytics"
+                href="https://thelaunderingcompany.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                className={`group flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer text-slate-600 hover:text-slate-900 hover:bg-slate-100/70`}
+                title="Order Detergent"
               >
-                <div className="relative shrink-0">
-                  <BarChart3 size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                </div>
+                <Droplets size={isSidebarCollapsed ? 20 : 17} className="shrink-0 text-sky-500" />
                 {!isSidebarCollapsed && (
-                  <span className="truncate">Reports & Analytics</span>
+                  <span className="truncate flex items-center justify-between flex-1">
+                    <span>Order Detergent</span>
+                    <ExternalLink size={12} className="text-slate-400 ml-1.5 shrink-0" />
+                  </span>
                 )}
               </motion.a>
-            )}
-
-            {hasAccess("marketing") && (
-              <motion.a
-                href="#marketing"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("marketing"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "marketing" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Marketing & Analytics"
-              >
-                <Megaphone size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Marketing & Analytics</span>}
-              </motion.a>
-            )}
-            {/* Tasks — available to all logged in users */}
-            <motion.a
-              href="#tasks"
-              onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("tasks"); }}
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "tasks" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-              title="Tasks"
-            >
-              <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-              {!isSidebarCollapsed && <span className="truncate">Tasks</span>}
-            </motion.a>
-
-            <motion.a
-              href="https://thelaunderingcompany.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
-              title="Order Detergent"
-            >
-              <Droplets size={isSidebarCollapsed ? 22 : 18} className="shrink-0 text-sky-500" />
-              {!isSidebarCollapsed && (
-                <span className="truncate flex items-center justify-between flex-1">
-                  <span>Order Detergent</span>
-                  <ExternalLink size={13} className="text-slate-400 ml-1.5 shrink-0" />
-                </span>
-              )}
-            </motion.a>
-            
-            {hasAccess("users") && (
-              <motion.a
-                href="#users"
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("users"); }}
-                whileHover={{ x: 2 }}
-                className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer ${activeTab === "users" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"}`}
-                title="Manage Users"
-              >
-                <ShieldCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
-                {!isSidebarCollapsed && <span className="truncate">Manage Users</span>}
-              </motion.a>
-            )}
-
+            </div>
           </nav>
-          <div className={`border-t border-slate-200 px-3 py-4 space-y-2`}>
-            <Link href="/privacy">
-              <Button variant="ghost" size="sm" className={`w-full gap-2 text-slate-500 hover:text-slate-900 cursor-pointer ${isSidebarCollapsed ? 'px-0 justify-center' : 'justify-start'}`} title="Privacy Policy">
-                <ShieldCheck size={isSidebarCollapsed ? 20 : 16} className="shrink-0" />
-                {!isSidebarCollapsed && <span>Privacy Policy</span>}
+
+          {/* Sidebar User Profile & Actions Footer */}
+          <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50/50">
+            {!isSidebarCollapsed ? (
+              <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl bg-white border border-slate-200/70 shadow-2xs">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-600 to-sky-500 text-white font-bold text-xs flex items-center justify-center shrink-0 uppercase shadow-2xs">
+                  {(user?.name || user?.email || "U").slice(0, 2)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-slate-900 truncate leading-tight">
+                    {user?.name || user?.email?.split("@")[0] || "Staff"}
+                  </p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-600 truncate">
+                    {user?.role || "Staff"}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="w-9 h-9 mx-auto rounded-xl bg-gradient-to-br from-indigo-600 to-sky-500 text-white font-bold text-xs flex items-center justify-center uppercase shadow-2xs"
+                title={`${user?.name || user?.email || "Staff"} (${user?.role || "staff"})`}
+              >
+                {(user?.name || user?.email || "U").slice(0, 2)}
+              </div>
+            )}
+            <div className={`flex ${isSidebarCollapsed ? "flex-col gap-1" : "items-center gap-1"}`}>
+              <Link href="/privacy" className={isSidebarCollapsed ? "w-full" : "flex-1"}>
+                <Button variant="ghost" size="sm" className={`w-full h-8 gap-1.5 text-xs text-slate-500 hover:text-slate-900 hover:bg-slate-200/50 rounded-lg cursor-pointer ${isSidebarCollapsed ? 'px-0 justify-center' : 'justify-start px-2.5'}`} title="Privacy Policy">
+                  <ShieldCheck size={15} className="shrink-0" />
+                  {!isSidebarCollapsed && <span className="truncate">Privacy</span>}
+                </Button>
+              </Link>
+              <Button variant="ghost" size="sm" className={`${isSidebarCollapsed ? "w-full px-0 justify-center" : "flex-1 justify-start px-2.5"} h-8 gap-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer`} onClick={handleLogout} title="Logout">
+                <LogOut size={15} className="shrink-0" />
+                {!isSidebarCollapsed && <span className="truncate">Logout</span>}
               </Button>
-            </Link>
-            <Button variant="ghost" size="sm" className={`w-full gap-2 text-red-500 hover:text-red-600 hover:bg-red-50 cursor-pointer ${isSidebarCollapsed ? 'px-0 justify-center' : 'justify-start'}`} onClick={handleLogout} title="Logout">
-              <LogOut size={isSidebarCollapsed ? 20 : 16} className="shrink-0" />
-              {!isSidebarCollapsed && <span>Logout</span>}
-            </Button>
+            </div>
           </div>
         </aside>
 
@@ -4438,7 +4787,7 @@ function AdminPageContent() {
                 animate={{ opacity: 0.4 }}
                 exit={{ opacity: 0 }}
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="fixed inset-0 bg-black z-40 lg:hidden"
+                className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-40 lg:hidden"
               />
               {/* Drawer Sidebar Menu */}
               <motion.div
@@ -4446,329 +4795,345 @@ function AdminPageContent() {
                 animate={{ x: 0 }}
                 exit={{ x: "-100%" }}
                 transition={{ type: "spring", damping: 25, stiffness: 200 }}
-                className="fixed inset-y-0 left-0 w-72 bg-white shadow-2xl z-50 lg:hidden flex flex-col h-full border-r border-slate-200"
+                className="fixed inset-y-0 left-0 w-72 bg-white shadow-2xl z-50 lg:hidden flex flex-col h-full border-r border-slate-200/80"
               >
                 {/* Header logo & close action */}
-                <div className="flex h-20 items-center justify-between border-b border-slate-100 px-6">
+                <div className="flex h-16 items-center justify-between border-b border-slate-100 px-5 shrink-0">
                   <Logo />
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => setIsMobileMenuOpen(false)}
-                    className="text-slate-400 hover:text-slate-600"
+                    className="text-slate-400 hover:text-slate-700 rounded-xl"
                   >
-                    <X size={20} />
+                    <X size={18} />
                   </Button>
                 </div>
 
-                {/* Sidebar Tab Nav Items */}
-                <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto hide-scrollbar">
-                  {hasAccess("dashboard") && (
+                {/* Sidebar Tab Nav Items (Grouped) */}
+                <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto hide-scrollbar">
+                  {/* Operations */}
+                  <div className="space-y-1">
+                    <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Operations</p>
+                    {hasAccess("dashboard") && (
+                      <a
+                        href="#dashboard"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("dashboard");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <LayoutDashboard size={17} className={activeTab === "dashboard" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Dashboard</span>
+                      </a>
+                    )}
+                    {hasAccess("jobs") && (
+                      <a
+                        href="#jobs"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("jobs");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "jobs" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <Package size={17} className={activeTab === "jobs" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>All Jobs</span>
+                      </a>
+                    )}
+                    {hasAccess("pos") && (
+                      <a
+                        href="#pos"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("pos");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "pos" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <CreditCard size={17} className={activeTab === "pos" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>POS Terminal</span>
+                      </a>
+                    )}
+                    {hasAccess("billing") && (
+                      <Link
+                        href="/billing"
+                        onClick={() => setIsMobileMenuOpen(false)}
+                        className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer text-slate-600 hover:bg-slate-100/70"
+                      >
+                        <Camera size={17} className="text-slate-400" />
+                        <span>Billing</span>
+                      </Link>
+                    )}
                     <a
-                      href="#dashboard"
+                      href="#tasks"
                       onClick={(e) => {
                         e.preventDefault();
-                        handleTabChange("dashboard");
+                        handleTabChange("tasks");
                         setIsMobileMenuOpen(false);
                       }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "dashboard" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                        activeTab === "tasks" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
                       }`}
                     >
-                      <LayoutDashboard size={18} />
-                      <span>Dashboard</span>
+                      <ClipboardCheck size={17} className={activeTab === "tasks" ? "text-indigo-600" : "text-slate-400"} />
+                      <span>Tasks</span>
                     </a>
-                  )}
+                  </div>
 
-                  {hasAccess("services") && (
-                    <a
-                      href="#services"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("services");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "services" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Tag size={18} />
-                      <span>Service Menu</span>
-                    </a>
-                  )}
-
-                  {hasAccess("pos") && (
-                    <a
-                      href="#pos"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("pos");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "pos" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <CreditCard size={18} />
-                      <span>POS</span>
-                    </a>
-                  )}
-
-                  {hasAccess("jobs") && (
-                    <a
-                      href="#jobs"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("jobs");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "jobs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Package size={18} />
-                      <span>All Jobs</span>
-                    </a>
-                  )}
-
-                  {hasAccess("customers") && (
-                    <a
-                      href="#customers"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("customers");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "customers" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Users size={18} />
-                      <span className="flex-1">Customers (CRM)</span>
-                      {canApproveWallet && pendingWalletMap.total > 0 && (
-                        <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-white animate-pulse">
-                          {pendingWalletMap.total}
-                        </span>
+                  {/* Sales & CRM */}
+                  {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing")) && (
+                    <div className="space-y-1">
+                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Sales & CRM</p>
+                      {hasAccess("customers") && (
+                        <a
+                          href="#customers"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("customers");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "customers" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Users size={17} className={activeTab === "customers" ? "text-indigo-600" : "text-slate-400"} />
+                          <span className="flex-1">Customers (CRM)</span>
+                          {canApproveWallet && pendingWalletMap.total > 0 && (
+                            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500 text-white animate-pulse">
+                              {pendingWalletMap.total}
+                            </span>
+                          )}
+                        </a>
                       )}
-                    </a>
-                  )}
-
-                  {hasAccess("dispatch") && (
-                    <a
-                      href="#dispatch"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("dispatch");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <CalendarClock size={18} />
-                      <span>Dispatch Schedule</span>
-                    </a>
-                  )}
-
-                  <a
-                    href="#billing"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      handleTabChange("verify");
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                      activeTab === "verify" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                    }`}
-                  >
-                    <Camera size={18} />
-                    <span>Billing</span>
-                  </a>
-
-                  {hasAccess("riders") && (
-                    <a
-                      href="#riders"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("riders");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "riders" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Truck size={18} />
-                      <span>Riders</span>
-                    </a>
-                  )}
-
-                  {hasAccess("map") && (
-                    <a
-                      href="#map"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("map");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "map" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Map size={18} />
-                      <span>Live Map</span>
-                    </a>
-                  )}
-
-                  <a
-                    href="#calculator"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      handleTabChange("calculator");
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                      activeTab === "calculator" || activeTab === "pois" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                    }`}
-                  >
-                    <Calculator size={18} />
-                    <span>Distance Calculator</span>
-                  </a>
-
-                  {hasAccess("settings") && (
-                    <a
-                      href="#settings"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("settings");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "settings" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Settings size={18} />
-                      <span>Settings</span>
-                    </a>
-                  )}
-
-                  {hasAccess("activity-logs") && (
-                    <a
-                      href="#activity-logs"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("activity-logs");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "activity-logs" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <ClipboardList size={18} />
-                      <span>Activity Logs</span>
-                    </a>
-                  )}
-
-                  {hasAccess("reports") && (
-                    <a
-                      href="#reports"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("reports");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "reports" ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <BarChart3 size={18} />
-                      <span>Reports & Analytics</span>
-                    </a>
-                  )}
-
-                  {hasAccess("marketing") && (
-                    <a
-                      href="#marketing"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("marketing");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "marketing" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Megaphone size={18} />
-                      <span>Marketing & Analytics</span>
-                    </a>
-                  )}
-                  {/* Tasks — available to all logged in users */}
-                  <a
-                    href="#tasks"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      handleTabChange("tasks");
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                      activeTab === "tasks" ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-500 hover:bg-slate-50"
-                    }`}
-                  >
-                    <ClipboardCheck size={18} />
-                    <span>Tasks</span>
-                  </a>
-
-                  <a
-                    href="https://thelaunderingcompany.com/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className="flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50 cursor-pointer"
-                  >
-                    <div className="flex items-center gap-3">
-                      <Droplets size={18} className="text-sky-500" />
-                      <span>Order Detergent</span>
+                      {hasAccess("services") && (
+                        <a
+                          href="#services"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("services");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "services" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Tag size={17} className={activeTab === "services" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Service Menu</span>
+                        </a>
+                      )}
+                      {hasAccess("marketing") && (
+                        <a
+                          href="#marketing"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("marketing");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "marketing" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Megaphone size={17} className={activeTab === "marketing" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Marketing & Promos</span>
+                        </a>
+                      )}
                     </div>
-                    <ExternalLink size={14} className="text-slate-400" />
-                  </a>
-
-                  {hasAccess("users") && (
-                    <a
-                      href="#users"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handleTabChange("users");
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                        activeTab === "users" ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"
-                      }`}
-                    >
-                      <ShieldCheck size={18} />
-                      <span>Manage Users</span>
-                    </a>
                   )}
+
+                  {/* Fleet & Map */}
+                  {(hasAccess("dispatch") || hasAccess("riders") || hasAccess("map") || hasAccess("calculator")) && (
+                    <div className="space-y-1">
+                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Fleet & Map</p>
+                      {hasAccess("dispatch") && (
+                        <a
+                          href="#dispatch"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("dispatch");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "dispatch" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <CalendarClock size={17} className={activeTab === "dispatch" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Dispatch Schedule</span>
+                        </a>
+                      )}
+                      {hasAccess("riders") && (
+                        <a
+                          href="#riders"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("riders");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "riders" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Truck size={17} className={activeTab === "riders" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Riders</span>
+                        </a>
+                      )}
+                      {hasAccess("map") && (
+                        <a
+                          href="#map"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("map");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "map" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Map size={17} className={activeTab === "map" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Live Map</span>
+                        </a>
+                      )}
+                      {hasAccess("calculator") && (
+                        <a
+                          href="#calculator"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("calculator");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "calculator" || activeTab === "pois" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Calculator size={17} className={activeTab === "calculator" || activeTab === "pois" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Distance Calculator</span>
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Management */}
+                  <div className="space-y-1">
+                    <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Management</p>
+                    {hasAccess("reports") && (
+                      <a
+                        href="#reports"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("reports");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "reports" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <BarChart3 size={17} className={activeTab === "reports" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Reports & Analytics</span>
+                      </a>
+                    )}
+                    {hasAccess("activity-logs") && (
+                      <a
+                        href="#activity-logs"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("activity-logs");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "activity-logs" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <ClipboardList size={17} className={activeTab === "activity-logs" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Activity Logs</span>
+                      </a>
+                    )}
+                    {hasAccess("users") && (
+                      <a
+                        href="#users"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("users");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "users" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <ShieldCheck size={17} className={activeTab === "users" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Manage Users</span>
+                      </a>
+                    )}
+                    {hasAccess("settings") && (
+                      <a
+                        href="#settings"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("settings");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "settings" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <Settings size={17} className={activeTab === "settings" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Settings</span>
+                      </a>
+                    )}
+                    <a
+                      href="https://thelaunderingcompany.com/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => setIsMobileMenuOpen(false)}
+                      className="flex items-center justify-between px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all text-slate-600 hover:bg-slate-100/70 cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Droplets size={17} className="text-sky-500" />
+                        <span>Order Detergent</span>
+                      </div>
+                      <ExternalLink size={13} className="text-slate-400" />
+                    </a>
+                  </div>
                 </nav>
 
                 {/* Drawer Footer Actions */}
-                <div className="border-t border-slate-100 p-4 space-y-2">
-                  <Link href="/privacy" onClick={() => setIsMobileMenuOpen(false)}>
-                    <Button variant="ghost" size="sm" className="w-full gap-3 text-slate-500 hover:text-slate-900 justify-start">
-                      <ShieldCheck size={16} />
-                      <span>Privacy Policy</span>
+                <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50/50">
+                  <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl bg-white border border-slate-200/70">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-600 to-sky-500 text-white font-bold text-xs flex items-center justify-center shrink-0 uppercase">
+                      {(user?.name || user?.email || "U").slice(0, 2)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-900 truncate">{user?.name || user?.email?.split("@")[0] || "Staff"}</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-600 truncate">{user?.role || "Staff"}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Link href="/privacy" onClick={() => setIsMobileMenuOpen(false)} className="flex-1">
+                      <Button variant="ghost" size="sm" className="w-full h-8 gap-1.5 text-xs text-slate-500 hover:text-slate-900 justify-start">
+                        <ShieldCheck size={15} />
+                        <span>Privacy</span>
+                      </Button>
+                    </Link>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="flex-1 h-8 gap-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 justify-start"
+                      onClick={() => {
+                        handleLogout();
+                        setIsMobileMenuOpen(false);
+                      }}
+                    >
+                      <LogOut size={15} />
+                      <span>Logout</span>
                     </Button>
-                  </Link>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full gap-3 text-red-500 hover:text-red-600 hover:bg-red-50 justify-start"
-                    onClick={() => {
-                      handleLogout();
-                      setIsMobileMenuOpen(false);
-                    }}
-                  >
-                    <LogOut size={16} />
-                    <span>Logout</span>
-                  </Button>
+                  </div>
                 </div>
               </motion.div>
             </>
@@ -4776,7 +5141,7 @@ function AdminPageContent() {
         </AnimatePresence>
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col">
+        <main className="flex-1 flex flex-col min-w-0 bg-slate-50/70">
           {isVersionOutdated && (
             <div className="w-full bg-amber-500 text-slate-950 px-4 py-2.5 text-xs font-bold flex items-center justify-between shadow-md z-30 shrink-0">
               <div className="flex items-center gap-2">
@@ -4793,23 +5158,61 @@ function AdminPageContent() {
             </div>
           )}
           {/* Top bar */}
-          <header className={`flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm ${activeTab === 'pos' ? 'lg:hidden' : ''}`}>
-            <div className="flex items-center gap-3 lg:hidden px-2 py-2">
+          <header className={`sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200/80 bg-white/85 backdrop-blur-md px-4 sm:px-6 lg:px-8 shrink-0 ${activeTab === 'pos' ? 'lg:hidden' : ''}`}>
+            <div className="flex items-center gap-3 lg:hidden">
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={() => setIsMobileMenuOpen(true)}
-                className="text-slate-600 hover:text-slate-900 mr-1"
+                className="text-slate-600 hover:text-slate-900 rounded-xl"
               >
                 <Menu size={20} />
               </Button>
               <Logo />
             </div>
-            <h1 className="hidden lg:block text-lg font-semibold text-slate-900">
-              Dashboard - {user?.name || user?.email || ""}
-            </h1>
+
+            {(() => {
+              const tabMeta: Record<string, { section: string; title: string; subtitle: string }> = {
+                dashboard: { section: "Operations", title: "Command Center", subtitle: "Live orders, fleet overview & team tasks" },
+                jobs: { section: "Operations", title: "All Jobs", subtitle: "Kanban board, order tracking & payment statuses" },
+                pos: { section: "Operations", title: "POS Terminal", subtitle: "In-store walk-in & order creation" },
+                tasks: { section: "Operations", title: "Task Management", subtitle: "Team assignments, checklists & SLA tracking" },
+                customers: { section: "Sales & CRM", title: "Customers (CRM)", subtitle: "Profiles, corporate accounts, wallets & vouchers" },
+                services: { section: "Sales & CRM", title: "Service Menu", subtitle: "Pricing tiers, laundry packages & catalog" },
+                marketing: { section: "Sales & CRM", title: "Marketing & Promos", subtitle: "Campaigns, vouchers & customer acquisition" },
+                dispatch: { section: "Fleet & Map", title: "Dispatch Schedule", subtitle: "Rider shifts, pickup & delivery routing" },
+                riders: { section: "Fleet & Map", title: "Rider Fleet", subtitle: "Rider profiles, commissions & status" },
+                map: { section: "Fleet & Map", title: "Live GPS Map", subtitle: "Real-time rider locations & branch hubs" },
+                calculator: { section: "Fleet & Map", title: "Distance Calculator", subtitle: "Route fee estimation & POI management" },
+                pois: { section: "Fleet & Map", title: "POI Locations", subtitle: "Saved buildings, condos & coordinates" },
+                reports: { section: "Management", title: "Reports & Analytics", subtitle: "Revenue, payment splits & historical insights" },
+                "activity-logs": { section: "Management", title: "Activity Logs", subtitle: "System audit trail & staff actions" },
+                users: { section: "Management", title: "Manage Users", subtitle: "Staff accounts, roles & branch permissions" },
+                settings: { section: "Management", title: "System Settings", subtitle: "Branches, payment channels & configurations" },
+              };
+              const currentMeta = tabMeta[activeTab] || { section: "Workspace", title: "Dashboard", subtitle: "That Laundry Shop" };
+              return (
+                <div className="hidden lg:flex items-center gap-3 min-w-0">
+                  <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-600/90 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                        {currentMeta.section}
+                      </span>
+                      <span className="text-slate-300 text-xs">/</span>
+                      <h1 className="text-base font-bold text-slate-900 tracking-tight truncate">
+                        {currentMeta.title}
+                      </h1>
+                    </div>
+                  </div>
+                  <span className="hidden xl:inline-flex items-center gap-1.5 ml-2 px-2.5 py-1 rounded-lg bg-slate-100/80 text-slate-500 text-xs font-medium border border-slate-200/60">
+                    <Clock size={12} className="text-slate-400" />
+                    {format(new Date(), "EEE, dd MMM yyyy")}
+                  </span>
+                </div>
+              );
+            })()}
             
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5">
               {/* Real-time Connection & Save Status Indicator */}
               {(() => {
                 const saveEntries = Object.entries(realtimeState.jobSaveStates || {});
@@ -4853,7 +5256,7 @@ function AdminPageContent() {
                 if (conn === 'connected') {
                   return (
                     <div
-                      className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-50/80 text-emerald-700 border border-emerald-200/70"
+                      className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-50/90 text-emerald-700 border border-emerald-200/80"
                       title="Real-time order updates active (SSE)"
                     >
                       <span className="w-2 h-2 rounded-full bg-emerald-500" />
@@ -4901,7 +5304,7 @@ function AdminPageContent() {
                     handleTabChange("customers");
                     window.dispatchEvent(new CustomEvent("open-crm-tab", { detail: { tab: "wallet_approvals" } }));
                   }}
-                  className="h-9 px-2.5 bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 flex items-center gap-1.5 rounded-xl text-xs font-bold shadow-xs animate-pulse cursor-pointer"
+                  className="h-9 px-3 bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 flex items-center gap-1.5 rounded-xl text-xs font-bold shadow-2xs animate-pulse cursor-pointer"
                   title="Pending wallet approvals"
                 >
                   <Wallet size={14} className="text-amber-600 shrink-0" />
@@ -4920,7 +5323,7 @@ function AdminPageContent() {
               <Button 
                 variant="outline" 
                 size="icon"
-                className="lg:hidden text-red-500 hover:text-red-600 hover:bg-red-50 border-red-200" 
+                className="lg:hidden text-rose-500 hover:text-rose-600 hover:bg-rose-50 border-rose-200 rounded-xl" 
                 onClick={handleLogout}
                 title="Logout"
               >
@@ -4942,17 +5345,17 @@ function AdminPageContent() {
                   disablePointerDismissal={true}
 
                 >
-                  <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                  <motion.div whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.98 }}>
                     <Button 
                       onClick={handleCreateNewJob}
-                      className="gap-2 bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-sm cursor-pointer border-none"
+                      className="h-9 px-4 gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl shadow-xs shadow-indigo-600/20 cursor-pointer border-none text-xs sm:text-sm"
                     >
                       <Plus size={16} />
                       <span className="hidden sm:inline">Create New Job</span>
                       <span className="sm:hidden">New Job</span>
                     </Button>
                   </motion.div>
-                  <DialogContent className="w-full max-w-[95vw] xl:max-w-[1400px] p-0 overflow-hidden bg-slate-50 flex flex-col h-[95vh]">
+                  <DialogContent className="w-full max-w-[98vw] 2xl:max-w-[1740px] xl:max-w-[97vw] p-0 overflow-hidden bg-slate-100/80 rounded-2xl border border-slate-200/90 shadow-2xl flex flex-col h-[95vh]">
                     {isVersionOutdated && (
                       <div className="sticky top-0 z-50 flex items-center justify-between gap-2 px-4 py-2 bg-amber-500 text-slate-950 text-xs font-bold shadow-md shrink-0">
                         <div className="flex items-center gap-2">
@@ -4968,62 +5371,64 @@ function AdminPageContent() {
                         </button>
                       </div>
                     )}
-                <DialogHeader className="p-3 border-b border-slate-200 bg-white shrink-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 items-start lg:items-center">
-                  <div className="col-span-6 lg:col-span-6 flex flex-row items-center gap-4 w-full">
-                    <DialogTitle className="flex flex-col items-start gap-1 text-lg shrink-0">
-                      <div className="flex items-center gap-2 flex-wrap">
+                <DialogHeader className="px-4 py-3 border-b border-slate-200/90 bg-white shrink-0 flex flex-col lg:flex-row gap-3 items-start lg:items-center justify-between">
+                  <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+                    <DialogTitle className="flex items-center gap-2.5 text-base sm:text-lg font-extrabold text-slate-900 shrink-0">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-200/80 text-indigo-600 flex items-center justify-center shrink-0 shadow-2xs">
                         <Package size={18} />
-                        <span>{editingJobId ? "Edit Job" : "Create New Job"}</span>
-                        {editingJobId && (() => {
-                          const js = realtimeState.jobSaveStates?.[editingJobId];
-                          if (!js) return null;
-                          if (js.status === 'saving') {
-                            return (
-                              <Badge className="bg-sky-50 text-sky-700 border border-sky-200 py-0 px-2 h-5 text-[10px] font-bold rounded-full flex items-center gap-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" />
-                                Saving...
-                              </Badge>
-                            );
-                          }
-                          if (js.status === 'saved') {
-                            return (
-                              <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
-                                ✓ Saved
-                              </Badge>
-                            );
-                          }
-                          if (js.status === 'conflict') {
-                            return (
-                              <Badge className="bg-amber-100 text-amber-900 border border-amber-300 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
-                                ⚠ Conflict
-                              </Badge>
-                            );
-                          }
-                          if (js.status === 'failed') {
-                            return (
-                              <Badge className="bg-rose-100 text-rose-800 border border-rose-300 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
-                                ✕ Save Failed
-                              </Badge>
-                            );
-                          }
-                          return null;
-                        })()}
-                        {isNewCustomer && (
-                          <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-2xs py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded ml-1">
-                            NEW
-                          </Badge>
-                        )}
-                        {selectedVIPLabel && (
-                          <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold ml-2 mt-0">
-                            VIP {selectedVIPLabel}
-                          </Badge>
-                        )}
                       </div>
-                      {editingJobId && (
-                        <div className="flex items-center gap-2 ml-6">
-                          <span className="text-slate-500 font-mono text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                            Order ID: #{formatJobDisplayId(editingJobId)}
-                          </span>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="tracking-tight">{editingJobId ? "Edit Job" : "Create New Job"}</span>
+                          {editingJobId && (
+                            <span className="font-mono text-xs font-extrabold text-indigo-700 bg-indigo-50/90 px-2 py-0.5 rounded-lg border border-indigo-200/80">
+                              #{formatJobDisplayId(editingJobId)}
+                            </span>
+                          )}
+                          {editingJobId && (() => {
+                            const js = realtimeState.jobSaveStates?.[editingJobId];
+                            if (!js) return null;
+                            if (js.status === 'saving') {
+                              return (
+                                <Badge className="bg-sky-50 text-sky-700 border border-sky-200 py-0 px-2 h-5 text-[10px] font-bold rounded-full flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" />
+                                  Saving...
+                                </Badge>
+                              );
+                            }
+                            if (js.status === 'saved') {
+                              return (
+                                <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
+                                  ✓ Saved
+                                </Badge>
+                              );
+                            }
+                            if (js.status === 'conflict') {
+                              return (
+                                <Badge className="bg-amber-100 text-amber-900 border border-amber-300 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
+                                  ⚠ Conflict
+                                </Badge>
+                              );
+                            }
+                            if (js.status === 'failed') {
+                              return (
+                                <Badge className="bg-rose-100 text-rose-800 border border-rose-300 py-0 px-2 h-5 text-[10px] font-bold rounded-full">
+                                  ✕ Save Failed
+                                </Badge>
+                              );
+                            }
+                            return null;
+                          })()}
+                          {isNewCustomer && (
+                            <Badge className="bg-sky-50 text-sky-700 border border-sky-200/60 shadow-2xs py-0 px-1.5 h-4 text-[9px] font-black uppercase tracking-wider rounded">
+                              NEW
+                            </Badge>
+                          )}
+                          {selectedVIPLabel && (
+                            <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200 font-bold">
+                              VIP {selectedVIPLabel}
+                            </Badge>
+                          )}
                           {activeJob?.refundId && (
                             <Badge variant="outline" className="bg-rose-100 text-rose-800 border-rose-300 font-bold text-[10px]">
                               REFUNDED
@@ -5034,30 +5439,52 @@ function AdminPageContent() {
                               CORRECTED
                             </Badge>
                           )}
-                          {hasAccess("activity-logs") && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setShowJobLogs(!showJobLogs)}
-                              className="h-7 px-2 text-xs flex items-center gap-1.5 border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all font-semibold rounded shadow-sm cursor-pointer"
-                            >
-                              <ClipboardList size={12} className="text-slate-500" />
-                              {showJobLogs ? "Back to Edit" : "Activity Logs"}
-                            </Button>
-                          )}
                         </div>
-                      )}
+                      </div>
                     </DialogTitle>
-                    <div className="relative w-full max-w-[320px] z-50 mt-0">
+
+                    {editingJobId && hasAccess("activity-logs") && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowJobLogs(!showJobLogs)}
+                        className={`h-8 px-3 text-xs flex items-center gap-1.5 font-semibold rounded-xl shadow-2xs cursor-pointer transition-all ${
+                          showJobLogs
+                            ? "bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700"
+                            : "border-slate-200/90 bg-slate-50/80 text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        <ClipboardList size={13} className={showJobLogs ? "text-white" : "text-slate-500"} />
+                        {showJobLogs ? "Back to Edit" : "Activity Logs"}
+                      </Button>
+                    )}
+
+                    {/* Screen Fit / Column View Adjuster for different laptop screen sizes */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const nextCols = modalLayoutCols === "4" ? "2" : "4";
+                        setModalLayoutCols(nextCols);
+                        toast.success(nextCols === "2" ? "2-Column layout active (เหมาะกับจอเล็ก)" : "4-Column layout active (แบบเต็ม 4 คอลัมน์)");
+                      }}
+                      className="h-8 px-2.5 text-xs flex items-center gap-1.5 font-semibold rounded-xl border-slate-200/90 bg-slate-50/80 text-slate-700 hover:bg-slate-100 shadow-2xs cursor-pointer shrink-0"
+                      title={modalLayoutCols === "4" ? "Switch to 2-Column Wide View (for smaller laptop screens)" : "Switch to 4-Column Compact View"}
+                    >
+                      <Columns size={13} className="text-slate-500" />
+                      <span className="hidden sm:inline">{modalLayoutCols === "4" ? "4 Cols" : "2 Cols"}</span>
+                    </Button>
+
+                    <div className="relative w-full sm:w-auto sm:min-w-[300px] z-50">
                       <div className="flex items-center gap-2">
-                        <div className="relative flex-1">
-                          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <div className="relative flex-1 min-w-[220px]">
+                          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                           <Input
                             id="customer-search"
-                            placeholder="Search name, phone, WA ID, member ID..."
+                            placeholder="Search customer name, phone, WA ID..."
                             value={customerSearchQuery}
-                            disabled={!!editingJobId}
                             onChange={(e) => {
                               setCustomerSearchQuery(e.target.value);
                               setShowCustomerDropdown(true);
@@ -5068,21 +5495,21 @@ function AdminPageContent() {
                             onBlur={() => {
                               setTimeout(() => setShowCustomerDropdown(false), 200);
                             }}
-                            className="h-9 pl-9 text-sm bg-slate-50 border-slate-200 focus-visible:ring-indigo-500 rounded-full w-full"
+                            className="h-8.5 pl-8.5 text-xs bg-slate-50/90 border-slate-200/90 focus:bg-white focus-visible:ring-indigo-500 rounded-xl w-full"
                           />
                         </div>
                         <Button 
                           type="button"
                           onClick={() => setCustomerDialogOpen(true)}
-                          className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 shadow-sm rounded-full flex items-center gap-1.5 font-bold shrink-0"
+                          className="h-8 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200/90 shadow-2xs rounded-xl flex items-center gap-1.5 font-bold shrink-0 cursor-pointer"
                         >
-                          <UserPlus size={14} />
+                          <UserPlus size={13} />
                           <span className="text-xs">Add Customer</span>
                         </Button>
                       </div>
                       
                       {showCustomerDropdown && customerSearchQuery && (
-                        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-60 overflow-y-auto top-[100%]">
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto top-[100%]">
                           {filteredCustomers.length > 0 ? (
                             filteredCustomers.map(c => (
                               <div
@@ -5091,7 +5518,7 @@ function AdminPageContent() {
                                 onClick={() => {
                                   setServiceWeight(2);
                                   setOtherClothingName("");
-    setOtherClothingPrice(0);
+                                  setOtherClothingPrice(0);
                                   setClothingItems({
                                     polo: { selected: false, quantity: 1 },
                                     tshirt: { selected: false, quantity: 1 },
@@ -5108,10 +5535,9 @@ function AdminPageContent() {
                                   setPromoCodeInput("");
                                   setPromoError(null);
                                   
-                                   // Always sync address from CRM when customer is selected
-                                   const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? c.defaultAddress : "";
-                                   const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
-                                   setPickupLoc(cleanCustAddr);
+                                  const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? c.defaultAddress : "";
+                                  const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
+                                  setPickupLoc(cleanCustAddr);
                                   setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
                                   setPickupCoords(validCustCoords);
                                   
@@ -5119,6 +5545,7 @@ function AdminPageContent() {
                                   setDeliveryRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());
                                   setDeliveryCoords(validCustCoords);
                                   
+                                  setDifferentDeliveryAddress(false);
                                   setIsDeliveryDirty(false);
                                   setIsFreeDelivery(false);
                                   updateClosestStoreAsync(c.defaultCoords, c.defaultAddress);
@@ -5198,12 +5625,12 @@ function AdminPageContent() {
                     </div>
                   </div>
                   
-                  <div className="col-span-6 lg:col-span-6 w-full flex justify-end pr-8 lg:pr-12">
+                  <div className="w-full lg:w-auto flex justify-end pr-8 lg:pr-10">
                     {editingJobId && (
-                      <div className="flex flex-row gap-1.5 sm:gap-3 items-center justify-end w-full">
-                        <div className="flex items-center gap-1 sm:gap-2">
+                      <div className="flex flex-wrap gap-2 sm:gap-3 items-center justify-end">
+                        <div className="flex items-center gap-1.5">
                           <span className="hidden sm:inline text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type:</span>
-                          <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+                          <div className="flex bg-slate-100/90 p-0.5 rounded-xl border border-slate-200/80 gap-0.5">
                             {[
                               { id: 'W', label: 'Wash' },
                               { id: 'F', label: 'Fold' },
@@ -5217,17 +5644,17 @@ function AdminPageContent() {
                                 key={t.id}
                                 type="button"
                                 onClick={() => setLaundryTypes(prev => prev.includes(t.id) ? prev.filter(x => x !== t.id) : [...prev, t.id])}
-                                className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
+                                className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                                   laundryTypes.includes(t.id)
-                                    ? 'bg-slate-800 shadow-sm'
+                                    ? 'bg-slate-900 shadow-2xs'
                                     : 'hover:bg-white text-slate-500 hover:text-slate-800'
                                 }`}
                                 title={t.label}
                               >
-                                <span className={`text-[11px] sm:text-[14px] font-black leading-none flex items-center justify-center ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-700'}`}>
+                                <span className={`text-[11px] sm:text-xs font-black leading-none flex items-center justify-center ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-700'}`}>
                                   {t.id}
                                 </span>
-                                <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${laundryTypes.includes(t.id) ? 'text-white' : 'text-slate-500'}`}>
+                                <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${laundryTypes.includes(t.id) ? 'text-slate-200' : 'text-slate-500'}`}>
                                   {t.label === 'Dryclean' ? 'Dry' : t.label}
                                 </span>
                               </button>
@@ -5235,91 +5662,174 @@ function AdminPageContent() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1 sm:gap-2">
+                        <div className="flex items-center gap-1.5">
                           <span className="hidden sm:inline text-[10px] font-bold text-slate-400 uppercase tracking-wider">Process:</span>
-                          <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+                          <div className="flex bg-slate-100/90 p-0.5 rounded-xl border border-slate-200/80 gap-0.5">
 
-                            {/* Billing — auto-indicator, not clickable */}
-                          <div
-                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 cursor-default ${
-                              billImageUrls.length > 0
-                                ? 'bg-violet-600 shadow-sm text-white'
-                                : 'text-slate-400'
-                            }`}
-                            title={billImageUrls.length > 0 ? 'Bill uploaded' : 'No bill uploaded'}
-                          >
-                            <div className="flex items-center justify-center">
-                              <Receipt className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2} />
-                            </div>
-                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${billImageUrls.length > 0 ? 'text-white' : 'text-slate-400'}`}>Bill</span>
-                          </div>
+                            {/* Billing Issued — auto-indicator */}
+                          {(() => {
+                            const hasAnyBillIssued = Boolean(
+                              billImageUrls.length > 0 ||
+                              (billNo && billNo.trim() !== "") ||
+                              (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT") ||
+                              dialogCart.length > 0
+                            );
+                            const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                            let isCurrentBillSent = false;
+                            if (currentJobObj?.adminNotesJson) {
+                              try {
+                                const p = JSON.parse(currentJobObj.adminNotesJson);
+                                if (p && typeof p === "object" && !Array.isArray(p)) {
+                                  isCurrentBillSent = Boolean(p.isBillSent);
+                                }
+                              } catch { /* ignore */ }
+                            }
+                            return (
+                              <>
+                                <div
+                                  className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-default ${
+                                    hasAnyBillIssued
+                                      ? 'bg-violet-600 shadow-2xs text-white'
+                                      : 'text-slate-400'
+                                  }`}
+                                  title={hasAnyBillIssued ? 'Bill issued' : 'No bill issued yet'}
+                                >
+                                  <div className="flex items-center justify-center">
+                                    <Receipt className="w-3.5 h-3.5" strokeWidth={2} />
+                                  </div>
+                                  <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${hasAnyBillIssued ? 'text-white' : 'text-slate-400'}`}>Bill</span>
+                                </div>
+
+                                {editingJobId && currentJobObj && (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      const nextSent = !isCurrentBillSent;
+                                      const staffName = (user as any)?.name || user?.email || "Staff";
+                                      let baseObj: Record<string, any> = {};
+                                      let notesArr: any[] = [];
+                                      let paymentsArr: any[] = [];
+                                      if (currentJobObj.adminNotesJson) {
+                                        try {
+                                          const parsed = JSON.parse(currentJobObj.adminNotesJson);
+                                          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                                            baseObj = { ...parsed };
+                                            notesArr = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
+                                            paymentsArr = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
+                                          } else if (Array.isArray(parsed)) {
+                                            notesArr = [...parsed];
+                                          }
+                                        } catch { /* ignore */ }
+                                      }
+                                      notesArr.push({
+                                        id: Math.random().toString(36).substring(2, 9),
+                                        userId: user?.id || "unknown",
+                                        userName: staffName,
+                                        text: nextSent ? `Bill sent to customer by ${staffName}` : `Bill sent status unmarked by ${staffName}`,
+                                        imageUrls: [],
+                                        timestamp: new Date().toISOString(),
+                                      });
+                                      const updatedObj: Record<string, any> = {
+                                        ...baseObj,
+                                        isBillSent: nextSent,
+                                        billSentAt: nextSent ? new Date().toISOString() : null,
+                                        billSentBy: nextSent ? staffName : null,
+                                        notes: notesArr,
+                                      };
+                                      if (paymentsArr.length > 0 || Array.isArray(baseObj.payments)) {
+                                        updatedObj.payments = paymentsArr;
+                                      }
+                                      const updatedJson = JSON.stringify(updatedObj);
+                                      const actorDetails = user ? { actorId: user.id, actorName: staffName, actorRole: user.role } : undefined;
+                                      await jobStore.updateJobDetails(editingJobId, { adminNotesJson: updatedJson }, actorDetails);
+                                      if (originalJobRef.current) {
+                                        (originalJobRef.current as any).adminNotesJson = updatedJson;
+                                      }
+                                      toast.success(nextSent ? "Marked as Bill Sent to Customer ✓" : "Marked as Bill Not Sent");
+                                    }}
+                                    className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
+                                      isCurrentBillSent
+                                        ? 'bg-emerald-600 shadow-2xs text-white'
+                                        : 'hover:bg-white text-amber-600 hover:text-amber-700'
+                                    }`}
+                                    title={isCurrentBillSent ? 'Bill sent to customer (Click to unmark)' : 'Bill not sent yet (Click to mark as Sent to Customer)'}
+                                  >
+                                    <div className="flex items-center justify-center">
+                                      <CheckCircle2 className={`w-3.5 h-3.5 ${isCurrentBillSent ? 'text-white' : ''}`} strokeWidth={2} />
+                                    </div>
+                                    <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${isCurrentBillSent ? 'text-white' : 'text-amber-600'}`}>Sent</span>
+                                  </button>
+                                )}
+                              </>
+                            );
+                          })()}
 
                           {/* Wash */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'wash' ? null : 'wash')}
-                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
+                            className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'wash'
-                                ? 'bg-blue-600 shadow-sm text-white'
+                                ? 'bg-blue-600 shadow-2xs text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Washing"
                           >
                             <div className="flex items-center justify-center">
-                              <Droplets className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'wash' ? 'text-white' : ''}`} strokeWidth={2} />
+                              <Droplets className={`w-3.5 h-3.5 ${editingSubStatus === 'wash' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'wash' ? 'text-white' : 'text-slate-500'}`}>Wash</span>
+                            <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${editingSubStatus === 'wash' ? 'text-white' : 'text-slate-500'}`}>Wash</span>
                           </button>
 
                           {/* Dry */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'dry' ? null : 'dry')}
-                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
+                            className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'dry'
-                                ? 'bg-orange-600 shadow-sm text-white'
+                                ? 'bg-orange-600 shadow-2xs text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Drying"
                           >
                             <div className="flex items-center justify-center">
-                              <Wind className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'dry' ? 'text-white' : ''}`} strokeWidth={2} />
+                              <Wind className={`w-3.5 h-3.5 ${editingSubStatus === 'dry' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'dry' ? 'text-white' : 'text-slate-500'}`}>Dry</span>
+                            <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${editingSubStatus === 'dry' ? 'text-white' : 'text-slate-500'}`}>Dry</span>
                           </button>
 
                           {/* Iron */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'iron' ? null : 'iron')}
-                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
+                            className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'iron'
-                                ? 'bg-indigo-700 shadow-sm text-white'
+                                ? 'bg-indigo-700 shadow-2xs text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Ironing"
                           >
                             <div className="flex items-center justify-center">
-                              <Shirt className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'iron' ? 'text-white' : ''}`} strokeWidth={2} />
+                              <Shirt className={`w-3.5 h-3.5 ${editingSubStatus === 'iron' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'iron' ? 'text-white' : 'text-slate-500'}`}>Iron</span>
+                            <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${editingSubStatus === 'iron' ? 'text-white' : 'text-slate-500'}`}>Iron</span>
                           </button>
 
                           {/* Ready */}
                           <button
                             type="button"
                             onClick={() => setEditingSubStatus(editingSubStatus === 'ready' ? null : 'ready')}
-                            className={`flex flex-col items-center justify-center rounded transition-all w-[26px] h-[26px] sm:w-10 sm:h-10 ${
+                            className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'ready'
-                                ? 'bg-emerald-600 shadow-sm text-white'
+                                ? 'bg-emerald-600 shadow-2xs text-white'
                                 : 'hover:bg-white text-slate-500 hover:text-slate-800'
                             }`}
                             title="Ready"
                           >
                             <div className="flex items-center justify-center">
-                              <CheckCircle2 className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${editingSubStatus === 'ready' ? 'text-white' : ''}`} strokeWidth={2} />
+                              <CheckCircle2 className={`w-3.5 h-3.5 ${editingSubStatus === 'ready' ? 'text-white' : ''}`} strokeWidth={2} />
                             </div>
-                            <span className={`hidden sm:inline text-[9px] font-bold leading-none mt-0.5 ${editingSubStatus === 'ready' ? 'text-white' : 'text-slate-500'}`}>Ready</span>
+                            <span className={`hidden sm:inline text-[8.5px] font-bold leading-none mt-0.5 ${editingSubStatus === 'ready' ? 'text-white' : 'text-slate-500'}`}>Ready</span>
                           </button>
 
                         </div>
@@ -5468,26 +5978,27 @@ function AdminPageContent() {
                 )}
 
                 {/* Main Content Grid */}
-                <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3 min-h-0 flex flex-col">
+                <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3.5 min-h-0 flex flex-col">
                   {!showJobLogs ? (
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 h-auto lg:h-full">
+                    <div className={`grid grid-cols-1 ${modalLayoutCols === "2" ? "lg:grid-cols-2" : "md:grid-cols-2 xl:grid-cols-4"} gap-3.5 h-auto ${modalLayoutCols === "2" ? "overflow-y-auto" : "xl:h-full overflow-y-auto xl:overflow-hidden"}`}>
                     
-                    {/* COL 1: Basic Info (span 4) */}
+                    {/* COL 1: Customer Profile, Origin Branch & Scheduling */}
                     <motion.div
-                      className="lg:col-span-4 flex flex-col gap-2 lg:overflow-y-auto pr-1 pb-4 lg:pb-0"
+                      className="col-span-1 flex flex-col gap-2.5 overflow-y-auto pr-0.5 pb-2 min-w-0 h-full"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.1, duration: 0.3 }}
                     >
                       {/* Customer Info & Logistics Card */}
-                      <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2 shrink-0">
-                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 pb-1 border-b border-slate-100">
+                      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-3 shrink-0">
+                        {/* Customer Name & Phone Section */}
+                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 pb-2.5 border-b border-slate-100">
                           {/* Col 1: Customer Name & Badges (7 cols) */}
-                          <div className="space-y-1 sm:col-span-7 min-w-0">
-                            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                              <Label htmlFor="custName" className="flex items-center gap-1 text-xs font-medium text-slate-500 shrink-0">
-                                <User size={12} className="shrink-0" />
-                                <span>Name <span className="text-red-500">*</span></span>
+                          <div className="space-y-1.5 sm:col-span-7 min-w-0">
+                            <div className="flex items-center gap-1.5 min-w-0 flex-wrap min-h-[18px]">
+                              <Label htmlFor="custName" className="flex items-center gap-1 text-[11px] font-bold text-slate-600 uppercase tracking-wider shrink-0">
+                                <User size={12} className="text-indigo-500 shrink-0" />
+                                <span>Customer <span className="text-red-500">*</span></span>
                               </Label>
 
                               <div className="flex items-center gap-1 shrink-0 flex-wrap">
@@ -5497,17 +6008,17 @@ function AdminPageContent() {
                                   </Badge>
                                 )}
                                 {selectedVIPLabel && (
-                                  <Badge variant="outline" className="text-[9px] py-0 px-1 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold shrink-0">
+                                  <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4 bg-amber-50 text-amber-700 border-amber-200 font-bold shrink-0">
                                     VIP
                                   </Badge>
                                 )}
                                 {selectedMemberLabel && (
-                                  <Badge variant="outline" className="text-[9px] py-0 px-1 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0 select-text cursor-text" style={{ userSelect: 'text' }}>
+                                  <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0 select-text cursor-text" style={{ userSelect: 'text' }}>
                                     {selectedMemberId ? `ID: ${selectedMemberId}` : 'Member'}
                                   </Badge>
                                 )}
                                 {selectedProfileCustomer?.isMember && (
-                                  <Badge variant="outline" className={`text-[9px] py-0 px-1.5 h-4 font-bold shrink-0 flex items-center gap-0.5 shadow-xs ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "bg-rose-50 text-rose-700 border-rose-300" : "bg-emerald-50 text-emerald-700 border-emerald-300"}`} title="ยอดเงินคงเหลือใน Wallet">
+                                  <Badge variant="outline" className={`text-[9px] py-0 px-1.5 h-4 font-bold shrink-0 flex items-center gap-0.5 shadow-2xs ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "bg-rose-50 text-rose-700 border-rose-300" : "bg-emerald-50 text-emerald-700 border-emerald-300"}`} title="ยอดเงินคงเหลือใน Wallet">
                                     <Wallet size={9} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-600"} />
                                     <span>{formatBaht(selectedProfileCustomer.creditBalance || 0)}</span>
                                   </Badge>
@@ -5531,15 +6042,15 @@ function AdminPageContent() {
                             <div className="relative flex items-center">
                               <Input
                                 id="custName"
-                                placeholder="Name"
+                                placeholder="Customer Name"
                                 value={customerName}
                                 readOnly={true}
-                                className={`h-8 text-xs bg-slate-50 cursor-text text-slate-700 select-all ${selectedProfileCustomer ? 'pr-8' : ''}`}
+                                className={`h-9 text-xs font-semibold bg-slate-50/90 border-slate-200/90 rounded-xl cursor-text text-slate-800 select-all ${selectedProfileCustomer ? 'pr-9' : ''}`}
                               />
                               {selectedProfileCustomer && (
                                 <button
                                   type="button"
-                                  className="absolute right-1 h-6 w-6 flex items-center justify-center bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded border border-indigo-200 transition-colors shadow-2xs cursor-pointer"
+                                  className="absolute right-1.5 h-6.5 w-6.5 flex items-center justify-center bg-white hover:bg-indigo-50 text-indigo-600 rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors shadow-2xs cursor-pointer"
                                   onClick={(e) => {
                                     e.preventDefault();
                                     setCustomerDialogOpen(true);
@@ -5553,31 +6064,30 @@ function AdminPageContent() {
                           </div>
 
                           {/* Col 2: Customer Phone (5 cols) */}
-                          <div className="space-y-1 sm:col-span-5 min-w-0">
-                            <div className="flex items-center justify-between text-xs min-h-[16px]">
-                              <Label htmlFor="custPhone" className="flex items-center gap-1.5 text-xs font-medium text-slate-500 shrink-0">
-                                <Phone size={12} className="shrink-0" />
+                          <div className="space-y-1.5 sm:col-span-5 min-w-0">
+                            <div className="flex items-center justify-between text-xs min-h-[18px]">
+                              <Label htmlFor="custPhone" className="flex items-center gap-1 text-[11px] font-bold text-slate-600 uppercase tracking-wider shrink-0">
+                                <Phone size={12} className="text-slate-400 shrink-0" />
                                 <span>Phone</span>
                               </Label>
                               {phoneResolution.isIntlPrimary ? (
                                 <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4 bg-sky-50 text-sky-700 border-sky-200 font-bold flex items-center gap-1 shrink-0">
                                   <Globe size={9} />
-                                  <span>Intl (ต่างชาติ)</span>
+                                  <span>Intl</span>
                                 </Badge>
                               ) : phoneResolution.hasThaiPhone ? (
-                                <span className="text-[9px] text-slate-400 font-medium">TH Mobile</span>
+                                <span className="text-[9px] text-slate-400 font-semibold">TH Mobile</span>
                               ) : null}
                             </div>
                             <div className="relative flex items-center">
                               <Input
                                 id="custPhone"
-                                placeholder="08x-xxx-xxxx, เบอร์ต่างชาติ หรือ WA ID"
+                                placeholder="08x-xxx-xxxx or WA ID"
                                 value={customerPhone}
                                 onChange={(e) => setCustomerPhone(e.target.value)}
-                                className="h-8 text-xs bg-white text-slate-700 font-mono border-slate-200"
+                                className="h-9 text-xs bg-white text-slate-800 font-mono font-semibold border-slate-200/90 rounded-xl"
                               />
                             </div>
-                            {/* If customer has an alternate/secondary phone (e.g. international mobile or address contact phone) */}
                             {Boolean(phoneResolution.secondaryPhone || (selectedProfileCustomer?.secondaryPhone && selectedProfileCustomer.phone)) && (() => {
                               const p1 = phoneResolution.primaryPhone || selectedProfileCustomer?.phone || "";
                               const p2 = phoneResolution.secondaryPhone || selectedProfileCustomer?.secondaryPhone || "";
@@ -5595,7 +6105,7 @@ function AdminPageContent() {
                                       setCustomerPhone(targetSwapPhone);
                                     }}
                                     className="flex items-center gap-1 text-slate-600 hover:text-sky-700 font-mono transition-colors text-left truncate cursor-pointer group"
-                                    title={`คลิกเพื่อสลิกไปใช้เบอร์ ${targetSwapPhone}`}
+                                    title={`คลิกเพื่อสลับไปใช้เบอร์ ${targetSwapPhone}`}
                                   >
                                     {isTargetIntl ? <Globe size={10} className="text-sky-600 shrink-0" /> : <span className="text-[10px]">🇹🇭</span>}
                                     <span className="truncate group-hover:underline">{targetSwapPhone}</span>
@@ -5631,118 +6141,153 @@ function AdminPageContent() {
                           </div>
                         </div>
 
-
-                        
-                        <div className="flex flex-col sm:flex-row sm:items-end gap-2.5 mb-1 pb-2 border-b border-slate-100 shrink-0">
-                          <div className="space-y-1 w-full sm:flex-1">
-                            <Label htmlFor="store-select" className="flex items-center gap-1.5 text-xs font-medium">
-                              <Store size={14} className="text-blue-600" />
-                              Origin Store Branch
+                        {/* Origin Store Branch & Service Mode (Well-proportioned so Branch dropdown never squishes) */}
+                        <div className="space-y-2 pb-2.5 border-b border-slate-100 shrink-0">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <Label htmlFor="store-select" className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                              <Store size={13} className="text-indigo-600" />
+                              <span>Origin Branch</span>
                             </Label>
-                            <select 
-                              id="store-select"
-                              disabled={isPaidJob}
-                              className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                              value={selectedStoreIndex}
-                              onChange={(e) => {
-                                if (isPaidJob) return;
-                                setSelectedStoreIndex(Number(e.target.value));
-                                setEditingFeeLock(null);
-                              }}
-                            >
-                              {shopLocations.map((shop, idx) => (
-                                <option key={shop.id} value={idx}>{shop.name}</option>
-                              ))}
-                            </select>
+
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <div className="inline-flex items-center bg-slate-100/90 p-0.5 rounded-xl border border-slate-200/80 gap-0.5">
+                                <Label 
+                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                                    isPickup ? "bg-white text-emerald-700 shadow-2xs font-bold" : "text-slate-500"
+                                  } ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                  title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
+                                >
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isPickup}
+                                    disabled={isLogisticsLocked}
+                                    onChange={(e) => {
+                                      if (isLogisticsLocked) return;
+                                      setIsPickup(e.target.checked);
+                                      if (e.target.checked) setIsWalkIn(false);
+                                      setEditingFeeLock(null);
+                                    }}
+                                    className="rounded text-emerald-600 w-3 h-3 border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  />
+                                  <span>Pickup</span>
+                                </Label>
+
+                                <Label 
+                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                                    isDelivery ? "bg-white text-indigo-700 shadow-2xs font-bold" : "text-slate-500"
+                                  } ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                  title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
+                                >
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isDelivery}
+                                    disabled={isLogisticsLocked}
+                                    onChange={(e) => {
+                                      if (isLogisticsLocked) return;
+                                      setIsDelivery(e.target.checked);
+                                      if (e.target.checked && isPickup) setIsWalkIn(false);
+                                      setEditingFeeLock(null);
+                                    }}
+                                    className="rounded text-indigo-600 w-3 h-3 border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  />
+                                  <span>Delivery</span>
+                                </Label>
+
+                                <Label 
+                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                                    isWalkIn ? "bg-amber-50 text-amber-800 shadow-2xs font-bold" : "text-slate-500"
+                                  } ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                  title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
+                                >
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isWalkIn}
+                                    disabled={isLogisticsLocked}
+                                    onChange={(e) => {
+                                      if (isLogisticsLocked) return;
+                                      setIsWalkIn(e.target.checked);
+                                      if (e.target.checked) {
+                                        setIsPickup(false);
+                                      }
+                                      setEditingFeeLock(null);
+                                    }}
+                                    className="rounded text-amber-500 w-3 h-3 border-slate-300 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  />
+                                  <span>Walk-In</span>
+                                </Label>
+                              </div>
+
+                              {isLogisticsLocked && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg shadow-2xs" title="งานนี้ชำระเงินแล้ว ค่าบริการและการรับ-ส่งถูกล็อค">
+                                  <LockIcon size={10} className="text-amber-600" />
+                                  <span>Locked</span>
+                                </span>
+                              )}
+                            </div>
                           </div>
 
-                          <div className="flex items-center justify-start gap-4 pb-1 w-full sm:w-auto flex-wrap sm:flex-nowrap">
-                            <Label 
-                              className={`flex items-center gap-1.5 ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                              title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
-                            >
-                              <input 
-                                type="checkbox" 
-                                checked={isPickup}
-                                disabled={isLogisticsLocked}
-                                onChange={(e) => {
-                                  if (isLogisticsLocked) return;
-                                  setIsPickup(e.target.checked);
-                                  if (e.target.checked) setIsWalkIn(false);
-                                  setEditingFeeLock(null);
-                                }}
-                                className="rounded text-blue-600 w-3 h-3 border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                              />
-                              <span className="text-xs font-semibold text-slate-700">Pickup</span>
-                            </Label>
-                            <Label 
-                              className={`flex items-center gap-1.5 ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                              title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
-                            >
-                              <input 
-                                type="checkbox" 
-                                checked={isDelivery}
-                                disabled={isLogisticsLocked}
-                                onChange={(e) => {
-                                  if (isLogisticsLocked) return;
-                                  setIsDelivery(e.target.checked);
-                                  if (e.target.checked && isPickup) setIsWalkIn(false);
-                                  setEditingFeeLock(null);
-                                }}
-                                className="rounded text-blue-600 w-3 h-3 border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                              />
-                              <span className="text-xs font-semibold text-slate-700">Delivery</span>
-                            </Label>
-                            <Label 
-                              className={`flex items-center gap-1.5 ml-2 ${isLogisticsLocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                              title={isLogisticsLocked ? "งานนี้ชำระเงินแล้ว ไม่สามารถเปลี่ยนประเภทบริการรับ-ส่งได้ (กรุณากด Unlock Paid หากต้องการแก้ไข)" : undefined}
-                            >
-                              <input 
-                                type="checkbox" 
-                                checked={isWalkIn}
-                                disabled={isLogisticsLocked}
-                                onChange={(e) => {
-                                  if (isLogisticsLocked) return;
-                                  setIsWalkIn(e.target.checked);
-                                  if (e.target.checked) {
-                                    setIsPickup(false);
-                                  }
-                                  setEditingFeeLock(null);
-                                }}
-                                className="rounded text-amber-500 w-3 h-3 border-slate-300 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                              />
-                              <span className="text-xs font-semibold text-amber-700">Walk-In</span>
-                            </Label>
-                            {isLogisticsLocked && (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded shadow-xs" title="งานนี้ชำระเงินแล้ว ค่าบริการและการรับ-ส่งถูกล็อค">
-                                <LockIcon size={11} className="text-amber-600" />
-                                <span>Locked</span>
-                              </span>
-                            )}
-                          </div>
+                          <select 
+                            id="store-select"
+                            disabled={isPaidJob}
+                            className="flex h-9 w-full rounded-xl border border-slate-200/90 bg-slate-50/70 hover:bg-white px-3 py-1 text-xs font-semibold text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                            value={selectedStoreIndex}
+                            onChange={(e) => {
+                              if (isPaidJob) return;
+                              setSelectedStoreIndex(Number(e.target.value));
+                              setEditingFeeLock(null);
+                            }}
+                          >
+                            {shopLocations.map((shop, idx) => (
+                              <option key={shop.id} value={idx}>{shop.name}</option>
+                            ))}
+                          </select>
                         </div>
 
-                        <div className="flex flex-col gap-2 shrink-0">
+                        {/* Pickup & Delivery Address Section */}
+                        <div className="flex flex-col gap-2.5 shrink-0">
+                          {/* Pickup Address Field */}
                           {isPickup && (
                             <div className="space-y-1">
-                              <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เปิดตำแหน่งใน Google Maps">
-                                  <MapPin 
-                                    size={14} 
-                                    className="text-emerald-600 cursor-pointer hover:text-emerald-800 transition-colors" 
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      if (pickupLoc) {
-                                        window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pickupLoc)}`, '_blank');
-                                      } else if (pickupCoords && (pickupCoords.lat !== 0 || pickupCoords.lng !== 0)) {
-                                        window.open(`https://www.google.com/maps/search/?api=1&query=${pickupCoords.lat},${pickupCoords.lng}`, '_blank');
-                                      }
+                              <div className="flex items-center justify-between">
+                                <Label htmlFor="pickup-location" className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                  <span title="เปิดตำแหน่งใน Google Maps">
+                                    <MapPin 
+                                      size={13} 
+                                      className="text-emerald-600 cursor-pointer hover:text-emerald-800 transition-colors" 
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (pickupLoc) {
+                                          window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pickupLoc)}`, '_blank');
+                                        } else if (pickupCoords && (pickupCoords.lat !== 0 || pickupCoords.lng !== 0)) {
+                                          window.open(`https://www.google.com/maps/search/?api=1&query=${pickupCoords.lat},${pickupCoords.lng}`, '_blank');
+                                        }
+                                      }}
+                                    />
+                                  </span>
+                                  <span>Pickup Address <span className="text-red-500">*</span></span>
+                                </Label>
+
+                                {!isDelivery && (
+                                  <button
+                                    type="button"
+                                    disabled={isLogisticsLocked}
+                                    onClick={() => {
+                                      setIsDelivery(true);
+                                      setDifferentDeliveryAddress(true);
+                                      setIsDeliveryDirty(true);
+                                      setEditingFeeLock(null);
+                                      setTimeout(() => {
+                                        const el = document.getElementById("delivery-location") as HTMLInputElement | null;
+                                        if (el) el.focus();
+                                      }, 50);
                                     }}
-                                  />
-                                </span>
-                                Pickup Address <span className="text-red-500">*</span>
-                              </Label>
+                                    className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2 py-0.5 rounded-lg cursor-pointer transition-colors shadow-2xs disabled:opacity-50"
+                                  >
+                                    + Add Delivery Address
+                                  </button>
+                                )}
+                              </div>
                               <div className="flex gap-2">
                                 <div className="flex-1">
                                   <LocationInput
@@ -5752,13 +6297,16 @@ function AdminPageContent() {
                                     localData={localDataForSearch}
                                     onChange={(v) => {
                                       setPickupLoc(v);
+                                      if (!isDeliveryDirty && !differentDeliveryAddress) {
+                                        setDeliveryLoc(v);
+                                      }
                                     }}
                                     onSelectLocation={(loc) => {
                                       const newCoords = { lat: loc.lat, lng: loc.lng };
                                       setPickupCoords(newCoords);
                                       updateClosestStoreAsync(newCoords, loc.name);
                                       setEditingFeeLock(null);
-                                      if (!isDeliveryDirty) {
+                                      if (!isDeliveryDirty && !differentDeliveryAddress) {
                                         setDeliveryLoc(loc.name);
                                         setDeliveryCoords(newCoords);
                                       }
@@ -5769,49 +6317,135 @@ function AdminPageContent() {
                                   <Input
                                     placeholder="Room"
                                     value={pickupRoom}
-                                    onChange={(e) => setPickupRoom(e.target.value)}
-                                    className="h-9 text-xs px-2"
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setPickupRoom(val);
+                                      if (!isDeliveryDirty && !differentDeliveryAddress) {
+                                        setDeliveryRoom(val);
+                                      }
+                                    }}
+                                    className="h-9 text-xs font-semibold px-2.5 rounded-xl border-slate-200/90"
                                   />
                                 </div>
                               </div>
                             </div>
                           )}
 
+                          {/* Delivery Address Field */}
                           {isDelivery && (
-                            <div className="space-y-1">
-                              <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-xs font-medium">
-                                <span title="เปิดตำแหน่งใน Google Maps">
-                                  <Navigation 
-                                    size={14} 
-                                    className="text-red-600 cursor-pointer hover:text-red-800 transition-colors" 
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      if (deliveryLoc) {
-                                        window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(deliveryLoc)}`, '_blank');
-                                      } else if (deliveryCoords && (deliveryCoords.lat !== 0 || deliveryCoords.lng !== 0)) {
-                                        window.open(`https://www.google.com/maps/search/?api=1&query=${deliveryCoords.lat},${deliveryCoords.lng}`, '_blank');
-                                      }
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                                <Label htmlFor="delivery-location" className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                  <span title="เปิดตำแหน่งใน Google Maps">
+                                    <Navigation 
+                                      size={13} 
+                                      className="text-rose-600 cursor-pointer hover:text-rose-800 transition-colors" 
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (deliveryLoc) {
+                                          window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(deliveryLoc)}`, '_blank');
+                                        } else if (deliveryCoords && (deliveryCoords.lat !== 0 || deliveryCoords.lng !== 0)) {
+                                          window.open(`https://www.google.com/maps/search/?api=1&query=${deliveryCoords.lat},${deliveryCoords.lng}`, '_blank');
+                                        }
+                                      }}
+                                    />
+                                  </span>
+                                  <span>Delivery Address <span className="text-red-500">*</span></span>
+                                </Label>
+
+                                {isPickup ? (
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <label className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-slate-100/90 hover:bg-indigo-50/70 border border-slate-200/90 cursor-pointer select-none transition-colors">
+                                      <input
+                                        type="checkbox"
+                                        id="toggle-different-delivery"
+                                        checked={differentDeliveryAddress || isDeliveryDirty}
+                                        disabled={isLogisticsLocked}
+                                        onChange={(e) => {
+                                          const checked = e.target.checked;
+                                          setDifferentDeliveryAddress(checked);
+                                          setIsDeliveryDirty(checked);
+                                          if (checked) {
+                                            if (deliveryLoc === pickupLoc) {
+                                              setDeliveryLoc("");
+                                              setDeliveryRoom("");
+                                              setDeliveryCoords(null);
+                                            }
+                                            setTimeout(() => {
+                                              const el = document.getElementById("delivery-location") as HTMLInputElement | null;
+                                              if (el) el.focus();
+                                            }, 50);
+                                          } else {
+                                            setDeliveryLoc(pickupLoc);
+                                            setDeliveryCoords(pickupCoords);
+                                            setDeliveryRoom(pickupRoom);
+                                            setEditingFeeLock(null);
+                                          }
+                                        }}
+                                        className="rounded text-indigo-600 w-3 h-3 border-slate-300 focus:ring-indigo-500 cursor-pointer disabled:opacity-50"
+                                      />
+                                      <span className="text-[10px] font-bold text-slate-700">
+                                        {currentLanguage === "en" ? "Different delivery address" : "ส่งคนละที่กับจุดรับผ้า"}
+                                      </span>
+                                    </label>
+
+                                    {selectedProfileCustomer?.secondaryAddress && (
+                                      <button
+                                        type="button"
+                                        disabled={isLogisticsLocked}
+                                        onClick={() => {
+                                          const sec = (selectedProfileCustomer.secondaryAddress || "").trim();
+                                          setDifferentDeliveryAddress(true);
+                                          setIsDeliveryDirty(true);
+                                          setDeliveryLoc(sec);
+                                          setEditingFeeLock(null);
+                                        }}
+                                        className="h-5.5 px-2 text-[9.5px] font-bold text-indigo-700 border border-indigo-200 bg-indigo-50/80 hover:bg-indigo-100 rounded-lg cursor-pointer transition-colors shadow-2xs disabled:opacity-50"
+                                        title={`ใช้ที่อยู่สำรอง: ${selectedProfileCustomer.secondaryAddress}`}
+                                      >
+                                        + 2nd Addr
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={isLogisticsLocked}
+                                    onClick={() => {
+                                      setIsPickup(true);
+                                      setIsWalkIn(false);
+                                      setDifferentDeliveryAddress(true);
+                                      setIsDeliveryDirty(true);
+                                      setEditingFeeLock(null);
                                     }}
-                                  />
-                                </span>
-                                Delivery Address <span className="text-red-500">*</span>
-                              </Label>
+                                    className="text-[10px] font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-lg cursor-pointer transition-colors shadow-2xs disabled:opacity-50"
+                                  >
+                                    + Add Pickup Location
+                                  </button>
+                                )}
+                              </div>
                               <div className="flex gap-2">
                                 <div className="flex-1">
                                   <LocationInput
                                     id="delivery-location"
-                                    placeholder="Customer delivery address"
+                                    placeholder={isPickup && (differentDeliveryAddress || isDeliveryDirty) ? "Enter different delivery address..." : "Customer delivery address"}
                                     value={deliveryLoc}
                                     localData={localDataForSearch}
                                     onChange={(v) => {
                                       setDeliveryLoc(v);
                                       setIsDeliveryDirty(true);
+                                      if (isPickup && v.trim().toLowerCase() !== pickupLoc.trim().toLowerCase()) {
+                                        setDifferentDeliveryAddress(true);
+                                      }
                                     }}
                                     onSelectLocation={(loc) => {
                                       const newCoords = { lat: loc.lat, lng: loc.lng };
                                       setDeliveryCoords(newCoords);
                                       setIsDeliveryDirty(true);
+                                      if (isPickup && loc.name.trim().toLowerCase() !== pickupLoc.trim().toLowerCase()) {
+                                        setDifferentDeliveryAddress(true);
+                                      }
                                       setEditingFeeLock(null);
                                       if (!isPickup) {
                                         updateClosestStoreAsync(newCoords, loc.name);
@@ -5823,8 +6457,15 @@ function AdminPageContent() {
                                   <Input
                                     placeholder="Room"
                                     value={deliveryRoom}
-                                    onChange={(e) => setDeliveryRoom(e.target.value)}
-                                    className="h-9 text-xs px-2"
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setDeliveryRoom(val);
+                                      setIsDeliveryDirty(true);
+                                      if (isPickup && val.trim() !== pickupRoom.trim()) {
+                                        setDifferentDeliveryAddress(true);
+                                      }
+                                    }}
+                                    className="h-9 text-xs font-semibold px-2.5 rounded-xl border-slate-200/90"
                                   />
                                 </div>
                               </div>
@@ -5832,8 +6473,325 @@ function AdminPageContent() {
                           )}
                         </div>
 
-                        {/* Interactive Map */}
-                        <div className="min-h-[80px] h-[80px] lg:h-[90px] shrink-0 rounded-lg overflow-hidden border border-slate-200 mt-1 relative">
+                        {/* Scheduling Block */}
+                        <div className="space-y-2 pt-2 border-t border-slate-100">
+                          {isPickup && (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                  <Clock size={13} className="text-amber-500" />
+                                  <span>Pickup Time & Rider</span>
+                                </Label>
+                                <div className="flex items-center gap-2.5">
+                                  <Label className="flex items-center gap-1 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                                      checked={isPickupMeet}
+                                      onChange={(e) => {
+                                        setIsPickupMeet(e.target.checked);
+                                        if (e.target.checked) setIsPickupLobby(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-semibold">Meet up</span>
+                                  </Label>
+                                  <Label className="flex items-center gap-1 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                                      checked={isPickupLobby}
+                                      onChange={(e) => {
+                                        setIsPickupLobby(e.target.checked);
+                                        if (e.target.checked) setIsPickupMeet(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-semibold">Lobby</span>
+                                  </Label>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-[1.55fr_1fr] gap-2">
+                                <DateTimePicker
+                                  id="schedule-pickup"
+                                  value={pickupScheduledTime}
+                                  onChange={setPickupScheduledTime}
+                                />
+                                <select
+                                  className="flex h-8 w-full rounded-lg border border-slate-200/90 bg-slate-50/70 hover:bg-white px-2 py-1 text-xs font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20"
+                                  value={pickupRiderId}
+                                  onChange={(e) => setPickupRiderId(e.target.value)}
+                                >
+                                  <option value="">-- Assign Rider --</option>
+                                  {riders
+                                    .filter(r => r.isActive !== false || (pickupRiderId && r.id === pickupRiderId))
+                                    .map(r => (
+                                      <option key={`p-${r.id}`} value={r.id}>
+                                        {r.name}{r.isActive === false ? " (Resigned / ลาออกแล้ว)" : ""}
+                                      </option>
+                                    ))}
+                                </select>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className={`space-y-1 ${isPickup ? 'pt-1.5 border-t border-slate-100' : ''}`}>
+                            <div className="flex items-center justify-between gap-2">
+                              <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                <CalendarClock size={13} className="text-indigo-500" />
+                                <span>{isDelivery ? "Delivery Time & Rider" : "Est. Return Date"}</span>
+                              </Label>
+                              {isDelivery && (
+                                <div className="flex items-center gap-2.5">
+                                  <Label className="flex items-center gap-1 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                                      checked={isDeliveryMeet}
+                                      onChange={(e) => {
+                                        setIsDeliveryMeet(e.target.checked);
+                                        if (e.target.checked) setIsDeliveryLobby(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-semibold">Meet up</span>
+                                  </Label>
+                                  <Label className="flex items-center gap-1 cursor-pointer w-fit">
+                                    <input 
+                                      type="checkbox" 
+                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                                      checked={isDeliveryLobby}
+                                      onChange={(e) => {
+                                        setIsDeliveryLobby(e.target.checked);
+                                        if (e.target.checked) setIsDeliveryMeet(false);
+                                      }}
+                                    />
+                                    <span className="text-[11px] text-slate-600 font-semibold">Lobby</span>
+                                  </Label>
+                                </div>
+                              )}
+                            </div>
+                            <div className={isDelivery ? "grid grid-cols-[1.55fr_1fr] gap-2" : "flex flex-col gap-1"}>
+                              <DateTimePicker
+                                id="schedule-delivery"
+                                value={deliveryScheduledTime}
+                                onChange={setDeliveryScheduledTime}
+                              />
+                              {isDelivery && (
+                                <select
+                                  className="flex h-8 w-full rounded-lg border border-slate-200/90 bg-slate-50/70 hover:bg-white px-2 py-1 text-xs font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20"
+                                  value={deliveryRiderId}
+                                  onChange={(e) => setDeliveryRiderId(e.target.value)}
+                                >
+                                  <option value="">-- Assign Rider --</option>
+                                  {riders
+                                    .filter(r => r.isActive !== false || (deliveryRiderId && r.id === deliveryRiderId))
+                                    .map(r => (
+                                      <option key={`d-${r.id}`} value={r.id}>
+                                        {r.name}{r.isActive === false ? " (Resigned / ลาออกแล้ว)" : ""}
+                                      </option>
+                                    ))}
+                                </select>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Customer Past Orders Card (Bottom Left - Listed Downwards by Order Bills, Fills Bottom Space) */}
+                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2 flex-1 min-h-[220px]">
+                        {isLoadingCustomerJobs ? (
+                          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-center gap-2 text-slate-500 text-xs flex-1">
+                            <Loader2 size={13} className="animate-spin text-amber-500" />
+                            <span className="text-[10.5px] font-medium">Loading customer past transactions...</span>
+                          </div>
+                        ) : customerPastJobs.length > 0 ? (
+                          <div className="flex-1 flex flex-col gap-2 min-h-0">
+                            {/* Past Orders Header */}
+                            <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 shrink-0">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <History size={13} className="text-amber-500 shrink-0" />
+                                <Label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider truncate">
+                                  {currentLanguage === "en" ? "Customer Past Orders" : "ประวัติการสั่งของลูกค้า"}
+                                </Label>
+                                <span className="text-[9.5px] font-bold text-amber-700 bg-amber-50 border border-amber-200/80 px-1.5 py-0.2 rounded-full shrink-0">
+                                  {customerPastJobs.length} {currentLanguage === "en" ? (customerPastJobs.length > 1 ? "orders" : "order") : "บิล"}
+                                </span>
+                              </div>
+
+                              {customerPastJobs.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const anyCollapsed = customerPastJobs.some(j => expandedPastJobIds[j.id] === false);
+                                    const nextState: Record<string, boolean> = {};
+                                    customerPastJobs.forEach(j => { nextState[j.id] = anyCollapsed; });
+                                    setExpandedPastJobIds(nextState);
+                                  }}
+                                  className="text-[9.5px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
+                                >
+                                  {customerPastJobs.some(j => expandedPastJobIds[j.id] === false)
+                                    ? (currentLanguage === "en" ? "Expand All" : "ขยายทั้งหมด")
+                                    : (currentLanguage === "en" ? "Collapse All" : "ย่อทั้งหมด")}
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Downwards List of Order Bills - Fills available bottom height */}
+                            <div className="space-y-2 flex-1 overflow-y-auto pr-0.5 show-scrollbar min-h-0">
+                              {customerPastJobs.map((pj: any, pjIdx: number) => {
+                                const isExpanded = expandedPastJobIds[pj.id] !== false;
+                                const pjItems = Array.isArray(pj.items) && pj.items.length > 0
+                                  ? pj.items
+                                  : (pj.itemsJson ? (() => { try { return JSON.parse(pj.itemsJson); } catch { return []; } })() : []);
+                                const isLatest = pjIdx === 0;
+
+                                return (
+                                  <div
+                                    key={pj.id || pjIdx}
+                                    className={`rounded-xl border transition-all ${
+                                      isLatest
+                                        ? "bg-slate-50/90 border-slate-200/90 shadow-2xs"
+                                        : "bg-white/90 border-slate-200/70 hover:border-slate-300"
+                                    } p-2.5 space-y-1.5`}
+                                  >
+                                    {/* Bill Header (Click to expand/collapse) */}
+                                    <div
+                                      onClick={() => {
+                                        setExpandedPastJobIds(prev => ({
+                                          ...prev,
+                                          [pj.id]: prev[pj.id] === false ? true : false,
+                                        }));
+                                      }}
+                                      className="flex items-center justify-between cursor-pointer select-none gap-2 pb-1 border-b border-slate-200/60"
+                                    >
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <span className="text-[10px] font-mono font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-1.5 py-0.2 rounded-md shadow-2xs shrink-0">
+                                          #{formatJobDisplayId(pj.id)}
+                                        </span>
+                                        {isLatest && (
+                                          <span className="text-[8.5px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded shrink-0">
+                                            Latest
+                                          </span>
+                                        )}
+                                        <span className="text-[10px] text-slate-500 truncate">
+                                          {pj.createdAt ? format(new Date(pj.createdAt), "dd MMM yyyy, HH:mm") : "-"}
+                                        </span>
+                                      </div>
+
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <span className="font-mono font-black text-amber-600 text-xs">
+                                          ฿{(pj.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: (pj.totalAmount || 0) % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2 })}
+                                        </span>
+                                        <span className="text-slate-400">
+                                          {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Bill Metadata: Fulfillment, Speed, Channel */}
+                                    <div className="flex items-center justify-between text-[9.5px] text-slate-500 px-0.5">
+                                      <span className="flex items-center gap-1 truncate font-medium">
+                                        <Truck size={10} className="text-sky-500 shrink-0" />
+                                        <span className="truncate">
+                                          {pj.pickupLocation && pj.dropoffLocation
+                                            ? (pj.pickupLocation === pj.dropoffLocation ? "Walk-In" : "Pickup & Delivery")
+                                            : (pj.deliveryAddress ? "Delivery" : "Standard Order")}
+                                        </span>
+                                        {pj.billNo && (
+                                          <span className="text-slate-400 font-mono">({pj.billNo})</span>
+                                        )}
+                                      </span>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <span className="font-medium text-slate-500">
+                                          {pj.paymentChannel || (pj.isPaid ? "Paid" : "Unpaid")}
+                                        </span>
+                                        {pj.serviceSpeed && pj.serviceSpeed !== "standard" && (
+                                          <span className="font-bold text-indigo-600">
+                                            {pj.serviceSpeed === "express_50" ? "⚡ Exp 50%" : "⚡ Exp 100%"}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Expanded Items Breakdown */}
+                                    {isExpanded && pjItems.length > 0 && (
+                                      <div className="space-y-1 pt-0.5">
+                                        <div className="space-y-1 max-h-[120px] overflow-y-auto pr-0.5 show-scrollbar">
+                                          {pjItems.map((pi: any, idx: number) => (
+                                            <div key={idx} className="flex justify-between items-center text-[10.5px] bg-white hover:bg-slate-100/70 px-2 py-1 rounded-lg border border-slate-200/70 transition-colors">
+                                              <span className="text-slate-700 truncate pr-1 font-semibold">{pi.name || "Item"}</span>
+                                              <div className="flex items-center gap-1.5 shrink-0">
+                                                <span className="text-slate-400 text-[9.5px]">×{pi.quantity || 1} {pi.unit || ""}</span>
+                                                <span className="text-amber-600 font-bold text-[10.5px]">฿{safeCeil((pi.price || 0) * (pi.quantity || 1)).toLocaleString()}</span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+
+                                        {/* Copy Items Button for this specific bill */}
+                                        {!isPaidJob && !isCartLocked && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleCopyPastItems(pjItems, pj)}
+                                            className="w-full mt-1 py-1 px-2 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[10px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                                            title="คัดลอกรายการสินค้าจากออเดอร์นี้ใส่ตะกร้าปัจจุบัน"
+                                          >
+                                            <Copy size={11} className="text-indigo-600" />
+                                            <span>{currentLanguage === "en" ? `Copy Items from #${formatJobDisplayId(pj.id)}` : `คัดลอกบิลนี้ (#${formatJobDisplayId(pj.id)}) ลงตะกร้า`}</span>
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (selectedProfileCustomer || customerPhone || customerName) ? (
+                          <div className="p-3 rounded-xl bg-slate-50/80 border border-dashed border-slate-200 text-center text-slate-500 text-[10.5px] flex items-center justify-center gap-1.5 flex-1 min-h-[90px]">
+                            <UserCheck size={13} className="text-slate-400" />
+                            <span className="italic">{currentLanguage === "en" ? "New customer (no previous transaction history)" : "ลูกค้ารายใหม่ (ไม่มีประวัติการสั่งก่อนหน้า)"}</span>
+                          </div>
+                        ) : (
+                          <div className="p-3 rounded-xl bg-slate-50/80 border border-dashed border-slate-200 text-center text-slate-500 text-[10.5px] flex items-center justify-center gap-1.5 flex-1 min-h-[90px]">
+                            <Search size={13} className="text-slate-400" />
+                            <span className="italic">{currentLanguage === "en" ? "Select a customer to view latest past transaction" : "เลือกหรือค้นหาลูกค้าเพื่อดูประวัติการสั่งล่าสุด"}</span>
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+
+                    {/* COL 2: Route & Map + Admin Note Logs */}
+                    <motion.div
+                      className="col-span-1 flex flex-col gap-2.5 overflow-y-auto pr-0.5 pb-2 min-w-0"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.15, duration: 0.3 }}
+                    >
+                      {/* Interactive Route & Live Map Card */}
+                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2 shrink-0">
+                        <div className="flex items-center justify-between pb-1 border-b border-slate-100">
+                          <Label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                            <MapPin size={13} className="text-emerald-600" />
+                            <span>Route & Location Map</span>
+                          </Label>
+                          {(pickupLoc || deliveryLoc) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const target = deliveryLoc || pickupLoc;
+                                if (target) {
+                                  window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(target)}`, '_blank');
+                                }
+                              }}
+                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 hover:underline cursor-pointer"
+                            >
+                              <span>Google Maps</span>
+                              <ExternalLink size={10} />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Interactive Map (Noticeably bigger for high readability) */}
+                        <div className="min-h-[200px] h-[215px] xl:h-[235px] rounded-xl overflow-hidden border border-slate-200/90 relative shadow-2xs">
                           <CreateJobMap 
                             branchCoords={shopLocations[selectedStoreIndex]?.coords || { lat: 13.7417, lng: 100.5526 }} 
                             pickupCoords={isPickup ? pickupCoords : null}
@@ -5861,276 +6819,217 @@ function AdminPageContent() {
                           />
                         </div>
 
-                        {/* Scheduling Block moved from Col 3 */}
-                        <div className="space-y-1 pt-1 border-t border-slate-100">
-                          {isPickup && (
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <Label htmlFor="schedule-pickup" className="flex items-center gap-1.5 text-xs font-medium">
-                                  <Clock size={14} className="text-amber-500" />
-                                  Pickup Time & Rider
-                                </Label>
-                                <div className="flex items-center gap-3">
-                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
-                                      checked={isPickupMeet}
-                                      onChange={(e) => {
-                                        setIsPickupMeet(e.target.checked);
-                                        if (e.target.checked) setIsPickupLobby(false);
-                                      }}
-                                    />
-                                    <span className="text-[11px] text-slate-600 font-medium">Meet up</span>
-                                  </Label>
-                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
-                                      checked={isPickupLobby}
-                                      onChange={(e) => {
-                                        setIsPickupLobby(e.target.checked);
-                                        if (e.target.checked) setIsPickupMeet(false);
-                                      }}
-                                    />
-                                    <span className="text-[11px] text-slate-600 font-medium">Lobby</span>
-                                  </Label>
+                        {/* Route & Distance Info Strip */}
+                        {(isPickup || isDelivery) && (
+                          <div className="flex justify-between items-center text-[10px] bg-slate-50/90 p-2 rounded-xl border border-slate-200/70">
+                            <div className="flex items-center gap-1.5 text-slate-600 font-semibold truncate">
+                              <Truck size={12} className="text-indigo-600 shrink-0" />
+                              {isPickup && <span>Pickup: {pickupDist} km (×2)</span>}
+                              {isPickup && isDelivery && <span className="text-slate-400">/</span>}
+                              {isDelivery && <span>Delivery: {deliveryDist} km</span>}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0 ml-1">
+                              <span className="text-slate-400 font-bold">Rider Comm:</span>
+                              {(() => {
+                                const targetCustomer = selectedProfileCustomer || (editingJobId && activeJob ? findMatchingCustomer(customers, { customerId: activeJob.customerId, customerName: activeJob.customerName, customerPhone: activeJob.customerPhone }) : null);
+                                const comm = calculateRiderCommission({
+                                  customer: targetCustomer,
+                                  isPickup,
+                                  pickupDist,
+                                  isDelivery,
+                                  deliveryDist,
+                                  systemSettings,
+                                  isVIP: Boolean(selectedVIPLabel),
+                                  isFreeDelivery: activeIsFreeDelivery,
+                                });
+                                const pVal = (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
+                                  ? (activeJob.pickupCommission ?? 0)
+                                  : comm.pickupCommission;
+                                const dVal = (editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
+                                  ? (activeJob.deliveryCommission ?? 0)
+                                  : comm.deliveryCommission;
+                                const totalComm = comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || activeIsFreeDelivery ? 0 : (pVal + dVal));
+                                return (
+                                  <span className="font-extrabold text-amber-600">฿{totalComm.toFixed(0)}</span>
+                                );
+                              })()}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Admin Notes & Activity Feed Card */}
+                      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2 flex-1 min-h-[220px] overflow-hidden">
+                        <div className="flex items-center justify-between shrink-0">
+                          <Label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
+                            <MessageSquare size={13} className="text-indigo-500" />
+                            <span>Admin Note Logs</span>
+                            {adminLogs.length > 0 && (
+                              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                                {adminLogs.length}
+                              </span>
+                            )}
+                          </Label>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer"
+                            onClick={() => setNoteLogsModalOpen(true)}
+                            title="Expand Notes"
+                          >
+                            <Maximize2 size={12} />
+                          </Button>
+                        </div>
+                        <div className="flex flex-col gap-2 flex-1 overflow-hidden">
+                          {adminLogs.length > 0 ? (
+                            <div 
+                              className="flex-1 min-h-0 overflow-y-auto space-y-2 bg-slate-50/80 p-2.5 rounded-xl border border-slate-200/60 text-xs"
+                            >
+                              {adminLogs.map((log, i) => (
+                                <div key={log.id || i} className="group relative p-2.5 rounded-xl bg-white border border-slate-200/70 shadow-2xs pr-6">
+                                  <div className="flex justify-between items-center mb-1">
+                                    <span className={`font-extrabold text-[11px] uppercase tracking-wide ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-800'}`}>
+                                      {log.userName || (log as any).createdBy || "System"}
+                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10px] font-medium text-slate-400">
+                                        {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
+                                      </span>
+                                      {log.isNew && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteAdminLog(log.id!);
+                                          }}
+                                          className="text-slate-400 hover:text-rose-500 rounded p-0.5 transition-colors"
+                                          title="Delete note"
+                                        >
+                                          <Trash2 size={11} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
+                                  {log.imageUrls && log.imageUrls.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                      {log.imageUrls.map((url, idx) => (
+                                        <div 
+                                          key={idx} 
+                                          className="relative w-10 h-10 rounded-lg border border-slate-200 overflow-hidden cursor-pointer bg-slate-100 shadow-2xs"
+                                          onClick={(e) => { e.stopPropagation(); setPreviewAdminNoteImage(url); }}
+                                          title="Click to view full image"
+                                        >
+                                          <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover hover:scale-110 transition-transform" />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
-                              </div>
-                              <div className="grid grid-cols-[1.6fr_1fr] gap-2">
-                                <DateTimePicker
-                                  id="schedule-pickup"
-                                  value={pickupScheduledTime}
-                                  onChange={setPickupScheduledTime}
-                                />
-                                <select
-                                  className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                                  value={pickupRiderId}
-                                  onChange={(e) => setPickupRiderId(e.target.value)}
-                                >
-                                  <option value="">-- Assign Rider --</option>
-                                  {riders
-                                    .filter(r => r.isActive !== false || (pickupRiderId && r.id === pickupRiderId))
-                                    .map(r => (
-                                      <option key={`p-${r.id}`} value={r.id}>
-                                        {r.name}{r.isActive === false ? " (Resigned / ลาออกแล้ว)" : ""}
-                                      </option>
-                                    ))}
-                                </select>
-                              </div>
+                              ))}
+                              <div ref={adminLogsEndRef} />
+                            </div>
+                          ) : (
+                            <div 
+                              className="text-xs text-slate-400 italic px-3 flex-1 flex flex-col items-center justify-center border border-dashed border-slate-200 bg-slate-50/60 rounded-xl gap-1"
+                            >
+                              <MessageSquare size={18} className="text-slate-300" />
+                              <span>No notes recorded yet</span>
                             </div>
                           )}
-
-                          <div className={`space-y-0.5 ${isPickup ? 'pt-0.5 border-t border-slate-100' : ''}`}>
-                            <div className="flex items-center justify-between gap-2">
-                              <Label htmlFor="schedule-delivery" className="flex items-center gap-1.5 text-xs font-medium">
-                                <CalendarClock size={14} className="text-blue-500" />
-                                {isDelivery ? "Delivery Time & Rider" : "Est. Return Date"}
-                              </Label>
-                              {isDelivery && (
-                                <div className="flex items-center gap-3">
-                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
-                                      checked={isDeliveryMeet}
-                                      onChange={(e) => {
-                                        setIsDeliveryMeet(e.target.checked);
-                                        if (e.target.checked) setIsDeliveryLobby(false);
-                                      }}
-                                    />
-                                    <span className="text-[11px] text-slate-600 font-medium">Meet up</span>
-                                  </Label>
-                                  <Label className="flex items-center gap-1.5 cursor-pointer w-fit">
-                                    <input 
-                                      type="checkbox" 
-                                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 h-3.5 w-3.5"
-                                      checked={isDeliveryLobby}
-                                      onChange={(e) => {
-                                        setIsDeliveryLobby(e.target.checked);
-                                        if (e.target.checked) setIsDeliveryMeet(false);
-                                      }}
-                                    />
-                                    <span className="text-[11px] text-slate-600 font-medium">Lobby</span>
-                                  </Label>
-                                </div>
-                              )}
-                            </div>
-                            <div className={isDelivery ? "grid grid-cols-[1.6fr_1fr] gap-1" : "flex flex-col gap-1"}>
-                              <DateTimePicker
-                                  id="schedule-delivery"
-                                  value={deliveryScheduledTime}
-                                  onChange={setDeliveryScheduledTime}
-                                />
-                                {isDelivery && (
-                                  <select
-                                    className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
-                                    value={deliveryRiderId}
-                                    onChange={(e) => setDeliveryRiderId(e.target.value)}
-                                  >
-                                    <option value="">-- Assign Rider --</option>
-                                    {riders
-                                      .filter(r => r.isActive !== false || (deliveryRiderId && r.id === deliveryRiderId))
-                                      .map(r => (
-                                        <option key={`d-${r.id}`} value={r.id}>
-                                          {r.name}{r.isActive === false ? " (Resigned / ลาออกแล้ว)" : ""}
-                                        </option>
-                                      ))}
-                                  </select>
+                          <div className="flex flex-col gap-1 shrink-0">
+                            <div className="flex gap-1.5 items-center">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className={`h-9 w-9 p-0 rounded-xl border shrink-0 cursor-pointer ${showNoteUploader && !noteLogsModalOpen ? 'bg-indigo-50 border-indigo-300 text-indigo-600' : 'bg-slate-50/80 border-slate-200/90 text-slate-500 hover:bg-slate-100'}`}
+                                onClick={() => setShowNoteUploader(prev => !prev)}
+                                disabled={isUploadingNote}
+                                title="Attach images"
+                              >
+                                <Paperclip size={14} />
+                              </Button>
+                              <Input
+                                placeholder="Type a note & press Enter..."
+                                value={adminNoteInput}
+                                onChange={(e) => setAdminNoteInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleSendAdminLog();
+                                  }
+                                }}
+                                disabled={isUploadingNote}
+                                className="h-9 text-xs bg-slate-50/70 focus:bg-white border-slate-200/90 flex-1 rounded-xl"
+                              />
+                              <Button 
+                                type="button" 
+                                size="sm" 
+                                disabled={isUploadingNote}
+                                className="h-9 px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-2xs cursor-pointer shrink-0"
+                                onClick={handleSendAdminLog}
+                              >
+                                {isUploadingNote ? (
+                                  <Loader2 className="animate-spin" size={14} />
+                                ) : (
+                                  <Send size={13} />
                                 )}
-                              </div>
+                                <span className="ml-1.5">Send</span>
+                              </Button>
                             </div>
-                          </div>
-                        </div>
-
-                        {/* Admin Notes & Options */}
-                        <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-1.5 flex-1 min-h-[180px]">
-                          <div className="flex items-center justify-between shrink-0">
-                            <Label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5"><MessageSquare size={14} className="text-indigo-500" /> Admin Note Logs</Label>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded"
-                              onClick={() => setNoteLogsModalOpen(true)}
-                              title="Expand Notes"
-                            >
-                              <Maximize2 size={12} />
-                            </Button>
-                          </div>
-                          <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
-                            {adminLogs.length > 0 ? (
-                              <div 
-                                className="flex-1 min-h-0 overflow-y-auto space-y-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 text-xs"
-                              >
-                                {adminLogs.map((log, i) => (
-                                  <div key={log.id || i} className="group relative p-2 rounded-lg bg-white border border-slate-100 shadow-sm pr-6">
-                                    <div className="flex justify-between items-center mb-1">
-                                      <span className={`font-bold text-xs uppercase ${log.userId === 'system' ? 'text-indigo-600' : 'text-slate-700'}`}>
-                                        {log.userName || (log as any).createdBy || "System"}
-                                      </span>
-                                      <div className="flex items-center gap-1.5">
-                                        <span className="text-[10px] text-slate-400">
-                                          {format(new Date(log.timestamp || (log as any).createdAt), "MMM d, HH:mm")}
-                                        </span>
-                                        {log.isNew && (
-                                          <button
-                                            type="button"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleDeleteAdminLog(log.id!);
-                                            }}
-                                            className="text-slate-400 hover:text-rose-500 rounded p-0.5 transition-colors"
-                                            title="Delete note"
-                                          >
-                                            <Trash2 size={11} />
-                                          </button>
-                                        )}
-                                      </div>
-                                    </div>
-                                    <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{log.text}</p>
-                                    {log.imageUrls && log.imageUrls.length > 0 && (
-                                      <div className="flex flex-wrap gap-1 mt-1.5">
-                                        {log.imageUrls.map((url, idx) => (
-                                          <div 
-                                            key={idx} 
-                                            className="relative w-10 h-10 rounded-lg border border-slate-200 overflow-hidden cursor-pointer bg-slate-100 shadow-sm"
-                                            onClick={(e) => { e.stopPropagation(); setPreviewAdminNoteImage(url); }}
-                                            title="Click to view full image"
-                                          >
-                                            <img src={url} alt={`Attachment ${idx}`} className="w-full h-full object-cover hover:scale-110 transition-transform" />
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
-                                <div ref={adminLogsEndRef} />
-                              </div>
-                            ) : (
-                              <div 
-                                className="text-[10px] text-slate-400 italic px-1 flex-1 flex items-center justify-center border border-slate-100 bg-slate-50 rounded-lg"
-                              >
-                                No notes yet...
+                            {showNoteUploader && !noteLogsModalOpen && (
+                              <div className="border border-slate-200 bg-white p-2 rounded-xl shadow-2xs mt-1 max-h-[160px] overflow-y-auto">
+                                <MultiImageUploader
+                                  ref={noteUploaderRef}
+                                  entityType="job"
+                                  entityId={editingJobId || "temp-note"}
+                                  subType="proofs"
+                                  maxFiles={3}
+                                />
                               </div>
                             )}
-                            <div className="flex flex-col gap-1 shrink-0 mt-1">
-                              <div className="flex gap-1">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className={`h-8 px-2 rounded-lg border text-slate-500 ${showNoteUploader && !noteLogsModalOpen ? 'bg-indigo-50 border-indigo-300 text-indigo-600' : 'bg-white border-slate-200'}`}
-                                  onClick={() => setShowNoteUploader(prev => !prev)}
-                                  disabled={isUploadingNote}
-                                  title="Attach images"
-                                >
-                                  <Paperclip size={14} />
-                                </Button>
-                                <Input
-                                  placeholder="Type a note & press Enter..."
-                                  value={adminNoteInput}
-                                  onChange={(e) => setAdminNoteInput(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.preventDefault();
-                                      handleSendAdminLog();
-                                    }
-                                  }}
-                                  disabled={isUploadingNote}
-                                  className="h-8 text-xs bg-white flex-1 rounded-lg"
-                                />
-                                <Button 
-                                  type="button" 
-                                  size="sm" 
-                                  disabled={isUploadingNote}
-                                  className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg"
-                                  onClick={handleSendAdminLog}
-                                >
-                                  {isUploadingNote ? (
-                                    <Loader2 className="animate-spin" size={14} />
-                                  ) : (
-                                    <Plus size={14} />
-                                  )}
-                                  <span className="ml-1">Send</span>
-                                </Button>
-                              </div>
-                              {showNoteUploader && !noteLogsModalOpen && (
-                                <div className="border border-slate-200 bg-white p-2 rounded-lg shadow-sm mt-1 max-h-[160px] overflow-y-auto">
-                                  <MultiImageUploader
-                                    ref={noteUploaderRef}
-                                    entityType="job"
-                                    entityId={editingJobId || "temp-note"}
-                                    subType="proofs"
-                                    maxFiles={3}
-                                  />
-                                </div>
-                              )}
-                            </div>
                           </div>
                         </div>
-
+                      </div>
                     </motion.div>
 
 {isPosEnabled ? (
   <>
-                    {/* COL 2: Logistics & Map (span 4) */}
+                    {/* COL 3: Job Photos & Service Catalog / Payment Overview */}
                     <motion.div
-                      className="lg:col-span-4 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+                      className="col-span-1 flex flex-col gap-2.5 overflow-y-auto pr-0.5 pb-2 min-w-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.15, duration: 0.3 }}
                     >
                       {/* Job Photos Unified Section */}
-                      <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm space-y-3">
-                        <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2">
-                          <Camera size={14} className="text-indigo-600" />
-                          <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">Job Photos</span>
+                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs space-y-2.5">
+                        <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                              <Camera size={13} />
+                            </div>
+                            <span className="text-xs font-extrabold text-slate-800 uppercase tracking-wide">Job Photos</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            {(bagImageUrls.length + billImageUrls.length + pickupProofImageUrls.length + deliveryProofImageUrls.length) > 0 && (
+                              <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2 py-0.5 rounded-full">
+                                {bagImageUrls.length + billImageUrls.length + pickupProofImageUrls.length + deliveryProofImageUrls.length} total
+                              </span>
+                            )}
+                          </div>
                         </div>
                         
-                        <div className="grid grid-cols-2 gap-x-3 gap-y-4">
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Laundry Bags</Label>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div className="p-2 rounded-xl bg-slate-50/70 border border-slate-200/70 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">Laundry Bags</Label>
+                              {bagImageUrls.length > 0 && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-700">{bagImageUrls.length}</span>
+                              )}
+                            </div>
                             <MultiImageUploader
                               ref={uploaderRef}
                               entityType="job"
@@ -6143,8 +7042,13 @@ function AdminPageContent() {
                             />
                           </div>
 
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Bill / Transfer</Label>
+                          <div className="p-2 rounded-xl bg-slate-50/70 border border-slate-200/70 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">Bill / Transfer</Label>
+                              {billImageUrls.length > 0 && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-700">{billImageUrls.length}</span>
+                              )}
+                            </div>
                             <MultiImageUploader
                               ref={billUploaderRef}
                               entityType="job"
@@ -6157,8 +7061,13 @@ function AdminPageContent() {
                             />
                           </div>
 
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Pickup Proofs</Label>
+                          <div className="p-2 rounded-xl bg-slate-50/70 border border-slate-200/70 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">Pickup Proofs</Label>
+                              {pickupProofImageUrls.length > 0 && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-sky-100 text-sky-700">{pickupProofImageUrls.length}</span>
+                              )}
+                            </div>
                             <MultiImageUploader
                               ref={isAdmin ? pickupUploaderRef : undefined}
                               entityType="job"
@@ -6172,8 +7081,13 @@ function AdminPageContent() {
                             />
                           </div>
 
-                          <div className="space-y-1.5">
-                            <Label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Delivery Proofs</Label>
+                          <div className="p-2 rounded-xl bg-slate-50/70 border border-slate-200/70 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">Delivery Proofs</Label>
+                              {deliveryProofImageUrls.length > 0 && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-700">{deliveryProofImageUrls.length}</span>
+                              )}
+                            </div>
                             <MultiImageUploader
                               ref={isAdmin ? deliveryUploaderRef : undefined}
                               entityType="job"
@@ -6189,19 +7103,101 @@ function AdminPageContent() {
                         </div>
                       </div>
 
-                      {/* Laundry Service Type & Speed */}
-                      <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex-1 flex flex-col gap-2 min-h-[350px]">
+                      {/* Laundry Service Type & Speed / Paid Summary */}
+                      <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs flex-1 flex flex-col gap-2 min-h-[350px]">
                         {isPaidJob ? (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
-                            <ShieldAlert size={36} className="text-emerald-500 mb-2" />
-                            <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">
-                              {currentLanguage === "en" ? "Payment Completed" : "ชำระเงินเรียบร้อยแล้ว"}
-                            </h3>
-                            <p className="text-[10px] text-slate-500 font-medium max-w-[280px] leading-relaxed">
-                              {currentLanguage === "en" 
-                                ? "This job has already been paid. Pricing and products can no longer be modified."
-                                : "ออเดอร์นี้ชำระเงินเสร็จสิ้นแล้ว ไม่สามารถแก้ไขรายการสินค้าและราคาได้อีก"}
-                            </p>
+                          <div className="flex-1 flex flex-col rounded-xl overflow-hidden border border-emerald-200/80 bg-gradient-to-b from-emerald-50/40 via-white to-slate-50/50">
+                            {/* Paid Banner Header */}
+                            <div className="p-3 bg-emerald-50/90 border-b border-emerald-200/80 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                                  <CheckCircle2 size={16} />
+                                </div>
+                                <div>
+                                  <h3 className="text-xs font-black text-emerald-950 uppercase tracking-wide">
+                                    {currentLanguage === "en" ? "Payment Completed" : "ชำระเงินเรียบร้อยแล้ว"}
+                                  </h3>
+                                  <p className="text-[10px] text-emerald-700 font-medium">
+                                    {currentLanguage === "en" ? "Order pricing and items are locked" : "รายการสินค้าและราคาถูกล็อคแล้ว"}
+                                  </p>
+                                </div>
+                              </div>
+                              <span className="text-sm font-black text-emerald-700 bg-white px-2.5 py-1 rounded-lg border border-emerald-200 shadow-2xs">
+                                ฿{dialogTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            </div>
+
+                            {/* Paid Job Info Grid */}
+                            <div className="p-3 space-y-3 flex-1 flex flex-col justify-between">
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div className="p-2 rounded-xl bg-white border border-slate-200/80 shadow-2xs">
+                                  <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">Payment Channel</span>
+                                  <span className="font-extrabold text-slate-800 text-xs flex items-center gap-1 mt-0.5">
+                                    <CreditCard size={12} className="text-indigo-600" />
+                                    {paymentChannel || "N/A"}
+                                  </span>
+                                </div>
+                                <div className="p-2 rounded-xl bg-white border border-slate-200/80 shadow-2xs">
+                                  <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">Bill / Ref No.</span>
+                                  <span className="font-extrabold text-slate-800 text-xs flex items-center gap-1 mt-0.5">
+                                    <Receipt size={12} className="text-amber-600" />
+                                    {billNo || proformaReceiptNumber || "-"}
+                                  </span>
+                                </div>
+                                <div className="p-2 rounded-xl bg-white border border-slate-200/80 shadow-2xs">
+                                  <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">Fulfillment Type</span>
+                                  <span className="font-extrabold text-slate-800 text-xs flex items-center gap-1 mt-0.5">
+                                    <Truck size={12} className="text-sky-600" />
+                                    {isWalkIn ? "Walk-In" : (isPickup && isDelivery ? "Pickup & Delivery" : isPickup ? "Pickup Only" : "Delivery Only")}
+                                  </span>
+                                </div>
+                                <div className="p-2 rounded-xl bg-white border border-slate-200/80 shadow-2xs">
+                                  <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">Total Items</span>
+                                  <span className="font-extrabold text-slate-800 text-xs flex items-center gap-1 mt-0.5">
+                                    <Package size={12} className="text-purple-600" />
+                                    {dialogCart.length} items ({dialogCart.reduce((sum, i) => sum + (typeof i.quantity === 'number' ? i.quantity : 1), 0)})
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Mini Cart Breakdown */}
+                              {dialogCart.length > 0 && (
+                                <div className="p-2.5 rounded-xl bg-white border border-slate-200/80 space-y-1.5 max-h-[140px] overflow-y-auto">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Items Summary</span>
+                                  <div className="space-y-1">
+                                    {dialogCart.map((it, idx) => (
+                                      <div key={idx} className="flex justify-between items-center text-[11px] text-slate-700 py-0.5 border-b border-slate-100 last:border-0">
+                                        <span className="font-medium truncate max-w-[180px]">{it.name} <span className="text-slate-400 font-normal">x{it.quantity}</span></span>
+                                        <span className="font-bold text-slate-900">฿{safeCeil((it.price || 0) * (it.quantity || 0)).toLocaleString()}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Unlock Paid Action Notice */}
+                              {canUnlockPaid && (
+                                <div className="p-2.5 rounded-xl bg-amber-50/80 border border-amber-200/90 flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5 text-xs text-amber-800 font-medium">
+                                    <Lock size={13} className="text-amber-600 shrink-0" />
+                                    <span className="text-[11px]">Need to add items or adjust bill?</span>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setUnlockPaidReason("");
+                                      setUnlockPaidDialogOpen(true);
+                                    }}
+                                    className="h-7 px-2.5 text-[10.5px] font-bold bg-white text-amber-800 border-amber-300 hover:bg-amber-100 shadow-2xs cursor-pointer rounded-lg shrink-0 gap-1"
+                                  >
+                                    <LockOpen size={11} className="text-amber-600" />
+                                    Unlock Paid
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         ) : (
 
@@ -6404,64 +7400,77 @@ function AdminPageContent() {
                           </div>
                         )}
                       </div>
-                      </motion.div>
+                    </motion.div>
 
-                    {/* COL 3: Fulfillment & Summary (span 4) */}
+                    {/* COL 4: Order Items Cart & Financial Checkout */}
                     <motion.div
-                      className="lg:col-span-4 flex flex-col pl-1 pb-4 lg:pb-0 h-full"
+                      className="col-span-1 flex flex-col gap-2.5 overflow-y-auto pr-0.5 pb-2 min-w-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.2, duration: 0.3 }}
                     >
                       {/* One Unified Consolidated Dark Card */}
-                      <div className="bg-slate-900 text-white rounded-xl p-3 shadow-md flex-1 flex flex-col gap-3 min-h-[500px] h-full overflow-hidden">
+                      <div className="bg-slate-900 text-white rounded-2xl p-3 shadow-lg flex-1 flex flex-col gap-2 min-h-0 border border-slate-800">
                         
                         {/* Cart / Order Items List */}
                         <div className="flex flex-col gap-2 flex-1 min-h-0">
-                          <div className="flex justify-between items-center shrink-0 select-none pb-0.5">
-                            <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                          <div className="flex justify-between items-center shrink-0 select-none pb-0.5 border-b border-slate-800/80">
+                            <span className="flex items-center gap-1.5 text-xs font-extrabold text-slate-300 uppercase tracking-wider">
                               {isPosEnabled ? (
                                 <>
-                                  <Package size={14} className="text-slate-500" />
-                                  Order Items Cart
+                                  <Package size={14} className="text-indigo-400" />
+                                  <span>Order Items Cart</span>
+                                  {dialogCart.length > 0 && (
+                                    <span className="text-[10px] font-bold text-indigo-300 bg-indigo-950/80 border border-indigo-700/60 px-1.5 py-0.2 rounded-full">
+                                      {dialogCart.length}
+                                    </span>
+                                  )}
                                 </>
                               ) : (
                                 <>
-                                  <Banknote size={14} className="text-slate-500" />
+                                  <Banknote size={14} className="text-emerald-400" />
                                   Laundry Price
                                 </>
                               )}
                             </span>
                             
                             {(canSeeStuck || canSeeTaxInvoice) && (
-                              <div className="flex items-center gap-2.5">
+                              <div className="flex items-center gap-2">
                                 {canSeeTaxInvoice && (
-                                  <Label className={`flex items-center gap-1 cursor-pointer select-none transition-colors ${isTaxInvoiceRequested ? 'text-amber-300 font-bold' : 'text-slate-400 hover:text-slate-300'}`}>
+                                  <Label className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[9.5px] font-bold cursor-pointer select-none transition-all ${
+                                    isTaxInvoiceRequested 
+                                      ? 'bg-amber-950/70 border-amber-600/70 text-amber-300' 
+                                      : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:text-slate-300'
+                                  }`}>
                                     <input 
                                       type="checkbox" 
                                       checked={isTaxInvoiceRequested} 
                                       onChange={(e) => setIsTaxInvoiceRequested(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer"
+                                      className="sr-only"
                                     />
                                     <FileText size={11} className={isTaxInvoiceRequested ? "text-amber-400" : "text-slate-400"} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Req Tax Inv</span>
+                                    <span>Tax Inv</span>
                                   </Label>
                                 )}
                                 {canSeeStuck && (
-                                  <Label className="flex items-center gap-1.5 cursor-pointer text-red-400 animate-in fade-in duration-200">
+                                  <Label className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[9.5px] font-bold cursor-pointer select-none transition-all ${
+                                    isStuck 
+                                      ? 'bg-rose-950/80 border-rose-600/70 text-rose-300' 
+                                      : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:text-rose-400'
+                                  }`}>
                                     <input 
                                       type="checkbox" 
                                       checked={isStuck} 
                                       onChange={(e) => setIsStuck(e.target.checked)} 
-                                      className="rounded border-slate-600 bg-slate-800 text-red-500 focus:ring-red-500 h-3 w-3 cursor-pointer"
+                                      className="sr-only"
                                     />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Stuck</span>
+                                    <span>Stuck</span>
                                   </Label>
                                 )}
                               </div>
                             )}
                           </div>
-                          <div id="order-items-list" className="overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar max-h-[45vh]">
+                          <div id="order-items-list" className="overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar max-h-[26vh] shrink-0">
                             {!isPosEnabled ? (
                               <div className="flex-1 flex flex-col items-center justify-center p-4 h-full min-h-[200px]">
                                 <div className="w-full max-w-[240px] space-y-4 text-center">
@@ -6480,17 +7489,17 @@ function AdminPageContent() {
                               </div>
                             ) : dialogCart.length > 0 ? (
                               dialogCart.map((item, idx) => (
-                                <div key={`${item.id}_${idx}`} className="flex justify-between items-center bg-slate-800/40 hover:bg-slate-800/80 p-1.5 rounded border border-slate-700/30 text-[11px] transition-all">
-                                  <div className="flex-1 min-w-0 pr-1.5 flex items-center gap-1">
-                                    <span className="font-bold text-white truncate">{item.name}</span>
-                                    <span className="text-[9px] text-slate-400 font-bold uppercase shrink-0">({item.category})</span>
+                                <div key={`${item.id}_${idx}`} className="flex justify-between items-center bg-slate-800/70 hover:bg-slate-800 p-2 rounded-xl border border-slate-700/60 text-[11px] transition-all">
+                                  <div className="flex-1 min-w-0 pr-1.5 flex flex-col">
+                                    <span className="font-bold text-white truncate text-xs">{item.name}</span>
+                                    <span className="text-[9px] text-slate-400 font-bold uppercase">{item.category}</span>
                                   </div>
                                   <div className="flex items-center gap-1.5 shrink-0">
-                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 p-0.5">
+                                    <div className="flex items-center border border-slate-700 rounded-lg bg-slate-950 p-0.5">
                                       <button
                                         type="button"
                                         disabled={isCartLocked}
-                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-rose-400'}`}
+                                        className={`w-4 h-4 flex items-center justify-center text-slate-400 font-bold rounded ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-rose-400 hover:bg-slate-800'}`}
                                         onClick={() => {
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => {
@@ -6538,7 +7547,7 @@ function AdminPageContent() {
                                       <button
                                         type="button"
                                         disabled={isCartLocked}
-                                        className={`w-3.5 h-3.5 flex items-center justify-center text-slate-400 font-bold ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400'}`}
+                                        className={`w-4 h-4 flex items-center justify-center text-slate-400 font-bold rounded ${isCartLocked ? 'opacity-40 cursor-not-allowed' : 'hover:text-indigo-400 hover:bg-slate-800'}`}
                                         onClick={() => {
                                           setDialogCart(prev => {
                                             const updated = prev.map(it => {
@@ -6556,7 +7565,7 @@ function AdminPageContent() {
                                         +
                                       </button>
                                     </div>
-                                    <div className="flex items-center border border-slate-700 rounded bg-slate-900 px-1.5 py-0.5 w-16" title="Unit price (ราคาต่อหน่วย)">
+                                    <div className="flex items-center border border-slate-700 rounded-lg bg-slate-950 px-1.5 py-0.5 w-16" title="Unit price (ราคาต่อหน่วย)">
                                       <input 
                                         type="number"
                                         step="0.01"
@@ -6590,7 +7599,7 @@ function AdminPageContent() {
                                       />
                                     </div>
                                     <div className="min-w-[42px] text-right" title="Total for this item (ราคารวมรายการนี้)">
-                                      <span className="text-[11px] font-black text-amber-400">
+                                      <span className="text-xs font-black text-amber-400">
                                         ฿{safeCeil((item.price || 0) * (item.quantity || 0)).toLocaleString()}
                                       </span>
                                     </div>
@@ -6606,7 +7615,6 @@ function AdminPageContent() {
                                             return updated;
                                           });
                                         }}
-
                                       >
                                         <Trash2 size={11} />
                                       </button>
@@ -6615,32 +7623,32 @@ function AdminPageContent() {
                                 </div>
                               ))
                             ) : isCartLocked ? (
-                                <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded border border-dashed border-slate-700/50 text-center text-slate-400">
+                                <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/40 rounded-xl border border-dashed border-slate-700/50 text-center text-slate-400">
                                   {isPaidJob ? (
                                     <>
                                       <CheckCircle2 size={24} className="text-emerald-500 mb-1.5" />
-                                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                      <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-300">
                                         {currentLanguage === "en" ? "Order Already Paid" : "ออเดอร์นี้ชำระเงินแล้ว"}
                                       </span>
                                     </>
                                   ) : isShiftFromPreviousDay ? (
                                     <>
                                       <ShieldAlert size={24} className="text-rose-400 mb-1.5 animate-bounce" />
-                                      <span className="text-[9px] font-bold uppercase tracking-wider text-rose-300">
+                                      <span className="text-[9.5px] font-bold uppercase tracking-wider text-rose-300">
                                         {currentLanguage === "en" ? "Cross-Day Shift: Please Close First" : "มีกะค้างจากวันก่อน กรุณาปิดกะก่อน"}
                                       </span>
                                     </>
                                   ) : (
                                     <>
                                       <PackageOpen size={24} className="text-slate-600 mb-1.5" />
-                                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                                      <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-500">
                                         {currentLanguage === "en" ? "No Active Shift" : "ไม่มีรอบกะที่รันอยู่"}
                                       </span>
                                     </>
                                   )}
                                 </div>
                             ) : (
-                              <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/20 rounded border border-dashed border-slate-700/30 text-center text-slate-500">
+                              <div className="h-full flex flex-col items-center justify-center p-4 bg-slate-800/20 rounded-xl border border-dashed border-slate-700/30 text-center text-slate-500">
                                 <PackageOpen size={20} className="mb-1" />
                                 <span className="text-[10px] italic">
                                   {currentLanguage === "en" ? "No items selected" : "ไม่มีสินค้าในตะกร้า"}
@@ -6651,18 +7659,45 @@ function AdminPageContent() {
                         </div>
 
                         {/* Summary and Controls (Bottom Section) */}
-                        <div className="border-t border-slate-800/80 pt-1 flex flex-col gap-1 shrink-0">
-                          {/* Service Speed */}
-                          <div className="flex flex-col pb-0.5">
-                            {serviceSpeed !== "standard" && (
-                              <div className="flex justify-between items-center pb-0.5">
-                                <span className="text-[9px] text-orange-300 font-medium">Service Speed ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})</span>
-                                <span className="text-xs font-bold text-orange-300">฿{(serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : currentLaundryPrice).toFixed(0)}</span>
-                              </div>
-                            )}
+                        <div className="border-t border-slate-800/90 pt-1.5 flex flex-col gap-1.5 shrink-0">
+                          {/* Service Speed - Modern 3-Segment Pill Group */}
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <Label className="flex items-center gap-1 text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
+                                <Zap size={11} className="text-amber-400" />
+                                Service Speed
+                              </Label>
+                              {serviceSpeed !== "standard" && (
+                                <span className="text-[10px] font-bold text-amber-300">
+                                  +฿{(serviceSpeed === 'express_50' ? Math.ceil(currentLaundryPrice * 0.5) : currentLaundryPrice).toFixed(0)} ({serviceSpeed === 'express_50' ? '+50%' : '+100%'})
+                                </span>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-3 gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+                              {[
+                                { id: "standard", label: "Standard", extra: "" },
+                                { id: "express_50", label: "Exp 50%", extra: "+50%" },
+                                { id: "express_100", label: "Exp 100%", extra: "+100%" },
+                              ].map(spd => (
+                                <button
+                                  key={spd.id}
+                                  type="button"
+                                  disabled={isPaidJob}
+                                  onClick={() => handleServiceOrSpeedChange(serviceType, spd.id as any, serviceWeight)}
+                                  className={`py-1 text-[10.5px] font-bold rounded-lg transition-all cursor-pointer ${
+                                    serviceSpeed === spd.id
+                                      ? (spd.id === "standard" ? "bg-indigo-600 text-white shadow-xs" : spd.id === "express_50" ? "bg-amber-500 text-slate-950 shadow-xs font-black" : "bg-rose-600 text-white shadow-xs font-black")
+                                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                                  } ${isPaidJob ? "opacity-60 cursor-not-allowed" : ""}`}
+                                >
+                                  {spd.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
 
                           {clothingItems.other.selected && !(isPosEnabled && dialogCart.length > 0) && (
-                            <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-700/80 animate-in fade-in duration-200">
+                            <div className="flex justify-between items-center mt-1 p-2 rounded-xl bg-slate-800/70 border border-amber-500/30 animate-in fade-in duration-200">
                               <Label className="text-xs font-medium text-amber-300 flex items-center gap-1">
                                 Other Price ({otherClothingName.trim() || 'Specify'})
                               </Label>
@@ -6670,7 +7705,7 @@ function AdminPageContent() {
                                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-bold">฿</span>
                                 <Input 
                                   type="number"
-                                  className="h-8 pl-6 pr-2 bg-slate-800 border-amber-500/50 text-amber-300 font-bold text-right text-sm focus:border-amber-400"
+                                  className="h-7 pl-6 pr-2 bg-slate-900 border-amber-500/50 text-amber-300 font-bold text-right text-xs rounded-lg focus:border-amber-400"
                                   value={otherClothingPrice || ""}
                                   onChange={e => setOtherClothingPrice(parseFloat(e.target.value) || 0)}
                                   placeholder="0"
@@ -6679,37 +7714,18 @@ function AdminPageContent() {
                             </div>
                           )}
 
-                            <div className="space-y-0.5">
-                              <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">Service Speed</Label>
-                              <div className="flex items-center gap-3">
-                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "standard"} onChange={() => handleServiceOrSpeedChange(serviceType, "standard", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
-                                  <span className="text-[10px] text-slate-200">Standard</span>
-                                </Label>
-                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "express_50"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_50", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
-                                  <span className="text-[10px] text-slate-200">Exp 50%</span>
-                                </Label>
-                                <Label className={`flex items-center gap-1 ${isPaidJob ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                  <input type="radio" disabled={isPaidJob} checked={serviceSpeed === "express_100"} onChange={() => handleServiceOrSpeedChange(serviceType, "express_100", serviceWeight)} className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed" />
-                                  <span className="text-[10px] text-slate-200">Exp 100%</span>
-                                </Label>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Consolidated Delivery & Rider Details Section */}
+                          {/* Logistics & Commission Info */}
                           {(isPickup || isDelivery) && (
-                            <div className="flex justify-between items-center text-[9px] text-slate-300 pb-1 border-t border-slate-800/60 pt-1 mt-0.5 animate-in fade-in duration-200">
-                              <div className="flex items-center gap-1">
-                                <Truck size={11} className="text-slate-500 mr-0.5" />
-                                <span className="text-slate-400 font-bold">Logistics:</span>
-                                {isPickup && <span>P: {pickupDist} km (×2)</span>}
-                                {isPickup && isDelivery && <span className="text-slate-600 px-0.5">/</span>}
-                                {isDelivery && <span>D: {deliveryDist} km</span>}
+                            <div className="flex justify-between items-center text-[9.5px] bg-slate-950/60 p-1.5 rounded-xl border border-slate-800/80 animate-in fade-in duration-200">
+                              <div className="flex items-center gap-1.5 text-slate-300">
+                                <Truck size={12} className="text-sky-400" />
+                                <span className="text-slate-400 font-bold">Route:</span>
+                                {isPickup && <span>Pickup {pickupDist} km (×2)</span>}
+                                {isPickup && isDelivery && <span className="text-slate-600">/</span>}
+                                {isDelivery && <span>Delivery {deliveryDist} km</span>}
                               </div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-amber-400 font-medium">Rider Comm:</span>
+                              <div className="flex items-center gap-1">
+                                <span className="text-slate-400 font-bold">Rider:</span>
                                 {(() => {
                                   const targetCustomer = selectedProfileCustomer || (editingJobId && activeJob ? findMatchingCustomer(customers, { customerId: activeJob.customerId, customerName: activeJob.customerName, customerPhone: activeJob.customerPhone }) : null);
                                   const comm = calculateRiderCommission({
@@ -6731,10 +7747,10 @@ function AdminPageContent() {
                                   const totalComm = comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || activeIsFreeDelivery ? 0 : (pVal + dVal));
                                   return (
                                     <>
-                                      <span className="font-bold text-amber-400">฿{totalComm.toFixed(0)}</span>
+                                      <span className="font-extrabold text-amber-400">฿{totalComm.toFixed(0)}</span>
                                       {comm.isCorporateRule && (
-                                        <span className="text-[8.5px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 py-0.2 rounded font-bold" title={comm.ruleLabel}>
-                                          🏢 Corporate
+                                        <span className="text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 rounded font-bold">
+                                          Corp
                                         </span>
                                       )}
                                     </>
@@ -6744,10 +7760,10 @@ function AdminPageContent() {
                             </div>
                           )}
 
-                          {/* Free Delivery checkbox (placed before Grand Total) */}
+                          {/* Free Delivery Row */}
                           {(isPickup || isDelivery) && (
-                            <div className="flex justify-between items-center text-[10px] border-t border-slate-800 pt-1 pb-1 animate-in fade-in duration-200">
-                              <div className="flex flex-col gap-0.5">
+                            <div className="flex justify-between items-center text-[10px] px-1 py-0.5 animate-in fade-in duration-200">
+                              <div className="flex items-center gap-1.5">
                                  <Label className={`flex items-center gap-1 text-slate-300 select-none ${hasPackage || isPaidJob ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'}`}>
                                     <input 
                                       type="checkbox" 
@@ -6758,7 +7774,7 @@ function AdminPageContent() {
                                     />
                                     <span className="font-bold">Free Delivery</span>
                                   </Label>
-                                  <span className="text-[8px] text-slate-500 ml-4.5">Rate: {selectedVIPLabel ? '4' : '10'}฿/km</span>
+                                  <span className="text-[8.5px] text-slate-500">({selectedVIPLabel ? '4' : '10'}฿/km)</span>
                               </div>
                               <div className="text-right select-none">
                                 {activeIsFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-1.5">฿{baseFee.toFixed(0)}</span>}
@@ -6804,7 +7820,6 @@ function AdminPageContent() {
                             <div className="border-t border-slate-800 py-1.5 space-y-1">
                               {!isPaidJob ? (
                                 <>
-                                  {/* Input row */}
                                   <div className="flex items-center gap-1.5">
                                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide whitespace-nowrap">Promo</span>
                                     <input
@@ -6846,7 +7861,6 @@ function AdminPageContent() {
                                       >✕</button>
                                     )}
                                   </div>
-                                  {/* Applied badge */}
                                   {appliedPromo && (
                                     <div className="flex justify-between items-center">
                                       <span className="text-[9px] text-amber-400 font-bold">
@@ -6855,7 +7869,6 @@ function AdminPageContent() {
                                       <span className="text-[10px] font-black text-rose-400">-฿{promoDiscountAmount.toFixed(2)}</span>
                                     </div>
                                   )}
-                                  {/* Error */}
                                   {promoError && !appliedPromo && (
                                     <p className="text-[9px] text-rose-400 font-bold">{promoError}</p>
                                   )}
@@ -6875,14 +7888,14 @@ function AdminPageContent() {
 
                           {/* VAT Row */}
                           {dialogVatType === "exclusive" && dialogVatRate > 0 && (
-                            <div className="flex justify-between text-xs font-semibold text-slate-400 py-1 border-t border-slate-800">
+                            <div className="flex justify-between text-xs font-semibold text-slate-400 py-0.5 border-t border-slate-800">
                               <span>VAT ({dialogVatRate}%)</span>
                               <span className="font-bold text-white">+฿{dialogVatAmount.toFixed(2)}</span>
                             </div>
                           )}
 
                           {dialogVatType === "inclusive" && dialogVatRate > 0 && (
-                            <div className="flex justify-between text-xs font-bold text-emerald-500 py-1 border-t border-slate-800">
+                            <div className="flex justify-between text-xs font-bold text-emerald-400 py-0.5 border-t border-slate-800">
                               <span>
                                 {currentLanguage === "en" ? `Incl. VAT ${dialogVatRate}%` : `รวม VAT ${dialogVatRate}%`}
                               </span>
@@ -6890,10 +7903,10 @@ function AdminPageContent() {
                             </div>
                           )}
 
-                          {/* Grand Total */}
-                          <div className="flex justify-between items-end border-t border-slate-800 pt-1 pb-1">
+                          {/* Grand Total Box */}
+                          <div className="flex justify-between items-center bg-slate-950/90 px-3 py-2 rounded-xl border border-slate-800">
                             <div className="flex items-center gap-2 select-none">
-                              <span className="text-xs font-bold text-slate-300 uppercase">Grand Total</span>
+                              <span className="text-xs font-extrabold text-slate-300 uppercase tracking-wide">Grand Total</span>
                               <label className="flex items-center gap-1 cursor-pointer text-[10px] text-slate-400 hover:text-white font-bold transition-colors">
                                 <input
                                   type="checkbox"
@@ -6914,7 +7927,7 @@ function AdminPageContent() {
                                 <span>{currentLanguage === "en" ? "Discount" : "ส่วนลด"}</span>
                               </label>
                             </div>
-                            <span className="text-xl font-black text-indigo-400">
+                            <span className="text-2xl font-black text-indigo-400">
                               ฿{dialogTotal.toLocaleString(undefined, {
                                 minimumFractionDigits: dialogVatType === "exclusive" || dialogTotal % 1 !== 0 ? 2 : 0,
                                 maximumFractionDigits: 2,
@@ -6923,15 +7936,15 @@ function AdminPageContent() {
                           </div>
 
                           {/* Payment Section: Row 1 (Channel & Bill No), Row 2 (CSO & SHOP Statuses) */}
-                          <div className="space-y-1.5 pt-1.5 border-t border-slate-800 pb-1">
+                          <div className="space-y-1.5 pt-1 border-t border-slate-800">
                             {/* Row 1: Payment Channel + Bill No. */}
                             <div className="grid grid-cols-2 gap-2">
                               {/* Col 1: Payment Channel */}
-                              <div className="space-y-0.5">
+                              <div className="space-y-1">
                                 <div className="flex items-center justify-between">
-                                  <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                    <CreditCard size={11} className="text-slate-500" />
-                                    Payment Channel
+                                  <Label htmlFor="payment-channel" className="flex items-center gap-1 text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
+                                    <CreditCard size={11} className="text-slate-400" />
+                                    Channel
                                   </Label>
                                   {!isPaidJob && (
                                     <button
@@ -6948,7 +7961,7 @@ function AdminPageContent() {
                                 <select
                                   id="payment-channel"
                                   disabled={forceMemberPaymentDialog || isPaidJob}
-                                  className="flex h-6 w-full rounded border border-slate-600 bg-slate-800 text-white px-1 py-0 text-[10px] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+                                  className="flex h-8 w-full rounded-xl border border-slate-700 bg-slate-800/90 text-white px-2.5 py-0 text-xs font-medium focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
                                   value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
                                   onChange={(e) => {
                                     const val = e.target.value;
@@ -7004,7 +8017,7 @@ function AdminPageContent() {
                                     type="button"
                                     disabled={isStartingBeamPayment}
                                     onClick={handleOpenBeamPaymentFromDialog}
-                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors disabled:opacity-50"
+                                    className="mt-1 w-full flex items-center justify-center gap-1 py-1 px-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9.5px] cursor-pointer shadow-xs transition-colors disabled:opacity-50"
                                     title="สร้างลิงก์ / QR Code จ่ายเงินออนไลน์ผ่าน Beam"
                                   >
                                     <Zap size={11} className="fill-white" />
@@ -7012,8 +8025,8 @@ function AdminPageContent() {
                                   </button>
                                 )}
                                 {selectedProfileCustomer?.isMember && (
-                                  <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1 py-0.2 rounded bg-slate-900/60 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
-                                    <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={8} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
+                                  <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1.5 py-0.5 rounded-lg bg-slate-950/80 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
+                                    <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={9} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
                                     <span className={`font-bold ${(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400 font-extrabold" : (selectedProfileCustomer.creditBalance || 0) >= dialogTotal ? "text-emerald-400" : "text-amber-400"}`}>
                                       {formatBaht(selectedProfileCustomer.creditBalance || 0)}
                                     </span>
@@ -7022,8 +8035,8 @@ function AdminPageContent() {
                               </div>
 
                               {/* Col 2: Bill No. */}
-                              <div className="space-y-0.5">
-                                <Label htmlFor="pos-bill-no" className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
+                              <div className="space-y-1">
+                                <Label htmlFor="pos-bill-no" className="flex items-center gap-1 text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
                                   <Receipt size={11} className="text-amber-400" />
                                   Bill No.
                                 </Label>
@@ -7032,32 +8045,29 @@ function AdminPageContent() {
                                   value={billNo}
                                   onChange={(e) => setBillNo(e.target.value)}
                                   placeholder="e.g. B-1024"
-                                  className="h-6 w-full rounded border-slate-600 bg-slate-800 text-white px-2 py-0 text-[10px] font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500"
+                                  className="h-8 w-full rounded-xl border-slate-700 bg-slate-800/90 text-white px-2.5 py-0 text-xs font-mono font-bold placeholder:text-slate-500 focus-visible:ring-indigo-500"
                                 />
                               </div>
                             </div>
 
                             {/* Row 2: CSO Status & SHOP Status */}
-                            <div className="grid grid-cols-2 gap-2 pt-0.5">
-                              {/* Col 1: CSO Status (isPaid) */}
+                            <div className="grid grid-cols-2 gap-2 pt-1">
+                              {/* Col 1: CSO Status */}
                               {!isWalkIn ? (
-                                <div className="space-y-0.5 flex flex-col">
+                                <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800 flex flex-col justify-between">
                                   <div className="flex items-center justify-between">
-                                    <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                      <CreditCard size={11} className="text-slate-500" />
+                                    <Label className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                                       CSO
                                     </Label>
-                                    {isPaidJob && (
-                                      <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
-                                        paymentMethod === 'paid' 
-                                          ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
-                                          : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
-                                      }`}>
-                                        {paymentMethod === 'paid' ? '✓ PAID' : 'UNPAID'}
-                                      </span>
-                                    )}
+                                    <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
+                                      paymentMethod === 'paid' 
+                                        ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
+                                        : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
+                                    }`}>
+                                      {paymentMethod === 'paid' ? '✓ PAID' : 'UNPAID'}
+                                    </span>
                                   </div>
-                                  <div className="flex items-center gap-1.5 h-6 flex-wrap">
+                                  <div className="flex items-center gap-2 mt-1">
                                     <Label className={`flex items-center gap-1 text-[10px] ${
                                       isPaidJob 
                                         ? (paymentMethod === 'unpaid' ? 'text-amber-300 font-bold' : 'text-slate-500 opacity-40') 
@@ -7070,7 +8080,7 @@ function AdminPageContent() {
                                         checked={paymentMethod === 'unpaid'}
                                         onChange={() => { if (isCsoOrAdmin) setPaymentMethod('unpaid'); }}
                                         onClick={(e) => { if (!isCsoOrAdmin) e.preventDefault(); }}
-                                        className={`w-2.5 h-2.5 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${!(isCsoOrAdmin && !isPaidJob) ? 'cursor-not-allowed' : ''}`}
+                                        className="w-3 h-3 text-indigo-500 focus:ring-indigo-500 bg-slate-800 border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                                       />
                                       <span className={paymentMethod === 'unpaid' ? 'font-bold' : 'font-medium'}>Unpaid</span>
                                     </Label>
@@ -7086,7 +8096,7 @@ function AdminPageContent() {
                                         checked={paymentMethod === 'paid'}
                                         onChange={() => { if (isCsoOrAdmin && !isWalletBlocked) setPaymentMethod('paid'); }}
                                         onClick={(e) => { if (!isCsoOrAdmin || isWalletBlocked) e.preventDefault(); }}
-                                        className={`w-2.5 h-2.5 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed ${isPaidJob ? 'disabled:opacity-90 accent-emerald-500' : 'disabled:opacity-50'} ${!(isCsoOrAdmin && !isPaidJob && !isWalletBlocked) ? 'cursor-not-allowed' : ''}`}
+                                        className="w-3 h-3 text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-slate-600 disabled:cursor-not-allowed cursor-pointer"
                                       />
                                       <span className={paymentMethod === 'paid' ? 'font-black text-emerald-400' : 'font-medium text-slate-400'}>
                                         {isPaidJob && paymentMethod === 'paid' ? '✓ Paid' : 'Paid'}
@@ -7097,10 +8107,9 @@ function AdminPageContent() {
                               ) : <div />}
 
                               {/* Col 2: Shop Status (isShopPaid) */}
-                              <div className="space-y-0.5 flex flex-col">
+                              <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800 flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
-                                  <Label className="flex items-center gap-1 text-[9px] font-medium text-slate-400 uppercase tracking-wider">
-                                    <Store size={11} className="text-slate-500" />
+                                  <Label className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                                     SHOP
                                   </Label>
                                   <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
@@ -7111,15 +8120,15 @@ function AdminPageContent() {
                                     {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false) ? '✓ PAID' : 'UNPAID'}
                                   </span>
                                 </div>
-                                <div className="flex items-center h-6">
+                                <div className="flex items-center mt-1">
                                   <span className={`text-[10px] ${
                                     isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
                                       ? 'font-black text-emerald-400' 
                                       : 'font-medium text-slate-400'
                                   }`}>
                                     {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
-                                      ? '✓ Paid via POS / Receipt' 
-                                      : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงินและออกใบเสร็จ")}
+                                      ? '✓ Paid via POS' 
+                                      : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงิน")}
                                   </span>
                                 </div>
                               </div>
@@ -7128,7 +8137,7 @@ function AdminPageContent() {
 
                           {/* Wallet Expired Warning Banner */}
                           {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isPaidJob && isCustomerWalletExpired && (
-                            <div className="mt-1 p-2 rounded-lg bg-rose-950/90 border border-rose-700 text-[10px] flex items-center justify-between gap-2 text-rose-200 font-bold shadow-md">
+                            <div className="mt-1 p-2 rounded-xl bg-rose-950/90 border border-rose-700 text-[10px] flex items-center justify-between gap-2 text-rose-200 font-bold shadow-md">
                               <div className="flex items-center gap-1.5 min-w-0">
                                 <AlertTriangle size={13} className="text-rose-400 shrink-0" />
                                 <div className="min-w-0">
@@ -7155,9 +8164,9 @@ function AdminPageContent() {
                             </div>
                           )}
 
-                          {/* Wallet Insufficient Warning Banner (Only when not expired and not already paid) */}
+                          {/* Wallet Insufficient Warning Banner */}
                           {paymentChannel === "Deduct Member" && selectedProfileCustomer?.isMember && !isPaidJob && !isCustomerWalletExpired && (selectedProfileCustomer.creditBalance || 0) < dialogTotal && (
-                            <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] space-y-1">
+                            <div className="mt-1 p-2 rounded-xl bg-rose-950/80 border border-rose-800 text-[10px] space-y-1">
                               <div className="flex items-center justify-between text-rose-300 font-bold">
                                 <span className="flex items-center gap-1">
                                   <Wallet size={11} className="text-rose-400" />
@@ -7180,7 +8189,7 @@ function AdminPageContent() {
                                     setPaymentChannel("Split Payment");
                                     setShowSplitPaymentDialog(true);
                                   }}
-                                  className="w-full py-1 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[9px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer shadow"
+                                  className="w-full py-1 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[9px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer shadow"
                                 >
                                   <Split size={10} />
                                   <span>แบ่งจ่ายทันที: Wallet (฿{(selectedProfileCustomer.creditBalance || 0).toLocaleString()}) + โอน</span>
@@ -7190,7 +8199,7 @@ function AdminPageContent() {
                           )}
 
                           {paymentChannel === "Split Payment" && selectedProfileCustomer?.isMember && !isPaidJob && splitMemberDeductAmt > (selectedProfileCustomer.creditBalance || 0) && (
-                            <div className="mt-1 p-1.5 rounded-lg bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold">
+                            <div className="mt-1 p-2 rounded-xl bg-rose-950/80 border border-rose-800 text-[10px] flex items-center justify-between text-rose-300 font-bold">
                               <span className="flex items-center gap-1">
                                 <Wallet size={11} className="text-rose-400" />
                                 <span>ยอดแบ่งจ่าย Wallet เกินยอดคงเหลือ</span>
@@ -7201,9 +8210,8 @@ function AdminPageContent() {
                             </div>
                           )}
 
-
-                          {/* Consolidated Checkout Buttons under summary card */}
-                          <div className="flex gap-1.5 mt-1 pt-1 border-t border-slate-800 select-none">
+                          {/* Consolidated Checkout Buttons */}
+                          <div className="flex gap-2 mt-1 pt-1.5 border-t border-slate-800 select-none">
                             <Button 
                               type="button"
                               variant="outline"
@@ -7278,11 +8286,11 @@ function AdminPageContent() {
                                 setIsDraftPreview(true);
                                 setShowReceipt(true);
                               }}
-                              className="flex-1 h-8 rounded-lg text-[10px] font-bold border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750 flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="flex-1 h-9 rounded-xl text-xs font-bold border border-slate-700 bg-slate-800/90 text-slate-200 hover:bg-slate-750 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
                               title={currentLanguage === "en" ? "Preview Proforma Receipt before recording sale" : "ดูตัวอย่างใบรับเงินชั่วคราวก่อนบันทึกการขาย"}
                             >
-                              <Eye size={11} />
-                              {currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}
+                              <Eye size={12} />
+                              <span>{currentLanguage === "en" ? "Proforma Receipt" : "ใบรับเงินชั่วคราว"}</span>
                             </Button>
 
                             <Button 
@@ -7301,14 +8309,14 @@ function AdminPageContent() {
                                 (paymentChannel === "Split Payment" && splitPayments.length < 2)
                               }
                               onClick={() => handleCreate(true)}
-                              className={`flex-[1.4] h-8 rounded-lg text-[10px] font-bold transition-all shadow border-none text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                              className={`flex-[1.4] h-9 rounded-xl text-xs font-extrabold transition-all shadow-md border-none text-white flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                                 isPaidJob
                                   ? 'bg-slate-700 text-slate-300'
                                   : isWalletInsufficient || (paymentChannel === "Deduct Member" && isCustomerWalletExpired) || isSplitAmountInvalid
                                     ? 'bg-rose-600/80 hover:bg-rose-600'
                                     : (!isWalkIn && paymentMethod !== 'paid')
                                       ? 'bg-slate-700 text-slate-400'
-                                      : 'bg-emerald-500 hover:bg-emerald-600'
+                                      : 'bg-emerald-600 hover:bg-emerald-500'
                               }`}
                               title={
                                 isPaidJob
@@ -7328,18 +8336,20 @@ function AdminPageContent() {
                                               : undefined
                               }
                             >
-                              <Banknote size={12} />
-                              {isPaidJob
-                                ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
-                                : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
-                                  ? "Wallet หมดอายุ"
-                                  : isWalletInsufficient
-                                    ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
-                                    : isSplitAmountInvalid
-                                      ? "ยอดแบ่งจ่ายไม่ครบ"
-                                      : paymentChannel === "Split Payment" && splitPayments.length >= 2
-                                        ? `Pay ฿${dialogTotal.toFixed(2)} (${splitPayments.length} ช่องทาง)`
-                                        : `Pay ฿${dialogTotal.toFixed(2)}`}
+                              <Banknote size={13} />
+                              <span>
+                                {isPaidJob
+                                  ? (currentLanguage === "en" ? "Paid" : "ชำระเงินแล้ว")
+                                  : (paymentChannel === "Deduct Member" && isCustomerWalletExpired)
+                                    ? "Wallet หมดอายุ"
+                                    : isWalletInsufficient
+                                      ? `Wallet ไม่พอ (฿${dialogTotal.toFixed(0)})`
+                                      : isSplitAmountInvalid
+                                        ? "ยอดแบ่งจ่ายไม่ครบ"
+                                        : paymentChannel === "Split Payment" && splitPayments.length >= 2
+                                          ? `Pay ฿${dialogTotal.toFixed(2)} (${splitPayments.length} ช่องทาง)`
+                                          : `Pay ฿${dialogTotal.toFixed(2)}`}
+                              </span>
                             </Button>
                           </div>
 
@@ -7351,9 +8361,9 @@ function AdminPageContent() {
   </>
 ) : (
   <>
-                    {/* COL 2: Logistics & Map (span 4) */}
+                    {/* COL 3: Logistics & Photos */}
                     <motion.div
-                      className="lg:col-span-4 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+                      className="col-span-1 flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200 shadow-sm overflow-y-auto pr-0.5 pb-2 min-w-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.15, duration: 0.3 }}
@@ -7531,9 +8541,9 @@ function AdminPageContent() {
                       </div>
                       </motion.div>
 
-                    {/* COL 3: Fulfillment & Summary (span 4) */}
+                    {/* COL 4: Fulfillment & Summary */}
                     <motion.div
-                      className="lg:col-span-4 flex flex-col gap-2 lg:overflow-y-auto pl-1 pb-4 lg:pb-0"
+                      className="col-span-1 flex flex-col gap-2 overflow-y-auto pr-0.5 pb-2 min-w-0"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.2, duration: 0.3 }}
@@ -7854,10 +8864,10 @@ function AdminPageContent() {
                 </div>
                 
                 {!showJobLogs && (
-                  <DialogFooter className="mx-0 mb-0 mt-0 p-4 border-t border-slate-200 bg-white shrink-0">
+                  <DialogFooter className="mx-0 mb-0 mt-0 px-5 py-3.5 border-t border-slate-200/90 bg-slate-50/60 shrink-0">
                     <div className="flex flex-col w-full gap-2.5">
                       {saveError && !isSubmitting && (
-                        <div className="w-full p-2.5 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-2 text-xs animate-in fade-in">
+                        <div className="w-full p-2.5 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2 text-xs animate-in fade-in">
                           <AlertCircle size={16} className="text-rose-600 mt-0.5 shrink-0" />
                           <div className="flex-1">
                             <p className="font-bold text-rose-700">บันทึกไม่สำเร็จ (Save Failed)</p>
@@ -7867,7 +8877,7 @@ function AdminPageContent() {
                             type="button"
                             size="sm" 
                             variant="outline" 
-                            className="border-rose-300 text-rose-700 hover:bg-rose-100 h-7 text-xs font-bold shrink-0 cursor-pointer"
+                            className="border-rose-300 text-rose-700 hover:bg-rose-100 h-7 text-xs font-bold shrink-0 cursor-pointer rounded-lg"
                             onClick={() => { setSaveError(null); handleCreate(false); }}
                           >
                             ลองใหม่อีกครั้ง (Retry)
@@ -7884,7 +8894,7 @@ function AdminPageContent() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className={`h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs border ${
+                                className={`h-9.5 px-4 text-xs font-bold gap-1.5 rounded-xl transition-all cursor-pointer shadow-2xs border ${
                                   isPaid
                                     ? "border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800"
                                     : "border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -7914,24 +8924,8 @@ function AdminPageContent() {
                               </Button>
                             );
                           })()}
-                          {canUnlockPaid && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="border-amber-400 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800 h-9 px-3.5 text-xs font-bold gap-1.5 rounded-lg transition-all cursor-pointer shadow-xs"
-                              onClick={() => {
-                                setUnlockPaidReason("");
-                                setUnlockPaidDialogOpen(true);
-                              }}
-                              title="ปลดล็อค Job ที่ชำระแล้ว เพื่อแก้ไขรายการและชำระใหม่"
-                            >
-                              <LockOpen size={14} className="text-amber-600" />
-                              <span>Unlock Paid (ปลดล็อค)</span>
-                            </Button>
-                          )}
                           {editingJobId && activeJob?.refundId && (
-                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-bold border border-rose-200">
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 text-rose-700 text-xs font-bold border border-rose-200">
                               <span className="w-2 h-2 rounded-full bg-rose-500" />
                               <span>บิลนี้ผ่านการ Refund & Reissue แล้ว</span>
                             </div>
@@ -7939,12 +8933,17 @@ function AdminPageContent() {
                         </div>
 
                         {/* Right: Cancel and Save Changes */}
-                        <div className="flex items-center gap-3 ml-auto">
-                          <Button variant="outline" className="px-5 cursor-pointer" onClick={() => { setDialogOpen(false); resetDialogForm(); }} disabled={isSubmitting}>
+                        <div className="flex items-center gap-2.5 ml-auto">
+                          <Button 
+                            variant="outline" 
+                            className="px-5 h-9.5 rounded-xl font-bold border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer" 
+                            onClick={() => { setDialogOpen(false); resetDialogForm(); }} 
+                            disabled={isSubmitting}
+                          >
                             Cancel
                           </Button>
                           <Button 
-                            className="px-6 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer" 
+                            className="px-6 h-9.5 rounded-xl font-extrabold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer" 
                             onClick={() => handleCreate(false)}
                             disabled={isSubmitting || isDetailLoading || !customerName || (isPickup && !pickupLoc) || (isDelivery && !deliveryLoc)}
                           >
