@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck } from "lucide-react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck, Eye, EyeOff, SlidersHorizontal, Compass } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
@@ -35,6 +35,7 @@ export function AdminSettings() {
   const [isCorporateCatalog, setIsCorporateCatalog] = useState(true);
   const [customItems, setCustomItems] = useState<PriceListItem[]>([]);
   const [catalogSearch, setCatalogSearch] = useState("");
+  const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
 
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<ShopLocation | null>(null);
@@ -652,23 +653,71 @@ export function AdminSettings() {
   };
 
   return (
-    <div className="p-6 lg:p-8 max-w-5xl mx-auto w-full space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div>
-        <h2 className="text-3xl font-black text-slate-900 tracking-tight">System Settings</h2>
-        <p className="text-slate-500 mt-1 font-medium">Configure global application settings and manage dynamic price lists.</p>
-      </div>
+    <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto w-full space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {/* Modern Header Banner */}
+      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white p-6 sm:p-8 shadow-xl shadow-slate-900/10 border border-slate-800/80">
+        <div className="pointer-events-none absolute -right-20 -top-20 w-80 h-80 rounded-full bg-indigo-500/15 blur-3xl" />
+        <div className="pointer-events-none absolute right-40 -bottom-20 w-60 h-60 rounded-full bg-emerald-500/10 blur-2xl" />
 
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
-              <Settings2 size={24} />
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black tracking-wide uppercase bg-white/10 text-indigo-200 backdrop-blur-md border border-white/15">
+                <SlidersHorizontal size={11} className="text-indigo-400" />
+                Global Workspace Settings
+              </span>
             </div>
-            <div>
-              <h3 className="text-xl font-bold text-slate-800">Dynamic Price Lists</h3>
-              <p className="text-xs text-slate-500 font-medium">Create unlimited price lists to assign to your customers.</p>
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-white">System Settings</h1>
+            <p className="text-xs sm:text-sm text-slate-300 font-medium max-w-xl leading-relaxed">
+              Configure dynamic pricing catalogs, manage physical branch service hubs, integrations, and hardware defaults.
+            </p>
+          </div>
+
+          {/* Quick Metrics Bar */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 shrink-0">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Price Lists</div>
+              <div className="text-lg font-black text-white mt-0.5 flex items-center gap-1.5">
+                <span>{priceLists.length}</span>
+                <span className="text-[10px] font-semibold text-indigo-300">Active</span>
+              </div>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Branches</div>
+              <div className="text-lg font-black text-white mt-0.5 flex items-center gap-1.5">
+                <span>{shopLocations.length}</span>
+                <span className="text-[10px] font-semibold text-emerald-300">Hubs</span>
+              </div>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md col-span-2 sm:col-span-1">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Maps Search</div>
+              <div className="text-lg font-black text-white mt-0.5 flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${enableGoogleApi ? 'bg-emerald-400' : 'bg-slate-400'}`} />
+                <span className="text-xs font-bold text-slate-200">{enableGoogleApi ? 'Active' : 'Local Only'}</span>
+              </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* 1. Dynamic Price Lists */}
+      <div className="space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
+              <Settings2 size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Dynamic Price Lists</h3>
+                <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                  {priceLists.length} Catalogs
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 font-medium">Create unlimited price lists to assign custom or corporate contract rates to customers.</p>
+            </div>
+          </div>
+
           <Button 
             onClick={() => {
               setName("");
@@ -689,153 +738,323 @@ export function AdminSettings() {
               setEditingList(null);
               setIsModalOpen(true);
             }} 
-            className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-sm cursor-pointer"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs h-9.5 px-4 rounded-xl shadow-xs shadow-indigo-600/25 hover:shadow-md cursor-pointer transition-all gap-1.5 self-start sm:self-auto"
           >
-            <Plus size={16} className="mr-2" /> Add Price List
+            <Plus size={15} />
+            <span>Add Price List</span>
           </Button>
         </div>
         
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="divide-y divide-slate-100">
-            {priceLists.map(list => (
-              <div key={list.id} className="p-5 flex flex-col md:flex-row md:items-center justify-between hover:bg-slate-50 transition-colors gap-4">
-                <div>
+        <div className="grid grid-cols-1 gap-3">
+          {priceLists.map(list => {
+            const isCorp = Boolean(list.isCorporate || (list.customItems && list.customItems.length > 0));
+            const itemCount = isCorp ? (list.customItems?.length || 0) : Object.keys(list.servicePrices || {}).length;
+
+            return (
+              <div 
+                key={list.id} 
+                className="group rounded-2xl bg-white border border-slate-200/80 hover:border-indigo-300 p-4.5 sm:p-5 shadow-2xs hover:shadow-md transition-all duration-200 flex flex-col md:flex-row md:items-center justify-between gap-4"
+              >
+                <div className="space-y-2 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h4 className="font-bold text-slate-900 text-lg">{list.name}</h4>
+                    <h4 className="font-extrabold text-slate-900 text-base sm:text-lg tracking-tight group-hover:text-indigo-900 transition-colors">
+                      {list.name}
+                    </h4>
+
                     {list.isDefault && (
-                      <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-none font-black uppercase text-[9px] tracking-wider px-2 py-0.5 rounded-md">Default Base</Badge>
+                      <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-none font-black uppercase text-[9.5px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
+                        <CheckCircle2 size={11} className="text-emerald-700" /> Default Base
+                      </Badge>
                     )}
-                    {(list.isCorporate || (list.customItems && list.customItems.length > 0)) && (
-                      <Badge className="bg-amber-100 text-amber-900 border-amber-300 font-extrabold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
-                        <Building size={11} className="text-amber-700" /> Corporate Catalog
+
+                    {isCorp && (
+                      <Badge className="bg-gradient-to-r from-amber-100 to-amber-200/90 text-amber-900 border border-amber-300 font-extrabold uppercase text-[9.5px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
+                        <Building size={11} className="text-amber-800" /> Corporate Catalog
+                      </Badge>
+                    )}
+
+                    {!list.isDefault && !isCorp && (
+                      <Badge className="bg-slate-100 text-slate-700 border-slate-200 font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded-md">
+                        Custom Special
                       </Badge>
                     )}
                   </div>
-                  <p className="text-xs text-slate-500 mt-1 font-medium bg-slate-100 inline-block px-2 py-0.5 rounded-full border border-slate-200">
-                    {list.isCorporate || (list.customItems && list.customItems.length > 0) ? (
-                      <>
-                        <span className="text-amber-800 font-bold">{list.customItems?.length || 0}</span> contract items (สินค้าตามสัญญา)
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-slate-700 font-bold">{Object.keys(list.servicePrices || {}).length}</span> overridden prices
-                      </>
-                    )}
-                  </p>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg border ${
+                      isCorp 
+                        ? 'bg-amber-50/80 text-amber-900 border-amber-200/80' 
+                        : 'bg-slate-50 text-slate-600 border-slate-200/80'
+                    }`}>
+                      <Tag size={12} className={isCorp ? 'text-amber-600' : 'text-slate-400'} />
+                      <span>
+                        <strong className="font-black text-slate-900">{itemCount}</strong> {isCorp ? 'contract items (สินค้าตามสัญญา)' : 'overridden prices'}
+                      </span>
+                    </span>
+                  </div>
                 </div>
-                <div className="flex gap-2 shrink-0">
-                  <Button variant="outline" size="sm" onClick={() => handleDuplicate(list)} className="h-9 gap-2 border-slate-200 hover:border-indigo-200 hover:text-indigo-700 hover:bg-indigo-50 font-semibold rounded-lg transition-all">
-                    <Copy size={14} /> Duplicate
+
+                <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => handleDuplicate(list)} 
+                    className="h-9 px-3 gap-1.5 border-slate-200/90 hover:border-indigo-300 hover:text-indigo-700 hover:bg-indigo-50/70 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-2xs"
+                  >
+                    <Copy size={13} className="text-slate-400 group-hover:text-indigo-600" />
+                    <span>Duplicate</span>
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleEdit(list)} className="h-9 gap-2 border-slate-200 hover:border-slate-300 font-semibold rounded-lg">
-                    <Edit3 size={14} /> Edit
+
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => handleEdit(list)} 
+                    className="h-9 px-3.5 gap-1.5 border-slate-200/90 hover:border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-2xs"
+                  >
+                    <Edit3 size={13} className="text-slate-500" />
+                    <span>Edit</span>
                   </Button>
+
                   {!list.isDefault && (
-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(list.id, list.name)} className="h-9 w-9 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg">
-                      <Trash2 size={16} />
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      onClick={() => handleDelete(list.id, list.name)} 
+                      className="h-9 w-9 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                      title="Delete price list"
+                    >
+                      <Trash2 size={15} />
                     </Button>
                   )}
                 </div>
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center justify-between">
+      {/* 2. Branch Locations */}
+      <div className="space-y-4 pt-8 border-t border-slate-200/80">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-emerald-100 text-emerald-600 rounded-xl">
-              <Store size={24} />
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-700 text-white flex items-center justify-center shadow-md shadow-emerald-500/20">
+              <Store size={20} />
             </div>
             <div>
-              <h3 className="text-xl font-bold text-slate-800">Branch Locations</h3>
-              <p className="text-xs text-slate-500 font-medium">Manage shop locations used for pickup/delivery maps.</p>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Branch Locations</h3>
+                <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70">
+                  {shopLocations.length} Hubs
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 font-medium">Manage physical shop locations used for pickup/delivery maps, routes, and staff assignments.</p>
             </div>
           </div>
-          <Button onClick={handleAddShop} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm">
-            <Plus size={16} className="mr-2" /> Add Branch
+
+          <Button 
+            onClick={handleAddShop} 
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-9.5 px-4 rounded-xl shadow-xs shadow-emerald-600/25 hover:shadow-md cursor-pointer transition-all gap-1.5 self-start sm:self-auto"
+          >
+            <Plus size={15} />
+            <span>Add Branch</span>
           </Button>
         </div>
         
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {shopLocations.map(shop => (
-            <div key={shop.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col hover:border-emerald-200 transition-colors">
-              <div className="flex justify-between items-start mb-3">
-                <div className="flex flex-col gap-1">
-                  <h4 className="font-bold text-slate-900 text-lg">{shop.name}</h4>
-                  <div className="flex gap-1.5 flex-wrap">
-                    <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-200 text-[10px] w-fit uppercase tracking-wider">{shop.area || "BKK"}</Badge>
-                    {shop.noCommission && (
-                      <Badge variant="outline" className="bg-rose-50 text-rose-600 border-rose-200 text-[10px] w-fit">ไม่มีค่าคอม</Badge>
-                    )}
+          {shopLocations.map((shop, idx) => {
+            const isMainHub = (shop.name || "").toLowerCase().includes("15 sukhumvit") || (shop.name || "").toLowerCase().includes("sukhumvit 15") || idx === 0;
+
+            return (
+              <div 
+                key={shop.id} 
+                className="group rounded-2xl bg-white border border-slate-200/90 hover:border-emerald-300 p-5 shadow-2xs hover:shadow-md transition-all duration-200 flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex justify-between items-start gap-2 mb-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 flex items-center justify-center shrink-0 mt-0.5">
+                        <Store size={18} />
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-extrabold text-slate-900 text-base leading-snug group-hover:text-emerald-950 transition-colors">
+                          {shop.name}
+                        </h4>
+                        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border ${
+                            shop.area === "PTY"
+                              ? "bg-amber-50 text-amber-700 border-amber-200/80"
+                              : "bg-sky-50 text-sky-700 border-sky-200/80"
+                          }`}>
+                            {shop.area || "BKK"}
+                          </span>
+
+                          {isMainHub && (
+                            <span className="text-[9.5px] font-extrabold px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 flex items-center gap-1">
+                              ⭐ Main Hub
+                            </span>
+                          )}
+
+                          {shop.noCommission && (
+                            <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200/80">
+                              ไม่มีค่าคอม
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        onClick={() => handleEditShop(shop)} 
+                        className="h-8 w-8 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg cursor-pointer"
+                        title="Edit branch"
+                      >
+                        <Edit3 size={14} />
+                      </Button>
+                      {shopLocations.length > 1 && (
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          onClick={() => handleDeleteShop(shop.id, shop.name)} 
+                          className="h-8 w-8 text-slate-400 hover:text-red-700 hover:bg-red-50 rounded-lg cursor-pointer"
+                          title="Delete branch"
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Address Box */}
+                  <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-100/90 text-xs text-slate-600 flex items-start gap-2 leading-relaxed">
+                    <MapPin size={14} className="shrink-0 text-emerald-600 mt-0.5" />
+                    <span className="line-clamp-2">{shop.address}</span>
                   </div>
                 </div>
-                <div className="flex gap-1 shrink-0">
-                  <Button variant="ghost" size="icon" onClick={() => handleEditShop(shop)} className="h-8 w-8 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg">
-                    <Edit3 size={14} />
-                  </Button>
-                  {shopLocations.length > 1 && (
-                    <Button variant="ghost" size="icon" onClick={() => handleDeleteShop(shop.id, shop.name)} className="h-8 w-8 text-slate-400 hover:text-red-700 hover:bg-red-50 rounded-lg">
-                      <Trash2 size={14} />
-                    </Button>
-                  )}
+
+                <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400 font-semibold">
+                  <span className="inline-flex items-center gap-1 text-emerald-700">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    Active Hub
+                  </span>
+                  <button 
+                    type="button" 
+                    onClick={() => handleEditShop(shop)}
+                    className="text-xs font-bold text-slate-600 hover:text-emerald-700 transition-colors cursor-pointer"
+                  >
+                    Edit Details →
+                  </button>
                 </div>
               </div>
-              <div className="text-sm text-slate-500 flex items-start gap-1.5 mt-auto">
-                <MapPin size={14} className="shrink-0 text-emerald-500 mt-0.5" />
-                <span className="line-clamp-2 leading-snug">{shop.address}</span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-orange-100 text-orange-600 rounded-xl">
-              <Key size={24} />
+      {/* 3. Integrations & API Keys */}
+      <div className="space-y-4 pt-8 border-t border-slate-200/80">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+            <Key size={20} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Integrations & API Keys</h3>
+              <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-orange-50 text-orange-700 border border-orange-200/70">
+                Maps Platform
+              </span>
             </div>
-            <div>
-              <h3 className="text-xl font-bold text-slate-800">Integrations & API Keys</h3>
-              <p className="text-xs text-slate-500 font-medium">Manage third-party services and system keys.</p>
-            </div>
+            <p className="text-xs text-slate-500 font-medium">Manage third-party search and routing services used across the platform.</p>
           </div>
         </div>
         
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/90 p-5 sm:p-7">
           <div className="max-w-2xl space-y-6">
-            <div className="flex items-center gap-3 p-4 border border-slate-200 rounded-xl bg-slate-50">
-              <input 
-                type="checkbox" 
-                id="enableApi" 
-                checked={enableGoogleApi} 
-                onChange={(e) => setEnableGoogleApi(e.target.checked)}
-                className="w-5 h-5 text-orange-600 rounded border-slate-300 focus:ring-orange-600 cursor-pointer"
-              />
-              <div className="flex flex-col">
-                <label htmlFor="enableApi" className="text-sm font-bold text-slate-800 cursor-pointer">
-                  Enable Google Maps Search (Fallback)
-                </label>
-                <span className="text-[10px] text-slate-500">If disabled, the system will ONLY search within your imported local database.</span>
+            {/* Toggle Card */}
+            <div 
+              onClick={() => setEnableGoogleApi(!enableGoogleApi)}
+              className={`flex items-start justify-between gap-4 p-4.5 rounded-2xl border transition-all cursor-pointer ${
+                enableGoogleApi
+                  ? "bg-amber-50/40 border-amber-200/90 shadow-2xs"
+                  : "bg-slate-50/80 border-slate-200/80 hover:bg-slate-50"
+              }`}
+            >
+              <div className="flex items-start gap-3.5">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                  enableGoogleApi ? 'bg-amber-500 text-white shadow-xs' : 'bg-slate-200 text-slate-500'
+                }`}>
+                  <Compass size={18} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-extrabold text-slate-900">Enable Google Maps Search (Fallback)</span>
+                    <span className={`text-[9.5px] font-black uppercase px-2 py-0.5 rounded-full ${
+                      enableGoogleApi ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
+                    }`}>
+                      {enableGoogleApi ? 'Active' : 'Disabled'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                    If disabled, location lookups will strictly search within your imported local database. When enabled, Google Maps acts as a rich fallback.
+                  </p>
+                </div>
+              </div>
+
+              {/* iOS-style toggle pill */}
+              <div className={`w-11 h-6 rounded-full transition-colors relative shrink-0 mt-1 ${enableGoogleApi ? 'bg-amber-500' : 'bg-slate-300'}`}>
+                <div className={`w-5 h-5 rounded-full bg-white shadow-sm absolute top-0.5 transition-transform ${enableGoogleApi ? 'translate-x-5.5' : 'translate-x-0.5'}`} />
               </div>
             </div>
 
-            <div className={`space-y-2 transition-opacity duration-200 ${enableGoogleApi ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
-              <Label className="font-semibold text-slate-700">Google Maps API Key</Label>
-              <Input 
-                type="password" 
-                value={googleApiKey} 
-                onChange={e => setGoogleApiKey(e.target.value)} 
-                placeholder="AIzaSy..." 
-                className="font-mono text-sm"
-              />
-              <p className="text-[10px] text-slate-500">Requires Places API and Geocoding API to be enabled. This will be used for searching locations securely.</p>
+            {/* API Key Box */}
+            <div className={`space-y-2.5 transition-opacity duration-200 ${enableGoogleApi ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
+              <div className="flex items-center justify-between">
+                <Label className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                  <ShieldCheck size={14} className="text-emerald-600" />
+                  <span>Google Maps API Key</span>
+                </Label>
+                <button
+                  type="button"
+                  onClick={() => setShowGoogleApiKey(!showGoogleApiKey)}
+                  className="text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                >
+                  {showGoogleApiKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                  <span>{showGoogleApiKey ? "Hide Key" : "Reveal Key"}</span>
+                </button>
+              </div>
+
+              <div className="relative">
+                <Input 
+                  type={showGoogleApiKey ? "text" : "password"} 
+                  value={googleApiKey} 
+                  onChange={e => setGoogleApiKey(e.target.value)} 
+                  placeholder="AIzaSy..." 
+                  className="font-mono text-sm h-10.5 rounded-xl border-slate-200 focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 pr-10"
+                />
+              </div>
+              <p className="text-[11px] text-slate-400 leading-normal">
+                Requires Places API and Geocoding API to be enabled on your Google Cloud Console. Keys are encrypted and used only for location queries.
+              </p>
             </div>
             
-            <Button onClick={handleSaveApiSettings} disabled={isVerifyingKey} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
-              {isVerifyingKey ? "Verifying Key..." : "Save API Settings"}
+            <Button 
+              onClick={handleSaveApiSettings} 
+              disabled={isVerifyingKey} 
+              className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs h-10 px-5 rounded-xl shadow-xs cursor-pointer transition-all gap-1.5"
+            >
+              {isVerifyingKey ? (
+                <>
+                  <RefreshCw size={13} className="animate-spin" />
+                  <span>Verifying Key...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={14} />
+                  <span>Save API Settings</span>
+                </>
+              )}
             </Button>
           </div>
         </div>
