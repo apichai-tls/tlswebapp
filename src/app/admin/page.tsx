@@ -1232,10 +1232,24 @@ function AdminPageContent() {
   }, [customerPhone, phoneResolution.primaryPhone]);
 
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin' || Boolean(user?.permissions?.includes('admin'));
   const isAccounting = user?.role === 'accounting' || Boolean(user?.permissions?.includes('accounting'));
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
+  const isBranchManager = user?.role === 'manager' || Boolean(user?.permissions?.includes('manager') || user?.permissions?.includes('branch_manager'));
   const isCsoOrAdmin = isCSO || isAdmin;
+  const canAdvanceBilling = isAdmin || isCSO || isBranchManager;
+
+  const isCurrentJobBillSent = useMemo(() => {
+    if (!editingJobId) return false;
+    const currentJob = jobs.find(j => j.id === editingJobId);
+    if (!currentJob?.adminNotesJson) return false;
+    try {
+      const p = JSON.parse(currentJob.adminNotesJson);
+      return Boolean(p && typeof p === "object" && !Array.isArray(p) && p.isBillSent);
+    } catch {
+      return false;
+    }
+  }, [jobs, editingJobId]);
 
   // CSO can only unlock jobs whose payment was recorded today or yesterday (Thailand time UTC+7)
   // Admin / Superadmin / Accounting can unlock any paid job without time limit
@@ -2876,6 +2890,30 @@ function AdminPageContent() {
       (paymentChannel === "Deduct Member" && (((selectedProfileCustomer?.creditBalance || 0) < remainingToPay) || isWalletExpired(selectedProfileCustomer))) ||
       (isSplitPayment && splitMemberDeductAmt > 0 && (((selectedProfileCustomer?.creditBalance || 0) < splitMemberDeductAmt) || isWalletExpired(selectedProfileCustomer)))
     );
+
+    // Billing stage transition guard on save:
+    // Orders in Billing stage can only advance to the next stage by CSO, Admin, or Branch Manager, with Bill Sent clicked.
+    const isCurrentlyInBilling = existingJob && existingJob.status === "billing" && (!existingJob.subStatus || existingJob.subStatus === "billing");
+    const isAdvancingToNextStage = editingSubStatus && ["wash", "dry", "iron", "ready"].includes(editingSubStatus);
+    if (isCurrentlyInBilling && isAdvancingToNextStage) {
+      if (!canAdvanceBilling) {
+        toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
+        setIsSubmitting(false);
+        return;
+      }
+      let isBillSentCheck = false;
+      if (existingJob.adminNotesJson) {
+        try {
+          const p = JSON.parse(existingJob.adminNotesJson);
+          if (p && typeof p === "object") isBillSentCheck = Boolean(p.isBillSent);
+        } catch {}
+      }
+      if (!isBillSentCheck) {
+        toast.error("Cannot move to next stage: Bill must be marked as Sent to Customer first (Bill Sent ✓)");
+        setIsSubmitting(false);
+        return;
+      }
+    }
 
 
     const newJobData: any = {
@@ -5778,7 +5816,21 @@ function AdminPageContent() {
                           {/* Wash */}
                           <button
                             type="button"
-                            onClick={() => setEditingSubStatus(editingSubStatus === 'wash' ? null : 'wash')}
+                            onClick={() => {
+                              const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                              const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
+                              if (isCurrentlyInBilling && editingSubStatus !== 'wash') {
+                                if (!canAdvanceBilling) {
+                                  toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
+                                  return;
+                                }
+                                if (!isCurrentJobBillSent) {
+                                  toast.error("Cannot move to next stage: Bill must be marked as Sent to Customer first (Bill Sent ✓)");
+                                  return;
+                                }
+                              }
+                              setEditingSubStatus(editingSubStatus === 'wash' ? null : 'wash');
+                            }}
                             className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'wash'
                                 ? 'bg-blue-600 shadow-2xs text-white'
@@ -5795,7 +5847,21 @@ function AdminPageContent() {
                           {/* Dry */}
                           <button
                             type="button"
-                            onClick={() => setEditingSubStatus(editingSubStatus === 'dry' ? null : 'dry')}
+                            onClick={() => {
+                              const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                              const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
+                              if (isCurrentlyInBilling && editingSubStatus !== 'dry') {
+                                if (!canAdvanceBilling) {
+                                  toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
+                                  return;
+                                }
+                                if (!isCurrentJobBillSent) {
+                                  toast.error("Cannot move to next stage: Bill must be marked as Sent to Customer first (Bill Sent ✓)");
+                                  return;
+                                }
+                              }
+                              setEditingSubStatus(editingSubStatus === 'dry' ? null : 'dry');
+                            }}
                             className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'dry'
                                 ? 'bg-orange-600 shadow-2xs text-white'
@@ -5812,7 +5878,21 @@ function AdminPageContent() {
                           {/* Iron */}
                           <button
                             type="button"
-                            onClick={() => setEditingSubStatus(editingSubStatus === 'iron' ? null : 'iron')}
+                            onClick={() => {
+                              const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                              const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
+                              if (isCurrentlyInBilling && editingSubStatus !== 'iron') {
+                                if (!canAdvanceBilling) {
+                                  toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
+                                  return;
+                                }
+                                if (!isCurrentJobBillSent) {
+                                  toast.error("Cannot move to next stage: Bill must be marked as Sent to Customer first (Bill Sent ✓)");
+                                  return;
+                                }
+                              }
+                              setEditingSubStatus(editingSubStatus === 'iron' ? null : 'iron');
+                            }}
                             className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'iron'
                                 ? 'bg-indigo-700 shadow-2xs text-white'
@@ -5829,7 +5909,21 @@ function AdminPageContent() {
                           {/* Ready */}
                           <button
                             type="button"
-                            onClick={() => setEditingSubStatus(editingSubStatus === 'ready' ? null : 'ready')}
+                            onClick={() => {
+                              const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
+                              const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
+                              if (isCurrentlyInBilling && editingSubStatus !== 'ready') {
+                                if (!canAdvanceBilling) {
+                                  toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
+                                  return;
+                                }
+                                if (!isCurrentJobBillSent) {
+                                  toast.error("Cannot move to next stage: Bill must be marked as Sent to Customer first (Bill Sent ✓)");
+                                  return;
+                                }
+                              }
+                              setEditingSubStatus(editingSubStatus === 'ready' ? null : 'ready');
+                            }}
                             className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
                               editingSubStatus === 'ready'
                                 ? 'bg-emerald-600 shadow-2xs text-white'

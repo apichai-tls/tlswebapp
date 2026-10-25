@@ -308,7 +308,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const { user, isLoading: isAuthLoading } = useAuth();
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
   const isAdmin = user?.role === 'admin' || Boolean(user?.permissions?.includes('admin'));
+  const isBranchManager = user?.role === 'manager' || Boolean(user?.permissions?.includes('manager') || user?.permissions?.includes('branch_manager'));
   const isCsoOrAdmin = isCSO || isAdmin;
+  const canAdvanceBilling = isAdmin || isCSO || isBranchManager;
   const canManageJobs = Boolean(
     user?.role === 'admin' ||
     isCSO ||
@@ -406,6 +408,22 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const handleMoveJobToColumn = async (job: Job, targetCol: KanbanColumnId) => {
     const currentCol = getJobKanbanColumn(job);
     if (currentCol === targetCol) return;
+
+    // Billing stage transition guard:
+    // Orders in Billing stage can ONLY be moved to the next stage (process, delivery, completed, etc.)
+    // by employees in CSO, ADMIN, or Branch Manager positions, AND ONLY IF the bill has been marked as Sent to Customer.
+    const isAdvancingFromBilling = currentCol === "billing" && !["cancel", "tba", "pending", "pickup"].includes(targetCol);
+    if (isAdvancingFromBilling) {
+      if (!canAdvanceBilling) {
+        toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
+        return;
+      }
+      const bMeta = getJobBillingMeta(job);
+      if (!bMeta.isBillSent) {
+        toast.error("Cannot move to next stage: Bill must be marked as Sent to Customer first (Bill Sent ✓)");
+        return;
+      }
+    }
 
     if (targetCol === "cancel") {
       setCancellingJob(job);
@@ -2672,7 +2690,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                   </button>
                                 </div>
 
-                                {/* Quick Advance Button when inside Billing Column */}
+                                {/* Quick Advance Button when inside Billing Column - Restricted to CSO, Admin, Branch Manager with Bill Sent */}
                                 {status === "billing" && canManageJobs && (
                                   <button
                                     type="button"
@@ -2681,11 +2699,17 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                       handleMoveJobToColumn(job, "process");
                                     }}
                                     className={`w-full flex items-center justify-center gap-1.5 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                                      bMeta.isBillIssued && bMeta.isBillSent
+                                      canAdvanceBilling && bMeta.isBillSent
                                         ? "bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600 shadow-2xs"
-                                        : "bg-white hover:bg-slate-100 text-slate-600 border-slate-200/80"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-500 border-slate-200/80"
                                     }`}
-                                    title="Move order from Billing to Process stage"
+                                    title={
+                                      !canAdvanceBilling
+                                        ? "Only CSO, Admin, and Branch Managers can advance order to Process"
+                                        : !bMeta.isBillSent
+                                          ? "Bill must be marked as Sent to Customer before advancing to Process"
+                                          : "Move order from Billing to Process stage"
+                                    }
                                   >
                                     <span>Move to Process</span>
                                     <ArrowRight size={11} />
