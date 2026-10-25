@@ -289,16 +289,29 @@ function mergeAdminNotesJson(
     mergedPayments = incoming.payments;
   } else {
     const seenPaymentKeys = new Set<string>();
+    const seenPaymentContentSigs: Array<{ sig: string; ts: number }> = [];
     const getPayKey = (p: any, idx: number) => {
       if (!p || typeof p !== 'object') return `idx-${idx}`;
       if (p.id) return `id:${p.id}`;
       if (p.chargeId) return `charge:${p.chargeId}`;
       return `sig:${Number(p.amount) || 0}|${p.method || ''}|${p.channel || ''}|${p.timestamp || ''}`;
     };
+    const isDuplicatePaymentContent = (p: any) => {
+      if (!p || typeof p !== 'object') return false;
+      const contentSig = `${Number(p.amount) || 0}|${String(p.method || '').toLowerCase()}|${String(p.channel || '').toLowerCase()}|${String(p.note || '').trim()}`;
+      const ts = p.timestamp ? new Date(p.timestamp).getTime() : 0;
+      for (const prev of seenPaymentContentSigs) {
+        if (prev.sig === contentSig && ts > 0 && prev.ts > 0 && Math.abs(ts - prev.ts) < 15000) {
+          return true;
+        }
+      }
+      seenPaymentContentSigs.push({ sig: contentSig, ts });
+      return false;
+    };
     for (let i = 0; i < existing.payments.length; i++) {
       const p = existing.payments[i];
       const k = getPayKey(p, i);
-      if (!seenPaymentKeys.has(k)) {
+      if (!seenPaymentKeys.has(k) && !isDuplicatePaymentContent(p)) {
         seenPaymentKeys.add(k);
         mergedPayments.push(p);
       }
@@ -306,7 +319,7 @@ function mergeAdminNotesJson(
     for (let i = 0; i < incoming.payments.length; i++) {
       const p = incoming.payments[i];
       const k = getPayKey(p, i + existing.payments.length);
-      if (!seenPaymentKeys.has(k)) {
+      if (!seenPaymentKeys.has(k) && !isDuplicatePaymentContent(p)) {
         seenPaymentKeys.add(k);
         mergedPayments.push(p);
       }
@@ -314,21 +327,38 @@ function mergeAdminNotesJson(
   }
 
   // 2. Merge notes: if the caller is explicitly editing/deleting only adminNotesJson and reduced notes count, respect deletion;
-  // otherwise merge existing + incoming notes by id/signature so concurrent saves never lose notes
+  // otherwise merge existing + incoming notes by id/signature so concurrent saves never lose notes or duplicate notes
   let mergedNotes: any[] = [];
   if (options?.isExplicitAdminNotesOnlyEdit && incoming.notes.length < existing.notes.length) {
     mergedNotes = incoming.notes;
   } else {
     const seenNoteKeys = new Set<string>();
+    const seenNoteContentSigs: Array<{ sig: string; ts: number }> = [];
     const getNoteKey = (n: any, idx: number) => {
       if (!n || typeof n !== 'object') return `raw:${String(n)}:${idx}`;
       if (n.id) return `id:${n.id}`;
       return `sig:${n.timestamp || n.date || ''}|${n.text || n.note || ''}|${n.user || n.userName || ''}`;
     };
+    const isDuplicateNoteContent = (n: any) => {
+      if (!n || typeof n !== 'object') return false;
+      const textStr = String(n.text || n.note || '').trim();
+      const imgsStr = Array.isArray(n.imageUrls) ? n.imageUrls.join(',') : '';
+      const authorStr = String(n.userId || n.userName || n.user || '').trim().toLowerCase();
+      const contentSig = `${textStr}|${imgsStr}|${authorStr}`;
+      const rawTs = n.timestamp || n.date;
+      const ts = rawTs ? new Date(rawTs).getTime() : 0;
+      for (const prev of seenNoteContentSigs) {
+        if (prev.sig === contentSig && ts > 0 && prev.ts > 0 && Math.abs(ts - prev.ts) < 20000) {
+          return true;
+        }
+      }
+      seenNoteContentSigs.push({ sig: contentSig, ts });
+      return false;
+    };
     for (let i = 0; i < existing.notes.length; i++) {
       const n = existing.notes[i];
       const k = getNoteKey(n, i);
-      if (!seenNoteKeys.has(k)) {
+      if (!seenNoteKeys.has(k) && !isDuplicateNoteContent(n)) {
         seenNoteKeys.add(k);
         mergedNotes.push(n);
       }
@@ -336,7 +366,7 @@ function mergeAdminNotesJson(
     for (let i = 0; i < incoming.notes.length; i++) {
       const n = incoming.notes[i];
       const k = getNoteKey(n, i + existing.notes.length);
-      if (!seenNoteKeys.has(k)) {
+      if (!seenNoteKeys.has(k) && !isDuplicateNoteContent(n)) {
         seenNoteKeys.add(k);
         mergedNotes.push(n);
       }
@@ -1616,6 +1646,8 @@ export async function setPrimaryCustomerAddressAction(customerId: string, addres
   return updated;
 }
 
+const recentJobCreationsByRequestId = new Map<string, { promise: Promise<any>; createdAt: number }>();
+
 export async function addJobAction(data: any) {
   const authUser = await assertServerActionAuthorized({
     requireWrite: true,
@@ -1624,18 +1656,356 @@ export async function addJobAction(data: any) {
   });
   data.actorId = authUser.id;
   data.actorName = authUser.name || authUser.email;
-  const year = new Date().getFullYear().toString(); // 4-digit year, auto-changes each year
+
+  const clientRequestId = typeof data?.clientRequestId === 'string' && data.clientRequestId.trim()
+    ? `${authUser.id}:${data.clientRequestId.trim()}`
+    : null;
+
+  if (clientRequestId) {
+    const now = Date.now();
+    for (const [k, v] of recentJobCreationsByRequestId.entries()) {
+      if (now - v.createdAt > 60000) recentJobCreationsByRequestId.delete(k);
+    }
+    const existingCreation = recentJobCreationsByRequestId.get(clientRequestId);
+    if (existingCreation) {
+      console.log(`[addJobAction] Idempotent replay for clientRequestId=${clientRequestId}`);
+      return existingCreation.promise;
+    }
+  }
+
+  const runCreate = async () => {
+    const year = new Date().getFullYear().toString(); // 4-digit year, auto-changes each year
+    const isTestDb = Boolean(
+      process.env.DATABASE_URL?.includes('/tls_test') ||
+        process.env.DIRECT_URL?.includes('/tls_test') ||
+        process.env.APP_ENV === 'test'
+    );
+    const prefix = isTestDb ? `T${year}` : year;
+    const needsSequentialId = !data.id || String(data.id).startsWith('JOB-');
+
+    const createdJob = await prisma.$transaction(async (tx) => {
+      let jobId = data.id;
+      if (needsSequentialId) {
+        const seqLockKey = `job_seq:${prefix}`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${seqLockKey}))`;
+
+        const latestJob = await tx.job.findFirst({
+          where: { id: { startsWith: prefix } },
+          orderBy: { id: 'desc' },
+        });
+
+        if (latestJob) {
+          const numericPart = latestJob.id.replace(/^T/, '').substring(4);
+          const lastNum = parseInt(numericPart, 10);
+          if (!isNaN(lastNum)) {
+            jobId = `${prefix}${(lastNum + 1).toString().padStart(6, '0')}`;
+          } else {
+            jobId = `${prefix}000001`;
+          }
+        } else {
+          jobId = `${prefix}000001`;
+        }
+      }
+
+      const shouldAutoProforma = Boolean(
+        (data as any).autoAssignProforma ||
+        (data.source === 'pos' && Array.isArray(data.items) && data.items.length > 0)
+      );
+      const resolvedProformaNumber =
+        (data.proformaNumber && data.proformaNumber !== 'DRAFT' ? data.proformaNumber : null) ||
+        ((data as any).proformaReceiptNumber && (data as any).proformaReceiptNumber !== 'DRAFT' ? (data as any).proformaReceiptNumber : null) ||
+        (shouldAutoProforma ? generateProformaBaseNumber(jobId) : null);
+      const resolvedProformaRevision =
+        data.proformaRevision !== undefined && data.proformaRevision !== null
+          ? data.proformaRevision
+          : (resolvedProformaNumber ? 0 : null);
+      const resolvedProformaCartHash =
+        data.proformaCartHash ||
+        (resolvedProformaNumber && Array.isArray(data.items) ? computeCartHash({ items: data.items }) : null);
+      let resolvedRemark = data.remark;
+      if ((data as any).autoAssignProforma && resolvedProformaNumber) {
+        const proformaRemark = `Proforma: ${resolvedProformaNumber}`;
+        resolvedRemark = resolvedRemark
+          ? (String(resolvedRemark).includes('Proforma:') ? resolvedRemark : `${proformaRemark} | ${resolvedRemark}`)
+          : proformaRemark;
+      }
+
+      const jobRow = await tx.job.create({
+        data: {
+          id: jobId,
+          type: data.type || 'full_service',
+          customerId: data.customerId,
+          customerName: data.customerName,
+          customerPhone: data.customerPhone,
+          pickupLocation: data.pickupLocation,
+          dropoffLocation: data.dropoffLocation,
+          pickupLat: data.pickupCoords?.lat || 0,
+          pickupLng: data.pickupCoords?.lng || 0,
+          dropoffLat: data.dropoffCoords?.lat || 0,
+          dropoffLng: data.dropoffCoords?.lng || 0,
+          distance: Math.max(0, Number.isFinite(Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance)) ? Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance) : 0),
+          fee: Math.max(0, Number.isFinite(Number(data.fee)) ? Number(data.fee) : 0),
+          status: data.status,
+          createdAt: data.createdAt,
+          scheduledAt: data.scheduledAt,
+          completedAt: data.completedAt,
+          proofImageUrl: data.proofImageUrl,
+          riderId: data.riderId,
+          bagImageUrl: data.bagImageUrl,
+          billImageUrl: data.billImageUrl,
+          billNo: data.billNo ? String(data.billNo).trim() : null,
+          serviceType: data.serviceType,
+          laundryTypes: data.laundryTypes ? data.laundryTypes.join(',') : null,
+          source: data.source,
+          totalAmount: data.totalAmount !== undefined && data.totalAmount !== null ? Math.max(0, Number.isFinite(Number(data.totalAmount)) ? Number(data.totalAmount) : 0) : null,
+          paymentMethod: data.paymentMethod,
+          paymentChannel: data.paymentChannel,
+          isPaid: data.isPaid || false,
+          isShopPaid: data.isShopPaid || false,
+          csoPaidAt: data.isPaid ? new Date() : null,
+          shopPaidAt: data.isShopPaid ? new Date() : null,
+          discount: Math.max(0, Number.isFinite(Number(data.discount)) ? Number(data.discount) : 0),
+          discountPercent: Math.min(100, Math.max(0, Number.isFinite(Number(data.discountPercent)) ? Number(data.discountPercent) : 0)),
+          pickupDistance: data.pickupDistance !== undefined && data.pickupDistance !== null ? Math.max(0, Number.isFinite(Number(data.pickupDistance)) ? Number(data.pickupDistance) : 0) : null,
+          deliveryDistance: data.deliveryDistance !== undefined && data.deliveryDistance !== null ? Math.max(0, Number.isFinite(Number(data.deliveryDistance)) ? Number(data.deliveryDistance) : 0) : null,
+          pickupCommission: data.pickupCommission !== undefined && data.pickupCommission !== null ? Math.max(0, Number.isFinite(Number(data.pickupCommission)) ? Number(data.pickupCommission) : 0) : null,
+          deliveryCommission: data.deliveryCommission !== undefined && data.deliveryCommission !== null ? Math.max(0, Number.isFinite(Number(data.deliveryCommission)) ? Number(data.deliveryCommission) : 0) : null,
+          pickupScheduledAt: data.pickupScheduledAt,
+          pickupScheduledEndAt: data.pickupScheduledEndAt,
+          deliveryScheduledAt: data.deliveryScheduledAt,
+          deliveryScheduledEndAt: data.deliveryScheduledEndAt,
+          pickupRiderId: data.pickupRiderId,
+          deliveryRiderId: data.deliveryRiderId,
+          itemsJson: data.items ? JSON.stringify(data.items) : null,
+          legsJson: data.legs ? JSON.stringify(data.legs) : null,
+          remark: resolvedRemark,
+          adminNotesJson: data.adminNotesJson,
+          branchId: data.branchId,
+          createdBy: data.createdBy,
+          cashPlaced: data.cashPlaced || false,
+          isStuck: data.isStuck || false,
+          shiftId: data.shiftId || null,
+          walletBalanceAfter: data.walletBalanceAfter !== undefined ? data.walletBalanceAfter : null,
+          proformaNumber: resolvedProformaNumber,
+          proformaRevision: resolvedProformaRevision,
+          proformaCartHash: resolvedProformaCartHash,
+        },
+      });
+
+      try {
+        await tx.activityLog.create({
+          data: {
+            entityId: jobRow.id,
+            entityType: 'job',
+            action: 'create',
+            details: JSON.stringify(jobRow),
+            userId: data.actorId || null,
+            userName: data.actorName || null,
+          },
+        });
+      } catch (err: any) {
+        console.error("Failed to write ActivityLog on create:", err.message);
+      }
+
+      return jobRow;
+    });
+
+    if ((createdJob.pickupRiderId || createdJob.deliveryRiderId) && (createdJob.isPaid || createdJob.isShopPaid)) {
+      await syncRiderCommissionsForJob(createdJob.id, createdJob, true);
+    }
+
+    // Evaluate promotion coupon issuance only when job is created with shop-paid status
+    let issuedCoupons: any[] = [];
+    if (createdJob.isShopPaid && createdJob.customerId) {
+      try {
+        const promoRes = await evaluateAndIssuePromotionCouponsAction({
+          jobId: createdJob.id,
+          customerId: createdJob.customerId,
+          actor: { id: data.actorId, name: data.actorName },
+        });
+        if (promoRes.success && promoRes.couponsIssued) {
+          issuedCoupons = promoRes.couponsIssued;
+        }
+      } catch (err: any) {
+        console.warn("[addJobAction] Promo coupon evaluation failed:", err);
+      }
+    }
+
+    // Auto-redeem applied CustomerVoucher on backend
+    if (data.remark && String(data.remark).includes('Promo:')) {
+      try {
+        const promoMatch = data.remark.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
+        const promoCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
+        const parsedPromoDiscount = promoMatch ? parseFloat(promoMatch[2] || promoMatch[3] || "0") : 0;
+        if (promoCode) {
+          const localCoupon = await prisma.customerVoucher.findFirst({
+            where: { code: { equals: promoCode, mode: "insensitive" }, status: "ACTIVE" },
+          });
+          if (localCoupon) {
+            const usedDiscount = parsedPromoDiscount > 0
+              ? parsedPromoDiscount
+              : (data.discount ? Math.max(0, Number(data.discount)) : localCoupon.discountValue);
+            await prisma.customerVoucher.update({
+              where: { id: localCoupon.id },
+              data: {
+                status: "USED",
+                usedAt: new Date(),
+                usedJobId: createdJob.id,
+                discountAmountUsed: usedDiscount,
+              },
+            });
+            await prisma.activityLog.create({
+              data: {
+                entityId: localCoupon.customerId,
+                entityType: "customer",
+                action: "COUPON_USED",
+                details: JSON.stringify({
+                  couponId: localCoupon.id,
+                  code: localCoupon.code,
+                  usedJobId: createdJob.id,
+                  discountAmountUsed: usedDiscount,
+                }),
+                userId: data.actorId || null,
+                userName: data.actorName || null,
+              },
+            });
+            console.log(`[CustomerVoucher] Auto-marked ${promoCode} as USED for job ${createdJob.id}`);
+          }
+        }
+      } catch (err) {
+        console.warn("[addJobAction] Promo auto-redeem failed:", err);
+      }
+    }
+
+    await publishOrderEvent({
+      type: 'job.created',
+      job: createdJob,
+      action: 'create',
+      actorId: data.actorId,
+      actorName: data.actorName,
+    });
+    return { ...createdJob, issuedCoupons };
+  };
+
+  if (clientRequestId) {
+    const promise = runCreate().catch((err) => {
+      recentJobCreationsByRequestId.delete(clientRequestId);
+      throw err;
+    });
+    recentJobCreationsByRequestId.set(clientRequestId, { promise, createdAt: Date.now() });
+    return promise;
+  }
+
+  return runCreate();
+}
+
+export async function splitJobDeliveryAction(data: {
+  originalJobId: string;
+  itemsToSplit: Array<{
+    id: string;
+    name: string;
+    quantity: number;
+    price?: number;
+    unit?: string;
+    category?: string;
+    serviceId?: string;
+  }>;
+  deliveryScheduledAt: string;
+  deliveryRiderId?: string | null;
+  noRiderCommission?: boolean;
+  notes?: string | null;
+  actorId?: string;
+  actorName?: string;
+  actorRole?: string;
+  expectedUpdatedAt?: string;
+}) {
+  const authUser = await assertServerActionAuthorized({
+    requireWrite: true,
+    forbidRoles: ['rider'],
+  });
+  data.actorId = authUser.id;
+  data.actorName = authUser.name || authUser.email;
+
+  if (!data.originalJobId) {
+    throw new Error("Missing originalJobId");
+  }
+  if (!Array.isArray(data.itemsToSplit) || data.itemsToSplit.length === 0) {
+    throw new Error("Please select at least one item to split for 2nd delivery.");
+  }
+  const totalSplitQty = data.itemsToSplit.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+  if (totalSplitQty <= 0) {
+    throw new Error("Split quantity must be greater than zero.");
+  }
+
+  const year = new Date().getFullYear().toString();
   const isTestDb = Boolean(
     process.env.DATABASE_URL?.includes('/tls_test') ||
       process.env.DIRECT_URL?.includes('/tls_test') ||
       process.env.APP_ENV === 'test'
   );
   const prefix = isTestDb ? `T${year}` : year;
-  const needsSequentialId = !data.id || String(data.id).startsWith('JOB-');
 
-  const createdJob = await prisma.$transaction(async (tx) => {
-    let jobId = data.id;
-    if (needsSequentialId) {
+  return await withJobUpdateLock(data.originalJobId, async () => {
+    return await prisma.$transaction(async (tx) => {
+      await lockJobRowForUpdate(tx, data.originalJobId);
+      const freshOriginal = await tx.job.findUnique({ where: { id: data.originalJobId } });
+      if (!freshOriginal) {
+        throw new Error(`Order #${data.originalJobId} not found.`);
+      }
+
+      // OCC concurrency check
+      if (data.expectedUpdatedAt) {
+        const incTime = new Date(data.expectedUpdatedAt).getTime();
+        const dbTime = new Date(freshOriginal.updatedAt).getTime();
+        if (!isNaN(incTime) && dbTime > incTime + 1000) {
+          throw new Error("409 Conflict: Order was modified concurrently. Please refresh and try again.");
+        }
+      }
+
+      // Branch authorization
+      if (!isAdminOrSuperadmin(authUser) && authUser.branchId && authUser.branchId !== 'all') {
+        if (freshOriginal.branchId && freshOriginal.branchId !== authUser.branchId) {
+          throw new Error("403 Forbidden: Cross-branch access denied");
+        }
+      }
+
+      // Calculate remaining items
+      let currentItems: any[] = [];
+      if (freshOriginal.itemsJson) {
+        try {
+          const parsed = JSON.parse(freshOriginal.itemsJson);
+          if (Array.isArray(parsed)) currentItems = parsed;
+        } catch {}
+      }
+
+      const splitMap = new Map<string, number>();
+      data.itemsToSplit.forEach(it => {
+        const k = String(it.id || it.serviceId || it.name).trim().toLowerCase();
+        splitMap.set(k, (splitMap.get(k) || 0) + (Number(it.quantity) || 0));
+      });
+
+      const remainingItems: any[] = [];
+      for (const it of currentItems) {
+        const k = String(it.id || it.serviceId || it.name).trim().toLowerCase();
+        const toSplitQty = splitMap.get(k) || 0;
+        const currentQty = Number(it.quantity) || 1;
+        if (toSplitQty >= currentQty) {
+          // Entire quantity moved to Part 2
+          splitMap.set(k, toSplitQty - currentQty);
+        } else if (toSplitQty > 0) {
+          // Partial quantity moved to Part 2
+          remainingItems.push({
+            ...it,
+            quantity: currentQty - toSplitQty
+          });
+          splitMap.set(k, 0);
+        } else {
+          // Unchanged
+          remainingItems.push(it);
+        }
+      }
+
+      // Sequential ID for Part 2 job
       const seqLockKey = `job_seq:${prefix}`;
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${seqLockKey}))`;
 
@@ -1644,195 +2014,162 @@ export async function addJobAction(data: any) {
         orderBy: { id: 'desc' },
       });
 
+      let newJobId = `${prefix}000001`;
       if (latestJob) {
         const numericPart = latestJob.id.replace(/^T/, '').substring(4);
         const lastNum = parseInt(numericPart, 10);
         if (!isNaN(lastNum)) {
-          jobId = `${prefix}${(lastNum + 1).toString().padStart(6, '0')}`;
-        } else {
-          jobId = `${prefix}000001`;
+          newJobId = `${prefix}${(lastNum + 1).toString().padStart(6, '0')}`;
         }
-      } else {
-        jobId = `${prefix}000001`;
       }
-    }
 
-    const shouldAutoProforma = Boolean(
-      (data as any).autoAssignProforma ||
-      (data.source === 'pos' && Array.isArray(data.items) && data.items.length > 0)
-    );
-    const resolvedProformaNumber =
-      (data.proformaNumber && data.proformaNumber !== 'DRAFT' ? data.proformaNumber : null) ||
-      ((data as any).proformaReceiptNumber && (data as any).proformaReceiptNumber !== 'DRAFT' ? (data as any).proformaReceiptNumber : null) ||
-      (shouldAutoProforma ? generateProformaBaseNumber(jobId) : null);
-    const resolvedProformaRevision =
-      data.proformaRevision !== undefined && data.proformaRevision !== null
-        ? data.proformaRevision
-        : (resolvedProformaNumber ? 0 : null);
-    const resolvedProformaCartHash =
-      data.proformaCartHash ||
-      (resolvedProformaNumber && Array.isArray(data.items) ? computeCartHash({ items: data.items }) : null);
-    let resolvedRemark = data.remark;
-    if ((data as any).autoAssignProforma && resolvedProformaNumber) {
-      const proformaRemark = `Proforma: ${resolvedProformaNumber}`;
-      resolvedRemark = resolvedRemark
-        ? (String(resolvedRemark).includes('Proforma:') ? resolvedRemark : `${proformaRemark} | ${resolvedRemark}`)
-        : proformaRemark;
-    }
-
-    return await tx.job.create({
-      data: {
-        id: jobId,
-        type: data.type || 'full_service',
-        customerId: data.customerId,
-        customerName: data.customerName,
-        customerPhone: data.customerPhone,
-        pickupLocation: data.pickupLocation,
-        dropoffLocation: data.dropoffLocation,
-        pickupLat: data.pickupCoords?.lat || 0,
-        pickupLng: data.pickupCoords?.lng || 0,
-        dropoffLat: data.dropoffCoords?.lat || 0,
-        dropoffLng: data.dropoffCoords?.lng || 0,
-        distance: Math.max(0, Number.isFinite(Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance)) ? Number(data.distance ?? data.deliveryDistance ?? data.pickupDistance) : 0),
-        fee: Math.max(0, Number.isFinite(Number(data.fee)) ? Number(data.fee) : 0),
-        status: data.status,
-        createdAt: data.createdAt,
-        scheduledAt: data.scheduledAt,
-        completedAt: data.completedAt,
-        proofImageUrl: data.proofImageUrl,
-        riderId: data.riderId,
-        bagImageUrl: data.bagImageUrl,
-        billImageUrl: data.billImageUrl,
-        billNo: data.billNo ? String(data.billNo).trim() : null,
-        serviceType: data.serviceType,
-        laundryTypes: data.laundryTypes ? data.laundryTypes.join(',') : null,
-        source: data.source,
-        totalAmount: data.totalAmount !== undefined && data.totalAmount !== null ? Math.max(0, Number.isFinite(Number(data.totalAmount)) ? Number(data.totalAmount) : 0) : null,
-        paymentMethod: data.paymentMethod,
-        paymentChannel: data.paymentChannel,
-        isPaid: data.isPaid || false,
-        isShopPaid: data.isShopPaid || false,
-        csoPaidAt: data.isPaid ? new Date() : null,
-        shopPaidAt: data.isShopPaid ? new Date() : null,
-        discount: Math.max(0, Number.isFinite(Number(data.discount)) ? Number(data.discount) : 0),
-        discountPercent: Math.min(100, Math.max(0, Number.isFinite(Number(data.discountPercent)) ? Number(data.discountPercent) : 0)),
-        pickupDistance: data.pickupDistance !== undefined && data.pickupDistance !== null ? Math.max(0, Number.isFinite(Number(data.pickupDistance)) ? Number(data.pickupDistance) : 0) : null,
-        deliveryDistance: data.deliveryDistance !== undefined && data.deliveryDistance !== null ? Math.max(0, Number.isFinite(Number(data.deliveryDistance)) ? Number(data.deliveryDistance) : 0) : null,
-        pickupCommission: data.pickupCommission !== undefined && data.pickupCommission !== null ? Math.max(0, Number.isFinite(Number(data.pickupCommission)) ? Number(data.pickupCommission) : 0) : null,
-        deliveryCommission: data.deliveryCommission !== undefined && data.deliveryCommission !== null ? Math.max(0, Number.isFinite(Number(data.deliveryCommission)) ? Number(data.deliveryCommission) : 0) : null,
-        pickupScheduledAt: data.pickupScheduledAt,
-        pickupScheduledEndAt: data.pickupScheduledEndAt,
-        deliveryScheduledAt: data.deliveryScheduledAt,
-        deliveryScheduledEndAt: data.deliveryScheduledEndAt,
-        pickupRiderId: data.pickupRiderId,
-        deliveryRiderId: data.deliveryRiderId,
-        itemsJson: data.items ? JSON.stringify(data.items) : null,
-        legsJson: data.legs ? JSON.stringify(data.legs) : null,
-        remark: resolvedRemark,
-        adminNotesJson: data.adminNotesJson,
-        branchId: data.branchId,
-        createdBy: data.createdBy,
-        cashPlaced: data.cashPlaced || false,
-        isStuck: data.isStuck || false,
-        shiftId: data.shiftId || null,
-        walletBalanceAfter: data.walletBalanceAfter !== undefined ? data.walletBalanceAfter : null,
-        proformaNumber: resolvedProformaNumber,
-        proformaRevision: resolvedProformaRevision,
-        proformaCartHash: resolvedProformaCartHash,
-      },
-    });
-  });
-
-  await syncRiderCommissionsForJob(createdJob.id);
-
-  // Write activity log
-  try {
-    await prisma.activityLog.create({
-      data: {
-        entityId: createdJob.id,
-        entityType: 'job',
-        action: 'create',
-        details: JSON.stringify(createdJob),
-        userId: data.actorId || null,
-        userName: data.actorName || null,
+      // Commission for Part 2
+      let deliveryCommission = 0;
+      if (!data.noRiderCommission) {
+        const dist = Math.max(0, Number(freshOriginal.deliveryDistance || freshOriginal.distance) || 0);
+        deliveryCommission = Math.max(0, Math.round(dist * 2));
       }
-    });
-    console.log(`[ActivityLog] Created job ${createdJob.id}`);
-  } catch (err: any) {
-    console.error("Failed to write ActivityLog on create:", err.message);
-  }
 
-  // Evaluate promotion coupon issuance only when job is created with shop-paid status
-  let issuedCoupons: any[] = [];
-  if (createdJob.isShopPaid && createdJob.customerId) {
-    try {
-      const promoRes = await evaluateAndIssuePromotionCouponsAction({
-        jobId: createdJob.id,
-        customerId: createdJob.customerId,
-        actor: { id: data.actorId, name: data.actorName },
+      const splitSummary = data.itemsToSplit.map(it => `${it.name} x${it.quantity}`).join(', ');
+
+      // Update original job
+      const origAdmin = parseStructuredAdminNotes(freshOriginal.adminNotesJson);
+      origAdmin.notes.push({
+        id: `split-${Date.now()}`,
+        text: `[Split Delivery] Created 2nd Delivery #${newJobId} for [${splitSummary}], scheduled on ${data.deliveryScheduledAt ? new Date(data.deliveryScheduledAt).toLocaleString('th-TH') : 'TBA'}.`,
+        author: data.actorName || "Staff",
+        timestamp: new Date().toISOString(),
+        imageUrls: []
       });
-      if (promoRes.success && promoRes.couponsIssued) {
-        issuedCoupons = promoRes.couponsIssued;
-      }
-    } catch (err: any) {
-      console.warn("[addJobAction] Promo coupon evaluation failed:", err);
-    }
-  }
 
-  // Auto-redeem applied CustomerVoucher on backend
-  if (data.remark) {
-    try {
-      const promoMatch = data.remark.match(/Promo:\s*([^\s(|]+)(?:\s*\((?:ALL|DELIVERY|[A-Z_ ]+):([\d.]+)\)|\s*\(-\u0E3F?([\d.]+)\))?/i);
-      const promoCode = promoMatch ? promoMatch[1].trim().toUpperCase() : null;
-      const parsedPromoDiscount = promoMatch ? parseFloat(promoMatch[2] || promoMatch[3] || "0") : 0;
-      if (promoCode) {
-        const localCoupon = await prisma.customerVoucher.findFirst({
-          where: { code: { equals: promoCode, mode: "insensitive" }, status: "ACTIVE" },
-        });
-        if (localCoupon) {
-          const usedDiscount = parsedPromoDiscount > 0
-            ? parsedPromoDiscount
-            : (data.discount ? Math.max(0, Number(data.discount)) : localCoupon.discountValue);
-          await prisma.customerVoucher.update({
-            where: { id: localCoupon.id },
-            data: {
-              status: "USED",
-              usedAt: new Date(),
-              usedJobId: createdJob.id,
-              discountAmountUsed: usedDiscount,
-            },
-          });
-          await prisma.activityLog.create({
-            data: {
-              entityId: localCoupon.customerId,
-              entityType: "customer",
-              action: "COUPON_USED",
-              details: JSON.stringify({
-                couponId: localCoupon.id,
-                code: localCoupon.code,
-                usedJobId: createdJob.id,
-                discountAmountUsed: usedDiscount,
-              }),
-              userId: data.actorId || null,
-              userName: data.actorName || null,
-            },
-          });
-          console.log(`[CustomerVoucher] Auto-marked ${promoCode} as USED for job ${createdJob.id}`);
+      const updatedOrigRemark = freshOriginal.remark
+        ? (freshOriginal.remark.includes("Split Deliv") ? freshOriginal.remark : `${freshOriginal.remark} | Split Deliv Part 2: #${newJobId}`)
+        : `Split Deliv Part 2: #${newJobId}`;
+
+      const updatedOriginal = await tx.job.update({
+        where: { id: freshOriginal.id },
+        data: {
+          remark: updatedOrigRemark,
+          adminNotesJson: JSON.stringify({
+            ...origAdmin.obj,
+            splitToJobId: newJobId,
+            notes: origAdmin.notes,
+          }),
+          updatedAt: new Date(),
         }
-      }
-    } catch (err) {
-      console.warn("[addJobAction] Promo auto-redeem failed:", err);
-    }
-  }
+      });
 
-  await publishOrderEvent({
-    type: 'job.created',
-    job: createdJob,
-    action: 'create',
-    actorId: data.actorId,
-    actorName: data.actorName,
+      // Create 2nd Delivery Job
+      const newJobNotes = [{
+        id: `split-created-${Date.now()}`,
+        text: `Created via Split Delivery from Order #${freshOriginal.id}. Items: [${splitSummary}]. Pre-paid (฿0).`,
+        author: data.actorName || "Staff",
+        timestamp: new Date().toISOString(),
+        imageUrls: []
+      }];
+
+      const schedDate = data.deliveryScheduledAt ? new Date(data.deliveryScheduledAt) : new Date(Date.now() + 2 * 86400000);
+      const schedEnd = new Date(schedDate.getTime() + 60 * 60 * 1000);
+
+      const createdNewJob = await tx.job.create({
+        data: {
+          id: newJobId,
+          type: freshOriginal.type || 'full_service',
+          customerId: freshOriginal.customerId,
+          customerName: freshOriginal.customerName,
+          customerPhone: freshOriginal.customerPhone,
+          pickupLocation: freshOriginal.pickupLocation || "",
+          dropoffLocation: freshOriginal.dropoffLocation,
+          pickupLat: 0,
+          pickupLng: 0,
+          dropoffLat: freshOriginal.dropoffLat || 0,
+          dropoffLng: freshOriginal.dropoffLng || 0,
+          distance: Math.max(0, Number(freshOriginal.deliveryDistance || freshOriginal.distance) || 0),
+          pickupDistance: 0,
+          deliveryDistance: Math.max(0, Number(freshOriginal.deliveryDistance || freshOriginal.distance) || 0),
+          pickupCommission: 0,
+          deliveryCommission: deliveryCommission,
+          fee: 0,
+          totalAmount: 0,
+          discount: 0,
+          discountPercent: 0,
+          paymentMethod: 'paid',
+          paymentChannel: 'Pre-paid / Split Delivery',
+          isPaid: true,
+          isShopPaid: true,
+          csoPaidAt: new Date(),
+          shopPaidAt: new Date(),
+          status: 'billing',
+          subStatus: 'wash',
+          createdAt: new Date(),
+          scheduledAt: schedDate,
+          deliveryScheduledAt: schedDate,
+          deliveryScheduledEndAt: schedEnd,
+          deliveryRiderId: data.deliveryRiderId || null,
+          serviceType: freshOriginal.serviceType,
+          laundryTypes: freshOriginal.laundryTypes,
+          source: freshOriginal.source || 'admin',
+          branchId: freshOriginal.branchId,
+          itemsJson: JSON.stringify(data.itemsToSplit.map(it => ({ ...it, price: 0, basePrice: it.price || 0 }))),
+          remark: `Split Delivery (Part 2) from #${freshOriginal.id} | Pre-paid${data.notes ? ` | ${data.notes}` : ''}`,
+          adminNotesJson: JSON.stringify({
+            isSplitDelivery: true,
+            splitFromJobId: freshOriginal.id,
+            noRiderCommission: Boolean(data.noRiderCommission),
+            isBillSent: true,
+            kanbanStage: 'process',
+            notes: newJobNotes,
+          })
+        }
+      });
+
+      // ActivityLog
+      try {
+        await tx.activityLog.create({
+          data: {
+            entityId: freshOriginal.id,
+            entityType: 'job',
+            action: 'SPLIT_DELIVERY',
+            details: JSON.stringify({
+              originalJobId: freshOriginal.id,
+              newJobId: createdNewJob.id,
+              splitItems: data.itemsToSplit,
+              remainingItems,
+              deliveryScheduledAt: data.deliveryScheduledAt,
+              deliveryRiderId: data.deliveryRiderId || null,
+              deliveryCommission,
+            }),
+            userId: authUser.id,
+            userName: authUser.name || authUser.email,
+          }
+        });
+      } catch (err: any) {
+        console.error("Failed to write ActivityLog on splitJobDeliveryAction:", err.message);
+      }
+
+      invalidateDbCache('jobs');
+      await publishOrderEvent({
+        type: 'job.updated',
+        job: updatedOriginal,
+        action: 'update',
+        actorId: data.actorId,
+        actorName: data.actorName,
+      });
+      await publishOrderEvent({
+        type: 'job.created',
+        job: createdNewJob,
+        action: 'create',
+        actorId: data.actorId,
+        actorName: data.actorName,
+      });
+
+      return {
+        success: true,
+        originalJob: updatedOriginal,
+        newJob: createdNewJob,
+      };
+    });
   });
-  return { ...createdJob, issuedCoupons };
 }
 
 export async function getJobsByIdsAction(ids: string[]) {
@@ -1883,6 +2220,7 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
     const jobsRaw = await prisma.job.findMany({
       where: whereClause,
       orderBy: { createdAt: 'desc' },
+      take: 40,
     });
 
     return jobsRaw.map(j => ({
@@ -2168,14 +2506,10 @@ export async function updateJobAction(id: string, updates: any) {
 
 async function updateJobActionInternal(id: string, updates: any) {
   console.log(`[updateJobAction] id: ${id}`, updates);
-  const preCheckJob = await prisma.job.findUnique({
-    where: { id },
-    select: { id: true, branchId: true, pickupRiderId: true, deliveryRiderId: true, riderId: true }
-  });
 
   const authUser = await assertServerActionAuthorized({
     requireWrite: true,
-    targetBranchId: preCheckJob?.branchId || updates?.branchId || null,
+    targetBranchId: updates?.branchId || null,
   });
   if (authUser) {
     updates.actorId = authUser.id;
@@ -2232,7 +2566,14 @@ async function updateJobActionInternal(id: string, updates: any) {
   // Shop Paid (isShopPaid) is the primary source of truth for payment settlement:
   // A job is only financial-locked if it has been settled by the Shop (isShopPaid), or if it's a Walk-In POS job marked paid.
   // CSO Paid (isPaid) alone on a delivery job does not lock financial pricing before Shop confirmation.
-  const isAlreadyShopSettled = Boolean(existingJob && (isPosJob ? (existingJob.isPaid || existingJob.isShopPaid) : existingJob.isShopPaid));
+  const isExistingRewash = Boolean(
+    existingJob && (
+      existingJob.paymentChannel === 'Rewash / No Charge' ||
+      existingJob.paymentChannel === 'Pre-paid / Split Delivery' ||
+      (typeof existingJob.remark === 'string' && (/\bRewash\b/i.test(existingJob.remark) || /Split Delivery\s*\(Part\s*2\)/i.test(existingJob.remark)))
+    )
+  );
+  const isAlreadyShopSettled = Boolean(existingJob && !isExistingRewash && (isPosJob ? (existingJob.isPaid || existingJob.isShopPaid) : existingJob.isShopPaid));
   const isUnlockingPayment = updates.isShopPaid === false || (isPosJob && updates.isPaid === false);
   const isSettlingShopPaymentNow = Boolean(updates.isShopPaid === true && existingJob && !existingJob.isShopPaid);
 
@@ -2780,11 +3121,23 @@ async function updateJobActionInternal(id: string, updates: any) {
   // Any errors here are logged as follow-up warnings and do NOT report "Save Failed" to staff.
   const followUpWarnings: string[] = [];
 
-  try {
-  await syncRiderCommissionsForJob(id);
-  } catch (commErr: any) {
-    console.warn(`[updateJobAction] syncRiderCommissionsForJob failed for ${id}:`, commErr?.message || commErr);
-    followUpWarnings.push("syncRiderCommissions");
+  const commissionRelevantFields = [
+    'status', 'isPaid', 'isShopPaid', 'pickupRiderId', 'deliveryRiderId', 'riderId',
+    'pickupCommission', 'deliveryCommission', 'remark', 'adminNotesJson', 'paymentChannel', 'source', 'type'
+  ];
+  const hasCommissionChange = commissionRelevantFields.some((k) => k in effectiveChanges);
+  const hasAnyRiderOrPayment = Boolean(
+    updatedJob.pickupRiderId || updatedJob.deliveryRiderId ||
+    existingJob?.pickupRiderId || existingJob?.deliveryRiderId ||
+    updatedJob.isShopPaid || existingJob?.isShopPaid
+  );
+  if (hasCommissionChange || hasAnyRiderOrPayment) {
+    try {
+      await syncRiderCommissionsForJob(id, updatedJob, true);
+    } catch (commErr: any) {
+      console.warn(`[updateJobAction] syncRiderCommissionsForJob failed for ${id}:`, commErr?.message || commErr);
+      followUpWarnings.push("syncRiderCommissions");
+    }
   }
 
   try {
@@ -2856,7 +3209,8 @@ async function updateJobActionInternal(id: string, updates: any) {
         console.log(`[CustomerVoucher] Restored removed voucher ${oldCode} to ACTIVE on job update ${id}`);
       }
 
-      if (newCode) {
+      const justBecameShopPaidForPromo = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
+      if (newCode && (newCode !== oldCode || effectiveChanges.remark !== undefined || justBecameShopPaidForPromo)) {
         const localCoupon = await prisma.customerVoucher.findFirst({
           where: { code: { equals: newCode, mode: "insensitive" } },
         });
@@ -2909,7 +3263,6 @@ async function updateJobActionInternal(id: string, updates: any) {
   // Evaluate promotion coupon issuance when job is confirmed shop paid:
   // 1) Job just transitioned to isShopPaid === true, OR
   // 2) Job is shop paid and items were updated/added
-  let issuedCoupons: any[] = [];
   const justBecameShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid !== true;
   const alreadyShopPaid = updatedJob.isShopPaid === true && existingJob?.isShopPaid === true;
   if ((justBecameShopPaid || (alreadyShopPaid && updates.items !== undefined)) && updatedJob.customerId) {
@@ -3793,6 +4146,7 @@ export async function updateSettingAction(key: string, value: string, options?: 
           UPDATE "Job"
           SET "pickupCommission" = FLOOR("pickupDistance") * ${rate}
           WHERE "pickupDistance" > 0
+            AND ("remark" IS NULL OR ("remark" NOT LIKE '%Rewash%' AND "remark" NOT LIKE '%No Rider Comm%'))
             AND (
               ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
               OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
@@ -3804,6 +4158,7 @@ export async function updateSettingAction(key: string, value: string, options?: 
           UPDATE "Job"
           SET "deliveryCommission" = FLOOR("deliveryDistance") * ${rate}
           WHERE "deliveryDistance" > 0
+            AND ("remark" IS NULL OR ("remark" NOT LIKE '%Rewash%' AND "remark" NOT LIKE '%No Rider Comm%'))
             AND (
               ("remark" IS NULL OR "remark" NOT LIKE '%Free Delivery%')
               OR "customerId" IN (SELECT "id" FROM "Customer" WHERE "isCorporate" = true AND ("corporateCommissionType" = 'default' OR "corporateCommissionType" IS NULL))
@@ -4420,8 +4775,7 @@ export async function getOpenShiftsAction() {
 
 
 
-export async function checkIsPaymentEligible(job: { source?: string | null; type?: string | null; isPaid?: boolean | null; isShopPaid?: boolean | null }) {
-  await assertServerActionAuthorized();
+function isJobPaymentEligibleSync(job: { source?: string | null; type?: string | null; isPaid?: boolean | null; isShopPaid?: boolean | null }) {
   const isWalkIn = job.source === 'pos' || job.type === 'in_store';
   if (isWalkIn) {
     return job.isShopPaid === true;
@@ -4429,10 +4783,17 @@ export async function checkIsPaymentEligible(job: { source?: string | null; type
   return job.isPaid === true && job.isShopPaid === true;
 }
 
-export async function syncRiderCommissionsForJob(jobId: string) {
+export async function checkIsPaymentEligible(job: { source?: string | null; type?: string | null; isPaid?: boolean | null; isShopPaid?: boolean | null }) {
   await assertServerActionAuthorized();
+  return isJobPaymentEligibleSync(job);
+}
+
+export async function syncRiderCommissionsForJob(jobId: string, preloadedJob?: any, skipAuth?: boolean) {
+  if (!skipAuth) {
+    await assertServerActionAuthorized();
+  }
   try {
-    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    const job = preloadedJob || (await prisma.job.findUnique({ where: { id: jobId } }));
     if (!job) return;
 
     // If the job was refunded (has refundId), the rider already did the physical trip — protect their earned commission from being reverted
@@ -4445,16 +4806,35 @@ export async function syncRiderCommissionsForJob(jobId: string) {
       return;
     }
 
-    const isEligible = await checkIsPaymentEligible(job);
+    const isEligible = isJobPaymentEligibleSync(job);
+
+    // Check if Rewash or No Rider Commission is set via remark or adminNotesJson
+    let isZeroCommForced = Boolean(
+      job.paymentChannel === 'Rewash / No Charge' ||
+      (typeof job.remark === 'string' && (/\bRewash\b/i.test(job.remark) || /\bNo Rider Comm\b/i.test(job.remark)))
+    );
+    if (!isZeroCommForced && job.adminNotesJson) {
+      try {
+        const parsed = typeof job.adminNotesJson === 'string' ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+        if (parsed && (parsed.isRewash === true || parsed.noRiderCommission === true)) {
+          isZeroCommForced = true;
+        }
+      } catch {}
+    }
+
+    const existingCommissionTxs = await prisma.riderTransaction.findMany({
+      where: {
+        jobId,
+        type: { in: ['commission_pickup', 'commission_delivery'] },
+      },
+    });
+    const existingPickupTx = existingCommissionTxs.find((t) => t.type === 'commission_pickup') || null;
+    const existingDeliveryTx = existingCommissionTxs.find((t) => t.type === 'commission_delivery') || null;
 
     // 1. Pickup Commission Check
     const pickupRiderId = job.pickupRiderId;
-    const pickupCommission = job.pickupCommission || 0;
+    const pickupCommission = isZeroCommForced ? 0 : (job.pickupCommission || 0);
     const isPickupDone = job.status !== 'tba' && job.status !== 'pending' && job.status !== 'pickup' && job.status !== 'cancel' && job.status !== 'return';
-
-    const existingPickupTx = await prisma.riderTransaction.findFirst({
-      where: { jobId, type: 'commission_pickup' }
-    });
 
     if (isEligible && isPickupDone && pickupRiderId && pickupCommission > 0) {
       if (!existingPickupTx) {
@@ -4490,7 +4870,7 @@ export async function syncRiderCommissionsForJob(jobId: string) {
           data: { commissionBalance: { increment: pickupCommission } }
         });
       }
-    } else if ((!isEligible || !isPickupDone) && existingPickupTx) {
+    } else if ((!isEligible || !isPickupDone || !pickupRiderId || pickupCommission <= 0) && existingPickupTx) {
       await prisma.rider.update({
         where: { id: existingPickupTx.riderId },
         data: { commissionBalance: { decrement: existingPickupTx.amount } }
@@ -4503,12 +4883,8 @@ export async function syncRiderCommissionsForJob(jobId: string) {
 
     // 2. Delivery Commission Check
     const deliveryRiderId = job.deliveryRiderId;
-    const deliveryCommission = job.deliveryCommission || 0;
+    const deliveryCommission = isZeroCommForced ? 0 : (job.deliveryCommission || 0);
     const isDeliveryDone = job.status === 'completed';
-
-    const existingDeliveryTx = await prisma.riderTransaction.findFirst({
-      where: { jobId, type: 'commission_delivery' }
-    });
 
     if (isEligible && isDeliveryDone && deliveryRiderId && deliveryCommission > 0) {
       if (!existingDeliveryTx) {
@@ -4544,7 +4920,7 @@ export async function syncRiderCommissionsForJob(jobId: string) {
           data: { commissionBalance: { increment: deliveryCommission } }
         });
       }
-    } else if ((!isEligible || !isDeliveryDone) && existingDeliveryTx) {
+    } else if ((!isEligible || !isDeliveryDone || !deliveryRiderId || deliveryCommission <= 0) && existingDeliveryTx) {
       await prisma.rider.update({
         where: { id: existingDeliveryTx.riderId },
         data: { commissionBalance: { decrement: existingDeliveryTx.amount } }

@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
@@ -62,7 +62,7 @@ import AdminFeeCalculator from "@/components/admin-fee-calculator";
 import AdminPoiManager from "@/components/admin-poi-manager";
 
 import { MultiImageUploader, type MultiImageUploaderRef } from "@/components/ui/multi-image-uploader";
-import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction } from "@/actions/db";
+import { addJobLogAction, unlockPaidJobAction, getCustomerCouponsAction, getCustomerJobsAction, splitJobDeliveryAction } from "@/actions/db";
 import { createTaxInvoiceTaskForJobAction } from "@/actions/tasks";
 import { useRiders } from "@/lib/use-riders";
 import {
@@ -448,31 +448,36 @@ function AdminPageContent() {
   const [dialogAvailableCoupons, setDialogAvailableCoupons] = useState<CustomerCoupon[]>([]);
   const [loadingDialogCoupons, setLoadingDialogCoupons] = useState(false);
 
-  // Fetch active customer coupons when selectedProfileCustomer changes
+  // Fetch active customer coupons when selectedProfileCustomer changes (only when dialog or voucher modal is open)
   useEffect(() => {
+    if (!dialogOpen && !customerVouchersModalOpen) return;
     if (!selectedProfileCustomer?.id) {
       setDialogAvailableCoupons([]);
       return;
     }
     let active = true;
-    setLoadingDialogCoupons(true);
-    getCustomerCouponsAction({ customerId: selectedProfileCustomer.id, status: "ACTIVE" })
-      .then((res) => {
-        if (active && res.success && res.coupons) {
-          setDialogAvailableCoupons(res.coupons as unknown as CustomerCoupon[]);
-        }
-      })
-      .catch((err) => {
-        console.error("[AdminPage] Failed to fetch customer coupons:", err);
-        if (active) setDialogAvailableCoupons([]);
-      })
-      .finally(() => {
-        if (active) setLoadingDialogCoupons(false);
-      });
+    const timer = setTimeout(() => {
+      if (!active) return;
+      setLoadingDialogCoupons(true);
+      getCustomerCouponsAction({ customerId: selectedProfileCustomer.id, status: "ACTIVE" })
+        .then((res) => {
+          if (active && res.success && res.coupons) {
+            setDialogAvailableCoupons(res.coupons as unknown as CustomerCoupon[]);
+          }
+        })
+        .catch((err) => {
+          console.error("[AdminPage] Failed to fetch customer coupons:", err);
+          if (active) setDialogAvailableCoupons([]);
+        })
+        .finally(() => {
+          if (active) setLoadingDialogCoupons(false);
+        });
+    }, 200);
     return () => {
       active = false;
+      clearTimeout(timer);
     };
-  }, [selectedProfileCustomer?.id]);
+  }, [selectedProfileCustomer?.id, dialogOpen, customerVouchersModalOpen]);
 
   // Customer Past Transactions State
   const [dbCustomerJobs, setDbCustomerJobs] = useState<any[]>([]);
@@ -480,8 +485,9 @@ function AdminPageContent() {
   const [pastJobIndex, setPastJobIndex] = useState(0);
   const [expandedPastJobIds, setExpandedPastJobIds] = useState<Record<string, boolean>>({});
 
-  // Fetch full customer jobs on-demand from DB when customer changes or modal opens
+  // Fetch full customer jobs on-demand from DB when customer changes or modal opens (debounced to avoid blocking Server Action queue)
   useEffect(() => {
+    if (!dialogOpen) return;
     const custId = selectedProfileCustomer?.id;
     const custPhone = customerPhone || selectedProfileCustomer?.phone;
     const cleanPhone = (custPhone || "").replace(/\D/g, "");
@@ -492,24 +498,28 @@ function AdminPageContent() {
     }
 
     let isCancelled = false;
-    setIsLoadingCustomerJobs(true);
-    getCustomerJobsAction(custId || "", custPhone)
-      .then((resJobs) => {
-        if (!isCancelled && Array.isArray(resJobs)) {
-          setDbCustomerJobs(resJobs);
-        }
-      })
-      .catch((err) => {
-        console.error("[AdminModal] Failed to fetch customer past jobs:", err);
-      })
-      .finally(() => {
-        if (!isCancelled) setIsLoadingCustomerJobs(false);
-      });
+    const timer = setTimeout(() => {
+      if (isCancelled) return;
+      setIsLoadingCustomerJobs(true);
+      getCustomerJobsAction(custId || "", custPhone)
+        .then((resJobs) => {
+          if (!isCancelled && Array.isArray(resJobs)) {
+            setDbCustomerJobs(resJobs);
+          }
+        })
+        .catch((err) => {
+          console.error("[AdminModal] Failed to fetch customer past jobs:", err);
+        })
+        .finally(() => {
+          if (!isCancelled) setIsLoadingCustomerJobs(false);
+        });
+    }, 300);
 
     return () => {
       isCancelled = true;
+      clearTimeout(timer);
     };
-  }, [selectedProfileCustomer?.id, selectedProfileCustomer?.phone, customerPhone]);
+  }, [selectedProfileCustomer?.id, selectedProfileCustomer?.phone, customerPhone, dialogOpen]);
 
   useEffect(() => {
     setPastJobIndex(0);
@@ -716,20 +726,33 @@ function AdminPageContent() {
 
 
 
+  const isSendingNoteRef = useRef(false);
+
   const handleAddAdminLog = async (text: string, isSystem = false, imageUrls?: string[]) => {
-    if (!text.trim() && (!imageUrls || imageUrls.length === 0)) return;
+    const trimmedText = text.trim();
+    if (!trimmedText && (!imageUrls || imageUrls.length === 0)) return;
     const newLog: AdminNoteLog = {
       id: Math.random().toString(36).substring(7),
       userId: isSystem ? "system" : (user?.id || "unknown"),
       userName: isSystem ? "System (CRM)" : ((user as any)?.name || user?.email || "Admin"),
-      text: text.trim(),
+      text: trimmedText,
       imageUrls: imageUrls || [],
       timestamp: new Date().toISOString(),
       isNew: !isSystem
     };
     
-    // Add locally for instant UI update
-    setAdminLogs(prev => [...prev, newLog]);
+    // Add locally for instant UI update (deduplicating if an identical note was just added within 10s)
+    setAdminLogs(prev => {
+      const nowMs = Date.now();
+      const isDuplicate = prev.some(
+        (existing) =>
+          existing.text === trimmedText &&
+          existing.userId === newLog.userId &&
+          JSON.stringify(existing.imageUrls || []) === JSON.stringify(newLog.imageUrls || []) &&
+          Math.abs(nowMs - new Date(existing.timestamp || 0).getTime()) < 10000
+      );
+      return isDuplicate ? prev : [...prev, newLog];
+    });
     setAdminNoteInput("");
 
     // Save instantly to DB if editing an existing job
@@ -737,11 +760,17 @@ function AdminPageContent() {
       try {
         const { isNew: _ignoreIsNew, ...cleanNewLog } = newLog as any;
         const updated = await addJobLogAction(editingJobId, cleanNewLog, user?.id, user?.name || user?.email);
-        if (updated && originalJobRef.current && originalJobRef.current.id === editingJobId) {
-          (originalJobRef.current as any).adminNotesJson = updated.adminNotesJson;
-          (originalJobRef.current as any).updatedAt = updated.updatedAt;
+        if (updated) {
+          if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+            (originalJobRef.current as any).adminNotesJson = updated.adminNotesJson;
+            (originalJobRef.current as any).updatedAt = updated.updatedAt;
+          }
+          api.optimisticUpdate(editingJobId, {
+            adminNotesJson: updated.adminNotesJson,
+            updatedAt: updated.updatedAt,
+          } as any);
+          jobStore.notify();
         }
-        api.fetchAndApplyJob(editingJobId).catch(() => {});
       } catch (err) {
         console.error("Failed to instantly save admin log:", err);
       }
@@ -793,16 +822,20 @@ function AdminPageContent() {
 
 
   const handleSendAdminLog = async () => {
+    if (isSendingNoteRef.current) return;
     const hasPendingImages = noteUploaderRef.current && noteUploaderRef.current.getPendingFilesCount() > 0;
-    if (!adminNoteInput.trim() && !hasPendingImages) return;
+    const textToSend = adminNoteInput.trim();
+    if (!textToSend && !hasPendingImages) return;
 
+    isSendingNoteRef.current = true;
+    setAdminNoteInput("");
     setIsUploadingNote(true);
     let uploadedUrls: string[] = [];
     try {
       if (noteUploaderRef.current && hasPendingImages) {
          uploadedUrls = await noteUploaderRef.current.startUpload();
       }
-      await handleAddAdminLog(adminNoteInput, false, uploadedUrls);
+      await handleAddAdminLog(textToSend, false, uploadedUrls);
       setShowNoteUploader(false);
       if (noteUploaderRef.current) {
         noteUploaderRef.current.reset();
@@ -810,6 +843,7 @@ function AdminPageContent() {
     } catch (err) {
       console.error("Failed to upload note images:", err);
     } finally {
+      isSendingNoteRef.current = false;
       setIsUploadingNote(false);
     }
   };
@@ -817,6 +851,22 @@ function AdminPageContent() {
   const [isPickupMeet, setIsPickupMeet] = useState(false);
   const [isDeliveryLobby, setIsDeliveryLobby] = useState(false);
   const [isDeliveryMeet, setIsDeliveryMeet] = useState(false);
+  const [isRewashJob, setIsRewashJob] = useState(false);
+  const [rewashFromJobId, setRewashFromJobId] = useState<string | null>(null);
+  const [noRiderCommission, setNoRiderCommission] = useState(false);
+  const [splitDeliveryModalOpen, setSplitDeliveryModalOpen] = useState(false);
+  const [splitTargetJob, setSplitTargetJob] = useState<Job | null>(null);
+  const [splitItemSelections, setSplitItemSelections] = useState<Record<string, number>>({});
+  const [splitScheduledTime, setSplitScheduledTime] = useState("");
+  const [splitRiderId, setSplitRiderId] = useState("");
+  const [splitGiveCommission, setSplitGiveCommission] = useState(true);
+  const [splitNotes, setSplitNotes] = useState("");
+  const [isSplittingDelivery, setIsSplittingDelivery] = useState(false);
+  const [customSplitItems, setCustomSplitItems] = useState<Array<{ id: string; name: string; quantity: number; unit: string }>>([]);
+  const [newCustomName, setNewCustomName] = useState("");
+  const [newCustomQty, setNewCustomQty] = useState(1);
+  const [newCustomUnit, setNewCustomUnit] = useState("ชิ้น");
+  const [showAddCustomRow, setShowAddCustomRow] = useState(false);
   const [serviceSpeed, setServiceSpeed] = useState<"standard" | "express_50" | "express_100">("standard");
   const [clothingItems, setClothingItems] = useState<Record<string, { selected: boolean; quantity: number }>>({
     polo: { selected: false, quantity: 1 },
@@ -835,6 +885,74 @@ function AdminPageContent() {
   const isSubmittingRef = useRef(isSubmitting);
   isSubmittingRef.current = isSubmitting;
   const isSubmittingLockRef = useRef(false);
+  const draftJobRequestIdRef = useRef<string>("");
+
+  const stripRoomSuffix = useCallback((loc: string) => {
+    return (loc || "").replace(/(?:\s*\(Room\s*[^)]*\))+$/i, "").trim();
+  }, []);
+
+  // Persist in-flight job updates to sessionStorage so clicking Refresh during a slow save never loses edits
+  const savePendingJobToSession = useCallback((jobId: string, payload: Record<string, any>) => {
+    try {
+      const raw = sessionStorage.getItem("tls_pending_job_saves");
+      const map = raw ? JSON.parse(raw) : {};
+      map[jobId] = { payload, timestamp: Date.now() };
+      sessionStorage.setItem("tls_pending_job_saves", JSON.stringify(map));
+    } catch {}
+  }, []);
+
+  const clearPendingJobFromSession = useCallback((jobId: string) => {
+    try {
+      const raw = sessionStorage.getItem("tls_pending_job_saves");
+      if (!raw) return;
+      const map = JSON.parse(raw);
+      if (jobId in map) {
+        delete map[jobId];
+        sessionStorage.setItem("tls_pending_job_saves", JSON.stringify(map));
+      }
+    } catch {}
+  }, []);
+
+  // Replay any interrupted in-flight job saves on page reload
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("tls_pending_job_saves");
+      if (!raw) return;
+      const map = JSON.parse(raw);
+      const now = Date.now();
+      const entries = Object.entries(map || {});
+      if (entries.length === 0) return;
+      for (const [jobId, item] of entries as [string, any][]) {
+        if (!item?.payload || now - (item.timestamp || 0) > 120000) {
+          clearPendingJobFromSession(jobId);
+          continue;
+        }
+        api.optimisticUpdate(jobId, item.payload);
+        jobStore.notify();
+        api.updateJob(jobId, item.payload)
+          .then(() => {
+            clearPendingJobFromSession(jobId);
+            jobStore.notify();
+          })
+          .catch(() => {
+            clearPendingJobFromSession(jobId);
+          });
+      }
+    } catch {}
+  }, [clearPendingJobFromSession]);
+
+  // Warn user if they attempt to refresh while a save is actively in flight
+  useEffect(() => {
+    if (!isSubmitting) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isSubmittingRef.current) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isSubmitting]);
 
   const [serviceWeight, setServiceWeight] = useState(2);
   
@@ -957,6 +1075,7 @@ function AdminPageContent() {
 
   const isPaidJob = editingJobId ? (() => {
     const j = jobs.find(job => job.id === editingJobId) || jobStore.getSnapshot().find(job => job.id === editingJobId);
+    if (isRewashJob || isRewashOrNoChargeJob(j)) return false;
     return isJobFullyPaid(j);
   })() : false;
   const isPricingLocked = isPaidJob;
@@ -1152,15 +1271,19 @@ function AdminPageContent() {
   }, [jobs, editingJobId, pickupRiderId, deliveryRiderId, billNo, editingSubStatus, customerPhone, dialogCart, pickupScheduledTime, deliveryScheduledTime, bagImageUrls, origBagImageUrls, billImageUrls, origBillImageUrls, pickupProofImageUrls, origPickupProofImageUrls, deliveryProofImageUrls, origDeliveryProofImageUrls]);
 
   const hasPackage = dialogCart.some(item => item.category === "PACKAGE");
-  const activeIsFreeDelivery = (isPaidJob && activeJob)
-    ? (activeJob.fee === 0 && activeJob.type !== "in_store")
-    : (isFreeDelivery || hasPackage);
-  const baseFee = (isPaidJob && activeJob)
+  const activeIsFreeDelivery = isRewashJob
+    ? true
+    : ((isPaidJob && activeJob)
+      ? (activeJob.fee === 0 && activeJob.type !== "in_store")
+      : (isFreeDelivery || hasPackage));
+  const baseFee = (isPaidJob && activeJob && !isRewashJob)
     ? (activeJob.fee ?? 0)
     : (editingFeeLock !== null ? editingFeeLock : calculateTotalFee());
-  const fee = (isPaidJob && activeJob)
-    ? (activeJob.fee ?? 0)
-    : (activeIsFreeDelivery ? 0 : baseFee);
+  const fee = isRewashJob
+    ? 0
+    : ((isPaidJob && activeJob)
+      ? (activeJob.fee ?? 0)
+      : (activeIsFreeDelivery ? 0 : baseFee));
   const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [categorySearch, setCategorySearch] = useState<string>("");
   
@@ -1240,8 +1363,10 @@ function AdminPageContent() {
   const canAdvanceBilling = isAdmin || isCSO || isBranchManager;
 
   const isCurrentJobBillSent = useMemo(() => {
+    if (isRewashJob) return true;
     if (!editingJobId) return false;
     const currentJob = jobs.find(j => j.id === editingJobId);
+    if (isRewashOrNoChargeJob(currentJob)) return true;
     if (!currentJob?.adminNotesJson) return false;
     try {
       const p = JSON.parse(currentJob.adminNotesJson);
@@ -1249,7 +1374,7 @@ function AdminPageContent() {
     } catch {
       return false;
     }
-  }, [jobs, editingJobId]);
+  }, [jobs, editingJobId, isRewashJob]);
 
   // CSO can only unlock jobs whose payment was recorded today or yesterday (Thailand time UTC+7)
   // Admin / Superadmin / Accounting can unlock any paid job without time limit
@@ -1313,6 +1438,7 @@ function AdminPageContent() {
   const [promoError, setPromoError] = useState<string | null>(null);
 
   const forceMemberPaymentDialog = useMemo(() => {
+    if (isRewashJob) return false;
     if (!selectedProfileCustomer?.isMember) return false;
     return dialogCart.some(item => 
       item.category !== "PACKAGE" && 
@@ -1320,14 +1446,15 @@ function AdminPageContent() {
       item.id !== "delivery-pickup-service-item" && 
       item.id !== "delivery-only-service-item"
     );
-  }, [selectedProfileCustomer, dialogCart]);
+  }, [selectedProfileCustomer, dialogCart, isRewashJob]);
 
   const currentLaundryPrice = useMemo(() => {
+    if (isRewashJob) return 0;
     if (isPosEnabled && dialogCart.length > 0) {
       return dialogCart.reduce((sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
     }
     return safeCeil(laundryPrice || 0);
-  }, [dialogCart, laundryPrice, isPosEnabled]);
+  }, [dialogCart, laundryPrice, isPosEnabled, isRewashJob]);
 
 
   const dialogDiscountAmount = useMemo(() => {
@@ -1714,6 +1841,9 @@ function AdminPageContent() {
     setDifferentDeliveryAddress(false);
     setIsDeliveryDirty(false);
     setIsFreeDelivery(false);
+    setIsRewashJob(false);
+    setRewashFromJobId(null);
+    setNoRiderCommission(false);
     setIsStuck(false);
     setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
@@ -1863,6 +1993,9 @@ function AdminPageContent() {
     setIsDeliveryLobby(false);
     setIsDeliveryMeet(false);
     setIsFreeDelivery(false);
+    setIsRewashJob(false);
+    setRewashFromJobId(null);
+    setNoRiderCommission(false);
     setAdminNote("");
     setAdminLogs([]);
     setAdminNoteInput("");
@@ -1874,6 +2007,9 @@ function AdminPageContent() {
     setDeliveryDist(0);
     setIsStuck(false);
     setSaveError(null);
+    draftJobRequestIdRef.current = typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `req-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     setPickupScheduledTime(format(roundToNearest30(new Date()), "yyyy-MM-dd'T'HH:mm"));
     setDeliveryScheduledTime(format(roundToNearest30(new Date(Date.now() + 86400000)), "yyyy-MM-dd'T'HH:mm"));
   };
@@ -1881,6 +2017,303 @@ function AdminPageContent() {
   const handleCreateNewJob = () => {
     resetDialogForm();
     setDialogOpen(true);
+  };
+
+  const handleToggleRewash = (nextVal: boolean) => {
+    setIsRewashJob(nextVal);
+    if (nextVal) {
+      setNoRiderCommission(true);
+      setIsFreeDelivery(true);
+      setPaymentChannel("Rewash / No Charge");
+      setPaymentMethod("paid");
+      setShopPaymentMethod("paid");
+      setSplitPayments([]);
+      setAppliedPromo(null);
+      setPromoCodeInput("");
+      setPromoError(null);
+      setShowDialogDiscount(false);
+      setDialogDiscountPercent(0);
+      setDialogCart(prev => prev.map(item => ({
+        ...item,
+        price: 0,
+        isCustomPrice: true,
+      })));
+      setLaundryPrice(0);
+    } else {
+      setRewashFromJobId(null);
+      setNoRiderCommission(false);
+      setIsFreeDelivery(false);
+      if (paymentChannel === "Rewash / No Charge") {
+        setPaymentChannel("");
+      }
+      setPaymentMethod("unpaid");
+      setShopPaymentMethod("unpaid");
+      setDialogCart(prev => {
+        const updated = prev.map(item => {
+          const svc = services.find(s => s.id === item.id) || dialogCorporateServices.find(s => s.id === item.id);
+          const restoredPrice = item.basePrice !== undefined && item.basePrice > 0
+            ? item.basePrice
+            : (svc ? getServicePrice(svc, selectedProfileCustomer, customerPriceListId) : 0);
+          return {
+            ...item,
+            price: restoredPrice,
+            basePrice: restoredPrice,
+            isCustomPrice: false,
+          };
+        });
+        const totalSum = updated.reduce((acc, it) => acc + safeCeil((it.price || 0) * (it.quantity || 0)), 0);
+        setLaundryPrice(totalSum);
+        return updated;
+      });
+    }
+  };
+
+  const handleStartRewashFromJob = (sourceJob: any) => {
+    if (!sourceJob) return;
+    const sourceDisplayId = formatJobDisplayId(sourceJob.id);
+    const foundCustomer = findMatchingCustomer(customers, {
+      customerId: sourceJob.customerId,
+      customerName: sourceJob.customerName,
+      customerPhone: sourceJob.customerPhone,
+    }) || selectedProfileCustomer;
+
+    const rawItems = Array.isArray(sourceJob.items) && sourceJob.items.length > 0
+      ? sourceJob.items
+      : (sourceJob.itemsJson ? (() => { try { return JSON.parse(sourceJob.itemsJson); } catch { return []; } })() : []);
+
+    resetDialogForm();
+
+    setSelectedProfileCustomer(foundCustomer || null);
+    const resolvedPhones = resolveCustomerPhones({
+      customerPhone: sourceJob.customerPhone,
+      customer: foundCustomer,
+    });
+    setCustomerName(sourceJob.customerName || foundCustomer?.name || "");
+    setCustomerPhone(resolvedPhones.primaryPhone || sourceJob.customerPhone || "");
+    setSelectedVIPLabel(foundCustomer?.isVIP ? "VIP" : "");
+    setSelectedMemberLabel(foundCustomer?.isMember ? "Member" : "");
+    setSelectedMemberId(foundCustomer?.memberId || "");
+    setCustomerPriceListId(foundCustomer?.priceListId || null);
+
+    const branchIndex = shopLocations.findIndex(s => s.id === sourceJob.branchId);
+    setSelectedStoreIndex(branchIndex >= 0 ? branchIndex : 0);
+
+    const isPickupService = !!sourceJob.pickupLocation && !shopLocations.some(s => s.address === sourceJob.pickupLocation || s.name === sourceJob.pickupLocation || (sourceJob.pickupLocation && sourceJob.pickupLocation.includes("POS Counter")));
+    const isDeliveryService = !!sourceJob.dropoffLocation && !shopLocations.some(s => s.address === sourceJob.dropoffLocation || s.name === sourceJob.dropoffLocation);
+    const parseRoom = (loc: string) => {
+      const match = loc.match(/^(.*?)(?:\s*\(Room\s*([^)]*)\))+$/i);
+      if (match) return { base: match[1].trim(), room: (match[2] || "").trim() };
+      return { base: loc, room: "" };
+    };
+    const custRoom = (foundCustomer?.roomNo || (foundCustomer?.secondaryAddress ? foundCustomer.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim();
+    const p = isPickupService ? parseRoom(sourceJob.pickupLocation || "") : { base: "", room: "" };
+    const d = isDeliveryService ? parseRoom(sourceJob.dropoffLocation || "") : { base: "", room: "" };
+
+    const cleanCustAddr = foundCustomer?.defaultAddress && foundCustomer.defaultAddress.trim() !== "--" && foundCustomer.defaultAddress.trim() !== "-" ? foundCustomer.defaultAddress : "";
+    const fallbackAddr = p.base || d.base || cleanCustAddr || "";
+    const fallbackRoom = p.room || d.room || custRoom || "";
+    const fallbackCoords = sourceJob.pickupCoords || sourceJob.dropoffCoords || foundCustomer?.defaultCoords || null;
+
+    const isWalkInSource = sourceJob.source === "pos" || sourceJob.type === "in_store";
+    setIsWalkIn(isWalkInSource);
+    setIsPickup(isWalkInSource ? false : (isPickupService || true));
+    setIsDelivery(isWalkInSource ? isDeliveryService : (isDeliveryService || true));
+
+    setPickupLoc(p.base || fallbackAddr);
+    setPickupRoom(p.room || fallbackRoom);
+    setPickupCoords(sourceJob.pickupCoords || fallbackCoords);
+    setDeliveryLoc(d.base || fallbackAddr);
+    setDeliveryRoom(d.room || fallbackRoom);
+    setDeliveryCoords(sourceJob.dropoffCoords || fallbackCoords);
+    setPickupDist(sourceJob.pickupDistance || sourceJob.distance || 0);
+    setDeliveryDist(sourceJob.deliveryDistance || sourceJob.distance || 0);
+
+    const rewashCart = rawItems
+      .filter((it: any) => it && it.category !== "PACKAGE")
+      .map((it: any, idx: number) => {
+        const matched = services.find(s => s.id === it.serviceId || s.name === it.name) || dialogCorporateServices.find(s => s.id === it.serviceId || s.name === it.name);
+        return {
+          id: it.serviceId || matched?.id || `rewash-${Date.now()}-${idx}`,
+          name: it.name || matched?.name || "Laundry Item",
+          nameEn: it.nameEn || matched?.nameEn || it.name || "Laundry Item",
+          quantity: Number(it.quantity) || 1,
+          price: 0,
+          basePrice: Number(it.basePrice || it.price || matched?.price) || 0,
+          isCustomPrice: true,
+          category: it.category || matched?.category || "Wash & Fold",
+          unit: it.unit || matched?.unit || "pcs",
+        };
+      });
+
+    setDialogCart(rewashCart);
+    setLaundryPrice(0);
+    setIsRewashJob(true);
+    setRewashFromJobId(sourceDisplayId);
+    setNoRiderCommission(true);
+    setIsFreeDelivery(true);
+    setPaymentChannel("Rewash / No Charge");
+    setPaymentMethod("paid");
+    setShopPaymentMethod("paid");
+
+    const staffName = (user as any)?.name || user?.email || "Admin";
+    setAdminLogs([{
+      id: Math.random().toString(36).substring(2, 9),
+      userId: user?.id || "system",
+      userName: staffName,
+      text: `🔄 Rewash / Re-process created from Order #${sourceDisplayId} (No Charge ฿0, No Rider Commission)`,
+      imageUrls: [],
+      timestamp: new Date().toISOString(),
+    }]);
+
+    setDialogOpen(true);
+    toast.success(
+      currentLanguage === "en"
+        ? `🔄 Prepared Rewash Order from #${sourceDisplayId} (฿0 No Charge & ฿0 Rider Commission)`
+        : `🔄 เตรียมบิลซักซ้ำจากออเดอร์ #${sourceDisplayId} เรียบร้อย (ฟรี ฿0 และไม่คิดค่าคอมไรเดอร์)`
+    );
+  };
+
+  const handleOpenSplitDelivery = (job: Job) => {
+    if (!job) return;
+    setSplitTargetJob(job);
+    const rawItems = Array.isArray(job.items) && job.items.length > 0
+      ? job.items
+      : (job.itemsJson ? (() => { try { return JSON.parse(job.itemsJson); } catch { return []; } })() : dialogCart);
+
+    const initialMap: Record<string, number> = {};
+    rawItems.forEach((it: any, idx: number) => {
+      const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+      initialMap[k] = 0;
+    });
+    setSplitItemSelections(initialMap);
+    setCustomSplitItems([]);
+    setNewCustomName("");
+    setNewCustomQty(1);
+    setNewCustomUnit("ชิ้น");
+    setShowAddCustomRow(false);
+
+    const baseDate = job.deliveryScheduledAt ? new Date(job.deliveryScheduledAt) : new Date();
+    const nextDate = new Date(baseDate.getTime() + 2 * 86400000);
+    setSplitScheduledTime(format(roundToNearest30(nextDate), "yyyy-MM-dd'T'HH:mm"));
+    setSplitRiderId(job.deliveryRiderId || "");
+    setSplitGiveCommission(!isNoRiderCommissionJob(job));
+    setSplitNotes("");
+    setSplitDeliveryModalOpen(true);
+  };
+
+  const handleSplitPreset50 = () => {
+    if (!splitTargetJob) return;
+    const rawItems = Array.isArray(splitTargetJob.items) && splitTargetJob.items.length > 0
+      ? splitTargetJob.items
+      : (splitTargetJob.itemsJson ? (() => { try { return JSON.parse(splitTargetJob.itemsJson); } catch { return []; } })() : dialogCart);
+
+    const nextMap: Record<string, number> = {};
+    rawItems.forEach((it: any, idx: number) => {
+      const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+      const totalQty = Number(it.quantity) || 1;
+      nextMap[k] = Math.max(1, Math.floor(totalQty / 2));
+    });
+    setSplitItemSelections(nextMap);
+  };
+
+  const handleSplitSelectAll = () => {
+    if (!splitTargetJob) return;
+    const rawItems = Array.isArray(splitTargetJob.items) && splitTargetJob.items.length > 0
+      ? splitTargetJob.items
+      : (splitTargetJob.itemsJson ? (() => { try { return JSON.parse(splitTargetJob.itemsJson); } catch { return []; } })() : dialogCart);
+
+    const nextMap: Record<string, number> = {};
+    rawItems.forEach((it: any, idx: number) => {
+      const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+      nextMap[k] = Number(it.quantity) || 1;
+    });
+    setSplitItemSelections(nextMap);
+  };
+
+  const handleSplitResetAll = () => {
+    if (!splitTargetJob) return;
+    const rawItems = Array.isArray(splitTargetJob.items) && splitTargetJob.items.length > 0
+      ? splitTargetJob.items
+      : (splitTargetJob.itemsJson ? (() => { try { return JSON.parse(splitTargetJob.itemsJson); } catch { return []; } })() : dialogCart);
+
+    const nextMap: Record<string, number> = {};
+    rawItems.forEach((it: any, idx: number) => {
+      const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+      nextMap[k] = 0;
+    });
+    setSplitItemSelections(nextMap);
+    setCustomSplitItems([]);
+  };
+
+  const handleConfirmSplitDelivery = async () => {
+    if (!splitTargetJob) return;
+    const rawItems = Array.isArray(splitTargetJob.items) && splitTargetJob.items.length > 0
+      ? splitTargetJob.items
+      : (splitTargetJob.itemsJson ? (() => { try { return JSON.parse(splitTargetJob.itemsJson); } catch { return []; } })() : dialogCart);
+
+    const itemsToSplit: any[] = [];
+    rawItems.forEach((it: any, idx: number) => {
+      const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+      const qty = splitItemSelections[k] || 0;
+      if (qty > 0) {
+        itemsToSplit.push({
+          ...it,
+          quantity: Math.min(qty, Number(it.quantity) || 1),
+        });
+      }
+    });
+
+    customSplitItems.forEach((cit) => {
+      if (cit && cit.quantity > 0 && cit.name.trim()) {
+        itemsToSplit.push({
+          id: cit.id || `custom-${Date.now()}`,
+          name: cit.name.trim(),
+          quantity: cit.quantity,
+          unit: cit.unit || "ชิ้น",
+          price: 0,
+        });
+      }
+    });
+
+    if (itemsToSplit.length === 0) {
+      toast.error(currentLanguage === "en" ? "Please select or add at least 1 item to split for 2nd delivery" : "กรุณาเลือกรายการสินค้า หรือเพิ่มรายการที่ต้องการแยกส่งในรอบที่ 2");
+      return;
+    }
+
+    try {
+      setIsSplittingDelivery(true);
+      const res = await splitJobDeliveryAction({
+        originalJobId: splitTargetJob.id,
+        itemsToSplit,
+        deliveryScheduledAt: splitScheduledTime,
+        deliveryRiderId: splitRiderId || null,
+        noRiderCommission: !splitGiveCommission,
+        notes: splitNotes || null,
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
+        actorRole: user?.role,
+        expectedUpdatedAt: splitTargetJob.updatedAt ? new Date(splitTargetJob.updatedAt).toISOString() : undefined,
+      });
+
+      if (res?.success) {
+        toast.success(
+          currentLanguage === "en"
+            ? `Split Delivery created! Order #${formatJobDisplayId(res.newJob.id)} scheduled for 2nd delivery.`
+            : `แยกจัดส่งสำเร็จ! สร้าง Order รอบที่ 2 #${formatJobDisplayId(res.newJob.id)} เรียบร้อยแล้ว (฿0 Pre-paid)`
+        );
+        setSplitDeliveryModalOpen(false);
+        setDialogOpen(false);
+        resetDialogForm();
+        refreshDb();
+      } else {
+        toast.error("Failed to split delivery. Please try again.");
+      }
+    } catch (err: any) {
+      console.error("Split delivery error:", err);
+      toast.error(err?.message || "Error creating split delivery");
+    } finally {
+      setIsSplittingDelivery(false);
+    }
   };
 
   // ── Promo Code Helpers ───────────────────────────────────────────────────────
@@ -2300,8 +2733,8 @@ function AdminPageContent() {
     const isDeliveryService = !!job.dropoffLocation && !shopLocations.some(s => s.address === job.dropoffLocation || s.name === job.dropoffLocation);
 
     const parseRoom = (loc: string) => {
-      const match = loc.match(/(.*?)\s*\(Room\s*(.*?)\)$/i);
-      if (match) return { base: match[1].trim(), room: match[2].trim() };
+      const match = loc.match(/^(.*?)(?:\s*\(Room\s*([^)]*)\))+$/i);
+      if (match) return { base: match[1].trim(), room: (match[2] || "").trim() };
       return { base: loc, room: "" };
     };
 
@@ -2529,7 +2962,23 @@ function AdminPageContent() {
     setIsPickupMeet(job.remark ? job.remark.includes("Pickup: Meet up") : false);
     setIsDeliveryLobby(job.remark ? job.remark.includes("Delivery: Leave at Lobby") : false);
     setIsDeliveryMeet(job.remark ? job.remark.includes("Delivery: Meet up") : false);
-    setIsFreeDelivery(job.remark ? job.remark.includes("Free Delivery") : false);
+    const loadedIsRewash = isRewashOrNoChargeJob(job);
+    const loadedIsSplitChild = isSplitDeliveryChildJob(job);
+    const loadedRewashFrom = getRewashFromJobId(job);
+    const loadedNoComm = isNoRiderCommissionJob(job);
+    setIsRewashJob(loadedIsRewash);
+    setRewashFromJobId(loadedRewashFrom);
+    setNoRiderCommission(loadedNoComm);
+    setIsFreeDelivery(Boolean((job.remark && job.remark.includes("Free Delivery")) || loadedIsRewash || loadedIsSplitChild));
+    if (loadedIsRewash) {
+      setPaymentChannel("Rewash / No Charge");
+      setPaymentMethod("paid");
+      setShopPaymentMethod("paid");
+    } else if (loadedIsSplitChild) {
+      setPaymentChannel("Pre-paid / Split Delivery");
+      setPaymentMethod("paid");
+      setShopPaymentMethod("paid");
+    }
     const safeDate = (val: any, fallbackMs: number) => {
       if (!val) return new Date(fallbackMs);
       const d = new Date(val);
@@ -2599,7 +3048,7 @@ function AdminPageContent() {
     // if (isPosEnabled && isShiftFromPreviousDay) { ... }
 
 
-    if (paymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim())) {
+    if (!isRewashJob && paymentMethod === 'paid' && (!paymentChannel || !paymentChannel.trim())) {
       abortSubmit(currentLanguage === "en" ? "Please select a payment channel." : "กรุณาเลือกช่องทางการชำระเงิน (Payment Channel)");
       return;
     }
@@ -2639,31 +3088,70 @@ function AdminPageContent() {
     const deliveryUploadPromise = (isAdmin && deliveryUploaderRef.current) ? deliveryUploaderRef.current.startUpload() : Promise.resolve(deliveryProofImageUrls);
 
     const oldRemarks = adminNote.split(" | ").map(r => r.trim()).filter(Boolean);
-    const customRemarks = oldRemarks.filter(r => 
-      !["Free Delivery", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up", "ขอใบกำกับภาษี", "Tax Invoice", "Req Tax Inv"].includes(r) &&
+    const customRemarks = Array.from(new Set(oldRemarks.filter(r => 
+      !["Free Delivery", "Rewash", "No Rider Comm", "Express 50%", "Express 100%", "Pickup: Leave at Lobby", "Pickup: Meet up", "Delivery: Leave at Lobby", "Delivery: Meet up", "ขอใบกำกับภาษี", "Tax Invoice", "Req Tax Inv"].includes(r) &&
+      !r.startsWith("Rewash #") &&
       !r.startsWith("VAT:") &&
       !r.startsWith("Proforma:") &&
       !r.startsWith("Revision:") &&
       !r.startsWith("Promo:") &&
       !r.startsWith("Discount:")
-    );
+    )));
 
     let finalAdminLogs = Array.isArray(adminLogs) ? [...adminLogs] : [];
-    if (adminNoteInput.trim()) {
-      finalAdminLogs.push({
-        id: Math.random().toString(36).substring(7),
-        userId: user?.id || "unknown",
-        userName: (user as any)?.name || user?.email || "Admin",
-        text: adminNoteInput.trim(),
-        timestamp: new Date().toISOString()
-      });
+    const pendingNoteText = adminNoteInput.trim();
+    if (pendingNoteText) {
+      const nowMs = Date.now();
+      const alreadyAddedRecently = finalAdminLogs.some(
+        (existing) =>
+          existing.text === pendingNoteText &&
+          existing.userId === (user?.id || "unknown") &&
+          Math.abs(nowMs - new Date(existing.timestamp || 0).getTime()) < 15000
+      );
+      if (!alreadyAddedRecently) {
+        finalAdminLogs.push({
+          id: Math.random().toString(36).substring(7),
+          userId: user?.id || "unknown",
+          userName: (user as any)?.name || user?.email || "Admin",
+          text: pendingNoteText,
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+
+    // Business Logic Audit Log when Rewash or No Rider Commission is toggled on an existing job
+    if (editingJobId && existingJob) {
+      const prevWasRewash = isRewashOrNoChargeJob(existingJob);
+      const prevWasNoComm = isNoRiderCommissionJob(existingJob);
+      const staffActor = (user as any)?.name || user?.email || "Admin";
+      if (isRewashJob !== prevWasRewash) {
+        finalAdminLogs.push({
+          id: Math.random().toString(36).substring(7),
+          userId: user?.id || "system",
+          userName: staffActor,
+          text: isRewashJob
+            ? `[Audit] Marked order as Rewash / Claim (฿0 No Charge, ฿0 Rider Commission)`
+            : `[Audit] Unmarked Rewash / Claim status`,
+          timestamp: new Date().toISOString(),
+        });
+      } else if (noRiderCommission !== prevWasNoComm) {
+        finalAdminLogs.push({
+          id: Math.random().toString(36).substring(7),
+          userId: user?.id || "system",
+          userName: staffActor,
+          text: noRiderCommission
+            ? `[Audit] Enabled No Rider Commission override (Pickup: ฿0, Delivery: ฿0)`
+            : `[Audit] Disabled No Rider Commission override`,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
     const itemsPayload = dialogCart.map(item => ({
       name: item.name,
       nameEn: item.nameEn || item.name,
       quantity: item.quantity,
-      price: item.price,
+      price: isRewashJob ? 0 : item.price,
       basePrice: item.basePrice,
       serviceId: item.id,
       category: item.category,
@@ -2673,17 +3161,17 @@ function AdminPageContent() {
     const uniqueCategories = Array.from(new Set(dialogCart.map(item => item.category).filter(Boolean)));
     const derivedLaundryTypes = uniqueCategories.length > 0 ? uniqueCategories : undefined;
 
-    const subtotal = dialogCart.reduce((sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
+    const subtotal = isRewashJob ? 0 : dialogCart.reduce((sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)), 0);
 
     const expressRate = serviceSpeed === "express_50" ? 0.5 : (serviceSpeed === "express_100" ? 1 : 0);
-    const surcharge = expressRate > 0 ? safeCeil(subtotal * expressRate) : 0;
+    const surcharge = (!isRewashJob && expressRate > 0) ? safeCeil(subtotal * expressRate) : 0;
 
     // Discount on (subtotal + surcharge), then subtract promo discount (only if applied via Apply button), then add fee and VAT
-    const discountVal = showDialogDiscount ? (subtotal + surcharge) * (dialogDiscountPercent / 100) : 0;
-    const promoDisc = appliedPromo ? promoDiscountAmount : 0;
-    const baseTotal = subtotal + surcharge - discountVal - promoDisc + fee;
-    const vatVal = dialogVatType === "exclusive" ? (baseTotal * (dialogVatRate / 100)) : 0;
-    const calculatedTotal = roundGrandTotal(Math.max(0, baseTotal + vatVal), dialogVatType);
+    const discountVal = (!isRewashJob && showDialogDiscount) ? (subtotal + surcharge) * (dialogDiscountPercent / 100) : 0;
+    const promoDisc = (!isRewashJob && appliedPromo) ? promoDiscountAmount : 0;
+    const baseTotal = isRewashJob ? 0 : (subtotal + surcharge - discountVal - promoDisc + fee);
+    const vatVal = (!isRewashJob && dialogVatType === "exclusive") ? (baseTotal * (dialogVatRate / 100)) : 0;
+    const calculatedTotal = isRewashJob ? 0 : roundGrandTotal(Math.max(0, baseTotal + vatVal), dialogVatType);
 
     const now = new Date();
     const effectiveCreatedAt = editingJobId 
@@ -2901,8 +3389,8 @@ function AdminPageContent() {
         setIsSubmitting(false);
         return;
       }
-      let isBillSentCheck = false;
-      if (existingJob.adminNotesJson) {
+      let isBillSentCheck = Boolean(isRewashJob || isRewashOrNoChargeJob(existingJob) || isSplitDeliveryChildJob(existingJob));
+      if (!isBillSentCheck && existingJob.adminNotesJson) {
         try {
           const p = JSON.parse(existingJob.adminNotesJson);
           if (p && typeof p === "object") isBillSentCheck = Boolean(p.isBillSent);
@@ -2915,14 +3403,16 @@ function AdminPageContent() {
       }
     }
 
+    const isSplitChildJob = Boolean(editingJobId && existingJob && isSplitDeliveryChildJob(existingJob));
+    const isNoChargePrepaidJob = Boolean(isRewashJob || isSplitChildJob);
 
     const newJobData: any = {
 
 
       isStuck,
       createdAt: effectiveCreatedAt,
-      discount: discountVal + (appliedPromo ? promoDiscountAmount : 0),
-      discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
+      discount: isNoChargePrepaidJob ? 0 : (discountVal + (appliedPromo ? promoDiscountAmount : 0)),
+      discountPercent: (!isNoChargePrepaidJob && showDialogDiscount) ? dialogDiscountPercent : 0,
       customerId: selectedProfileCustomer?.id || (existingJob ? existingJob.customerId : null) || null,
       items: itemsPayload,
       type: (isAlreadyPaidJob && existingJob?.type)
@@ -2934,7 +3424,7 @@ function AdminPageContent() {
         const isNoService = !isPickup && !isDelivery && !isWalkIn;
         // Package/Online sale — no service type selected
         if (isNoService) {
-          return paymentMethod === 'paid' ? 'completed' : 'tba';
+          return (paymentMethod === 'paid' || isNoChargePrepaidJob) ? 'completed' : 'tba';
         }
         // Normal laundry job: when marked 'ready', move to 'delivery' status for all jobs (including Walk-In)
         // so that finished laundry waits in Delivery column for actual handover to customer
@@ -2953,12 +3443,14 @@ function AdminPageContent() {
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       pickupLocation: isPickup ? (() => {
+        const baseLoc = stripRoomSuffix(pickupLoc);
         const cleanRoom = (pickupRoom || "").replace(/^Room\s*/i, '').trim();
-        return cleanRoom ? `${pickupLoc} (Room ${cleanRoom})` : pickupLoc;
+        return cleanRoom ? `${baseLoc} (Room ${cleanRoom})` : baseLoc;
       })() : shop.address,
       dropoffLocation: isDelivery ? (() => {
+        const baseLoc = stripRoomSuffix(deliveryLoc);
         const cleanRoom = (deliveryRoom || "").replace(/^Room\s*/i, '').trim();
-        return cleanRoom ? `${deliveryLoc} (Room ${cleanRoom})` : deliveryLoc;
+        return cleanRoom ? `${baseLoc} (Room ${cleanRoom})` : baseLoc;
       })() : shop.address,
       pickupCoords: isPickup ? pickupCoords : shop.coords,
       dropoffCoords: isDelivery ? deliveryCoords : shop.coords,
@@ -2970,11 +3462,11 @@ function AdminPageContent() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (isWalkIn ? false : paymentMethod === 'paid')),
-      isShopPaid: cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false)),
+      isPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (isWalkIn ? false : paymentMethod === 'paid'))),
+      isShopPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false))),
 
-      fee: (isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (existingJob.fee ?? 0) : fee,
-      totalAmount: (isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (Number(existingJob.totalAmount) || 0) : calculatedTotal,
+      fee: isNoChargePrepaidJob ? 0 : ((isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (existingJob.fee ?? 0) : fee),
+      totalAmount: isNoChargePrepaidJob ? 0 : ((isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (Number(existingJob.totalAmount) || 0) : calculatedTotal),
       billNo: billNo?.trim() || null,
       serviceType: dialogCart[0]?.id || "wash_fold",
 
@@ -2982,55 +3474,65 @@ function AdminPageContent() {
       deliveryDistance: isDelivery ? deliveryDist : 0,
       distance: (isDelivery && deliveryDist) ? deliveryDist : (isPickup ? pickupDist : 0),
       shiftId: targetShiftId,
-      pickupCommission: isPickup 
-        ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed') && (existingJob.pickupCommission ?? 0) > 0) 
-            ? (existingJob.pickupCommission ?? 0) 
-            : calculateRiderCommission({
-                customer: selectedProfileCustomer || (editingJobId ? findMatchingCustomer(customers, { customerId: existingJob?.customerId, customerName: existingJob?.customerName, customerPhone: existingJob?.customerPhone }) : null),
-                isPickup,
-                pickupDist,
-                isDelivery,
-                deliveryDist,
-                systemSettings,
-                isVIP: Boolean(selectedVIPLabel),
-                isFreeDelivery: activeIsFreeDelivery,
-              }).pickupCommission) 
-        : 0,
-      deliveryCommission: isDelivery 
-        ? ((editingJobId && existingJob && existingJob.status === 'completed' && (existingJob.deliveryCommission ?? 0) > 0) 
-            ? (existingJob.deliveryCommission ?? 0) 
-            : calculateRiderCommission({
-                customer: selectedProfileCustomer || (editingJobId ? findMatchingCustomer(customers, { customerId: existingJob?.customerId, customerName: existingJob?.customerName, customerPhone: existingJob?.customerPhone }) : null),
-                isPickup,
-                pickupDist,
-                isDelivery,
-                deliveryDist,
-                systemSettings,
-                isVIP: Boolean(selectedVIPLabel),
-                isFreeDelivery: activeIsFreeDelivery,
-              }).deliveryCommission) 
-        : 0,
-      remark: [
+      pickupCommission: (isRewashJob || noRiderCommission || isSplitChildJob)
+        ? 0
+        : (isPickup 
+          ? ((editingJobId && existingJob && (existingJob.status === 'billing' || existingJob.status === 'delivery' || existingJob.status === 'completed') && (existingJob.pickupCommission ?? 0) > 0) 
+              ? (existingJob.pickupCommission ?? 0) 
+              : calculateRiderCommission({
+                  customer: selectedProfileCustomer || (editingJobId ? findMatchingCustomer(customers, { customerId: existingJob?.customerId, customerName: existingJob?.customerName, customerPhone: existingJob?.customerPhone }) : null),
+                  isPickup,
+                  pickupDist,
+                  isDelivery,
+                  deliveryDist,
+                  systemSettings,
+                  isVIP: Boolean(selectedVIPLabel),
+                  isFreeDelivery: activeIsFreeDelivery,
+                  isRewash: isRewashJob,
+                  noRiderCommission,
+                }).pickupCommission) 
+          : 0),
+      deliveryCommission: (isRewashJob || noRiderCommission)
+        ? 0
+        : (isDelivery 
+          ? ((editingJobId && existingJob && existingJob.status === 'completed' && (existingJob.deliveryCommission ?? 0) > 0) 
+              ? (existingJob.deliveryCommission ?? 0) 
+              : calculateRiderCommission({
+                  customer: selectedProfileCustomer || (editingJobId ? findMatchingCustomer(customers, { customerId: existingJob?.customerId, customerName: existingJob?.customerName, customerPhone: existingJob?.customerPhone }) : null),
+                  isPickup,
+                  pickupDist,
+                  isDelivery,
+                  deliveryDist,
+                  systemSettings,
+                  isVIP: Boolean(selectedVIPLabel),
+                  isFreeDelivery: isSplitChildJob ? false : activeIsFreeDelivery,
+                  isRewash: isRewashJob,
+                  noRiderCommission,
+                }).deliveryCommission) 
+          : 0),
+      remark: Array.from(new Set([
         targetProformaNum ? `Proforma: ${cleanProformaNumber(targetProformaNum)}${effectiveProformaRevision !== null && effectiveProformaRevision > 0 ? `-R${effectiveProformaRevision}` : ""}` : "",
+        isRewashJob ? (rewashFromJobId ? `Rewash #${rewashFromJobId}` : "Rewash") : "",
+        (noRiderCommission || isRewashJob) ? "No Rider Comm" : "",
         ...customRemarks,
-        showDialogDiscount ? "Discount: on" : "",
+        (!isNoChargePrepaidJob && showDialogDiscount) ? "Discount: on" : "",
         activeIsFreeDelivery ? "Free Delivery" : "",
         serviceSpeed === "express_50" ? "Express 50%" : "",
         serviceSpeed === "express_100" ? "Express 100%" : "",
         isPickup ? (isPickupLobby ? "Pickup: Leave at Lobby" : (isPickupMeet ? "Pickup: Meet up" : "")) : "",
         isDelivery ? (isDeliveryLobby ? "Delivery: Leave at Lobby" : (isDeliveryMeet ? "Delivery: Meet up" : "")) : "",
-        dialogVatType !== "none" ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
+        (!isNoChargePrepaidJob && dialogVatType !== "none") ? `VAT: ${dialogVatType} (${dialogVatRate}%)` : "",
         isTaxInvoiceRequested ? "Req Tax Inv" : "",
-        (showDialogDiscount || appliedPromo || promoCodeInput.trim()) ? (
+        (!isNoChargePrepaidJob && (showDialogDiscount || appliedPromo || promoCodeInput.trim())) ? (
           appliedPromo
             ? `Promo: ${appliedPromo.code} (${appliedPromo.discountTarget}:${promoDiscountAmount})`
             : (promoCodeInput.trim() ? `Promo: ${promoCodeInput.trim().toUpperCase()}` : "")
         ) : "",
-      ].filter(Boolean).join(" | ") || null,
+      ].filter(Boolean))).join(" | ") || null,
       adminNotesJson: (() => {
         const finalPayments = [...existingPayments];
 
-        if (isPayment && remainingToPay > 0) {
+        if (isPayment && remainingToPay > 0 && !isNoChargePrepaidJob) {
           if (isSplitPayment) {
             splitPayments.forEach((sp) => {
               const pMethod = mapChannelNameToMethod(sp.channel, getPaymentChannels(systemSettings));
@@ -3064,7 +3566,13 @@ function AdminPageContent() {
           ...existingParsedNotes,
           notes: cleanLogs,
           isTaxInvoiceRequested,
+          isRewash: Boolean(isRewashJob),
+          rewashFromJobId: isRewashJob ? (rewashFromJobId || null) : null,
+          noRiderCommission: Boolean(noRiderCommission || isRewashJob),
         };
+        if (isNoChargePrepaidJob) {
+          notesObj.isBillSent = true;
+        }
         if (editingSubStatus && ['wash', 'dry', 'iron', 'ready'].includes(editingSubStatus)) {
           notesObj.kanbanStage = 'process';
         } else if (editingSubStatus === 'billing') {
@@ -3077,7 +3585,7 @@ function AdminPageContent() {
       })(),
 
       branchId: shop.id,
-      paymentChannel: isSplitPayment ? "Split Payment" : (paymentChannel || null),
+      paymentChannel: isRewashJob ? "Rewash / No Charge" : (isSplitChildJob ? "Pre-paid / Split Delivery" : (isSplitPayment ? "Split Payment" : (paymentChannel || null))),
       proformaReceiptNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaNumber: (targetProformaNum && targetProformaNum !== "DRAFT") ? targetProformaNum : null,
       proformaRevision: targetProformaNum ? (effectiveProformaRevision !== null ? effectiveProformaRevision : 0) : null,
@@ -3142,13 +3650,16 @@ function AdminPageContent() {
           }
 
           const normAdminNotes = (raw: any) => {
-            if (!raw) return JSON.stringify({ notes: [], payments: [], isTaxInvoiceRequested: false });
+            if (!raw) return JSON.stringify({ notes: [], payments: [], isTaxInvoiceRequested: false, isRewash: false, rewashFromJobId: null, noRiderCommission: false });
             try {
               const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
               const notes = (Array.isArray(p) ? p : (Array.isArray(p?.notes) ? p.notes : [])).map(({ isNew, ...rest }: any) => rest);
               const payments = Array.isArray(p?.payments) ? p.payments : [];
               const isTax = Boolean(p?.isTaxInvoiceRequested);
-              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax });
+              const isRewash = Boolean(p?.isRewash);
+              const rewashFromJobId = p?.rewashFromJobId || null;
+              const noRiderCommission = Boolean(p?.noRiderCommission);
+              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission });
             } catch {
               return String(raw);
             }
@@ -3395,9 +3906,41 @@ function AdminPageContent() {
             (payload as any).updatedAt = (originalJobRef.current as any).updatedAt;
             (payload as any).expectedUpdatedAt = (originalJobRef.current as any).updatedAt;
           }
-          const savedMainJob = await api.updateJob(targetEditingJobId, payload);
-          if ((savedMainJob as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
-            (originalJobRef.current as any).updatedAt = (savedMainJob as any).updatedAt;
+          savePendingJobToSession(targetEditingJobId, payload);
+          const updatePromise = api.updateJob(targetEditingJobId, payload).then((saved) => {
+            clearPendingJobFromSession(targetEditingJobId);
+            if ((saved as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
+              (originalJobRef.current as any).updatedAt = (saved as any).updatedAt;
+            }
+            jobStore.notify();
+            return saved;
+          }).catch((err) => {
+            clearPendingJobFromSession(targetEditingJobId);
+            throw err;
+          });
+
+          if (!isPayment) {
+            let timedOut = false;
+            const savedMainJob = await Promise.race([
+              updatePromise,
+              new Promise<null>((resolve) =>
+                setTimeout(() => {
+                  timedOut = true;
+                  resolve(null);
+                }, 5000)
+              ),
+            ]);
+            if (timedOut) {
+              updatePromise.catch((bgErr: any) => {
+                const bgMsg = bgErr?.message || "เกิดข้อผิดพลาดในการบันทึกข้อมูล";
+                toast.error(`บันทึกไม่สำเร็จ: ${bgMsg}`);
+                api.fetchAndApplyJob(targetEditingJobId).catch(() => {});
+              });
+            } else if ((savedMainJob as any)?.updatedAt && originalJobRef.current && editingJobIdRef.current === targetEditingJobId) {
+              (originalJobRef.current as any).updatedAt = (savedMainJob as any).updatedAt;
+            }
+          } else {
+            await updatePromise;
           }
           jobStore.notify();
         }
@@ -3698,8 +4241,14 @@ function AdminPageContent() {
           : preDeductedBalance;
 
         // Now create the job — include walletBalanceAfter and autoAssignProforma so DB saves everything in 1 INSERT!
+        if (!draftJobRequestIdRef.current) {
+          draftJobRequestIdRef.current = typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `req-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        }
         const jobDataWithWallet = {
           ...newJobData,
+          clientRequestId: draftJobRequestIdRef.current,
           ...(expectedWalletBalAfterTopup !== null ? { walletBalanceAfter: expectedWalletBalAfterTopup } : {}),
           ...(shouldAutoAssignNewJobProforma ? { autoAssignProforma: true, proformaCartHash: currentCartHash } : {}),
         };
@@ -4086,12 +4635,14 @@ function AdminPageContent() {
         memberId: selectedProfileCustomer?.memberId || (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.memberId : undefined) || null,
         walletBalance: effectiveWalletBalanceForProforma,
         deliveryAddress: isDelivery ? (() => {
+          const baseLoc = stripRoomSuffix(deliveryLoc);
           const cleanRoom = (deliveryRoom || "").replace(/^Room\s*/i, '').trim();
-          return cleanRoom ? `${deliveryLoc} (Room ${cleanRoom})` : deliveryLoc;
+          return cleanRoom ? `${baseLoc} (Room ${cleanRoom})` : baseLoc;
         })() : (selectedProfileCustomer?.defaultAddress || null),
         dropoffLocation: isDelivery ? (() => {
+          const baseLoc = stripRoomSuffix(deliveryLoc);
           const cleanRoom = (deliveryRoom || "").replace(/^Room\s*/i, '').trim();
-          return cleanRoom ? `${deliveryLoc} (Room ${cleanRoom})` : deliveryLoc;
+          return cleanRoom ? `${baseLoc} (Room ${cleanRoom})` : baseLoc;
         })() : (selectedProfileCustomer?.defaultAddress || activeShop?.address || ""),
         items: dialogCart.map(item => ({
           name: item.name,
@@ -6831,17 +7382,28 @@ function AdminPageContent() {
                                           ))}
                                         </div>
 
-                                        {/* Copy Items Button for this specific bill */}
+                                        {/* Copy Items & Rewash Buttons for this specific bill */}
                                         {!isPaidJob && !isCartLocked && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleCopyPastItems(pjItems, pj)}
-                                            className="w-full mt-1 py-1 px-2 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[10px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
-                                            title="คัดลอกรายการสินค้าจากออเดอร์นี้ใส่ตะกร้าปัจจุบัน"
-                                          >
-                                            <Copy size={11} className="text-indigo-600" />
-                                            <span>{currentLanguage === "en" ? `Copy Items from #${formatJobDisplayId(pj.id)}` : `คัดลอกบิลนี้ (#${formatJobDisplayId(pj.id)}) ลงตะกร้า`}</span>
-                                          </button>
+                                          <div className="grid grid-cols-2 gap-1.5 mt-1">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleCopyPastItems(pjItems, pj)}
+                                              className="py-1 px-2 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[9.5px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-2xs truncate"
+                                              title="คัดลอกรายการสินค้าจากออเดอร์นี้ใส่ตะกร้าปัจจุบัน"
+                                            >
+                                              <Copy size={10} className="text-indigo-600 shrink-0" />
+                                              <span className="truncate">{currentLanguage === "en" ? `Copy #${formatJobDisplayId(pj.id)}` : `คัดลอก #${formatJobDisplayId(pj.id)}`}</span>
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleStartRewashFromJob(pj)}
+                                              className="py-1 px-2 rounded-lg bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-300 text-[9.5px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-2xs truncate"
+                                              title="เปิดบิลซักซ้ำ / เคลมฟรี (฿0 และไม่คิดค่าคอมไรเดอร์) จากออเดอร์นี้"
+                                            >
+                                              <RotateCcw size={10} className="text-cyan-700 shrink-0" />
+                                              <span className="truncate">{currentLanguage === "en" ? `Rewash #${formatJobDisplayId(pj.id)}` : `ซักซ้ำฟรี #${formatJobDisplayId(pj.id)}`}</span>
+                                            </button>
+                                          </div>
                                         )}
                                       </div>
                                     )}
@@ -6946,14 +7508,20 @@ function AdminPageContent() {
                                   systemSettings,
                                   isVIP: Boolean(selectedVIPLabel),
                                   isFreeDelivery: activeIsFreeDelivery,
+                                  isRewash: isRewashJob,
+                                  noRiderCommission,
                                 });
-                                const pVal = (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
-                                  ? (activeJob.pickupCommission ?? 0)
-                                  : comm.pickupCommission;
-                                const dVal = (editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
-                                  ? (activeJob.deliveryCommission ?? 0)
-                                  : comm.deliveryCommission;
-                                const totalComm = comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || activeIsFreeDelivery ? 0 : (pVal + dVal));
+                                const pVal = (isRewashJob || noRiderCommission)
+                                  ? 0
+                                  : ((editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
+                                    ? (activeJob.pickupCommission ?? 0)
+                                    : comm.pickupCommission);
+                                const dVal = (isRewashJob || noRiderCommission)
+                                  ? 0
+                                  : ((editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
+                                    ? (activeJob.deliveryCommission ?? 0)
+                                    : comm.deliveryCommission);
+                                const totalComm = (isRewashJob || noRiderCommission) ? 0 : (comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || activeIsFreeDelivery ? 0 : (pVal + dVal)));
                                 return (
                                   <span className="font-extrabold text-amber-600">฿{totalComm.toFixed(0)}</span>
                                 );
@@ -7470,13 +8038,15 @@ function AdminPageContent() {
                                                   toast(`⚠️ มีรายการที่ปรับราคาพิเศษอยู่ในตะกร้า — ราคาสินค้าใหม่จะใช้ราคาตามปกติ`, { duration: 3000 });
                                                 }
                                                 const defaultQty = isKiloService ? 2 : 1;
+                                                const effectiveItemPrice = isRewashJob ? 0 : resolvedPrice;
                                                 updated = [...prev, {
                                                   id: s.id,
                                                   name: s.name,
                                                   nameEn: s.nameEn || s.name,
                                                   quantity: defaultQty,
-                                                  price: resolvedPrice,
+                                                  price: effectiveItemPrice,
                                                   basePrice: resolvedPrice,
+                                                  isCustomPrice: isRewashJob,
                                                   category: s.category || "",
                                                   unit: s.unit || "piece"
                                                 }];
@@ -7539,42 +8109,73 @@ function AdminPageContent() {
                               )}
                             </span>
                             
-                            {(canSeeStuck || canSeeTaxInvoice) && (
-                              <div className="flex items-center gap-2">
-                                {canSeeTaxInvoice && (
-                                  <Label className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[9.5px] font-bold cursor-pointer select-none transition-all ${
-                                    isTaxInvoiceRequested 
-                                      ? 'bg-amber-950/70 border-amber-600/70 text-amber-300' 
-                                      : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:text-slate-300'
-                                  }`}>
-                                    <input 
-                                      type="checkbox" 
-                                      checked={isTaxInvoiceRequested} 
-                                      onChange={(e) => setIsTaxInvoiceRequested(e.target.checked)} 
-                                      className="sr-only"
-                                    />
-                                    <FileText size={11} className={isTaxInvoiceRequested ? "text-amber-400" : "text-slate-400"} />
-                                    <span>Tax Inv</span>
-                                  </Label>
-                                )}
-                                {canSeeStuck && (
-                                  <Label className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[9.5px] font-bold cursor-pointer select-none transition-all ${
-                                    isStuck 
-                                      ? 'bg-rose-950/80 border-rose-600/70 text-rose-300' 
-                                      : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:text-rose-400'
-                                  }`}>
-                                    <input 
-                                      type="checkbox" 
-                                      checked={isStuck} 
-                                      onChange={(e) => setIsStuck(e.target.checked)} 
-                                      className="sr-only"
-                                    />
-                                    <span>Stuck</span>
-                                  </Label>
-                                )}
-                              </div>
-                            )}
+                            <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                              <Label
+                                className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[9.5px] font-bold cursor-pointer select-none transition-all ${
+                                  isRewashJob
+                                    ? 'bg-cyan-950/90 border-cyan-500/80 text-cyan-300 shadow-xs'
+                                    : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:text-cyan-300'
+                                }`}
+                                title="Rewash / Claim Order (ซักซ้ำ / เคลมฟรี ฿0 — ไม่คิดเงินลูกค้า และไม่คิดค่าคอมไรเดอร์)"
+                              >
+                                <input
+                                  type="checkbox"
+                                  disabled={isPaidJob}
+                                  checked={isRewashJob}
+                                  onChange={(e) => handleToggleRewash(e.target.checked)}
+                                  className="sr-only"
+                                />
+                                <RotateCcw size={10} className={isRewashJob ? "text-cyan-400" : "text-slate-400"} />
+                                <span>{currentLanguage === "en" ? "Rewash ฿0" : "ซักซ้ำ ฿0"}</span>
+                              </Label>
+                              {canSeeTaxInvoice && (
+                                <Label className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[9.5px] font-bold cursor-pointer select-none transition-all ${
+                                  isTaxInvoiceRequested 
+                                    ? 'bg-amber-950/70 border-amber-600/70 text-amber-300' 
+                                    : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:text-slate-300'
+                                }`}>
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isTaxInvoiceRequested} 
+                                    onChange={(e) => setIsTaxInvoiceRequested(e.target.checked)} 
+                                    className="sr-only"
+                                  />
+                                  <FileText size={11} className={isTaxInvoiceRequested ? "text-amber-400" : "text-slate-400"} />
+                                  <span>Tax Inv</span>
+                                </Label>
+                              )}
+                              {canSeeStuck && (
+                                <Label className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[9.5px] font-bold cursor-pointer select-none transition-all ${
+                                  isStuck 
+                                    ? 'bg-rose-950/80 border-rose-600/70 text-rose-300' 
+                                    : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:text-rose-400'
+                                }`}>
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isStuck} 
+                                    onChange={(e) => setIsStuck(e.target.checked)} 
+                                    className="sr-only"
+                                  />
+                                  <span>Stuck</span>
+                                </Label>
+                              )}
+                            </div>
                           </div>
+                          {isRewashJob && (
+                            <div className="px-2.5 py-1.5 rounded-xl bg-cyan-950/80 border border-cyan-600/60 text-cyan-200 text-[10px] font-bold flex items-center justify-between gap-2 shadow-xs">
+                              <span className="flex items-center gap-1.5 truncate">
+                                <RotateCcw size={12} className="text-cyan-400 shrink-0" />
+                                <span className="truncate">
+                                  {currentLanguage === "en"
+                                    ? `REWASH / CLAIM${rewashFromJobId ? ` (#${rewashFromJobId})` : ""} • No Charge (฿0)`
+                                    : `บิลซักซ้ำ / เคลมฟรี${rewashFromJobId ? ` (#${rewashFromJobId})` : ""} • ไม่คิดค่าใช้จ่าย (฿0)`}
+                                </span>
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-cyan-900/90 text-cyan-300 text-[8.5px] font-black uppercase tracking-wider shrink-0 border border-cyan-700/60">
+                                Rider Comm ฿0
+                              </span>
+                            </div>
+                          )}
                           <div id="order-items-list" className="overflow-y-auto space-y-1.5 pr-0.5 show-scrollbar max-h-[26vh] shrink-0">
                             {!isPosEnabled ? (
                               <div className="flex-1 flex flex-col items-center justify-center p-4 h-full min-h-[200px]">
@@ -7842,20 +8443,31 @@ function AdminPageContent() {
                                     systemSettings,
                                     isVIP: Boolean(selectedVIPLabel),
                                     isFreeDelivery: activeIsFreeDelivery,
+                                    isRewash: isRewashJob,
+                                    noRiderCommission,
                                   });
-                                  const pVal = (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
-                                    ? (activeJob.pickupCommission ?? 0)
-                                    : comm.pickupCommission;
-                                  const dVal = (editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
-                                    ? (activeJob.deliveryCommission ?? 0)
-                                    : comm.deliveryCommission;
-                                  const totalComm = comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || activeIsFreeDelivery ? 0 : (pVal + dVal));
+                                  const pVal = (isRewashJob || noRiderCommission)
+                                    ? 0
+                                    : ((editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
+                                      ? (activeJob.pickupCommission ?? 0)
+                                      : comm.pickupCommission);
+                                  const dVal = (isRewashJob || noRiderCommission)
+                                    ? 0
+                                    : ((editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
+                                      ? (activeJob.deliveryCommission ?? 0)
+                                      : comm.deliveryCommission);
+                                  const totalComm = (isRewashJob || noRiderCommission) ? 0 : (comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || activeIsFreeDelivery ? 0 : (pVal + dVal)));
                                   return (
                                     <>
-                                      <span className="font-extrabold text-amber-400">฿{totalComm.toFixed(0)}</span>
-                                      {comm.isCorporateRule && (
+                                      <span className={`font-extrabold ${(isRewashJob || noRiderCommission) ? "text-rose-400" : "text-amber-400"}`}>฿{totalComm.toFixed(0)}</span>
+                                      {comm.isCorporateRule && !isRewashJob && !noRiderCommission && (
                                         <span className="text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 rounded font-bold">
                                           Corp
+                                        </span>
+                                      )}
+                                      {(isRewashJob || noRiderCommission) && (
+                                        <span className="text-[8px] bg-rose-500/20 text-rose-300 border border-rose-500/40 px-1 rounded font-bold">
+                                          No Comm
                                         </span>
                                       )}
                                     </>
@@ -7865,21 +8477,37 @@ function AdminPageContent() {
                             </div>
                           )}
 
-                          {/* Free Delivery Row */}
+                          {/* Free Delivery & No Rider Commission Row */}
                           {(isPickup || isDelivery) && (
-                            <div className="flex justify-between items-center text-[10px] px-1 py-0.5 animate-in fade-in duration-200">
-                              <div className="flex items-center gap-1.5">
-                                 <Label className={`flex items-center gap-1 text-slate-300 select-none ${hasPackage || isPaidJob ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'}`}>
+                            <div className="flex justify-between items-center text-[10px] px-1 py-0.5 animate-in fade-in duration-200 gap-2 flex-wrap">
+                              <div className="flex items-center gap-2.5 flex-wrap">
+                                 <Label className={`flex items-center gap-1 text-slate-300 select-none ${hasPackage || isPaidJob || isRewashJob ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'}`}>
                                     <input 
                                       type="checkbox" 
-                                      disabled={hasPackage || isPaidJob}
+                                      disabled={hasPackage || isPaidJob || isRewashJob}
                                       checked={activeIsFreeDelivery} 
                                       onChange={(e) => setIsFreeDelivery(e.target.checked)} 
                                       className="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 h-3 w-3 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                     />
                                     <span className="font-bold">Free Delivery</span>
                                   </Label>
-                                  <span className="text-[8.5px] text-slate-500">({selectedVIPLabel ? '4' : '10'}฿/km)</span>
+                                  <Label
+                                    className={`flex items-center gap-1 select-none px-1.5 py-0.2 rounded border transition-colors ${
+                                      isRewashJob || noRiderCommission
+                                        ? "bg-rose-950/70 border-rose-600/60 text-rose-300"
+                                        : "border-slate-700/70 bg-slate-800/40 text-slate-300 hover:text-rose-300"
+                                    } ${isRewashJob ? "opacity-80 cursor-not-allowed" : "cursor-pointer"}`}
+                                    title="งดคิดค่าคอมมิชชั่นไรเดอร์สำหรับงานรับ-ส่งนี้ (No Rider Commission for Rewash or Other Assignments)"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      disabled={isRewashJob}
+                                      checked={Boolean(noRiderCommission || isRewashJob)}
+                                      onChange={(e) => setNoRiderCommission(e.target.checked)}
+                                      className="rounded border-slate-600 bg-slate-900 text-rose-500 focus:ring-rose-500 h-3 w-3 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                    />
+                                    <span className="font-bold text-[9.5px]">{currentLanguage === "en" ? "No Rider Comm" : "งดค่าคอมไรเดอร์"}</span>
+                                  </Label>
                               </div>
                               <div className="text-right select-none">
                                 {activeIsFreeDelivery && <span className="text-[9px] line-through text-slate-500 mr-1.5">฿{baseFee.toFixed(0)}</span>}
@@ -8065,9 +8693,9 @@ function AdminPageContent() {
                                 </div>
                                 <select
                                   id="payment-channel"
-                                  disabled={forceMemberPaymentDialog || isPaidJob}
+                                  disabled={forceMemberPaymentDialog || isPaidJob || isRewashJob}
                                   className="flex h-8 w-full rounded-xl border border-slate-700 bg-slate-800/90 text-white px-2.5 py-0 text-xs font-medium focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
-                                  value={forceMemberPaymentDialog ? "Deduct Member" : paymentChannel}
+                                  value={isRewashJob ? "Rewash / No Charge" : (forceMemberPaymentDialog ? "Deduct Member" : paymentChannel)}
                                   onChange={(e) => {
                                     const val = e.target.value;
                                     if (val === "Split Payment") {
@@ -8080,6 +8708,9 @@ function AdminPageContent() {
                                   }}
                                 >
                                   <option value="">Select Channel</option>
+                                  {isRewashJob && (
+                                    <option value="Rewash / No Charge">Rewash / No Charge (฿0)</option>
+                                  )}
                                   {paymentChannel && paymentChannel !== "Split Payment" && !activePaymentChannels.some(c => c.name === paymentChannel) && (
                                     <option value={paymentChannel}>{paymentChannel}</option>
                                   )}
@@ -8218,22 +8849,28 @@ function AdminPageContent() {
                                     SHOP
                                   </Label>
                                   <span className={`text-[8.5px] font-black px-1.5 py-0.2 rounded border ${
-                                    isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
-                                      ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
-                                      : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
+                                    isRewashJob
+                                      ? 'bg-cyan-950/90 text-cyan-300 border-cyan-600/70 shadow-sm'
+                                      : isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                        ? 'bg-emerald-950/90 text-emerald-400 border-emerald-700/70 shadow-sm' 
+                                        : 'bg-amber-950/90 text-amber-400 border-amber-700/70'
                                   }`}>
-                                    {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false) ? '✓ PAID' : 'UNPAID'}
+                                    {isRewashJob ? '✓ REWASH ฿0' : (isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false) ? '✓ PAID' : 'UNPAID')}
                                   </span>
                                 </div>
                                 <div className="flex items-center mt-1">
                                   <span className={`text-[10px] ${
-                                    isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
-                                      ? 'font-black text-emerald-400' 
-                                      : 'font-medium text-slate-400'
+                                    isRewashJob
+                                      ? 'font-black text-cyan-300'
+                                      : isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                        ? 'font-black text-emerald-400' 
+                                        : 'font-medium text-slate-400'
                                   }`}>
-                                    {isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
-                                      ? '✓ Paid via POS' 
-                                      : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงิน")}
+                                    {isRewashJob
+                                      ? (currentLanguage === "en" ? "✓ No Charge (Ready to Close)" : "✓ เคลมฟรี ฿0 (ปิดงานได้ทันที)")
+                                      : isPaidJob || (editingJobId ? Boolean(jobs.find(j => j.id === editingJobId)?.isShopPaid) : false)
+                                        ? '✓ Paid via POS' 
+                                        : (currentLanguage === "en" ? "Press [Pay] to complete" : "กด [Pay] เพื่อรับเงิน")}
                                   </span>
                                 </div>
                               </div>
@@ -8919,30 +9556,46 @@ function AdminPageContent() {
                             systemSettings,
                             isVIP: Boolean(selectedVIPLabel),
                             isFreeDelivery,
+                            isRewash: isRewashJob,
+                            noRiderCommission,
                           });
-                          const pVal = (editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
-                            ? (activeJob.pickupCommission ?? 0)
-                            : comm.pickupCommission;
-                          const dVal = (editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
-                            ? (activeJob.deliveryCommission ?? 0)
-                            : comm.deliveryCommission;
-                          const totalComm = comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || isFreeDelivery ? 0 : (pVal + dVal));
+                          const pVal = (isRewashJob || noRiderCommission)
+                            ? 0
+                            : ((editingJobId && activeJob && (activeJob.status === 'billing' || activeJob.status === 'delivery' || activeJob.status === 'completed') && (activeJob.pickupCommission ?? 0) > 0)
+                              ? (activeJob.pickupCommission ?? 0)
+                              : comm.pickupCommission);
+                          const dVal = (isRewashJob || noRiderCommission)
+                            ? 0
+                            : ((editingJobId && activeJob && activeJob.status === 'completed' && (activeJob.deliveryCommission ?? 0) > 0)
+                              ? (activeJob.deliveryCommission ?? 0)
+                              : comm.deliveryCommission);
+                          const totalComm = (isRewashJob || noRiderCommission) ? 0 : (comm.isCorporateRule ? (pVal + dVal) : (selectedVIPLabel || isFreeDelivery ? 0 : (pVal + dVal)));
 
                           return (
                             <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-700/50">
-                              <div className="flex flex-col">
+                              <div className="flex flex-col gap-1">
                                 <div className="flex items-center gap-1.5">
                                   <span className="text-xs text-amber-400 font-medium">Est. Rider Commission</span>
-                                  {comm.isCorporateRule && (
+                                  {comm.isCorporateRule && !isRewashJob && !noRiderCommission && (
                                     <span className="text-[8.5px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 py-0.2 rounded font-bold">
                                       🏢 Corporate
                                     </span>
                                   )}
                                 </div>
                                 <span className="text-[10px] text-slate-500">{comm.ruleLabel}</span>
+                                <Label className={`flex items-center gap-1.5 text-[10px] text-slate-300 ${isRewashJob ? "opacity-75 cursor-not-allowed" : "cursor-pointer"}`}>
+                                  <input
+                                    type="checkbox"
+                                    disabled={isRewashJob}
+                                    checked={Boolean(noRiderCommission || isRewashJob)}
+                                    onChange={(e) => setNoRiderCommission(e.target.checked)}
+                                    className="rounded border-slate-600 bg-slate-900 text-rose-500 focus:ring-rose-500 h-3 w-3 cursor-pointer"
+                                  />
+                                  <span>{currentLanguage === "en" ? "No Rider Commission (฿0)" : "งดคิดค่าคอมไรเดอร์ (฿0)"}</span>
+                                </Label>
                               </div>
                               <div className="text-right">
-                                <span className="text-lg font-bold text-amber-400">
+                                <span className={`text-lg font-bold ${(isRewashJob || noRiderCommission) ? "text-rose-400" : "text-amber-400"}`}>
                                   ฿{totalComm.toFixed(0)}
                                 </span>
                               </div>
@@ -8990,8 +9643,34 @@ function AdminPageContent() {
                         </div>
                       )}
                       <div className="flex items-center justify-between gap-3 w-full flex-wrap">
-                        {/* Left: Complete Handover, Unlock Paid & Refund Action Buttons */}
-                        <div className="flex items-center gap-2">
+                        {/* Left: Complete Handover, Rewash, Unlock Paid & Refund Action Buttons */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {editingJobId && activeJob && !isRewashOrNoChargeJob(activeJob) && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleStartRewashFromJob(activeJob)}
+                              className="h-9.5 px-3.5 text-xs font-bold gap-1.5 rounded-xl transition-all cursor-pointer shadow-2xs border border-cyan-400 bg-cyan-50 text-cyan-800 hover:bg-cyan-100 hover:text-cyan-900"
+                              title="เปิดออเดอร์ใหม่สำหรับซักซ้ำ / เคลมฟรี (฿0 ไม่คิดค่าใช้จ่ายลูกค้า และไม่คิดค่าคอมไรเดอร์) โดยคัดลอกข้อมูลลูกค้าและรายการผ้าจากออเดอร์นี้"
+                            >
+                              <RotateCcw size={14} className="text-cyan-700" />
+                              <span>{currentLanguage === "en" ? "Rewash / Re-process (฿0)" : "เปิดบิลซักซ้ำ / เคลมฟรี (฿0)"}</span>
+                            </Button>
+                          )}
+                          {editingJobId && activeJob && activeJob.status !== 'completed' && activeJob.status !== 'cancel' && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleOpenSplitDelivery(activeJob)}
+                              className="h-9.5 px-3.5 text-xs font-bold gap-1.5 rounded-xl transition-all cursor-pointer shadow-2xs border border-purple-400 bg-purple-50 text-purple-800 hover:bg-purple-100 hover:text-purple-900"
+                              title="แยกส่งสินค้าบางชิ้นในรอบที่ 2 (เช่น เสื้อผ้าส่งวันนี้ รองเท้าส่งอีก 2-3 วันข้างหน้า) โดยเปิดออเดอร์จัดส่งรอบที่ 2 (฿0 Pre-paid) ให้อัตโนมัติ"
+                            >
+                              <Split size={14} className="text-purple-700" />
+                              <span>{currentLanguage === "en" ? "Split Delivery" : "แยกจัดส่ง (Split Delivery)"}</span>
+                            </Button>
+                          )}
                           {editingJobId && activeJob?.status === 'delivery' && (isWalkIn && !isDelivery) && (() => {
                             const isPaid = isJobFullyPaid(activeJob);
                             return (
@@ -9074,6 +9753,406 @@ function AdminPageContent() {
                 </DialogContent>
               </Dialog>
             )}
+
+            {/* Split Delivery Modal */}
+            <Dialog open={splitDeliveryModalOpen} onOpenChange={(open) => {
+              if (!isSplittingDelivery) {
+                setSplitDeliveryModalOpen(open);
+              }
+            }}>
+              <DialogContent className="sm:max-w-lg w-[95vw] rounded-2xl p-0 overflow-hidden border border-slate-200 shadow-2xl bg-white max-h-[90vh] flex flex-col">
+                <DialogHeader className="p-4 bg-gradient-to-r from-purple-700 to-indigo-700 text-white shrink-0">
+                  <DialogTitle className="flex items-center gap-2 text-base font-bold text-white">
+                    <Split size={18} />
+                    <span>{currentLanguage === "en" ? "Split Delivery (Multiple Batches)" : "แยกจัดส่งสินค้าตามรอบ (Split Delivery)"}</span>
+                  </DialogTitle>
+                  <DialogDescription className="text-purple-100 text-xs mt-0.5">
+                    {currentLanguage === "en"
+                      ? "Select items or laundry bags to deliver in the 2nd batch. A linked ฿0 pre-paid order will be created automatically."
+                      : "เลือกสินค้าหรือถุงผ้าที่ต้องการแยกส่งในรอบที่ 2 ระบบจะสร้างออเดอร์จัดส่งรอบ 2 ให้ที่ ฿0 (Pre-paid) ให้อัตโนมัติ"}
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="p-4 space-y-4 overflow-y-auto flex-1 text-xs">
+                  {/* Customer & Address Quick Info */}
+                  <div className="p-3 bg-purple-50/70 border border-purple-200/80 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between font-bold text-purple-900">
+                      <span className="flex items-center gap-1.5">
+                        <User size={13} className="text-purple-600" />
+                        <span>{splitTargetJob?.customerName || customerName || "Customer"}</span>
+                      </span>
+                      <span className="font-mono text-[11px] text-purple-700">{splitTargetJob?.customerPhone || customerPhone}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-600 flex items-start gap-1">
+                      <MapPin size={12} className="text-purple-500 mt-0.5 shrink-0" />
+                      <span className="truncate">{splitTargetJob?.dropoffLocation || deliveryLoc || "Delivery Address"}</span>
+                    </div>
+                  </div>
+
+                  {/* Items list with quantity steppers & Quick Presets */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between font-bold text-slate-700 flex-wrap gap-1">
+                      <span>{currentLanguage === "en" ? "Select items or quantity to deliver in Batch 2:" : "เลือกสินค้า/จำนวนที่ต้องการแยกไปส่งในรอบที่ 2:"}</span>
+                      <span className="text-[11px] text-purple-600 font-semibold">
+                        {currentLanguage === "en"
+                          ? `(Batch 1 remains in Order #${formatJobDisplayId(splitTargetJob?.id)})`
+                          : `(รอบแรกยังคงอยู่ใน Order #${formatJobDisplayId(splitTargetJob?.id)})`}
+                      </span>
+                    </div>
+
+                    {/* Quick Presets & Add Custom Item Buttons */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={handleSplitPreset50}
+                        className="px-2 py-1 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-800 text-[10.5px] font-bold transition-colors cursor-pointer shadow-2xs"
+                        title={currentLanguage === "en" ? "Split 50% of each item to Batch 2" : "แบ่ง 50% ของแต่ละรายการไปส่งในรอบที่ 2"}
+                      >
+                        ⚡ {currentLanguage === "en" ? "Split 50% (แบ่งครึ่ง)" : "แบ่ง 50% (Split Half)"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSplitSelectAll}
+                        className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10.5px] font-bold transition-colors cursor-pointer shadow-2xs"
+                      >
+                        📦 {currentLanguage === "en" ? "Select All (เลือกทั้งหมด)" : "เลือกทั้งหมด (Select All)"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSplitResetAll}
+                        className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 text-[10.5px] font-bold transition-colors cursor-pointer shadow-2xs"
+                      >
+                        🔄 {currentLanguage === "en" ? "Reset (ล้าง)" : "ล้าง (Reset)"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowAddCustomRow(!showAddCustomRow)}
+                        className="ml-auto px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-[10.5px] font-bold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                        title={currentLanguage === "en" ? "Add custom bag or item name (e.g. Wash & Fold Bag 2)" : "เพิ่มถุงผ้าหรือรายการระบุเอง เช่น ผ้าซักอบพับ ถุงที่ 2 (10 kg)"}
+                      >
+                        <Plus size={11} />
+                        <span>{currentLanguage === "en" ? (showAddCustomRow ? "Close Custom Form" : "+ Add Custom Item / Bag") : (showAddCustomRow ? "ปิดฟอร์มเพิ่มเอง" : "+ เพิ่มถุงผ้า / รายการเอง")}</span>
+                      </button>
+                    </div>
+
+                    {/* Add Custom Item Inline Form */}
+                    {showAddCustomRow && (
+                      <div className="p-2.5 bg-purple-50/90 border border-purple-200 rounded-xl space-y-2 animate-in fade-in">
+                        <p className="text-[10px] font-bold text-purple-900">
+                          {currentLanguage === "en"
+                            ? "Specify item name or laundry bag to deliver in 2nd batch (e.g. Wash & Fold Bag 2, 2 Pairs Shoes):"
+                            : "ระบุรายการหรือถุงผ้าที่จะแยกส่งในรอบที่ 2 (เช่น ผ้าซักอบพับ ถุงที่ 2, ผ้านวม 2 ผืน):"}
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Input
+                            placeholder={currentLanguage === "en" ? "e.g. Wash & Fold Bag 2 (10 kg)" : "เช่น ผ้าซักอบพับ ถุงที่ 2 (10 kg)"}
+                            value={newCustomName}
+                            onChange={(e) => setNewCustomName(e.target.value)}
+                            className="text-xs h-8 flex-1 min-w-[150px] bg-white"
+                          />
+                          <Input
+                            type="number"
+                            min={1}
+                            value={newCustomQty}
+                            onChange={(e) => setNewCustomQty(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="text-xs h-8 w-16 bg-white"
+                          />
+                          <select
+                            value={newCustomUnit}
+                            onChange={(e) => setNewCustomUnit(e.target.value)}
+                            className="h-8 text-xs bg-white border border-slate-200 rounded-lg px-2 outline-none"
+                          >
+                            <option value="ชิ้น">{currentLanguage === "en" ? "pcs (ชิ้น)" : "ชิ้น (pcs)"}</option>
+                            <option value="ถุง">{currentLanguage === "en" ? "bag (ถุง)" : "ถุง (bag)"}</option>
+                            <option value="กก.">{currentLanguage === "en" ? "kg (กก.)" : "กก. (kg)"}</option>
+                            <option value="คู่">{currentLanguage === "en" ? "pair (คู่)" : "คู่ (pair)"}</option>
+                            <option value="ชุด">{currentLanguage === "en" ? "set (ชุด)" : "ชุด (set)"}</option>
+                          </select>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs"
+                            onClick={() => {
+                              if (!newCustomName.trim()) return;
+                              setCustomSplitItems(prev => [
+                                ...prev,
+                                {
+                                  id: `custom-${Date.now()}`,
+                                  name: newCustomName.trim(),
+                                  quantity: newCustomQty,
+                                  unit: newCustomUnit,
+                                }
+                              ]);
+                              setNewCustomName("");
+                              setNewCustomQty(1);
+                            }}
+                          >
+                            {currentLanguage === "en" ? "Add (เพิ่ม)" : "เพิ่ม (Add)"}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Custom Added Items Badges */}
+                    {customSplitItems.length > 0 && (
+                      <div className="p-2 bg-purple-100/60 border border-purple-200 rounded-xl space-y-1">
+                        <span className="text-[10px] font-bold text-purple-900 block">
+                          {currentLanguage === "en" ? "Custom items added for Batch 2:" : "รายการเพิ่มเติมที่ระบุเอง (รอบ 2):"}
+                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {customSplitItems.map((cit, idx) => (
+                            <span key={cit.id || idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-purple-300 text-purple-900 font-bold text-[10.5px] shadow-2xs">
+                              <span>{cit.name} x{cit.quantity} {cit.unit}</span>
+                              <button
+                                type="button"
+                                onClick={() => setCustomSplitItems(prev => prev.filter((_, i) => i !== idx))}
+                                className="text-rose-500 hover:text-rose-700 ml-1 cursor-pointer"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-56 overflow-y-auto bg-slate-50/40">
+                      {(() => {
+                        const items = Array.isArray(splitTargetJob?.items) && splitTargetJob.items.length > 0
+                          ? splitTargetJob.items
+                          : (splitTargetJob?.itemsJson ? (() => { try { return JSON.parse(splitTargetJob.itemsJson); } catch { return []; } })() : dialogCart);
+                        
+                        if (!items || items.length === 0) {
+                          return (
+                            <div className="p-4 text-center text-slate-500 space-y-1">
+                              <p className="font-bold">
+                                {currentLanguage === "en" ? "This order has no item breakdown (e.g. Wash & Fold by weight)" : "ออเดอร์นี้ไม่มีรายการแยกชิ้น (เช่น งานคิดเหมารวม / ซักอบพับ)"}
+                              </p>
+                              <p className="text-[11px] text-slate-400">
+                                {currentLanguage === "en"
+                                  ? 'Click "+ Add Custom Item / Bag" above to specify what will be delivered in Batch 2.'
+                                  : 'ท่านสามารถกดปุ่ม "+ เพิ่มถุงผ้า / รายการเอง" ด้านบน เพื่อระบุถุงหรือรายการที่ต้องการแยกส่งได้เลย'}
+                              </p>
+                            </div>
+                          );
+                        }
+
+                        return items.map((it: any, idx: number) => {
+                          const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+                          const totalQty = Number(it.quantity) || 1;
+                          const splitQty = splitItemSelections[k] || 0;
+                          const remainQty = Math.max(0, totalQty - splitQty);
+                          const isSelected = splitQty > 0;
+                          const itemUnit = it.unit || (currentLanguage === "en" ? "pcs" : "ชิ้น");
+
+                          return (
+                            <div key={k} className={`p-2.5 flex items-center justify-between gap-3 transition-colors ${isSelected ? "bg-purple-50/80 border-l-4 border-l-purple-600" : "hover:bg-white"}`}>
+                              <div className="flex-1 min-w-0">
+                                <p className="font-bold text-slate-800 text-xs truncate">{it.name || "Item"}</p>
+                                <p className="text-[10px] text-slate-500">
+                                  {currentLanguage === "en" ? `Total in bill: ${totalQty} ${itemUnit}` : `ทั้งหมดในบิล: ${totalQty} ${itemUnit}`}
+                                  {isSelected && (
+                                    <span className="ml-2 font-bold text-purple-700">
+                                      {currentLanguage === "en"
+                                        ? `(Batch 1: ${remainQty} ${itemUnit} • Batch 2: ${splitQty} ${itemUnit})`
+                                        : `(รอบ 1 ส่ง ${remainQty} ${itemUnit} • รอบ 2 ส่ง ${splitQty} ${itemUnit})`}
+                                    </span>
+                                  )}
+                                </p>
+                              </div>
+
+                              {/* Quantity Stepper */}
+                              <div className="flex items-center gap-1.5 shrink-0 bg-white border border-slate-200 rounded-lg p-0.5 shadow-2xs">
+                                <button
+                                  type="button"
+                                  disabled={splitQty <= 0}
+                                  onClick={() => setSplitItemSelections(prev => ({ ...prev, [k]: Math.max(0, (prev[k] || 0) - 1) }))}
+                                  className="w-6 h-6 rounded flex items-center justify-center font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                                >
+                                  -
+                                </button>
+                                <span className={`w-8 text-center font-mono font-bold text-xs ${isSelected ? "text-purple-700" : "text-slate-400"}`}>
+                                  {splitQty}
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={splitQty >= totalQty}
+                                  onClick={() => setSplitItemSelections(prev => ({ ...prev, [k]: Math.min(totalQty, (prev[k] || 0) + 1) }))}
+                                  className="w-6 h-6 rounded flex items-center justify-center font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+
+                    {/* Live Two-Batch Comparison Card */}
+                    <div className="grid grid-cols-2 gap-2 p-2.5 bg-slate-100/90 rounded-xl border border-slate-200">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1 text-[11px] font-bold text-slate-700">
+                          <Package size={12} className="text-slate-500" />
+                          <span>{currentLanguage === "en" ? "Batch 1 (Original Order)" : "รอบที่ 1 (บิลเดิม)"}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-600 line-clamp-2">
+                          {(() => {
+                            const items = Array.isArray(splitTargetJob?.items) && splitTargetJob.items.length > 0
+                              ? splitTargetJob.items
+                              : (splitTargetJob?.itemsJson ? (() => { try { return JSON.parse(splitTargetJob.itemsJson); } catch { return []; } })() : dialogCart);
+                            const remainings = items
+                              .map((it: any, idx: number) => {
+                                const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+                                const totalQty = Number(it.quantity) || 1;
+                                const splitQty = splitItemSelections[k] || 0;
+                                const rem = totalQty - splitQty;
+                                const itemUnit = it.unit || (currentLanguage === "en" ? "pcs" : "ชิ้น");
+                                return rem > 0 ? `${it.name} x${rem} ${itemUnit}` : null;
+                              })
+                              .filter(Boolean);
+                            return remainings.length > 0 ? remainings.join(", ") : (currentLanguage === "en" ? "(All items moved to Batch 2)" : "(ส่งรอบที่ 2 ทั้งหมด)");
+                          })()}
+                        </p>
+                        <p className="text-[9.5px] text-emerald-700 font-bold">
+                          {currentLanguage === "en" ? "✓ Original bill payment remains 100% intact" : "✓ ยอดขายบิลเดิมยังอยู่ครบ 100%"}
+                        </p>
+                      </div>
+                      <div className="space-y-1 border-l border-slate-200 pl-2">
+                        <div className="flex items-center gap-1 text-[11px] font-bold text-purple-700">
+                          <Truck size={12} className="text-purple-600" />
+                          <span>{currentLanguage === "en" ? "Batch 2 (New Order)" : "รอบที่ 2 (บิลใหม่)"}</span>
+                        </div>
+                        <p className="text-[10px] text-purple-900 font-bold line-clamp-2">
+                          {(() => {
+                            const items = Array.isArray(splitTargetJob?.items) && splitTargetJob.items.length > 0
+                              ? splitTargetJob.items
+                              : (splitTargetJob?.itemsJson ? (() => { try { return JSON.parse(splitTargetJob.itemsJson); } catch { return []; } })() : dialogCart);
+                            const splitItemsSummary = items
+                              .map((it: any, idx: number) => {
+                                const k = String(it.id || it.serviceId || it.name || `item-${idx}`);
+                                const splitQty = splitItemSelections[k] || 0;
+                                const itemUnit = it.unit || (currentLanguage === "en" ? "pcs" : "ชิ้น");
+                                return splitQty > 0 ? `${it.name} x${splitQty} ${itemUnit}` : null;
+                              })
+                              .filter(Boolean);
+                            customSplitItems.forEach(cit => {
+                              splitItemsSummary.push(`${cit.name} x${cit.quantity} ${cit.unit}`);
+                            });
+                            return splitItemsSummary.length > 0 ? splitItemsSummary.join(", ") : (currentLanguage === "en" ? "No items selected yet" : "ยังไม่ได้เลือกรายการ");
+                          })()}
+                        </p>
+                        <p className="text-[9.5px] text-purple-600 font-bold">
+                          {currentLanguage === "en" ? "✓ New order ฿0 (Pre-paid)" : "✓ บิลใหม่ ฿0 (Pre-paid)"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Scheduling & Rider Settings for Round 2 */}
+                  <div className="space-y-3 pt-2 border-t border-slate-200">
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Delivery Scheduled Time */}
+                      <div className="space-y-1">
+                        <Label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                          {currentLanguage === "en" ? "Batch 2 Delivery Date & Time (วัน-เวลาจัดส่งรอบที่ 2)" : "วัน-เวลาจัดส่งรอบที่ 2 (DELIVERY DATE & TIME)"}
+                        </Label>
+                        <Input
+                          type="datetime-local"
+                          value={splitScheduledTime}
+                          onChange={(e) => setSplitScheduledTime(e.target.value)}
+                          className="text-xs h-9 bg-white"
+                        />
+                      </div>
+
+                      {/* Rider Assignment */}
+                      <div className="space-y-1">
+                        <Label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                          {currentLanguage === "en" ? "Batch 2 Delivery Rider (ไรเดอร์จัดส่งรอบที่ 2)" : "ไรเดอร์จัดส่งรอบที่ 2 (DELIVERY RIDER)"}
+                        </Label>
+                        <select
+                          value={splitRiderId}
+                          onChange={(e) => setSplitRiderId(e.target.value)}
+                          className="flex h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs outline-none focus:ring-1 focus:ring-purple-500"
+                        >
+                          <option value="">{currentLanguage === "en" ? "Assign Later (ยังไม่ระบุไรเดอร์)" : "ยังไม่ระบุไรเดอร์ (Assign Later)"}</option>
+                          {riders.map((r: any) => (
+                            <option key={r.id} value={r.id}>
+                              {r.name || r.phone}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Rider Commission Toggle */}
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="space-y-0.5">
+                        <span className="font-bold text-slate-700 text-xs block">
+                          {currentLanguage === "en" ? "Batch 2 Rider Commission (ค่าคอมไรเดอร์)" : "ค่าคอมมิชชั่นไรเดอร์รอบที่ 2 (Rider Commission)"}
+                        </span>
+                        <span className="text-[10px] text-slate-500 block">
+                          {splitGiveCommission 
+                            ? (currentLanguage === "en" ? "Standard distance-based commission (คำนวณตามระยะทางปกติ)" : "คำนวณค่าคอมจัดส่งตามระยะทางปกติ")
+                            : (currentLanguage === "en" ? "No Rider Commission (฿0 งดค่าคอม)" : "ไม่คิดค่าคอมมิชชั่น (฿0 No Rider Comm)")}
+                        </span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={splitGiveCommission}
+                        onChange={(e) => setSplitGiveCommission(e.target.checked)}
+                        className="w-4 h-4 accent-purple-600 cursor-pointer rounded"
+                      />
+                    </div>
+
+                    {/* Note */}
+                    <div className="space-y-1">
+                      <Label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                        {currentLanguage === "en" ? "Additional Note for Batch 2 (หมายเหตุเพิ่มเติม)" : "หมายเหตุเพิ่มเติมสำหรับรอบที่ 2 (OPTIONAL NOTE)"}
+                      </Label>
+                      <Input
+                        value={splitNotes}
+                        onChange={(e) => setSplitNotes(e.target.value)}
+                        placeholder={currentLanguage === "en" ? "e.g. Shoes ready Wednesday, leave at lobby" : "เช่น รองเท้าพร้อมส่งวันพุธ, ส่งห้องนิติ"}
+                        className="text-xs h-8 bg-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <DialogFooter className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSplitDeliveryModalOpen(false)}
+                    disabled={isSplittingDelivery}
+                    className="text-xs font-bold rounded-xl cursor-pointer"
+                  >
+                    {currentLanguage === "en" ? "Cancel (ยกเลิก)" : "ยกเลิก (Cancel)"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isSplittingDelivery || (Object.values(splitItemSelections).reduce((a, b) => a + b, 0) === 0 && customSplitItems.length === 0)}
+                    onClick={handleConfirmSplitDelivery}
+                    className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSplittingDelivery ? (
+                      <>
+                        <Loader2 size={13} className="animate-spin mr-1.5" />
+                        <span>{currentLanguage === "en" ? "Creating Split Delivery..." : "กำลังแยกออเดอร์..."}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Split size={13} className="mr-1.5" />
+                        <span>{currentLanguage === "en" ? "Confirm Split Delivery (Create Batch 2)" : "ยืนยันแยกส่ง (Create 2nd Delivery)"}</span>
+                      </>
+                    )}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             {/* Wallet Approval Reject Reason Dialog */}
             <Dialog open={walletRejectModalOpen} onOpenChange={(open) => {
@@ -9436,6 +10515,7 @@ function AdminPageContent() {
               jobs={jobs} 
               onEditJob={stableHandleEditFullJob} 
               onCreateJob={stableHandleCreateNewJob} 
+              onSplitDelivery={handleOpenSplitDelivery}
               savingJobIds={savingJobIds} 
             />
           )}
@@ -9511,7 +10591,7 @@ function AdminPageContent() {
             setPromoError(null);
             
             // Always sync address from CRM when customer is selected
-            const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? c.defaultAddress : "";
+            const cleanCustAddr = c.defaultAddress && c.defaultAddress.trim() !== "--" && c.defaultAddress.trim() !== "-" ? stripRoomSuffix(c.defaultAddress) : "";
             const validCustCoords = isRealCustomerCoords(c.defaultCoords, c.defaultAddress) ? c.defaultCoords : null;
             setPickupLoc(cleanCustAddr);
             setPickupRoom((c.roomNo || (c.secondaryAddress ? c.secondaryAddress.replace(/^Room\s*/i, '') : '') || '').trim());

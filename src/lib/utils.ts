@@ -331,16 +331,140 @@ export interface JobPaymentBreakdown {
   channels: string[];
 }
 
+export function isSplitDeliveryChildJob(job?: {
+  remark?: string | null;
+  paymentChannel?: string | null;
+  adminNotesJson?: string | null;
+} | null): boolean {
+  if (!job) return false;
+  if (job.paymentChannel === "Pre-paid / Split Delivery") return true;
+  if (typeof job.remark === "string" && /Split Delivery\s*\(Part\s*2\)/i.test(job.remark)) return true;
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (parsed && typeof parsed === "object" && parsed.isSplitDelivery === true) return true;
+    } catch {}
+  }
+  return false;
+}
+
+export function isRewashOrNoChargeJob(job?: {
+  remark?: string | null;
+  paymentChannel?: string | null;
+  adminNotesJson?: string | null;
+} | null): boolean {
+  if (!job) return false;
+  if (isSplitDeliveryChildJob(job)) return false;
+  if (job.paymentChannel === "Rewash / No Charge") return true;
+  if (typeof job.remark === "string" && /\bRewash\b/i.test(job.remark)) return true;
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (parsed && typeof parsed === "object" && parsed.isRewash === true) return true;
+    } catch {}
+  }
+  return false;
+}
+
+export function isSplitDeliveryJob(job?: {
+  remark?: string | null;
+  paymentChannel?: string | null;
+  adminNotesJson?: string | null;
+} | null): boolean {
+  if (!job) return false;
+  if (isSplitDeliveryChildJob(job)) return true;
+  if (typeof job.remark === "string" && /\bSplit Deliv/i.test(job.remark)) return true;
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        (parsed.isSplitDelivery === true || Boolean(parsed.splitFromJobId) || Boolean(parsed.splitToJobId))
+      ) {
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
+export function getSplitDeliveryFromJobId(job?: {
+  remark?: string | null;
+  note?: string | null;
+  adminNotesJson?: string | null;
+} | null): string | null {
+  if (!job) return null;
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.splitFromJobId === "string" && parsed.splitFromJobId.trim()) {
+          return parsed.splitFromJobId.trim();
+        }
+        if (typeof parsed.splitToJobId === "string" && parsed.splitToJobId.trim()) {
+          return parsed.splitToJobId.trim();
+        }
+      }
+    } catch {}
+  }
+  const text = `${job.remark || ""} ${job.note || ""}`;
+  const match = text.match(/Split Deliv(?:ery)?(?:\s+Part\s*\d+)?(?:\s+from)?[:\s]+#?([A-Za-z0-9_-]+)/i);
+  return match ? match[1] : null;
+}
+
+export function getRewashFromJobId(job?: {
+  remark?: string | null;
+  note?: string | null;
+  adminNotesJson?: string | null;
+} | null): string | null {
+  if (!job) return null;
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (parsed && typeof parsed === "object" && typeof parsed.rewashFromJobId === "string" && parsed.rewashFromJobId.trim()) {
+        return parsed.rewashFromJobId.trim();
+      }
+    } catch {}
+  }
+  const text = `${job.remark || ""} ${job.note || ""}`;
+  const match = text.match(/Rewash(?:\s+from)?\s+#?([A-Za-z0-9-_]+)/i);
+  return match ? match[1] : null;
+}
+
+export function isNoRiderCommissionJob(job?: {
+  remark?: string | null;
+  paymentChannel?: string | null;
+  adminNotesJson?: string | null;
+} | null): boolean {
+  if (!job) return false;
+  if (job.paymentChannel === "Rewash / No Charge" || (typeof job.remark === "string" && /\bRewash\b/i.test(job.remark))) return true;
+  if (typeof job.remark === "string" && /\bNo Rider Comm\b/i.test(job.remark)) return true;
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (parsed && typeof parsed === "object") {
+        if (parsed.isRewash === true || parsed.noRiderCommission === true) return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
 export function getJobPaymentBreakdown(job?: {
   totalAmount?: number | null;
   isPaid?: boolean | null;
   isShopPaid?: boolean | null;
   paymentChannel?: string | null;
   paymentMethod?: string | null;
+  remark?: string | null;
   adminNotesJson?: string | null;
 } | null): JobPaymentBreakdown {
   const total = Math.max(0, Number(job?.totalAmount) || 0);
   let payments: JobPaymentEntry[] = [];
+  const isRewash = isRewashOrNoChargeJob(job);
+  const isSplitChild = isSplitDeliveryChildJob(job);
+  const isNoChargePrepaid = isRewash || isSplitChild;
   
   if (job?.adminNotesJson) {
     try {
@@ -365,7 +489,7 @@ export function getJobPaymentBreakdown(job?: {
   
   let totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
   
-  const isShopOrPosPaid = Boolean(job?.isShopPaid === true || ((job as any)?.source === "pos" && job?.isPaid === true));
+  const isShopOrPosPaid = Boolean(job?.isShopPaid === true || ((job as any)?.source === "pos" && job?.isPaid === true) || isNoChargePrepaid);
 
   // Fallback for legacy jobs marked paid without payments array
   if (payments.length === 0 && isShopOrPosPaid && total > 0) {
@@ -380,10 +504,12 @@ export function getJobPaymentBreakdown(job?: {
   }
 
   const remaining = Math.max(0, Math.round((total - totalPaid) * 100) / 100);
-  const isFullyPaid = isShopOrPosPaid || (total > 0 && totalPaid >= total - 0.01);
+  const isFullyPaid = isNoChargePrepaid || isShopOrPosPaid || (total > 0 && totalPaid >= total - 0.01);
   const isPartial = !isFullyPaid && totalPaid > 0 && remaining > 0;
   
-  const channels = Array.from(new Set(payments.map(p => p.channel || p.method || "Unspecified").filter(Boolean)));
+  const channels = isNoChargePrepaid && payments.length === 0
+    ? [isSplitChild ? "Pre-paid / Split Delivery" : "Rewash / No Charge"]
+    : Array.from(new Set(payments.map(p => p.channel || p.method || "Unspecified").filter(Boolean)));
   const isSplit = channels.length > 1;
 
   return {
@@ -403,9 +529,12 @@ export function isJobFullyPaid(job?: {
   isShopPaid?: boolean | null;
   source?: string | null;
   totalAmount?: number | null;
+  remark?: string | null;
+  paymentChannel?: string | null;
   adminNotesJson?: string | null;
 } | null): boolean {
   if (!job) return false;
+  if (isRewashOrNoChargeJob(job) || isSplitDeliveryChildJob(job)) return true;
   if (job.isShopPaid === true || ((job as any).source === "pos" && job.isPaid === true)) return true;
   const jobTotal = Number(job.totalAmount) || 0;
   if (jobTotal <= 0) return false;
@@ -953,6 +1082,8 @@ export function calculateRiderCommission({
   systemSettings,
   isVIP = false,
   isFreeDelivery = false,
+  isRewash = false,
+  noRiderCommission = false,
 }: {
   customer?: any | null;
   isPickup: boolean;
@@ -962,12 +1093,24 @@ export function calculateRiderCommission({
   systemSettings?: Record<string, string> | null;
   isVIP?: boolean;
   isFreeDelivery?: boolean;
+  isRewash?: boolean;
+  noRiderCommission?: boolean;
 }): {
   pickupCommission: number;
   deliveryCommission: number;
   isCorporateRule: boolean;
   ruleLabel: string;
 } {
+  // Explicit Rewash or No Rider Commission override takes top priority (even over Corporate B2B rules)
+  if (isRewash || noRiderCommission) {
+    return {
+      pickupCommission: 0,
+      deliveryCommission: 0,
+      isCorporateRule: false,
+      ruleLabel: isRewash ? "Rewash / Claim (฿0)" : "No Commission (฿0)",
+    };
+  }
+
   const isCorp = Boolean(customer?.isCorporate || customer?.tier === "corporate");
   const commType = isCorp ? (customer?.corporateCommissionType || "default") : "default";
 

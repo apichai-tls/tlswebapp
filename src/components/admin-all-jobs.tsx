@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns, Split } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, realtimeStore, type Job, type JobStatus } from "@/lib/store";
-import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom } from "@/lib/utils";
+import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds, getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
@@ -98,13 +98,19 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
   const proformaMatch = job.remark?.match(/Proforma:\s*(PR-[^\s|]+)/i);
   const proformaText = ((job as any).proformaNumber || (proformaMatch ? proformaMatch[1] : "") || "").trim();
   const hasProforma = proformaText.length > 0;
+  const isSplitDeliv = isSplitDeliveryChildJob(job);
+  const isRewash = isRewashOrNoChargeJob(job) && !isSplitDeliv;
   const netLaundryTotal = (job.totalAmount || 0) - (job.fee || 0);
   const hasPricedItems = Boolean(Array.isArray(job.items) && job.items.length > 0 && netLaundryTotal > 0);
 
-  const isBillIssued = hasBillNo || hasBillPhoto || hasProforma || hasPricedItems;
+  const isBillIssued = isRewash || isSplitDeliv || hasBillNo || hasBillPhoto || hasProforma || hasPricedItems;
 
   let billIssuedLabel = "No Bill";
-  if (hasBillNo) {
+  if (isSplitDeliv) {
+    billIssuedLabel = "Split Deliv (฿0)";
+  } else if (isRewash) {
+    billIssuedLabel = "Rewash (฿0)";
+  } else if (hasBillNo) {
     billIssuedLabel = `Bill #${billNoText}`;
   } else if (hasProforma) {
     billIssuedLabel = proformaText;
@@ -114,7 +120,7 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
     billIssuedLabel = "Bill Priced";
   }
 
-  let isBillSent = false;
+  let isBillSent = isRewash || isSplitDeliv;
   let billSentAt: string | null = null;
   let billSentBy: string | null = null;
   let kanbanStage: "billing" | "process" | null = null;
@@ -215,12 +221,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   onEditJob, 
   onCreateJob,
   onTopUp,
+  onSplitDelivery,
   savingJobIds,
 }: { 
   jobs: Job[], 
   onEditJob?: (job: Job) => void, 
   onCreateJob?: () => void,
   onTopUp?: () => void,
+  onSplitDelivery?: (job: Job) => void,
   savingJobIds?: Set<string>,
 }) {
   const riders = useRiders();
@@ -654,10 +662,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     return Array.from(new Set([...configured, ...fromJobs]));
   }, [systemSettings, jobs]);
 
-  // Filter Logic (Memoized & High Performance with Early Exits)
-  const filteredJobs = useMemo(() => {
-    const searchLower = searchTerm.toLowerCase().trim();
-
+  // 1. Scoped Overview Jobs: filters jobs by Global Context (Branch, Brand, Source, Role, Date, Active/ShowCompleted)
+  // This forms the consistent baseline for BOTH the quick filter pill badges AND the final job view.
+  const scopedOverviewJobs = useMemo(() => {
     return jobs.filter((job) => {
       // 0. Hard Area / Assigned Branches Boundary (Prevents cross-branch/area viewing)
       if (isAreaRestricted) {
@@ -696,8 +703,146 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
       if (job.status === 'topup') return false;
 
-      // Stuck Filter: when checked, show ONLY stuck jobs
-      if (stuckOnly && !job.isStuck) return false;
+      // Date Filter
+      let matchesDate = true;
+      const isActive = !['completed', 'cancel', 'return'].includes(job.status);
+      if (dateFilter === "today") {
+        matchesDate = isSameDay(new Date(job.createdAt), today) || 
+                      isActive || 
+                      (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
+                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
+                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
+                      (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
+      } else if (dateFilter === "yesterday") {
+        matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
+                      (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
+                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
+                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
+                      (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
+      } else if (dateFilter === "custom") {
+        const jobDate = new Date(job.createdAt);
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        matchesDate = (jobDate >= start && jobDate <= end) || 
+                      (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
+                      (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
+                      (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
+      }
+      if (!matchesDate) return false;
+
+      // Status Filter (supports both 'billing' and 'process' virtual Kanban columns)
+      const jobCol = getJobKanbanColumn(job);
+      if (statusFilter !== "all") {
+        if (jobCol !== statusFilter) return false;
+      } else {
+        if (job.status === 'completed' && !showCompleted) return false;
+        if (job.status === 'cancel' && !showCancelled) return false;
+      }
+
+      return true;
+    });
+  }, [
+    jobs, isAreaRestricted, allowedBranchIdSet, user?.role, isCSO, selectedBrand,
+    jobSourceFilter, effectiveSelectedBranchIds, selectedBranchIds, allowedBranches,
+    shopLocations, dateFilter, today, yesterday, startDate, endDate, statusFilter,
+    showCompleted, showCancelled
+  ]);
+
+  // 2. Quick summary counts for Billing, Stuck, CSO Paid, and Shop Unpaid
+  // Accurately computed from scopedOverviewJobs so pill badges reflect current operational scope
+  const billingOverview = useMemo(() => {
+    let noBillCount = 0;
+    let unsentBillCount = 0;
+    let stuckCount = 0;
+    let csoPaidCount = 0;
+    let shopUnpaidCount = 0;
+    let csoPaidShopUnpaidCount = 0;
+    let riderCashCount = 0;
+
+    for (const j of scopedOverviewJobs) {
+      if (j.isStuck && (showCompleted || !['completed', 'cancel', 'return'].includes(j.status))) {
+        stuckCount++;
+      }
+      const breakdown = getJobPaymentBreakdown(j);
+      const isShopPaid = breakdown.isFullyPaid || Boolean(j.isShopPaid);
+
+      if (j.isPaid) {
+        csoPaidCount++;
+        if (!isShopPaid) {
+          csoPaidShopUnpaidCount++;
+        }
+      }
+
+      if (!isShopPaid) {
+        shopUnpaidCount++;
+      }
+
+      if (isRiderCashDeliveryJob(j)) {
+        riderCashCount++;
+      }
+
+      // Billing alerts: only relevant for in-shop and delivery stages (not tba, pending, pickup, completed, cancel, return, topup)
+      if (!["tba", "pending", "pickup", "cancel", "return", "completed", "topup"].includes(j.status)) {
+        const bm = getJobBillingMeta(j);
+        if (!bm.isBillIssued) noBillCount++;
+        if (!bm.isBillSent) unsentBillCount++;
+      }
+    }
+    return { noBillCount, unsentBillCount, stuckCount, csoPaidCount, shopUnpaidCount, csoPaidShopUnpaidCount, riderCashCount };
+  }, [scopedOverviewJobs, showCompleted]);
+
+  // 3. Payment counts across scoped jobs for quick filter pill badges
+  const csoOverviewCounts = useMemo(() => {
+    let csoPaidTotal = 0;
+    let shopUnpaidTotal = 0;
+    let csoPaidShopUnpaidTotal = 0;
+    let riderCashTotal = 0;
+    let riderCashPendingTotal = 0;
+    let riderCashPendingAmount = 0;
+
+    for (const j of scopedOverviewJobs) {
+      const breakdown = getJobPaymentBreakdown(j);
+      const isShopPaid = breakdown.isFullyPaid || Boolean(j.isShopPaid);
+
+      if (j.isPaid) {
+        csoPaidTotal++;
+        if (!isShopPaid) {
+          csoPaidShopUnpaidTotal++;
+        }
+      }
+
+      if (!isShopPaid) {
+        shopUnpaidTotal++;
+      }
+
+      if (isRiderCashDeliveryJob(j)) {
+        riderCashTotal++;
+        if (!isShopPaid && !j.cashPlaced) {
+          riderCashPendingTotal++;
+          riderCashPendingAmount += (j.totalAmount || 0);
+        }
+      }
+    }
+
+    return { 
+      csoPaidTotal, 
+      shopUnpaidTotal, 
+      csoPaidShopUnpaidTotal,
+      riderCashTotal,
+      riderCashPendingTotal,
+      riderCashPendingAmount,
+    };
+  }, [scopedOverviewJobs]);
+
+  // 4. Final Filtered Jobs for Display (List & Kanban)
+  const filteredJobs = useMemo(() => {
+    const searchLower = searchTerm.toLowerCase().trim();
+
+    return scopedOverviewJobs.filter((job) => {
+      // Stuck Filter: when checked, show ONLY stuck jobs (exclude completed/cancelled unless showCompleted is checked)
+      if (stuckOnly && (!job.isStuck || (!showCompleted && ['completed', 'cancel', 'return'].includes(job.status)))) return false;
 
       // CSO, Shop & Rider Payment Quick Filter
       if (csoPaidFilter === "PAID" && !job.isPaid) return false;
@@ -722,20 +867,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
       // Billing Quick Filter (No Bill Issued / Bill Not Sent to Customer)
       if (billingFilterMode !== "ALL") {
-        // Focus on active in-shop / delivery / completed jobs after pickup
-        if (["tba", "pending", "pickup", "cancel", "return"].includes(job.status)) return false;
+        // Focus on active in-shop / delivery jobs after pickup (excluding completed)
+        if (["tba", "pending", "pickup", "cancel", "return", "completed", "topup"].includes(job.status)) return false;
         const bMeta = getJobBillingMeta(job);
         if (billingFilterMode === "NO_BILL" && bMeta.isBillIssued) return false;
         if (billingFilterMode === "UNSENT_BILL" && bMeta.isBillSent) return false;
-      }
-
-      // Status Filter (supports both 'billing' and 'process' virtual Kanban columns)
-      const jobCol = getJobKanbanColumn(job);
-      if (statusFilter !== "all") {
-        if (jobCol !== statusFilter) return false;
-      } else {
-        if (job.status === 'completed' && !showCompleted && viewMode === "list" && !stuckOnly) return false;
-        if (job.status === 'cancel' && !showCancelled && viewMode === "list" && !stuckOnly) return false;
       }
 
       // Payment Channel & CSO / Shop Status Filter
@@ -768,38 +904,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         }
       }
 
-      // Date Filter
-      let matchesDate = true;
-      const isActive = !['completed', 'cancel', 'return'].includes(job.status);
-      if (dateFilter === "today") {
-        matchesDate = isSameDay(new Date(job.createdAt), today) || 
-                      isActive || 
-                      (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
-                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
-                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
-                      (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
-      } else if (dateFilter === "yesterday") {
-        matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
-                      (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
-                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
-                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
-                      (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
-      } else if (dateFilter === "custom") {
-        const jobDate = new Date(job.createdAt);
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        matchesDate = (jobDate >= start && jobDate <= end) || 
-                      (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
-                      (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
-                      (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
-      }
-      if (!matchesDate) return false;
-
       // Search Filter: only evaluate heavy lookups if search query is NOT empty!
       if (!searchLower) return true;
 
+      const jobCol = getJobKanbanColumn(job);
       const statusLabel = statusConfig[jobCol]?.label || "";
       const pickupRiderObj = riders.find(r => r.id === job.pickupRiderId);
       const deliveryRiderObj = riders.find(r => r.id === job.deliveryRiderId);
@@ -865,93 +973,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       ));
     });
   }, [
-    jobs, user?.role, isCSO, isAreaRestricted, allowedBranchIdSet, effectiveSelectedBranchIds, allowedBranches,
-    selectedBrand, jobSourceFilter, stuckOnly, csoPaidFilter, billingFilterMode, selectedBranchIds, shopLocations,
-    statusFilter, showCompleted, showCancelled, viewMode, paymentChannelFilter, selectedRiderId,
-    dateFilter, today, yesterday, startDate, endDate, searchTerm, riders, customers
+    scopedOverviewJobs, stuckOnly, showCompleted, csoPaidFilter, selectedRiderId,
+    billingFilterMode, paymentChannelFilter, searchTerm, riders, customers,
+    shopLocations
   ]);
-
-  // Quick summary counts for Billing, Stuck, CSO Paid, and Shop Unpaid
-  const billingOverview = useMemo(() => {
-    let noBillCount = 0;
-    let unsentBillCount = 0;
-    let stuckCount = 0;
-    let csoPaidCount = 0;
-    let shopUnpaidCount = 0;
-    let csoPaidShopUnpaidCount = 0;
-    let riderCashCount = 0;
-    for (const j of filteredJobs) {
-      if (j.isStuck) stuckCount++;
-      const breakdown = getJobPaymentBreakdown(j);
-      const isShopPaid = breakdown.isFullyPaid || Boolean(j.isShopPaid);
-
-      if (j.isPaid) {
-        csoPaidCount++;
-        if (!isShopPaid) {
-          csoPaidShopUnpaidCount++;
-        }
-      }
-
-      if (!isShopPaid) {
-        shopUnpaidCount++;
-      }
-
-      if (isRiderCashDeliveryJob(j)) {
-        riderCashCount++;
-      }
-
-      if (!["tba", "pending", "pickup", "cancel", "return"].includes(j.status)) {
-        const bm = getJobBillingMeta(j);
-        if (!bm.isBillIssued) noBillCount++;
-        if (!bm.isBillSent) unsentBillCount++;
-      }
-    }
-    return { noBillCount, unsentBillCount, stuckCount, csoPaidCount, shopUnpaidCount, csoPaidShopUnpaidCount, riderCashCount };
-  }, [filteredJobs]);
-
-  // Total payment counts across all branch jobs for quick filter pill badges
-  const csoOverviewCounts = useMemo(() => {
-    let csoPaidTotal = 0;
-    let shopUnpaidTotal = 0;
-    let csoPaidShopUnpaidTotal = 0;
-    let riderCashTotal = 0;
-    let riderCashPendingTotal = 0;
-    let riderCashPendingAmount = 0;
-    for (const j of jobs) {
-      if (isAreaRestricted && (!j.branchId || !allowedBranchIdSet.has(j.branchId))) continue;
-      if (j.status === 'topup' || j.status === 'cancel') continue;
-      
-      const breakdown = getJobPaymentBreakdown(j);
-      const isShopPaid = breakdown.isFullyPaid || Boolean(j.isShopPaid);
-
-      if (j.isPaid) {
-        csoPaidTotal++;
-        if (!isShopPaid) {
-          csoPaidShopUnpaidTotal++;
-        }
-      }
-
-      if (!isShopPaid) {
-        shopUnpaidTotal++;
-      }
-
-      if (isRiderCashDeliveryJob(j)) {
-        riderCashTotal++;
-        if (!isShopPaid && !j.cashPlaced) {
-          riderCashPendingTotal++;
-          riderCashPendingAmount += (j.totalAmount || 0);
-        }
-      }
-    }
-    return { 
-      csoPaidTotal, 
-      shopUnpaidTotal, 
-      csoPaidShopUnpaidTotal,
-      riderCashTotal,
-      riderCashPendingTotal,
-      riderCashPendingAmount,
-    };
-  }, [jobs, isAreaRestricted, allowedBranchIdSet]);
 
   const sortedJobs = useMemo(() => {
     const list = [...filteredJobs];
@@ -1860,6 +1885,23 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 EXP 100%
                               </Badge>
                             )}
+                            {isSplitDeliveryJob(job) && (
+                              <Badge
+                                className="text-[9px] uppercase font-black px-1.5 py-0 h-4 bg-purple-100 text-purple-800 border-purple-300 inline-flex items-center gap-1 shrink-0"
+                                title={(() => {
+                                  const linked = getSplitDeliveryFromJobId(job);
+                                  return linked ? `Split Delivery Order (Linked: #${linked})` : "Split Delivery Order";
+                                })()}
+                              >
+                                <Split size={9.5} className="shrink-0" />
+                                <span>SPLIT</span>
+                              </Badge>
+                            )}
+                            {isRewashOrNoChargeJob(job) && !isSplitDeliveryJob(job) && (
+                              <Badge className="text-[9px] uppercase font-black px-1.5 py-0 h-4 bg-cyan-100 text-cyan-800 border-cyan-300">
+                                🔄 REWASH{getRewashFromJobId(job) ? ` #${getRewashFromJobId(job)}` : ""}
+                              </Badge>
+                            )}
                             {job.refundId && (
                               <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border-rose-200">
                                 {job.status === "cancel" ? "REFUNDED" : "REFUNDED"}
@@ -2580,6 +2622,23 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 {job.brand === "noname_laundry" && (
                                   <Badge className="text-[9px] uppercase font-black px-1.5 py-0 h-4 bg-amber-100 text-amber-900 border-amber-300">Noname</Badge>
                                 )}
+                                {isSplitDeliveryJob(job) && (
+                                  <Badge
+                                    className="text-[9px] uppercase font-black px-1.5 py-0 h-4 bg-purple-100 text-purple-800 border-purple-300 inline-flex items-center gap-1 shrink-0"
+                                    title={(() => {
+                                      const linked = getSplitDeliveryFromJobId(job);
+                                      return linked ? `Split Delivery Order (Linked: #${linked})` : "Split Delivery Order";
+                                    })()}
+                                  >
+                                    <Split size={9.5} className="shrink-0" />
+                                    <span>SPLIT</span>
+                                  </Badge>
+                                )}
+                                {isRewashOrNoChargeJob(job) && !isSplitDeliveryJob(job) && (
+                                  <Badge className="text-[9px] uppercase font-black px-1.5 py-0 h-4 bg-cyan-100 text-cyan-800 border-cyan-300">
+                                    🔄 REWASH{getRewashFromJobId(job) ? ` #${getRewashFromJobId(job)}` : ""}
+                                  </Badge>
+                                )}
                                 {job.refundId && (
                                   <Badge className="text-[9px] uppercase font-bold px-1.5 py-0 h-4 bg-rose-100 text-rose-700 border-rose-200">
                                     REFUNDED
@@ -2767,7 +2826,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                   customerName: job.customerName,
                                   customerPhone: job.customerPhone,
                                 });
-                                if (['billing', 'delivery', 'completed'].includes(job.status)) {
+                                if (['billing', 'process', 'delivery', 'completed'].includes(job.status)) {
                                   const dLoc = formatLocationWithRoom(job.dropoffLocation, c, shopLocations);
                                   return (
                                     <div className="text-[11px] text-slate-600 flex items-start gap-1 pt-0.5" title="Delivery Address">

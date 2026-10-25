@@ -132,30 +132,51 @@ function pruneExpiredRevocations(now = Date.now()) {
   }
 }
 
-export async function syncRevocationsFromDb(_force = false): Promise<void> {
+const REVOCATION_SYNC_TTL_MS = 10000;
+let inFlightRevocationSync: Promise<void> | null = null;
+
+export async function syncRevocationsFromDb(force = false): Promise<void> {
   const now = Date.now();
-  globalForAuth.__tlsRevocationSyncedAt = now;
-  const row = await prisma.setting.findUnique({ where: { key: REVOCATION_SETTING_KEY } });
-  if (row?.value) {
-    const parsed = JSON.parse(row.value) as Partial<RevocationState>;
-    if (parsed.tokens && typeof parsed.tokens === 'object') {
-      for (const [hash, exp] of Object.entries(parsed.tokens)) {
-        if (typeof exp === 'number' && exp > now) {
-          const existingExp = revokedTokensMap.get(hash) || 0;
-          if (exp > existingExp) revokedTokensMap.set(hash, exp);
-        }
-      }
-    }
-    if (parsed.users && typeof parsed.users === 'object') {
-      for (const [uid, ts] of Object.entries(parsed.users)) {
-        if (typeof ts === 'number' && now - ts <= SESSION_TTL_MS) {
-          const existing = userRevokedBeforeMap.get(uid) || 0;
-          if (ts > existing) userRevokedBeforeMap.set(uid, ts);
-        }
-      }
-    }
+  if (
+    !force &&
+    globalForAuth.__tlsRevocationSyncedAt &&
+    now - globalForAuth.__tlsRevocationSyncedAt < REVOCATION_SYNC_TTL_MS
+  ) {
+    return;
   }
-  pruneExpiredRevocations(now);
+  if (!force && inFlightRevocationSync) {
+    return inFlightRevocationSync;
+  }
+  inFlightRevocationSync = (async () => {
+    try {
+      const syncNow = Date.now();
+      globalForAuth.__tlsRevocationSyncedAt = syncNow;
+      const row = await prisma.setting.findUnique({ where: { key: REVOCATION_SETTING_KEY } });
+      if (row?.value) {
+        const parsed = JSON.parse(row.value) as Partial<RevocationState>;
+        if (parsed.tokens && typeof parsed.tokens === 'object') {
+          for (const [hash, exp] of Object.entries(parsed.tokens)) {
+            if (typeof exp === 'number' && exp > syncNow) {
+              const existingExp = revokedTokensMap.get(hash) || 0;
+              if (exp > existingExp) revokedTokensMap.set(hash, exp);
+            }
+          }
+        }
+        if (parsed.users && typeof parsed.users === 'object') {
+          for (const [uid, ts] of Object.entries(parsed.users)) {
+            if (typeof ts === 'number' && syncNow - ts <= SESSION_TTL_MS) {
+              const existing = userRevokedBeforeMap.get(uid) || 0;
+              if (ts > existing) userRevokedBeforeMap.set(uid, ts);
+            }
+          }
+        }
+      }
+      pruneExpiredRevocations(syncNow);
+    } finally {
+      inFlightRevocationSync = null;
+    }
+  })();
+  return inFlightRevocationSync;
 }
 
 async function persistRevocationsToDb(delta?: {

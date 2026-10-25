@@ -229,10 +229,15 @@ function schedulePgReconnect(delayMs: number) {
 }
 
 let isPollingWatermark = false;
+let lastWatermarkPollAt = 0;
 function ensureWatermarkLoop() {
   if (bus.watermarkTimer) return;
   bus.watermarkTimer = setInterval(async () => {
     if (bus.subscribers.size === 0 || isPollingWatermark) return;
+    // When PG LISTEN/NOTIFY is active, only run watermark reconciliation every 12s instead of every 1.5s
+    const minInterval = bus.pgConnected ? 12000 : 3500;
+    if (Date.now() - lastWatermarkPollAt < minInterval) return;
+    lastWatermarkPollAt = Date.now();
     isPollingWatermark = true;
     try {
       const sinceDate = new Date(bus.lastWatermarkMs);
@@ -287,7 +292,7 @@ function ensureWatermarkLoop() {
     } finally {
       isPollingWatermark = false;
     }
-  }, 1500);
+  }, 2000);
 }
 
 /**
@@ -378,12 +383,20 @@ export async function publishOrderEvent(params: {
       instanceId: bus.instanceId,
     };
 
-    // 1. Dispatch immediately to local SSE clients on this instance
+    // 1. Dispatch immediately to local SSE clients on this instance (0ms synchronous)
     recordAndDispatchLocal(event, false);
 
-    // 2. Broadcast to all other Cloud Run instances via PostgreSQL NOTIFY
+    // 2. Broadcast to all other Cloud Run instances via PostgreSQL NOTIFY (non-blocking)
     const payloadStr = JSON.stringify(event);
-    await prisma.$executeRaw`SELECT pg_notify(${PG_CHANNEL}, ${payloadStr})`;
+    if (bus.pgClient && bus.pgConnected) {
+      bus.pgClient.query('SELECT pg_notify($1, $2)', [PG_CHANNEL, payloadStr]).catch(() => {
+        prisma.$executeRaw`SELECT pg_notify(${PG_CHANNEL}, ${payloadStr})`.catch(() => {});
+      });
+    } else {
+      prisma.$executeRaw`SELECT pg_notify(${PG_CHANNEL}, ${payloadStr})`.catch((err) => {
+        console.warn('[RealtimeBus] Failed to pg_notify order event:', err);
+      });
+    }
   } catch (err) {
     console.warn('[RealtimeBus] Failed to publish order event:', err);
   }
