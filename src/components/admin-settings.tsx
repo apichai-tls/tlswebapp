@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck, Eye, EyeOff, SlidersHorizontal, Compass } from "lucide-react";
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore, useMemo } from "react";
+import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck, Eye, EyeOff, SlidersHorizontal, Compass, Percent, Shield, ArrowRight, Check, X, Layers, Cpu, CreditCard as CardIcon } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
@@ -36,6 +36,8 @@ export function AdminSettings() {
   const [customItems, setCustomItems] = useState<PriceListItem[]>([]);
   const [catalogSearch, setCatalogSearch] = useState("");
   const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"all" | "pricing" | "branches" | "payments" | "pos" | "system">("all");
+  const [settingsSearch, setSettingsSearch] = useState("");
 
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<ShopLocation | null>(null);
@@ -653,1027 +655,1051 @@ export function AdminSettings() {
   };
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto w-full space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      {/* Modern Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white p-6 sm:p-8 shadow-xl shadow-slate-900/10 border border-slate-800/80">
-        <div className="pointer-events-none absolute -right-20 -top-20 w-80 h-80 rounded-full bg-indigo-500/15 blur-3xl" />
-        <div className="pointer-events-none absolute right-40 -bottom-20 w-60 h-60 rounded-full bg-emerald-500/10 blur-2xl" />
+    <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto w-full space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-400">
+      {/* 1. Modern Hero Banner */}
+      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white p-6 sm:p-8 shadow-xl shadow-slate-950/20 border border-slate-800/80">
+        <div className="pointer-events-none absolute -right-16 -top-16 w-80 h-80 rounded-full bg-indigo-500/15 blur-3xl" />
+        <div className="pointer-events-none absolute right-32 -bottom-20 w-72 h-72 rounded-full bg-emerald-500/10 blur-2xl" />
 
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black tracking-wide uppercase bg-white/10 text-indigo-200 backdrop-blur-md border border-white/15">
-                <SlidersHorizontal size={11} className="text-indigo-400" />
-                Global Workspace Settings
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black tracking-wider uppercase bg-white/10 text-indigo-200 backdrop-blur-md border border-white/15">
+                <SlidersHorizontal size={12} className="text-indigo-400" />
+                Workspace Settings &amp; Configuration
               </span>
             </div>
-            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-white">System Settings</h1>
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-white">
+              System Settings
+            </h1>
             <p className="text-xs sm:text-sm text-slate-300 font-medium max-w-xl leading-relaxed">
-              Configure dynamic pricing catalogs, manage physical branch service hubs, integrations, and hardware defaults.
+              Configure dynamic pricing catalogs, manage physical branch service hubs, payment channels, hardware integration, and platform defaults.
             </p>
           </div>
 
-          {/* Quick Metrics Bar */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 shrink-0">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Price Lists</div>
-              <div className="text-lg font-black text-white mt-0.5 flex items-center gap-1.5">
+          {/* Quick Metrics & Fast Tab Jumpers */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveSettingsTab("pricing")}
+              className={`p-3 rounded-2xl border text-left transition-all cursor-pointer backdrop-blur-md ${
+                activeSettingsTab === "pricing" 
+                  ? "bg-indigo-600/30 border-indigo-400/80 ring-2 ring-indigo-400/30" 
+                  : "bg-white/5 border-white/10 hover:bg-white/10"
+              }`}
+            >
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                <span>Price Lists</span>
+                <Settings2 size={12} className="text-indigo-400" />
+              </div>
+              <div className="text-lg font-black text-white mt-1 flex items-baseline gap-1.5">
                 <span>{priceLists.length}</span>
                 <span className="text-[10px] font-semibold text-indigo-300">Active</span>
               </div>
-            </div>
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Branches</div>
-              <div className="text-lg font-black text-white mt-0.5 flex items-center gap-1.5">
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSettingsTab("branches")}
+              className={`p-3 rounded-2xl border text-left transition-all cursor-pointer backdrop-blur-md ${
+                activeSettingsTab === "branches" 
+                  ? "bg-emerald-600/30 border-emerald-400/80 ring-2 ring-emerald-400/30" 
+                  : "bg-white/5 border-white/10 hover:bg-white/10"
+              }`}
+            >
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                <span>Branches</span>
+                <Store size={12} className="text-emerald-400" />
+              </div>
+              <div className="text-lg font-black text-white mt-1 flex items-baseline gap-1.5">
                 <span>{shopLocations.length}</span>
                 <span className="text-[10px] font-semibold text-emerald-300">Hubs</span>
               </div>
-            </div>
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md col-span-2 sm:col-span-1">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Maps Search</div>
-              <div className="text-lg font-black text-white mt-0.5 flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${enableGoogleApi ? 'bg-emerald-400' : 'bg-slate-400'}`} />
-                <span className="text-xs font-bold text-slate-200">{enableGoogleApi ? 'Active' : 'Local Only'}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+            </button>
 
-      {/* 1. Dynamic Price Lists */}
-      <div className="space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
-              <Settings2 size={20} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Dynamic Price Lists</h3>
-                <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/70">
-                  {priceLists.length} Catalogs
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 font-medium">Create unlimited price lists to assign custom or corporate contract rates to customers.</p>
-            </div>
-          </div>
-
-          <Button 
-            onClick={() => {
-              setName("");
-              setServicePrices({});
-              setIsCorporateCatalog(true);
-              const initialItems: PriceListItem[] = services
-                .filter(s => s.isActive !== false && s.category !== 'PACKAGE')
-                .map(s => ({
-                  id: s.id,
-                  serviceId: s.id,
-                  name: s.name,
-                  nameEn: s.nameEn || null,
-                  category: s.category || "GENERAL",
-                  unit: s.unit || "ชิ้น",
-                  price: s.price || 0,
-                }));
-              setCustomItems(initialItems);
-              setEditingList(null);
-              setIsModalOpen(true);
-            }} 
-            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs h-9.5 px-4 rounded-xl shadow-xs shadow-indigo-600/25 hover:shadow-md cursor-pointer transition-all gap-1.5 self-start sm:self-auto"
-          >
-            <Plus size={15} />
-            <span>Add Price List</span>
-          </Button>
-        </div>
-        
-        <div className="grid grid-cols-1 gap-3">
-          {priceLists.map(list => {
-            const isCorp = Boolean(list.isCorporate || (list.customItems && list.customItems.length > 0));
-            const itemCount = isCorp ? (list.customItems?.length || 0) : Object.keys(list.servicePrices || {}).length;
-
-            return (
-              <div 
-                key={list.id} 
-                className="group rounded-2xl bg-white border border-slate-200/80 hover:border-indigo-300 p-4.5 sm:p-5 shadow-2xs hover:shadow-md transition-all duration-200 flex flex-col md:flex-row md:items-center justify-between gap-4"
-              >
-                <div className="space-y-2 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h4 className="font-extrabold text-slate-900 text-base sm:text-lg tracking-tight group-hover:text-indigo-900 transition-colors">
-                      {list.name}
-                    </h4>
-
-                    {list.isDefault && (
-                      <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-none font-black uppercase text-[9.5px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
-                        <CheckCircle2 size={11} className="text-emerald-700" /> Default Base
-                      </Badge>
-                    )}
-
-                    {isCorp && (
-                      <Badge className="bg-gradient-to-r from-amber-100 to-amber-200/90 text-amber-900 border border-amber-300 font-extrabold uppercase text-[9.5px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
-                        <Building size={11} className="text-amber-800" /> Corporate Catalog
-                      </Badge>
-                    )}
-
-                    {!list.isDefault && !isCorp && (
-                      <Badge className="bg-slate-100 text-slate-700 border-slate-200 font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded-md">
-                        Custom Special
-                      </Badge>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg border ${
-                      isCorp 
-                        ? 'bg-amber-50/80 text-amber-900 border-amber-200/80' 
-                        : 'bg-slate-50 text-slate-600 border-slate-200/80'
-                    }`}>
-                      <Tag size={12} className={isCorp ? 'text-amber-600' : 'text-slate-400'} />
-                      <span>
-                        <strong className="font-black text-slate-900">{itemCount}</strong> {isCorp ? 'contract items (สินค้าตามสัญญา)' : 'overridden prices'}
-                      </span>
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={() => handleDuplicate(list)} 
-                    className="h-9 px-3 gap-1.5 border-slate-200/90 hover:border-indigo-300 hover:text-indigo-700 hover:bg-indigo-50/70 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-2xs"
-                  >
-                    <Copy size={13} className="text-slate-400 group-hover:text-indigo-600" />
-                    <span>Duplicate</span>
-                  </Button>
-
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={() => handleEdit(list)} 
-                    className="h-9 px-3.5 gap-1.5 border-slate-200/90 hover:border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-2xs"
-                  >
-                    <Edit3 size={13} className="text-slate-500" />
-                    <span>Edit</span>
-                  </Button>
-
-                  {!list.isDefault && (
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      onClick={() => handleDelete(list.id, list.name)} 
-                      className="h-9 w-9 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
-                      title="Delete price list"
-                    >
-                      <Trash2 size={15} />
-                    </Button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 2. Branch Locations */}
-      <div className="space-y-4 pt-8 border-t border-slate-200/80">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-700 text-white flex items-center justify-center shadow-md shadow-emerald-500/20">
-              <Store size={20} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Branch Locations</h3>
-                <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70">
-                  {shopLocations.length} Hubs
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 font-medium">Manage physical shop locations used for pickup/delivery maps, routes, and staff assignments.</p>
-            </div>
-          </div>
-
-          <Button 
-            onClick={handleAddShop} 
-            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-9.5 px-4 rounded-xl shadow-xs shadow-emerald-600/25 hover:shadow-md cursor-pointer transition-all gap-1.5 self-start sm:self-auto"
-          >
-            <Plus size={15} />
-            <span>Add Branch</span>
-          </Button>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {shopLocations.map((shop, idx) => {
-            const isMainHub = (shop.name || "").toLowerCase().includes("15 sukhumvit") || (shop.name || "").toLowerCase().includes("sukhumvit 15") || idx === 0;
-
-            return (
-              <div 
-                key={shop.id} 
-                className="group rounded-2xl bg-white border border-slate-200/90 hover:border-emerald-300 p-5 shadow-2xs hover:shadow-md transition-all duration-200 flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex justify-between items-start gap-2 mb-3">
-                    <div className="flex items-start gap-2.5 min-w-0">
-                      <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 flex items-center justify-center shrink-0 mt-0.5">
-                        <Store size={18} />
-                      </div>
-                      <div className="min-w-0">
-                        <h4 className="font-extrabold text-slate-900 text-base leading-snug group-hover:text-emerald-950 transition-colors">
-                          {shop.name}
-                        </h4>
-                        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                          <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border ${
-                            shop.area === "PTY"
-                              ? "bg-amber-50 text-amber-700 border-amber-200/80"
-                              : "bg-sky-50 text-sky-700 border-sky-200/80"
-                          }`}>
-                            {shop.area || "BKK"}
-                          </span>
-
-                          {isMainHub && (
-                            <span className="text-[9.5px] font-extrabold px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 flex items-center gap-1">
-                              ⭐ Main Hub
-                            </span>
-                          )}
-
-                          {shop.noCommission && (
-                            <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200/80">
-                              ไม่มีค่าคอม
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1 shrink-0">
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        onClick={() => handleEditShop(shop)} 
-                        className="h-8 w-8 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg cursor-pointer"
-                        title="Edit branch"
-                      >
-                        <Edit3 size={14} />
-                      </Button>
-                      {shopLocations.length > 1 && (
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
-                          onClick={() => handleDeleteShop(shop.id, shop.name)} 
-                          className="h-8 w-8 text-slate-400 hover:text-red-700 hover:bg-red-50 rounded-lg cursor-pointer"
-                          title="Delete branch"
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Address Box */}
-                  <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-100/90 text-xs text-slate-600 flex items-start gap-2 leading-relaxed">
-                    <MapPin size={14} className="shrink-0 text-emerald-600 mt-0.5" />
-                    <span className="line-clamp-2">{shop.address}</span>
-                  </div>
-                </div>
-
-                <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400 font-semibold">
-                  <span className="inline-flex items-center gap-1 text-emerald-700">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    Active Hub
-                  </span>
-                  <button 
-                    type="button" 
-                    onClick={() => handleEditShop(shop)}
-                    className="text-xs font-bold text-slate-600 hover:text-emerald-700 transition-colors cursor-pointer"
-                  >
-                    Edit Details →
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 3. Integrations & API Keys */}
-      <div className="space-y-4 pt-8 border-t border-slate-200/80">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
-            <Key size={20} />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Integrations & API Keys</h3>
-              <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-orange-50 text-orange-700 border border-orange-200/70">
-                Maps Platform
-              </span>
-            </div>
-            <p className="text-xs text-slate-500 font-medium">Manage third-party search and routing services used across the platform.</p>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/90 p-5 sm:p-7">
-          <div className="max-w-2xl space-y-6">
-            {/* Toggle Card */}
-            <div 
-              onClick={() => setEnableGoogleApi(!enableGoogleApi)}
-              className={`flex items-start justify-between gap-4 p-4.5 rounded-2xl border transition-all cursor-pointer ${
-                enableGoogleApi
-                  ? "bg-amber-50/40 border-amber-200/90 shadow-2xs"
-                  : "bg-slate-50/80 border-slate-200/80 hover:bg-slate-50"
+            <button
+              type="button"
+              onClick={() => setActiveSettingsTab("payments")}
+              className={`p-3 rounded-2xl border text-left transition-all cursor-pointer backdrop-blur-md ${
+                activeSettingsTab === "payments" 
+                  ? "bg-sky-600/30 border-sky-400/80 ring-2 ring-sky-400/30" 
+                  : "bg-white/5 border-white/10 hover:bg-white/10"
               }`}
             >
-              <div className="flex items-start gap-3.5">
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
-                  enableGoogleApi ? 'bg-amber-500 text-white shadow-xs' : 'bg-slate-200 text-slate-500'
-                }`}>
-                  <Compass size={18} />
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                <span>Payments</span>
+                <CreditCard size={12} className="text-sky-400" />
+              </div>
+              <div className="text-lg font-black text-white mt-1 flex items-baseline gap-1.5">
+                <span>{paymentChannels.length}</span>
+                <span className="text-[10px] font-semibold text-sky-300">Methods</span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSettingsTab("pos")}
+              className={`p-3 rounded-2xl border text-left transition-all cursor-pointer backdrop-blur-md ${
+                activeSettingsTab === "pos" 
+                  ? "bg-amber-600/30 border-amber-400/80 ring-2 ring-amber-400/30" 
+                  : "bg-white/5 border-white/10 hover:bg-white/10"
+              }`}
+            >
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                <span>Hardware</span>
+                <Usb size={12} className={drawerStatus.isPaired ? "text-emerald-400" : "text-amber-400"} />
+              </div>
+              <div className="text-lg font-black text-white mt-1 flex items-baseline gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${drawerStatus.isPaired ? "bg-emerald-400" : "bg-amber-400"}`} />
+                <span className="text-xs font-bold">{drawerStatus.isPaired ? "Ready" : "Pairing"}</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Modern Segmented Tab Bar & Search Filter */}
+      <div className="bg-white/90 backdrop-blur-md p-2 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 sticky top-2 z-20">
+        {/* Category Tabs */}
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar p-0.5">
+          {[
+            { id: "all", label: "All Overview", icon: Layers, count: null },
+            { id: "pricing", label: "Price Lists", icon: Settings2, count: priceLists.length },
+            { id: "branches", label: "Branches", icon: Store, count: shopLocations.length },
+            { id: "payments", label: "Payments & VAT", icon: CreditCard, count: paymentChannels.length },
+            { id: "pos", label: "POS & Hardware", icon: Printer, count: null },
+            { id: "system", label: "System & API", icon: Key, count: null },
+          ].map(tab => {
+            const Icon = tab.icon;
+            const isActive = activeSettingsTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveSettingsTab(tab.id as any)}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-extrabold whitespace-nowrap transition-all cursor-pointer ${
+                  isActive
+                    ? "bg-slate-900 text-white shadow-sm"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
+                }`}
+              >
+                <Icon size={14} className={isActive ? "text-indigo-400" : "text-slate-400"} />
+                <span>{tab.label}</span>
+                {tab.count !== null && (
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    isActive ? "bg-white/20 text-white" : "bg-slate-200/80 text-slate-700"
+                  }`}>
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Live Filter Input */}
+        <div className="relative min-w-[220px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Input
+            value={settingsSearch}
+            onChange={e => setSettingsSearch(e.target.value)}
+            placeholder="Search settings..."
+            className="h-9 pl-8.5 pr-8 text-xs rounded-xl bg-slate-50/80 border-slate-200 focus:bg-white focus:border-indigo-400"
+          />
+          {settingsSearch && (
+            <button
+              type="button"
+              onClick={() => setSettingsSearch("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* SECTION 1: DYNAMIC PRICE LISTS                                            */}
+      {/* ========================================================================= */}
+      {(activeSettingsTab === "all" || activeSettingsTab === "pricing") && (
+        (!settingsSearch || "price list catalog corporate contract override default".includes(settingsSearch.toLowerCase())) && (
+          <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5 animate-in fade-in duration-300">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
+                  <Settings2 size={20} />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-extrabold text-slate-900">Enable Google Maps Search (Fallback)</span>
-                    <span className={`text-[9.5px] font-black uppercase px-2 py-0.5 rounded-full ${
+                    <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Dynamic Price Lists</h3>
+                    <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                      {priceLists.length} Catalogs
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 font-medium">Create unlimited price lists to assign custom or corporate contract rates to customers.</p>
+                </div>
+              </div>
+
+              <Button 
+                onClick={() => {
+                  setName("");
+                  setServicePrices({});
+                  setIsCorporateCatalog(true);
+                  const initialItems: PriceListItem[] = services
+                    .filter(s => s.isActive !== false && s.category !== 'PACKAGE')
+                    .map(s => ({
+                      id: s.id,
+                      serviceId: s.id,
+                      name: s.name,
+                      nameEn: s.nameEn || null,
+                      category: s.category || "GENERAL",
+                      unit: s.unit || "ชิ้น",
+                      price: s.price || 0,
+                    }));
+                  setCustomItems(initialItems);
+                  setEditingList(null);
+                  setIsModalOpen(true);
+                }} 
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs h-9.5 px-4 rounded-xl shadow-xs shadow-indigo-600/25 hover:shadow-md cursor-pointer transition-all gap-1.5 self-start sm:self-auto"
+              >
+                <Plus size={15} />
+                <span>Add Price List</span>
+              </Button>
+            </div>
+            
+            <div className="grid grid-cols-1 gap-3">
+              {priceLists
+                .filter(l => !settingsSearch || l.name.toLowerCase().includes(settingsSearch.toLowerCase()))
+                .map(list => {
+                  const isCorp = Boolean(list.isCorporate || (list.customItems && list.customItems.length > 0));
+                  const itemCount = isCorp ? (list.customItems?.length || 0) : Object.keys(list.servicePrices || {}).length;
+
+                  return (
+                    <div 
+                      key={list.id} 
+                      className="group rounded-2xl bg-slate-50/50 hover:bg-white border border-slate-200/80 hover:border-indigo-300 p-4.5 sm:p-5 shadow-2xs hover:shadow-md transition-all duration-200 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    >
+                      <div className="space-y-2 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="font-extrabold text-slate-900 text-base sm:text-lg tracking-tight group-hover:text-indigo-900 transition-colors">
+                            {list.name}
+                          </h4>
+
+                          {list.isDefault && (
+                            <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-none font-black uppercase text-[9.5px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
+                              <CheckCircle2 size={11} className="text-emerald-700" /> Default Base
+                            </Badge>
+                          )}
+
+                          {isCorp && (
+                            <Badge className="bg-gradient-to-r from-amber-100 to-amber-200/90 text-amber-900 border border-amber-300 font-extrabold uppercase text-[9.5px] tracking-wider px-2 py-0.5 rounded-md flex items-center gap-1 shadow-2xs">
+                              <Building size={11} className="text-amber-800" /> Corporate Catalog
+                            </Badge>
+                          )}
+
+                          {!list.isDefault && !isCorp && (
+                            <Badge className="bg-slate-100 text-slate-700 border-slate-200 font-bold uppercase text-[9px] tracking-wider px-2 py-0.5 rounded-md">
+                              Custom Special
+                            </Badge>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg border ${
+                            isCorp 
+                              ? 'bg-amber-50/80 text-amber-900 border-amber-200/80' 
+                              : 'bg-white text-slate-600 border-slate-200/80'
+                          }`}>
+                            <Tag size={12} className={isCorp ? 'text-amber-600' : 'text-slate-400'} />
+                            <span>
+                              <strong className="font-black text-slate-900">{itemCount}</strong> {isCorp ? 'contract items (สินค้าตามสัญญา)' : 'overridden prices'}
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => handleDuplicate(list)} 
+                          className="h-9 px-3 gap-1.5 border-slate-200 hover:border-indigo-300 hover:text-indigo-700 hover:bg-indigo-50/70 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-2xs"
+                        >
+                          <Copy size={13} className="text-slate-400 group-hover:text-indigo-600" />
+                          <span>Duplicate</span>
+                        </Button>
+
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => handleEdit(list)} 
+                          className="h-9 px-3.5 gap-1.5 border-slate-200 hover:border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-2xs"
+                        >
+                          <Edit3 size={13} className="text-slate-500" />
+                          <span>Edit</span>
+                        </Button>
+
+                        {!list.isDefault && (
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            onClick={() => handleDelete(list.id, list.name)} 
+                            className="h-9 w-9 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                            title="Delete price list"
+                          >
+                            <Trash2 size={15} />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )
+      )}
+
+      {/* ========================================================================= */}
+      {/* SECTION 2: BRANCH LOCATIONS                                               */}
+      {/* ========================================================================= */}
+      {(activeSettingsTab === "all" || activeSettingsTab === "branches") && (
+        (!settingsSearch || "branch hub location shop store address".includes(settingsSearch.toLowerCase())) && (
+          <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5 animate-in fade-in duration-300">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-700 text-white flex items-center justify-center shadow-md shadow-emerald-500/20">
+                  <Store size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Branch Locations</h3>
+                    <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70">
+                      {shopLocations.length} Hubs
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 font-medium">Manage physical shop locations used for pickup/delivery maps, routes, and staff assignments.</p>
+                </div>
+              </div>
+
+              <Button 
+                onClick={handleAddShop} 
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-9.5 px-4 rounded-xl shadow-xs shadow-emerald-600/25 hover:shadow-md cursor-pointer transition-all gap-1.5 self-start sm:self-auto"
+              >
+                <Plus size={15} />
+                <span>Add Branch</span>
+              </Button>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {shopLocations
+                .filter(s => !settingsSearch || s.name.toLowerCase().includes(settingsSearch.toLowerCase()) || s.address.toLowerCase().includes(settingsSearch.toLowerCase()))
+                .map((shop, idx) => {
+                  const isMainHub = (shop.name || "").toLowerCase().includes("15 sukhumvit") || (shop.name || "").toLowerCase().includes("sukhumvit 15") || idx === 0;
+
+                  return (
+                    <div 
+                      key={shop.id} 
+                      className="group rounded-2xl bg-slate-50/40 hover:bg-white border border-slate-200/90 hover:border-emerald-300 p-5 shadow-2xs hover:shadow-md transition-all duration-200 flex flex-col justify-between"
+                    >
+                      <div>
+                        <div className="flex justify-between items-start gap-2 mb-3">
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 flex items-center justify-center shrink-0 mt-0.5">
+                              <Store size={18} />
+                            </div>
+                            <div className="min-w-0">
+                              <h4 className="font-extrabold text-slate-900 text-base leading-snug group-hover:text-emerald-950 transition-colors">
+                                {shop.name}
+                              </h4>
+                              <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                                <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border ${
+                                  shop.area === "PTY"
+                                    ? "bg-amber-50 text-amber-700 border-amber-200/80"
+                                    : "bg-sky-50 text-sky-700 border-sky-200/80"
+                                }`}>
+                                  {shop.area || "BKK"}
+                                </span>
+
+                                {isMainHub && (
+                                  <span className="text-[9.5px] font-extrabold px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 flex items-center gap-1">
+                                    ⭐ Main Hub
+                                  </span>
+                                )}
+
+                                {shop.noCommission && (
+                                  <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200/80">
+                                    ไม่มีค่าคอม
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              onClick={() => handleEditShop(shop)} 
+                              className="h-8 w-8 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg cursor-pointer"
+                              title="Edit branch"
+                            >
+                              <Edit3 size={14} />
+                            </Button>
+                            {shopLocations.length > 1 && (
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                onClick={() => handleDeleteShop(shop.id, shop.name)} 
+                                className="h-8 w-8 text-slate-400 hover:text-red-700 hover:bg-red-50 rounded-lg cursor-pointer"
+                                title="Delete branch"
+                              >
+                                <Trash2 size={14} />
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Address Box */}
+                        <div className="bg-white rounded-xl p-3 border border-slate-200/70 text-xs text-slate-600 flex items-start gap-2 leading-relaxed">
+                          <MapPin size={14} className="shrink-0 text-emerald-600 mt-0.5" />
+                          <span className="line-clamp-2">{shop.address}</span>
+                        </div>
+                      </div>
+
+                      <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400 font-semibold">
+                        <span className="inline-flex items-center gap-1 text-emerald-700">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          Active Hub
+                        </span>
+                        <button 
+                          type="button" 
+                          onClick={() => handleEditShop(shop)}
+                          className="text-xs font-bold text-slate-600 hover:text-emerald-700 transition-colors cursor-pointer"
+                        >
+                          Edit Details →
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )
+      )}
+
+      {/* ========================================================================= */}
+      {/* SECTION 3: PAYMENTS & VAT                                                 */}
+      {/* ========================================================================= */}
+      {(activeSettingsTab === "all" || activeSettingsTab === "payments") && (
+        (!settingsSearch || "payment channel vat tax transfer cash card promptpay".includes(settingsSearch.toLowerCase())) && (
+          <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Payment Channels Table */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-500 to-indigo-600 text-white flex items-center justify-center shadow-md shadow-sky-500/20">
+                    <CreditCard size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Payment Channels</h3>
+                      <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-sky-50 text-sky-700 border border-sky-200/70">
+                        {paymentChannels.length} Channels
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Configure accepted payment methods (cash, transfers, cards, promptpay) for POS registers and dispatch orders.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleResetDefaultChannels}
+                    className="text-xs text-slate-500 hover:text-slate-800 rounded-xl h-9"
+                  >
+                    Reset Defaults
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleOpenAddChannel}
+                    className="bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs h-9 px-4 rounded-xl shadow-xs shadow-sky-600/25 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus size={15} />
+                    <span>Add Channel</span>
+                  </Button>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-2xl border border-slate-200/80">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm text-slate-600">
+                    <thead className="bg-slate-50 text-slate-700 font-bold text-xs uppercase tracking-wider border-b border-slate-200">
+                      <tr>
+                        <th className="py-3.5 px-6">Channel Name</th>
+                        <th className="py-3.5 px-6">Type</th>
+                        <th className="py-3.5 px-6 text-center">Status</th>
+                        <th className="py-3.5 px-6 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {paymentChannels
+                        .filter(c => !settingsSearch || c.name.toLowerCase().includes(settingsSearch.toLowerCase()) || c.type.toLowerCase().includes(settingsSearch.toLowerCase()))
+                        .map((channel) => {
+                          const typeInfo = PAYMENT_TYPE_LABELS[channel.type] || PAYMENT_TYPE_LABELS.other;
+                          return (
+                            <tr key={channel.id} className="hover:bg-slate-50/80 transition-colors">
+                              <td className="py-3.5 px-6 font-bold text-slate-900">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span>{channel.name}</span>
+                                  {channel.requiresMember && (
+                                    <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200">
+                                      Member Only
+                                    </Badge>
+                                  )}
+                                  {channel.isSystem && (
+                                    <span className="text-[10px] text-slate-400 font-normal">
+                                      (system)
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-6">
+                                <span className={`inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full border ${typeInfo.color}`}>
+                                  {typeInfo.label}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-6 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleChannel(channel.id)}
+                                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer ${
+                                    channel.enabled
+                                      ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                                      : "bg-slate-100 text-slate-400 hover:bg-slate-200"
+                                  }`}
+                                >
+                                  <span className={`w-2 h-2 rounded-full ${channel.enabled ? "bg-emerald-500" : "bg-slate-400"}`} />
+                                  {channel.enabled ? "Active" : "Disabled"}
+                                </button>
+                              </td>
+                              <td className="py-3.5 px-6 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => handleOpenEditChannel(channel)}
+                                    className="h-8 w-8 p-0 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer"
+                                    title="Edit"
+                                  >
+                                    <Edit3 size={14} />
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setDeletingChannel(channel)}
+                                    className="h-8 w-8 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                                    title="Delete"
+                                  >
+                                    <Trash2 size={14} />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* VAT & Tax Settings */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
+              <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-500 to-pink-600 text-white flex items-center justify-center shadow-md shadow-rose-500/20">
+                  <Percent size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">VAT &amp; Tax Configuration</h3>
+                  <p className="text-xs text-slate-500 font-medium">Configure default Value-Added Tax rules and percentages applied during invoicing.</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">VAT Calculation Mode</Label>
+                  <select
+                    value={vatTypeInput}
+                    onChange={e => {
+                      setVatTypeInput(e.target.value);
+                      handleSaveVatSetting("vatType", e.target.value);
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-11"
+                  >
+                    <option value="none">No VAT (ไม่มีภาษี)</option>
+                    <option value="inclusive">Inclusive VAT (รวมภาษีในราคาสินค้า)</option>
+                    <option value="exclusive">Exclusive VAT (คำนวณภาษีเพิ่มจากราคาสินค้า)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">VAT Rate Percentage</Label>
+                  <div className="relative">
+                    <Input 
+                      type="number" 
+                      step="any"
+                      value={vatRateInput} 
+                      onChange={e => setVatRateInput(e.target.value)} 
+                      onBlur={() => handleSaveVatSetting("vatRate", vatRateInput)}
+                      placeholder="7" 
+                      className="font-bold pr-10 h-11 rounded-xl border-slate-200"
+                    />
+                    <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-black text-sm">%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* ========================================================================= */}
+      {/* SECTION 4: POS & HARDWARE                                                 */}
+      {/* ========================================================================= */}
+      {(activeSettingsTab === "all" || activeSettingsTab === "pos") && (
+        (!settingsSearch || "pos receipt printer cash drawer kick hardware voucher bt-100u paper".includes(settingsSearch.toLowerCase())) && (
+          <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Hardware: Cash Drawer */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                    <Banknote size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Cash Drawer Hardware</h3>
+                      <Badge className={drawerStatus.isPaired ? "bg-emerald-100 text-emerald-800 border-none font-bold" : "bg-amber-100 text-amber-800 border-none font-bold"}>
+                        {drawerStatus.isPaired ? "Device Paired" : "Not Paired"}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Configure automatic drawer kick behavior and pair USB-to-RJ11 (BT-100U) triggers via Web Serial API.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handlePairDrawer}
+                    disabled={isPairingDrawer}
+                    className="h-9.5 px-3.5 text-xs font-bold bg-white hover:bg-slate-50 border-slate-200 text-slate-700 shadow-2xs rounded-xl cursor-pointer"
+                  >
+                    {isPairingDrawer ? (
+                      <RefreshCw size={13} className="animate-spin mr-1.5" />
+                    ) : (
+                      <Usb size={13} className="mr-1.5 text-indigo-600" />
+                    )}
+                    {drawerStatus.isPaired ? "Re-pair USB" : "Pair BT-100U Device"}
+                  </Button>
+
+                  <Button
+                    type="button"
+                    onClick={handleTestKick}
+                    disabled={isTestingDrawer || !drawerStatus.isPaired}
+                    className="h-9.5 px-4 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-xs rounded-xl disabled:opacity-50 cursor-pointer"
+                  >
+                    {isTestingDrawer ? (
+                      <RefreshCw size={13} className="animate-spin mr-1.5" />
+                    ) : (
+                      <Banknote size={13} className="mr-1.5" />
+                    )}
+                    Test Kick
+                  </Button>
+                </div>
+              </div>
+
+              {/* Trigger Checkboxes Grid */}
+              <div className="space-y-3">
+                <Label className="text-xs font-black text-slate-400 uppercase tracking-widest block">
+                  Drawer Kick Trigger Conditions
+                </Label>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <label className="flex items-start gap-3 p-4 rounded-2xl border border-slate-200/90 bg-slate-50/50 hover:bg-white cursor-pointer transition-all shadow-2xs">
+                    <input
+                      type="checkbox"
+                      checked={cashDrawerAutoOpenOnPay}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setCashDrawerAutoOpenOnPay(checked);
+                        handleUpdateReceiptSetting("cashDrawerAutoOpenOnPay", checked ? "true" : "false");
+                      }}
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <div className="space-y-1">
+                      <span className="text-xs font-extrabold text-slate-900 block">Open on Cash Pay</span>
+                      <span className="text-[11px] text-slate-500 block leading-relaxed">
+                        Kicks drawer automatically when completing Cash or Split-Cash payment at register.
+                      </span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-start gap-3 p-4 rounded-2xl border border-slate-200/90 bg-slate-50/50 hover:bg-white cursor-pointer transition-all shadow-2xs">
+                    <input
+                      type="checkbox"
+                      checked={cashDrawerAutoOpenOnPrint}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setCashDrawerAutoOpenOnPrint(checked);
+                        handleUpdateReceiptSetting("cashDrawerAutoOpenOnPrint", checked ? "true" : "false");
+                      }}
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <div className="space-y-1">
+                      <span className="text-xs font-extrabold text-slate-900 block">Open on Print Receipt</span>
+                      <span className="text-[11px] text-slate-500 block leading-relaxed">
+                        Kicks drawer when clicking Print in the receipt preview dialog for cash orders.
+                      </span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-start gap-3 p-4 rounded-2xl border border-slate-200/90 bg-slate-50/50 hover:bg-white cursor-pointer transition-all shadow-2xs">
+                    <input
+                      type="checkbox"
+                      checked={cashDrawerShowManualButton}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setCashDrawerShowManualButton(checked);
+                        handleUpdateReceiptSetting("cashDrawerShowManualButton", checked ? "true" : "false");
+                      }}
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <div className="space-y-1">
+                      <span className="text-xs font-extrabold text-slate-900 block">Show Manual Kick Button</span>
+                      <span className="text-[11px] text-slate-500 block leading-relaxed">
+                        Display a quick-access manual [Open Drawer] button on POS header &amp; Job Table.
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* POS Printer & Voucher Policies */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Receipt Printer Card */}
+              <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-4">
+                <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
+                    <Printer size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">Receipt Printing Defaults</h3>
+                    <p className="text-xs text-slate-500 font-medium">Default paper sizing and print language.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">Receipt Paper Width</Label>
+                    <select
+                      value={receiptPaperSize}
+                      onChange={e => {
+                        setReceiptPaperSize(e.target.value);
+                        handleUpdateReceiptSetting("receiptPaperSize", e.target.value);
+                      }}
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs font-bold rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
+                    >
+                      <option value="80mm">80mm (Standard POS Thermal)</option>
+                      <option value="58mm">58mm (Compact Mobile Thermal)</option>
+                      <option value="A5">A5 (Half Letter Sheet)</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">Default Receipt Language</Label>
+                    <select
+                      value={currentLanguage}
+                      onChange={e => {
+                        setCurrentLanguage(e.target.value);
+                        handleUpdateReceiptSetting("language", e.target.value);
+                      }}
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs font-bold rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
+                    >
+                      <option value="th">ไทย (Thai)</option>
+                      <option value="en">English (EN)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Promotion & Voucher Policy */}
+              <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-4">
+                <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-amber-700 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                    <Ticket size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">Voucher &amp; Discounts</h3>
+                    <p className="text-xs text-slate-500 font-medium">Automated coupon policies at checkout.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <label className="flex items-start gap-3 p-4 rounded-2xl border border-amber-200/90 bg-amber-50/40 hover:bg-amber-50/70 cursor-pointer transition-all shadow-2xs">
+                    <input
+                      type="checkbox"
+                      checked={posAutoApplyVoucher}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setPosAutoApplyVoucher(checked);
+                        handleUpdateReceiptSetting("posAutoApplyVoucher", checked ? "true" : "false");
+                      }}
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <div className="space-y-1">
+                      <span className="text-xs font-extrabold text-amber-950 block">
+                        Auto-apply Best Voucher at POS (นำคูปองที่ดีที่สุดมาใช้ให้อัตโนมัติ)
+                      </span>
+                      <span className="text-[11px] text-amber-900/80 block leading-relaxed">
+                        เมื่อเลือกลูกค้าที่มีคูปองในระบบ POS จะคำนวณและเลือกคูปองที่ประหยัดให้ลูกค้ามากที่สุดมาหักลดทันที
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* ========================================================================= */}
+      {/* SECTION 5: SYSTEM, INTEGRATIONS & SECURITY                                */}
+      {/* ========================================================================= */}
+      {(activeSettingsTab === "all" || activeSettingsTab === "system") && (
+        (!settingsSearch || "system api google maps rider commission rate timeout session security deploy".includes(settingsSearch.toLowerCase())) && (
+          <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Google Maps API Key Card */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
+              <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                  <Compass size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Google Maps Platform &amp; Places API</h3>
+                    <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
                       enableGoogleApi ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
                     }`}>
                       {enableGoogleApi ? 'Active' : 'Disabled'}
                     </span>
                   </div>
-                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                    If disabled, location lookups will strictly search within your imported local database. When enabled, Google Maps acts as a rich fallback.
+                  <p className="text-xs text-slate-500 font-medium">Manage third-party search and routing services used across dispatch and map lookups.</p>
+                </div>
+              </div>
+
+              <div className="max-w-2xl space-y-5">
+                {/* Toggle Card */}
+                <div 
+                  onClick={() => setEnableGoogleApi(!enableGoogleApi)}
+                  className={`flex items-start justify-between gap-4 p-4.5 rounded-2xl border transition-all cursor-pointer ${
+                    enableGoogleApi
+                      ? "bg-amber-50/40 border-amber-200/90 shadow-2xs"
+                      : "bg-slate-50/80 border-slate-200/80 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-start gap-3.5">
+                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                      enableGoogleApi ? 'bg-amber-500 text-white shadow-xs' : 'bg-slate-200 text-slate-500'
+                    }`}>
+                      <Compass size={18} />
+                    </div>
+                    <div>
+                      <span className="text-sm font-extrabold text-slate-900 block">Enable Google Maps Search (Fallback)</span>
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        If disabled, location lookups will strictly search within your imported local database. When enabled, Google Maps acts as a rich fallback.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className={`w-11 h-6 rounded-full transition-colors relative shrink-0 mt-1 ${enableGoogleApi ? 'bg-amber-500' : 'bg-slate-300'}`}>
+                    <div className={`w-5 h-5 rounded-full bg-white shadow-sm absolute top-0.5 transition-transform ${enableGoogleApi ? 'translate-x-5.5' : 'translate-x-0.5'}`} />
+                  </div>
+                </div>
+
+                {/* API Key Box */}
+                <div className={`space-y-2.5 transition-opacity duration-200 ${enableGoogleApi ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
+                  <div className="flex items-center justify-between">
+                    <Label className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <ShieldCheck size={14} className="text-emerald-600" />
+                      <span>Google Maps API Key</span>
+                    </Label>
+                    <button
+                      type="button"
+                      onClick={() => setShowGoogleApiKey(!showGoogleApiKey)}
+                      className="text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      {showGoogleApiKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                      <span>{showGoogleApiKey ? "Hide Key" : "Reveal Key"}</span>
+                    </button>
+                  </div>
+
+                  <div className="relative">
+                    <Input 
+                      type={showGoogleApiKey ? "text" : "password"} 
+                      value={googleApiKey} 
+                      onChange={e => setGoogleApiKey(e.target.value)} 
+                      placeholder="AIzaSy..." 
+                      className="font-mono text-sm h-10.5 rounded-xl border-slate-200 focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 pr-10"
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    Requires Places API and Geocoding API to be enabled on your Google Cloud Console. Keys are encrypted and used only for location queries.
                   </p>
                 </div>
-              </div>
-
-              {/* iOS-style toggle pill */}
-              <div className={`w-11 h-6 rounded-full transition-colors relative shrink-0 mt-1 ${enableGoogleApi ? 'bg-amber-500' : 'bg-slate-300'}`}>
-                <div className={`w-5 h-5 rounded-full bg-white shadow-sm absolute top-0.5 transition-transform ${enableGoogleApi ? 'translate-x-5.5' : 'translate-x-0.5'}`} />
-              </div>
-            </div>
-
-            {/* API Key Box */}
-            <div className={`space-y-2.5 transition-opacity duration-200 ${enableGoogleApi ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
-              <div className="flex items-center justify-between">
-                <Label className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                  <ShieldCheck size={14} className="text-emerald-600" />
-                  <span>Google Maps API Key</span>
-                </Label>
-                <button
-                  type="button"
-                  onClick={() => setShowGoogleApiKey(!showGoogleApiKey)}
-                  className="text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                
+                <Button 
+                  onClick={handleSaveApiSettings} 
+                  disabled={isVerifyingKey} 
+                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs h-10 px-5 rounded-xl shadow-xs cursor-pointer transition-all gap-1.5"
                 >
-                  {showGoogleApiKey ? <EyeOff size={13} /> : <Eye size={13} />}
-                  <span>{showGoogleApiKey ? "Hide Key" : "Reveal Key"}</span>
-                </button>
+                  {isVerifyingKey ? (
+                    <>
+                      <RefreshCw size={13} className="animate-spin" />
+                      <span>Verifying Key...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 size={14} />
+                      <span>Save API Settings</span>
+                    </>
+                  )}
+                </Button>
               </div>
-
-              <div className="relative">
-                <Input 
-                  type={showGoogleApiKey ? "text" : "password"} 
-                  value={googleApiKey} 
-                  onChange={e => setGoogleApiKey(e.target.value)} 
-                  placeholder="AIzaSy..." 
-                  className="font-mono text-sm h-10.5 rounded-xl border-slate-200 focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 pr-10"
-                />
-              </div>
-              <p className="text-[11px] text-slate-400 leading-normal">
-                Requires Places API and Geocoding API to be enabled on your Google Cloud Console. Keys are encrypted and used only for location queries.
-              </p>
             </div>
-            
-            <Button 
-              onClick={handleSaveApiSettings} 
-              disabled={isVerifyingKey} 
-              className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs h-10 px-5 rounded-xl shadow-xs cursor-pointer transition-all gap-1.5"
-            >
-              {isVerifyingKey ? (
-                <>
-                  <RefreshCw size={13} className="animate-spin" />
-                  <span>Verifying Key...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 size={14} />
-                  <span>Save API Settings</span>
-                </>
-              )}
-            </Button>
-          </div>
-        </div>
-      </div>
 
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-amber-100 text-amber-600 rounded-xl">
-              <Coins size={24} />
-            </div>
-            <div>
-              <h3 className="text-xl font-bold text-slate-800">Rider Commission Settings</h3>
-              <p className="text-xs text-slate-500 font-medium">Configure the payout rate per kilometer for riders.</p>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <div className="max-w-2xl space-y-4">
-            <div className="space-y-2">
-              <Label className="font-semibold text-slate-700">Rider Commission Rate (฿ per km)</Label>
-              <div className="relative max-w-[200px]">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">฿</span>
-                <Input 
-                  id="rider-commission-input"
-                  type="number" 
-                  step="0.1"
-                  value={commissionRateInput} 
-                  onChange={e => setCommissionRateInput(e.target.value)} 
-                  placeholder="2.0" 
-                  className="pl-8 font-bold"
-                />
-              </div>
-              <p className="text-[10px] text-slate-500">This rate is used to calculate pickup and delivery commissions based on distance. Default is ฿2.0 per km.</p>
-            </div>
-            
-            <Button id="save-commission-btn" onClick={handleSaveCommissionSettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
-              Save Commission Rate
-            </Button>
-          </div>
-        </div>
-      </div>
+            {/* Rider Commission & Session Security 2-Column Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Rider Commission Settings */}
+              <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5 flex flex-col justify-between">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-amber-700 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                      <Coins size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">Rider Commission Rate</h3>
+                      <p className="text-xs text-slate-500 font-medium">Payout calculation per kilometer for delivery team.</p>
+                    </div>
+                  </div>
 
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
-            <Printer size={24} />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold text-slate-800">POS Receipt Settings</h3>
-            <p className="text-xs text-slate-500 font-medium">Configure global printer options and language for POS receipts.</p>
-          </div>
-        </div>
+                  <div className="space-y-2">
+                    <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">Commission Rate (฿ per km)</Label>
+                    <div className="relative max-w-[200px]">
+                      <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-black">฿</span>
+                      <Input 
+                        id="rider-commission-input"
+                        type="number" 
+                        step="0.1"
+                        value={commissionRateInput} 
+                        onChange={e => setCommissionRateInput(e.target.value)} 
+                        placeholder="2.0" 
+                        className="pl-8 font-black text-sm h-11 rounded-xl"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-normal">
+                      Used to calculate pickup and delivery rider payout based on distance from branch. Default is ฿2.0 / km.
+                    </p>
+                  </div>
+                </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <div className="max-w-2xl space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label className="font-semibold text-slate-700">Receipt Paper Size</Label>
-                <select
-                  value={receiptPaperSize}
-                  onChange={e => {
-                    setReceiptPaperSize(e.target.value);
-                    handleUpdateReceiptSetting("receiptPaperSize", e.target.value);
-                  }}
-                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
+                <Button 
+                  id="save-commission-btn" 
+                  onClick={handleSaveCommissionSettings} 
+                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs h-10 px-4 rounded-xl shadow-xs self-start cursor-pointer"
                 >
-                  <option value="80mm">80mm (Standard)</option>
-                  <option value="58mm">58mm (Small)</option>
-                  <option value="A5">A5 (Half Letter)</option>
-                </select>
+                  Save Commission Rate
+                </Button>
               </div>
 
-              <div className="space-y-2">
-                <Label className="font-semibold text-slate-700">Default Print Language</Label>
-                <select
-                  value={currentLanguage}
-                  onChange={e => {
-                    setCurrentLanguage(e.target.value);
-                    handleUpdateReceiptSetting("language", e.target.value);
-                  }}
-                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10"
-                >
-                  <option value="th">ไทย (TH)</option>
-                  <option value="en">English (EN)</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+              {/* Security & Idle Session Timeout */}
+              <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5 flex flex-col justify-between">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
+                      <Clock size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">Security &amp; Session Timeout</h3>
+                      <p className="text-xs text-slate-500 font-medium">Idle user auto-logout duration.</p>
+                    </div>
+                  </div>
 
-      {/* Cash Drawer Settings (BT-100U / USB-RJ11) */}
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-amber-100 text-amber-700 rounded-xl">
-            <Banknote size={24} />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold text-slate-800">Cash Drawer Settings</h3>
-            <p className="text-xs text-slate-500 font-medium">
-              Configure automatic cash drawer kick behavior and pair USB-to-RJ11 (BT-100U) triggers via Web Serial API.
-            </p>
-          </div>
-        </div>
+                  <div className="space-y-2.5">
+                    <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                      Idle Timeout Duration
+                    </Label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="relative w-32">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={sessionTimeoutInput}
+                          onChange={(e) => setSessionTimeoutInput(e.target.value)}
+                          placeholder="20"
+                          className="font-black pr-12 h-10 text-xs rounded-xl"
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-400 font-bold">min</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {["15", "20", "30", "60", "0"].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => handleSaveSessionTimeout(preset)}
+                            className={`px-2 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                              sessionTimeoutInput === preset
+                                ? "bg-indigo-50 border-indigo-300 text-indigo-800"
+                                : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                            }`}
+                          >
+                            {preset === "0" ? "Off" : `${preset}m`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-6">
-          {/* Hardware Connection Card */}
-          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Device Status on this PC:</span>
-                {drawerStatus.isPaired ? (
-                  <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 font-semibold px-2 py-0.5 text-xs flex items-center gap-1">
-                    <CheckCircle2 size={12} className="text-emerald-600" />
-                    Connected ({drawerStatus.portInfo})
-                  </Badge>
-                ) : (
-                  <Badge variant="outline" className="bg-slate-200/80 text-slate-700 border-slate-300 font-semibold px-2 py-0.5 text-xs flex items-center gap-1">
-                    <AlertCircle size={12} className="text-slate-500" />
-                    Not Paired
-                  </Badge>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-500">
-                Supports BT-100U and USB-to-RJ11 adapters (Prolific PL2303, CH340, FTDI). Pairing is required only once per workstation.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handlePairDrawer}
-                disabled={isPairingDrawer}
-                className="h-9 px-3.5 text-xs font-bold bg-white hover:bg-slate-50 border-slate-300 text-slate-700 shadow-sm cursor-pointer"
-              >
-                {isPairingDrawer ? (
-                  <RefreshCw size={13} className="animate-spin mr-1.5" />
-                ) : (
-                  <Usb size={13} className="mr-1.5 text-indigo-600" />
-                )}
-                {drawerStatus.isPaired ? "Re-pair Device" : "Pair BT-100U Device"}
-              </Button>
-
-              <Button
-                type="button"
-                onClick={handleTestKick}
-                disabled={isTestingDrawer || !drawerStatus.isPaired}
-                className="h-9 px-3.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-sm disabled:opacity-50 cursor-pointer"
-              >
-                {isTestingDrawer ? (
-                  <RefreshCw size={13} className="animate-spin mr-1.5" />
-                ) : (
-                  <Banknote size={13} className="mr-1.5" />
-                )}
-                Test Drawer Kick
-              </Button>
-            </div>
-          </div>
-
-          {/* Trigger Options */}
-          <div className="space-y-3">
-            <Label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
-              Drawer Kick Trigger Conditions (Global for all branches):
-            </Label>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/80 cursor-pointer transition-colors shadow-xs">
-                <input
-                  type="checkbox"
-                  checked={cashDrawerAutoOpenOnPay}
-                  onChange={e => {
-                    const checked = e.target.checked;
-                    setCashDrawerAutoOpenOnPay(checked);
-                    handleUpdateReceiptSetting("cashDrawerAutoOpenOnPay", checked ? "true" : "false");
-                  }}
-                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <div className="space-y-0.5">
-                  <span className="text-xs font-bold text-slate-800 block">Open on Cash Pay</span>
-                  <span className="text-[11px] text-slate-500 block leading-tight">
-                    Automatically opens the cash drawer when clicking Pay with Cash or Split Payment containing cash.
-                  </span>
+                  <div className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] text-slate-600 leading-relaxed">
+                    <ShieldCheck size={16} className="text-emerald-600 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Force Re-login on Deploy:</strong> The system automatically logs out stale sessions whenever a new application build is deployed.
+                    </span>
+                  </div>
                 </div>
-              </label>
 
-              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/80 cursor-pointer transition-colors shadow-xs">
-                <input
-                  type="checkbox"
-                  checked={cashDrawerAutoOpenOnPrint}
-                  onChange={e => {
-                    const checked = e.target.checked;
-                    setCashDrawerAutoOpenOnPrint(checked);
-                    handleUpdateReceiptSetting("cashDrawerAutoOpenOnPrint", checked ? "true" : "false");
-                  }}
-                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <div className="space-y-0.5">
-                  <span className="text-xs font-bold text-slate-800 block">Open on Print Receipt</span>
-                  <span className="text-[11px] text-slate-500 block leading-tight">
-                    Automatically opens the cash drawer when clicking Print in the receipt dialog (A5 / Thermal) for cash orders.
-                  </span>
-                </div>
-              </label>
-
-              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/80 cursor-pointer transition-colors shadow-xs">
-                <input
-                  type="checkbox"
-                  checked={cashDrawerShowManualButton}
-                  onChange={e => {
-                    const checked = e.target.checked;
-                    setCashDrawerShowManualButton(checked);
-                    handleUpdateReceiptSetting("cashDrawerShowManualButton", checked ? "true" : "false");
-                  }}
-                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <div className="space-y-0.5">
-                  <span className="text-xs font-bold text-slate-800 block">Show [Open Drawer] Button</span>
-                  <span className="text-[11px] text-slate-500 block leading-tight">
-                    Display a manual [Open Drawer] button on the All Jobs table toolbar and POS header bar.
-                  </span>
-                </div>
-              </label>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Promotion & Voucher Policy Section */}
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-amber-100 text-amber-700 rounded-xl">
-            <Ticket size={24} />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold text-slate-800">Promotion & Voucher Policy (นโยบายส่วนลดและคูปอง)</h3>
-            <p className="text-xs text-slate-500 font-medium">Configure automated discount rules and redemption policies for POS checkout.</p>
-          </div>
-        </div>
-
-        <div className="bg-slate-50/50 rounded-2xl p-6 border border-slate-200/80">
-          <div className="max-w-2xl space-y-4">
-            <label className="flex items-start gap-3 p-4 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/50 cursor-pointer transition-colors shadow-2xs">
-              <input
-                type="checkbox"
-                checked={posAutoApplyVoucher}
-                onChange={e => {
-                  const checked = e.target.checked;
-                  setPosAutoApplyVoucher(checked);
-                  handleUpdateReceiptSetting("posAutoApplyVoucher", checked ? "true" : "false");
-                }}
-                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500"
-              />
-              <div className="space-y-1">
-                <span className="text-sm font-bold text-slate-800 block">
-                  Auto-apply Best Voucher at POS (นำคูปองที่ดีที่สุดมาใช้ให้อัตโนมัติที่หน้า POS)
-                </span>
-                <span className="text-xs text-slate-500 block leading-relaxed">
-                  เมื่อเลือกลูกค้าและมีบริการในตะกร้าตรงตามเงื่อนไข ระบบ POS จะค้นหาคูปองส่วนลดที่คุ้มค่าที่สุดของลูกค้ารายนั้น และนำมาคำนวณหักลดให้อัตโนมัติทันที
-                </span>
-              </div>
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-rose-100 text-rose-600 rounded-xl">
-            <Coins size={24} />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold text-slate-800">VAT Settings</h3>
-            <p className="text-xs text-slate-500 font-medium">Configure the default VAT type and rate applied to orders.</p>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <div className="max-w-2xl space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label className="font-semibold text-slate-700">VAT Type</Label>
-                <select
-                  value={vatTypeInput}
-                  onChange={e => {
-                    setVatTypeInput(e.target.value);
-                    handleSaveVatSetting("vatType", e.target.value);
-                  }}
-                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-bold rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 h-10 shadow-sm"
-                >
-                  <option value="none">No VAT</option>
-                  <option value="inclusive">Inclusive VAT</option>
-                  <option value="exclusive">Exclusive VAT</option>
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <Label className="font-semibold text-slate-700">VAT Rate (%)</Label>
-                <div className="relative">
-                  <Input 
-                    type="number" 
-                    step="any"
-                    value={vatRateInput} 
-                    onChange={e => {
-                      setVatRateInput(e.target.value);
-                    }} 
-                    onBlur={() => {
-                      handleSaveVatSetting("vatRate", vatRateInput);
-                    }}
-                    placeholder="7" 
-                    className="font-bold pr-8 h-10 border-slate-200 shadow-sm"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">%</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Security & Session Timeout Settings */}
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-amber-100 text-amber-600 rounded-xl">
-            <Clock size={24} />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold text-slate-800">Security &amp; Session Timeout (ตั้งค่าเวลาตัดออกจากระบบอัตโนมัติ)</h3>
-            <p className="text-xs text-slate-500 font-medium">
-              กำหนดเวลาเมื่อเปิดหน้าจอทิ้งไว้โดยไม่มีการเคลื่อนไหว (Idle Timeout) และระบบบังคับ Login ใหม่อัตโนมัติเมื่อมีการ Deploy เวอร์ชันใหม่
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-          <div className="max-w-2xl space-y-5">
-            <div className="space-y-2">
-              <Label className="font-semibold text-slate-700">
-                Idle Session Timeout (นาที) <span className="text-xs font-normal text-slate-400">— ใส่ 0 หากต้องการปิดการตัดออกจากระบบอัตโนมัติ</span>
-              </Label>
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="relative w-40">
-                  <Input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={sessionTimeoutInput}
-                    onChange={(e) => setSessionTimeoutInput(e.target.value)}
-                    placeholder="20"
-                    className="font-bold pr-14 h-10 border-slate-200 shadow-sm"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 font-bold">นาที</span>
-                </div>
                 <Button
                   type="button"
                   onClick={() => handleSaveSessionTimeout()}
-                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs h-10 px-4 rounded-xl shadow-sm"
+                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs h-10 px-4 rounded-xl shadow-xs self-start cursor-pointer"
                 >
-                  บันทึกเวลา (Save)
+                  Save Timeout Settings
                 </Button>
-                <div className="flex items-center gap-1.5">
-                  {["15", "20", "30", "60", "0"].map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => handleSaveSessionTimeout(preset)}
-                      className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
-                        sessionTimeoutInput === preset
-                          ? "bg-amber-50 border-amber-300 text-amber-800"
-                          : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
-                      }`}
-                    >
-                      {preset === "0" ? "ปิด (Off)" : `${preset}m`}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <p className="text-xs text-slate-500">
-                หากผู้ใช้ไม่มีการขยับเมาส์ คลิก หรือพิมพ์งานติดต่อกันครบตามเวลาที่กำหนด ระบบจะตัดออกจากระบบและพากลับไปหน้า Login ทันที (ค่าเริ่มต้น: 20 นาที)
-              </p>
-            </div>
-
-            <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600">
-              <ShieldCheck size={18} className="text-emerald-600 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-bold text-slate-800">Force Re-login on New Deploy (ทำงานอัตโนมัติ): </span>
-                เมื่อมีการอัปเดตหรือ Deploy ระบบเวอร์ชันใหม่ขึ้นเซิร์ฟเวอร์ ระบบจะตรวจจับหมายเลข Build ใหม่และบังคับให้ผู้ใช้งานทุกคนออกไปยังหน้า Login เพื่อให้ใช้งานโค้ดและข้อมูลเวอร์ชันล่าสุดเสมอ
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* Payment Channels Settings */}
-      <div className="space-y-4 pt-8 border-t border-slate-100">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
-              <CreditCard size={24} />
-            </div>
-            <div>
-              <h3 className="text-xl font-bold text-slate-800">Payment Channels (ช่องทางการชำระเงิน)</h3>
-              <p className="text-xs text-slate-500 font-medium">
-                จัดการช่องทางการชำระเงินของระบบ (เพิ่ม, ลบ, แก้ไขชื่อ, เปิด/ปิดการใช้งาน เพื่อแสดงใน Job Modal และ POS)
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleResetDefaultChannels}
-              className="text-xs text-slate-500 hover:text-slate-700"
-            >
-              Reset to Defaults
-            </Button>
-            <Button
-              type="button"
-              onClick={handleOpenAddChannel}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs h-9 px-4 rounded-xl shadow-sm flex items-center gap-1.5"
-            >
-              <Plus size={16} />
-              เพิ่มช่องทางใหม่
-            </Button>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-slate-600">
-              <thead className="bg-slate-50 text-slate-700 font-bold text-xs uppercase tracking-wider border-b border-slate-200">
-                <tr>
-                  <th className="py-3.5 px-6">ชื่อช่องทาง (Channel Name)</th>
-                  <th className="py-3.5 px-6">ประเภท (Type)</th>
-                  <th className="py-3.5 px-6 text-center">สถานะ (Status)</th>
-                  <th className="py-3.5 px-6 text-right">จัดการ (Actions)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {paymentChannels.map((channel) => {
-                  const typeInfo = PAYMENT_TYPE_LABELS[channel.type] || PAYMENT_TYPE_LABELS.other;
-                  return (
-                    <tr key={channel.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-4 px-6 font-bold text-slate-900">
-                        <div className="flex items-center gap-2">
-                          <span>{channel.name}</span>
-                          {channel.requiresMember && (
-                            <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200">
-                              เฉพาะสมาชิก (Member Only)
-                            </Badge>
-                          )}
-                          {channel.isSystem && (
-                            <span className="text-[10px] text-slate-400 font-normal">
-                              (ระบบ)
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="py-4 px-6">
-                        <span className={`inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full border ${typeInfo.color}`}>
-                          {typeInfo.label}
-                        </span>
-                      </td>
-                      <td className="py-4 px-6 text-center">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleChannel(channel.id)}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer ${
-                            channel.enabled
-                              ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
-                              : "bg-slate-100 text-slate-400 hover:bg-slate-200"
-                          }`}
-                        >
-                          <span className={`w-2 h-2 rounded-full ${channel.enabled ? "bg-emerald-500" : "bg-slate-400"}`} />
-                          {channel.enabled ? "เปิดใช้งาน" : "ปิดใช้งาน"}
-                        </button>
-                      </td>
-                      <td className="py-4 px-6 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleOpenEditChannel(channel)}
-                            className="h-8 w-8 p-0 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50"
-                            title="แก้ไข"
-                          >
-                            <Edit3 size={15} />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setDeletingChannel(channel)}
-                            className="h-8 w-8 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50"
-                            title="ลบ"
-                          >
-                            <Trash2 size={15} />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      {/* Temporarily hidden: change false to true to show again */}
-      {false && (
-        <div className="space-y-4 pt-8 border-t border-slate-100">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
-                <QrCode size={24} />
-              </div>
-              <div>
-                <h3 className="text-xl font-bold text-slate-800">PromptPay Configuration</h3>
-                <p className="text-xs text-slate-500 font-medium">Configure dynamic PromptPay QR code parameters for POS bank transfers.</p>
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-            <div className="max-w-4xl space-y-6">
-              {/* Enable/Disable Toggle Checkbox */}
-              <div className="flex items-center gap-3 p-4 border border-slate-200 rounded-xl bg-slate-50">
-                <input 
-                  type="checkbox" 
-                  id="enablePromptPay" 
-                  checked={enablePromptPay} 
-                  onChange={(e) => setEnablePromptPay(e.target.checked)}
-                  className="w-5 h-5 text-indigo-600 rounded border-slate-300 focus:ring-indigo-600 cursor-pointer"
-                />
-                <div className="flex flex-col">
-                  <label htmlFor="enablePromptPay" className="text-sm font-bold text-slate-800 cursor-pointer">
-                    Enable Dynamic PromptPay QR Code Payment
-                  </label>
-                  <span className="text-[10px] text-slate-500">
-                    Toggle whether to display dynamic PromptPay QR Codes during cashier checkout when payment method is Bank Transfer.
-                  </span>
-                </div>
-              </div>
-
-              <div className={`space-y-6 transition-opacity duration-200 ${enablePromptPay ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
-                {/* Global Config */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-4 border-b border-slate-100">
-                  <div className="space-y-2">
-                    <Label className="font-semibold text-slate-700">Global PromptPay ID (Mobile or Tax ID)</Label>
-                    <Input 
-                      value={ppSettings["global_id"] || ""} 
-                      onChange={e => setPpSettings(prev => ({ ...prev, global_id: e.target.value }))} 
-                      placeholder="e.g. 0812345678 or 1234567890123" 
-                      className="font-mono"
-                    />
-                    <p className="text-[10px] text-slate-500">Default PromptPay ID if branch-specific is not set. 10-digit mobile number or 13-digit Tax ID.</p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="font-semibold text-slate-700">Global Account Name</Label>
-                    <Input 
-                      value={ppSettings["global_name"] || ""} 
-                      onChange={e => setPpSettings(prev => ({ ...prev, global_name: e.target.value }))} 
-                      placeholder="e.g. THAI LAUNDRY SERVICE" 
-                    />
-                    <p className="text-[10px] text-slate-500">Optional account holder display name.</p>
-                  </div>
-                </div>
-
-                {/* Branch Specific Config */}
-                <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider text-[11px] text-slate-400 font-semibold">Branch-Specific Configurations</h4>
-                  
-                  {shopLocations.length === 0 ? (
-                    <p className="text-xs text-slate-400 italic">No shop locations configured yet.</p>
-                  ) : (
-                    <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2">
-                      {shopLocations.map(shop => (
-                        <div key={shop.id} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center p-3 border border-slate-100 rounded-xl bg-slate-50/50">
-                          <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                            <Store size={14} className="text-slate-400 shrink-0" />
-                            {shop.name}
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-[10px] text-slate-500">PromptPay ID</Label>
-                            <Input 
-                              value={ppSettings[`id_${shop.id}`] || ""} 
-                              onChange={e => setPpSettings(prev => ({ ...prev, [`id_${shop.id}`]: e.target.value }))} 
-                              placeholder="Mobile / Tax ID for this branch" 
-                              className="h-8 text-xs font-mono"
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-[10px] text-slate-500">Account Name</Label>
-                            <Input 
-                              value={ppSettings[`name_${shop.id}`] || ""} 
-                              onChange={e => setPpSettings(prev => ({ ...prev, [`name_${shop.id}`]: e.target.value }))} 
-                              placeholder="Account owner name for this branch" 
-                              className="h-8 text-xs"
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <Button onClick={handleSavePromptPaySettings} className="bg-slate-900 hover:bg-slate-800 text-white font-semibold">
-                Save PromptPay Settings
-              </Button>
-            </div>
-          </div>
-        </div>
+        )
       )}
+
 
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col p-0 overflow-hidden rounded-2xl border-none shadow-2xl">
