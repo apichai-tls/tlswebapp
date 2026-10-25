@@ -5703,7 +5703,12 @@ function AdminPageContent() {
                                 {editingJobId && currentJobObj && (
                                   <button
                                     type="button"
+                                    disabled={!isCsoOrAdmin}
                                     onClick={async () => {
+                                      if (!isCsoOrAdmin) {
+                                        toast.error("Only CSO and Admin positions can update Bill Sent status");
+                                        return;
+                                      }
                                       const nextSent = !isCurrentBillSent;
                                       const staffName = (user as any)?.name || user?.email || "Staff";
                                       let baseObj: Record<string, any> = {};
@@ -5747,12 +5752,18 @@ function AdminPageContent() {
                                       }
                                       toast.success(nextSent ? "Marked as Bill Sent to Customer ✓" : "Marked as Bill Not Sent");
                                     }}
-                                    className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 cursor-pointer ${
-                                      isCurrentBillSent
-                                        ? 'bg-emerald-600 shadow-2xs text-white'
-                                        : 'hover:bg-white text-amber-600 hover:text-amber-700'
+                                    className={`flex flex-col items-center justify-center rounded-lg transition-all w-[26px] h-[26px] sm:w-9 sm:h-9 ${
+                                      !isCsoOrAdmin
+                                        ? 'opacity-60 cursor-not-allowed text-slate-400'
+                                        : isCurrentBillSent
+                                          ? 'bg-emerald-600 shadow-2xs text-white cursor-pointer'
+                                          : 'hover:bg-white text-amber-600 hover:text-amber-700 cursor-pointer'
                                     }`}
-                                    title={isCurrentBillSent ? 'Bill sent to customer (Click to unmark)' : 'Bill not sent yet (Click to mark as Sent to Customer)'}
+                                    title={
+                                      !isCsoOrAdmin
+                                        ? `Customer Bill Status: ${isCurrentBillSent ? 'Bill Sent' : 'Not Sent'} (Only CSO and Admin can change)`
+                                        : isCurrentBillSent ? 'Bill sent to customer (Click to unmark)' : 'Bill not sent yet (Click to mark as Sent to Customer)'
+                                    }
                                   >
                                     <div className="flex items-center justify-center">
                                       <CheckCircle2 className={`w-3.5 h-3.5 ${isCurrentBillSent ? 'text-white' : ''}`} strokeWidth={2} />

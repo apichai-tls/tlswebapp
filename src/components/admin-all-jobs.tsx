@@ -307,6 +307,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   
   const { user, isLoading: isAuthLoading } = useAuth();
   const isCSO = user?.role === 'cso' || Boolean(user?.permissions?.includes('cso'));
+  const isAdmin = user?.role === 'admin' || Boolean(user?.permissions?.includes('admin'));
+  const isCsoOrAdmin = isCSO || isAdmin;
   const canManageJobs = Boolean(
     user?.role === 'admin' ||
     isCSO ||
@@ -364,7 +366,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
 
   const handleToggleBillSent = async (job: Job, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!canManageJobs) return;
+    if (!isCsoOrAdmin) {
+      toast.error("Only CSO and Admin positions can update Bill Sent status");
+      return;
+    }
     const meta = getJobBillingMeta(job);
     const nextSent = !meta.isBillSent;
     const staffName = (user as any)?.name || user?.email || "Staff";
@@ -1959,16 +1964,21 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               </span>
                               <button
                                 type="button"
+                                disabled={!isCsoOrAdmin}
                                 onClick={(e) => handleToggleBillSent(job, e)}
-                                className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded-lg border transition-all cursor-pointer w-fit ${
-                                  bMeta.isBillSent
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
-                                    : "bg-violet-50 text-violet-800 border-violet-200 hover:bg-violet-100/80"
+                                className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded-lg border transition-all w-fit ${
+                                  !isCsoOrAdmin
+                                    ? "opacity-60 cursor-not-allowed " + (bMeta.isBillSent ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-violet-50/70 text-violet-800 border-violet-200")
+                                    : bMeta.isBillSent
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 cursor-pointer"
+                                      : "bg-violet-50 text-violet-800 border-violet-200 hover:bg-violet-100/80 cursor-pointer"
                                 }`}
                                 title={
-                                  bMeta.isBillSent
-                                    ? `Bill Sent${bMeta.billSentBy ? ` by ${bMeta.billSentBy}` : ""}${bMeta.billSentAt ? ` (${format(new Date(bMeta.billSentAt), "dd/MM HH:mm")})` : ""} — Click to unmark`
-                                    : "Click to mark Bill as Sent to Customer"
+                                  !isCsoOrAdmin
+                                    ? `Customer Bill Status: ${bMeta.isBillSent ? "Bill Sent" : "Not Sent"} (Only CSO and Admin can change)`
+                                    : bMeta.isBillSent
+                                      ? `Bill Sent${bMeta.billSentBy ? ` by ${bMeta.billSentBy}` : ""}${bMeta.billSentAt ? ` (${format(new Date(bMeta.billSentAt), "dd/MM HH:mm")})` : ""} — Click to unmark`
+                                      : "Click to mark Bill as Sent to Customer"
                                 }
                               >
                                 {bMeta.isBillSent ? <CheckCircle2 size={10} className="text-emerald-600 shrink-0" /> : <Send size={9.5} className="text-violet-600 shrink-0" />}
@@ -2626,19 +2636,24 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     </div>
                                   </div>
 
-                                  {/* Indicator 2: Sent to Customer vs Not Sent (Violet matches Filter #5) */}
+                                  {/* Indicator 2: Sent to Customer vs Not Sent (Violet matches Filter #5) - Only CSO & Admin */}
                                   <button
                                     type="button"
+                                    disabled={!isCsoOrAdmin}
                                     onClick={(e) => handleToggleBillSent(job, e)}
-                                    className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-left text-[10px] font-bold transition-all cursor-pointer ${
-                                      bMeta.isBillSent
-                                        ? "bg-emerald-50 text-emerald-700 border-emerald-200/90 hover:bg-emerald-100/80 shadow-2xs"
-                                        : "bg-violet-50/90 text-violet-800 border-violet-200/90 hover:bg-violet-100/80"
+                                    className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-left text-[10px] font-bold transition-all ${
+                                      !isCsoOrAdmin
+                                        ? "opacity-60 cursor-not-allowed " + (bMeta.isBillSent ? "bg-emerald-50 text-emerald-700 border-emerald-200/90" : "bg-violet-50/70 text-violet-800 border-violet-200/70")
+                                        : bMeta.isBillSent
+                                          ? "bg-emerald-50 text-emerald-700 border-emerald-200/90 hover:bg-emerald-100/80 shadow-2xs cursor-pointer"
+                                          : "bg-violet-50/90 text-violet-800 border-violet-200/90 hover:bg-violet-100/80 cursor-pointer"
                                     }`}
                                     title={
-                                      bMeta.isBillSent
-                                        ? `Sent to Customer${bMeta.billSentBy ? ` by ${bMeta.billSentBy}` : ""}${bMeta.billSentAt ? ` (${format(new Date(bMeta.billSentAt), "dd/MM HH:mm")})` : ""} — Click to toggle`
-                                        : "Bill not sent to customer yet — Click to mark as Sent"
+                                      !isCsoOrAdmin
+                                        ? `Customer Bill Status: ${bMeta.isBillSent ? "Bill Sent" : "Not Sent"} (Only CSO and Admin can change)`
+                                        : bMeta.isBillSent
+                                          ? `Sent to Customer${bMeta.billSentBy ? ` by ${bMeta.billSentBy}` : ""}${bMeta.billSentAt ? ` (${format(new Date(bMeta.billSentAt), "dd/MM HH:mm")})` : ""} — Click to toggle`
+                                          : "Bill not sent to customer yet — Click to mark as Sent"
                                     }
                                   >
                                     {bMeta.isBillSent ? (
