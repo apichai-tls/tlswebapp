@@ -1410,11 +1410,42 @@ function AdminPageContent() {
   const [savingJobIds, setSavingJobIds] = useState<Set<string>>(new Set());
   const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
 
-  // Wallet Approval review context — set when opening Edit Job from Wallet Approvals table
+  // Wallet Approval review context — set when opening Edit Job from Wallet Approvals table or auto-loaded for the open job
   const [reviewingWalletTx, setReviewingWalletTx] = useState<WalletTransactionItem | null>(null);
+  const [jobPendingWalletTxs, setJobPendingWalletTxs] = useState<WalletTransactionItem[]>([]);
   const [walletRejectModalOpen, setWalletRejectModalOpen] = useState(false);
   const [walletRejectReason, setWalletRejectReason] = useState("");
   const [isWalletActionProcessing, setIsWalletActionProcessing] = useState(false);
+
+  const loadJobPendingWalletTxs = useCallback((targetJobId: string | null) => {
+    if (!targetJobId) {
+      setJobPendingWalletTxs([]);
+      return;
+    }
+    api.getWalletTransactions({ referenceId: targetJobId, approvalStatus: "PENDING" })
+      .then((txs) => {
+        const list = (txs || []) as unknown as WalletTransactionItem[];
+        setJobPendingWalletTxs(list);
+        setReviewingWalletTx((prev) => {
+          if (prev && prev.referenceId === targetJobId && prev.approvalStatus === "PENDING") {
+            const updated = list.find((t) => t.id === prev.id);
+            return updated || list[0] || null;
+          }
+          // Prioritize UNLOCK_PAID / REFUND alerts first so Accounts immediately sees Unlock Paid issues
+          const unlockOrRefund = list.find((t) => t.type === "UNLOCK_PAID" || t.type === "REFUND");
+          return unlockOrRefund || list[0] || prev || null;
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (dialogOpen && editingJobId) {
+      loadJobPendingWalletTxs(editingJobId);
+    } else if (!dialogOpen) {
+      setJobPendingWalletTxs([]);
+    }
+  }, [dialogOpen, editingJobId, loadJobPendingWalletTxs]);
 
   // Unlock Paid states
   const [unlockPaidDialogOpen, setUnlockPaidDialogOpen] = useState(false);
@@ -3221,7 +3252,14 @@ function AdminPageContent() {
       : 0;
 
     const isAlreadyPaidJob = (isPaidJob || Boolean(existingJob?.isShopPaid)) && remainingToPay <= 0;
-    const isNewDeduction = (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && isPayment && !isAlreadyPaidJob;
+    const isMemberChannelSelected = paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0;
+    const hasCartItemsForPayment = Boolean(dialogCart && dialogCart.length > 0 && calculatedTotal > 0 && remainingToPay > 0);
+    // Guarantee: If staff selected Status: Paid + Deduct Member on an unpaid order with items and clicked "Save Changes",
+    // promote isPayment = true so the wallet deduction and payment entry are ALWAYS executed atomically!
+    if (!isPayment && !isAlreadyPaidJob && paymentMethod === "paid" && isMemberChannelSelected && hasCartItemsForPayment) {
+      isPayment = true;
+    }
+    const isNewDeduction = isMemberChannelSelected && isPayment && !isAlreadyPaidJob;
     const effectiveMemberDeduct = isSplitPayment ? splitMemberDeductAmt : remainingToPay;
 
     if (!isAlreadyPaidJob && (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && !selectedProfileCustomer?.isMember) {
@@ -3462,7 +3500,7 @@ function AdminPageContent() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (isWalkIn ? false : paymentMethod === 'paid'))),
+      isPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || ((isWalkIn || isMemberChannelSelected) ? false : paymentMethod === 'paid'))),
       isShopPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false))),
 
       fee: isNoChargePrepaidJob ? 0 : ((isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (existingJob.fee ?? 0) : fee),
@@ -3774,6 +3812,7 @@ function AdminPageContent() {
             const confirmedBal = updatedCust?.creditBalance ?? ((selectedProfileCustomer.creditBalance || 0) + balAdj);
             payload.walletBalanceAfter = confirmedBal;
             setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+            walletApprovalStore.refresh().catch(() => {});
             toast.success(`Customer wallet updated. New balance: ${formatBaht(confirmedBal)}`);
           }
         }
@@ -4271,6 +4310,7 @@ function AdminPageContent() {
           };
           const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
           preDeductedBalance = updatedCust?.creditBalance ?? preDeductedBalance;
+          walletApprovalStore.refresh().catch(() => {});
         }
 
         // [AUTO-PROFORMA for NEW JOB] If previewed or shop paid WITH actual laundry items → auto-assign + capture in background
@@ -4719,17 +4759,20 @@ function AdminPageContent() {
     handleEditFullJobRef.current(job);
   }, []);
 
-  const handleApproveFromJobDialog = async () => {
-    if (!reviewingWalletTx) return;
+  const handleApproveFromJobDialog = async (targetTx?: WalletTransactionItem) => {
+    const txToApprove = targetTx || reviewingWalletTx;
+    if (!txToApprove) return;
     setIsWalletActionProcessing(true);
     try {
       await walletApprovalStore.approve(
-        reviewingWalletTx.id,
+        txToApprove.id,
         user?.id || "system",
         user?.name || user?.email || "Admin"
       );
-      toast.success(`Approved ${reviewingWalletTx.type} ฿${reviewingWalletTx.amount.toLocaleString()} สำเร็จ`);
-      setReviewingWalletTx(null);
+      toast.success(`Approved ${txToApprove.type} ฿${txToApprove.amount.toLocaleString()} สำเร็จ`);
+      const remaining = jobPendingWalletTxs.filter((t) => t.id !== txToApprove.id);
+      setJobPendingWalletTxs(remaining);
+      setReviewingWalletTx(remaining[0] || null);
     } catch (e: any) {
       toast.error("ไม่สามารถอนุมัติได้: " + e.message);
     } finally {
@@ -4748,7 +4791,9 @@ function AdminPageContent() {
         walletRejectReason.trim()
       );
       toast.success(`Rejected #${reviewingWalletTx.id.slice(0, 8)} สำเร็จ`);
-      setReviewingWalletTx(null);
+      const remaining = jobPendingWalletTxs.filter((t) => t.id !== reviewingWalletTx.id);
+      setJobPendingWalletTxs(remaining);
+      setReviewingWalletTx(remaining[0] || null);
       setWalletRejectModalOpen(false);
       setWalletRejectReason("");
     } catch (e: any) {
@@ -4806,6 +4851,7 @@ function AdminPageContent() {
         adminNotesJson: result.updatedJob?.adminNotesJson,
         billImageUrl: result.updatedJob?.billImageUrl ?? null,
       } as any);
+      jobStore.notify();
 
       // 4. Update in-memory customer wallet & dialog customer badge if refund occurred
       if (result.walletRefundAmount && result.walletRefundAmount > 0 && selectedProfileCustomer) {
@@ -4816,6 +4862,10 @@ function AdminPageContent() {
         });
         customerStore.notify();
       }
+
+      // 5. Notify Accounts Pending Approvals store & load pending banner for this job immediately
+      walletApprovalStore.refresh().catch(() => {});
+      loadJobPendingWalletTxs(editingJobId);
 
       toast.success(
         `🔓 ปลดล็อค Job สำเร็จ${result.walletRefundAmount && result.walletRefundAmount > 0 
@@ -6586,52 +6636,83 @@ function AdminPageContent() {
                   );
                 })()}
 
-                {/* Wallet Approval Review Banner */}
-                {reviewingWalletTx && (
-                  <div className="mx-3 mt-2 px-4 py-2.5 bg-amber-500 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md rounded-xl shrink-0">
-                    <div className="flex items-center gap-2 text-xs font-bold min-w-0">
-                      <ShieldCheck size={18} className="text-white shrink-0" />
-                      <span className="truncate">
-                        รออนุมัติ Wallet: {reviewingWalletTx.type === "DEDUCT" ? "ตัดเงินค่าออเดอร์" : (reviewingWalletTx.type === "REFUND" ? "คืนเงินออเดอร์" : reviewingWalletTx.type)} 
-                        {" "}฿{reviewingWalletTx.amount.toLocaleString()} 
-                        {reviewingWalletTx.createdByName && ` (โดย: ${reviewingWalletTx.createdByName})`}
-                      </span>
+                {/* Wallet & Unlock Paid Approval Review Banners */}
+                {(() => {
+                  const bannerTxs = jobPendingWalletTxs.length > 0
+                    ? jobPendingWalletTxs
+                    : (reviewingWalletTx ? [reviewingWalletTx] : []);
+                  if (bannerTxs.length === 0) return null;
+                  return (
+                    <div className="mx-3 mt-2 flex flex-col gap-1.5 shrink-0">
+                      {bannerTxs.map((bTx) => {
+                        const isUnlockOrRefund = bTx.type === "UNLOCK_PAID" || bTx.type === "REFUND";
+                        const labelText =
+                          bTx.type === "UNLOCK_PAID"
+                            ? "🔓 แจ้งเตือนบัญชี (Unlock Paid — ปลดล็อคบิลที่ชำระแล้ว)"
+                            : bTx.type === "REFUND"
+                              ? "🔓 รออนุมัติคืนเงิน Wallet (Unlock Paid / Refund)"
+                              : bTx.type === "DEDUCT"
+                                ? "รออนุมัติ Wallet: ตัดเงินค่าออเดอร์"
+                                : `รออนุมัติ Wallet: ${bTx.type}`;
+                        return (
+                          <div
+                            key={bTx.id}
+                            className={`px-4 py-2 ${isUnlockOrRefund ? "bg-orange-600" : "bg-amber-500"} text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-md rounded-xl`}
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 text-xs font-bold min-w-0">
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <ShieldCheck size={16} className="text-white shrink-0" />
+                                <span>
+                                  {labelText} ฿{Number(bTx.amount || 0).toLocaleString()}
+                                  {bTx.createdByName && ` (โดย: ${bTx.createdByName})`}
+                                </span>
+                              </div>
+                              {bTx.reason && (
+                                <span className="text-[11px] bg-black/20 px-2 py-0.5 rounded-md font-semibold truncate max-w-[360px]" title={bTx.reason}>
+                                  เหตุผล: {bTx.reason}
+                                </span>
+                              )}
+                            </div>
+                            {bTx.approvalStatus === "PENDING" && canApproveWallet && (
+                              <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  className="h-7 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
+                                  onClick={() => handleApproveFromJobDialog(bTx)}
+                                  disabled={isWalletActionProcessing}
+                                >
+                                  <CheckCircle2 size={13} />
+                                  <span>Approve (อนุมัติ)</span>
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-3 bg-rose-600 hover:bg-rose-700 text-white border-none font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
+                                  onClick={() => {
+                                    setReviewingWalletTx(bTx);
+                                    setWalletRejectReason("");
+                                    setWalletRejectModalOpen(true);
+                                  }}
+                                  disabled={isWalletActionProcessing}
+                                >
+                                  <X size={13} />
+                                  <span>Reject (ปฏิเสธ)</span>
+                                </Button>
+                              </div>
+                            )}
+                            {bTx.approvalStatus !== "PENDING" && (
+                              <Badge className={`text-xs font-bold shrink-0 ${bTx.approvalStatus === "APPROVED" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
+                                {bTx.approvalStatus}
+                              </Badge>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                    {reviewingWalletTx.approvalStatus === "PENDING" && (
-                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="h-7 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
-                          onClick={handleApproveFromJobDialog}
-                          disabled={isWalletActionProcessing}
-                        >
-                          <CheckCircle2 size={13} />
-                          <span>Approve (อนุมัติ)</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-3 bg-rose-600 hover:bg-rose-700 text-white border-none font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
-                          onClick={() => {
-                            setWalletRejectReason("");
-                            setWalletRejectModalOpen(true);
-                          }}
-                          disabled={isWalletActionProcessing}
-                        >
-                          <X size={13} />
-                          <span>Reject (ปฏิเสธ)</span>
-                        </Button>
-                      </div>
-                    )}
-                    {reviewingWalletTx.approvalStatus !== "PENDING" && (
-                      <Badge className={`text-xs font-bold shrink-0 ${reviewingWalletTx.approvalStatus === "APPROVED" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
-                        {reviewingWalletTx.approvalStatus}
-                      </Badge>
-                    )}
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Main Content Grid */}
                 <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3.5 min-h-0 flex flex-col">
@@ -10642,6 +10723,7 @@ function AdminPageContent() {
           setProfileOpen(false);
           setCustomerDialogOpen(true);
         }}
+        onViewJob={stableHandleEditFullJob}
       />
 
       <AdminCustomerVouchersDialog

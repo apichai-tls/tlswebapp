@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword } from "@/lib/crypto";
 import {
   signStaffSessionToken,
+  verifyStaffSessionToken,
+  isTokenRevoked,
   invalidateServerAuthCache,
   assertServerActionAuthorized,
   resolveServerActionUser,
@@ -179,4 +181,23 @@ export async function logoutUserAction() {
     cookieStore.delete("tls_user_id");
   } catch {}
   return { success: true };
+}
+
+export async function syncSessionCookieAction(token: string): Promise<{ success: boolean }> {
+  try {
+    const verified = verifyStaffSessionToken(token);
+    if (verified?.id && !isTokenRevoked(token, verified)) {
+      const { cookies } = await import("next/headers");
+      const cookieStore = await cookies();
+      cookieStore.set("tls_session", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: 60 * 60 * 18,
+      });
+      return { success: true };
+    }
+  } catch {}
+  return { success: false };
 }

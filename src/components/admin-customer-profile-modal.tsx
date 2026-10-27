@@ -22,7 +22,8 @@ import {
   setPrimaryCustomerAddressAction,
   getCustomerCouponsAction,
   updateCustomerCouponStatusAction,
-  getCustomerJobsAction
+  getCustomerJobsAction,
+  getCustomerWalletAdjustmentsAction
 } from "@/actions/db";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { AdminIssueCouponDialog } from "@/components/admin-issue-coupon-dialog";
@@ -84,12 +85,14 @@ export function AdminCustomerProfileModal({
   open, 
   onOpenChange, 
   customer,
-  onEditCustomer
+  onEditCustomer,
+  onViewJob
 }: { 
   open: boolean; 
   onOpenChange: (open: boolean) => void; 
   customer: Customer | null;
   onEditCustomer?: (c: Customer) => void;
+  onViewJob?: (job: any) => void;
 }) {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
@@ -229,6 +232,7 @@ export function AdminCustomerProfileModal({
   const [isLoadingTopUps, setIsLoadingTopUps] = useState(false);
   const [walletTxs, setWalletTxs] = useState<any[]>([]);
   const [isLoadingWallet, setIsLoadingWallet] = useState(false);
+  const [customerAdjustments, setCustomerAdjustments] = useState<any[]>([]);
 
   // Receipt Preview
   const [previewReceipt, setPreviewReceipt] = useState<ReceiptData | null>(null);
@@ -274,9 +278,13 @@ export function AdminCustomerProfileModal({
         .finally(() => setIsLoadingTopUps(false));
 
       api.getWalletTransactions({ customerId: customer.id })
-        .then(txs => setWalletTxs(txs || []))
+        .then(txs => setWalletTxs((txs || []).filter((t: any) => t.type !== "UNLOCK_PAID")))
         .catch(err => console.error("Failed to load customer wallet transactions:", err))
         .finally(() => setIsLoadingWallet(false));
+
+      getCustomerWalletAdjustmentsAction(customer.id)
+        .then(adjs => setCustomerAdjustments(adjs || []))
+        .catch(err => console.error("Failed to load customer adjustments:", err));
 
       // Fetch customer coupons
       if (canSeeCoupons) {
@@ -359,6 +367,252 @@ export function AdminCustomerProfileModal({
   const phoneResolution = useMemo(() => {
     return resolveCustomerPhones({ customer });
   }, [customer]);
+
+  // Unified Full Credit Wallet Ledger since day one
+  const unifiedLedger = useMemo(() => {
+    if (!customer) return [];
+
+    // 1. Process Top-ups from Transaction table
+    const topups = (topUpTxs || []).map((tx: any) => {
+      let meta: any = {};
+      try { meta = JSON.parse(tx.description || "{}"); } catch {}
+      const totalCredit = Number(meta.totalCredit) || Number(tx.totalCredit) || Number(tx.amount) || 0;
+      const paidAmount = Number(tx.amount) || 0;
+      const bonusAmount = Number(meta.bonusAmount) || Number(tx.bonusAmount) || 0;
+      return {
+        id: tx.id,
+        createdAt: new Date(tx.createdAt),
+        type: "TOPUP",
+        direction: "CREDIT" as const,
+        amount: totalCredit,
+        paidAmount,
+        bonusAmount,
+        packageName: tx.packageName || meta.packageName || "Member Package Top-Up",
+        paymentChannel: tx.paymentChannel || meta.paymentChannel || "Transfer",
+        slipImageUrl: tx.slipImageUrl || meta.slipImageUrl || null,
+        receiptData: tx.receiptData || meta.receiptData || null,
+        balanceBefore: tx.balanceBefore != null ? Number(tx.balanceBefore) : (meta.balanceBefore != null ? Number(meta.balanceBefore) : null),
+        balanceAfter: tx.balanceAfter != null ? Number(tx.balanceAfter) : (meta.balanceAfter != null ? Number(meta.balanceAfter) : null),
+        approvalStatus: "APPROVED",
+        source: "TopUpTransaction",
+        referenceId: tx.id,
+        rawTx: tx,
+      };
+    });
+
+    const handledJobIds = new Set<string>();
+    const handledTopupReceipts = new Set<string>();
+
+    topups.forEach((t: any) => {
+      handledTopupReceipts.add(t.id);
+      if (t.rawTx?.id) handledTopupReceipts.add(t.rawTx.id);
+    });
+
+    // 2. Process WalletTransactions
+    const wts = (walletTxs || []).map((wt: any) => {
+      const isCredit = wt.direction === "CREDIT" || wt.type === "TOPUP" || wt.type === "ADJUST_ADD" || wt.type === "REFUND";
+      if (wt.referenceId) handledJobIds.add(wt.referenceId);
+      if (wt.reason) {
+        const match = wt.reason.match(/#([A-Za-z0-9\/\-_]+)/);
+        if (match) handledJobIds.add(match[1]);
+      }
+      if (wt.type === "TOPUP" && wt.referenceId) handledTopupReceipts.add(wt.referenceId);
+
+      let matchedJob = null;
+      if (wt.referenceId) {
+        matchedJob = customerJobs.find((j: any) => j.id === wt.referenceId || j.billNo === wt.referenceId || j.ticketNo === wt.referenceId);
+      }
+      if (!matchedJob && wt.reason) {
+        const m = wt.reason.match(/#([A-Za-z0-9\/\-_]+)/);
+        if (m) {
+          matchedJob = customerJobs.find((j: any) => j.id === m[1] || j.billNo === m[1] || j.ticketNo === m[1]);
+        }
+      }
+
+      return {
+        id: wt.id,
+        createdAt: new Date(wt.createdAt),
+        type: wt.type || (isCredit ? "TOPUP" : "DEDUCT"),
+        direction: (isCredit ? "CREDIT" : "DEBIT") as "CREDIT" | "DEBIT",
+        amount: Number(wt.amount || 0),
+        paidAmount: wt.type === "TOPUP" ? Number(wt.amount || 0) - (Number(wt.bonusAmount) || 0) : Number(wt.amount || 0),
+        bonusAmount: Number(wt.bonusAmount || 0),
+        packageName: wt.packageName || wt.reason || (wt.type === "DEDUCT" ? `Order Payment #${wt.referenceId}` : "Wallet Transaction"),
+        paymentChannel: wt.paymentChannel || null,
+        slipImageUrl: wt.slipImageUrl || null,
+        receiptData: null,
+        balanceBefore: wt.balanceBefore != null ? Number(wt.balanceBefore) : null,
+        balanceAfter: wt.balanceAfter != null ? Number(wt.balanceAfter) : null,
+        approvalStatus: wt.approvalStatus || "APPROVED",
+        source: "WalletTransaction",
+        referenceId: wt.referenceId,
+        job: matchedJob,
+        rawTx: wt,
+      };
+    });
+
+    // Filter out walletTransactions that duplicate topups
+    const nonDuplicateWts = wts.filter((w: any) => {
+      if (w.type === "TOPUP") {
+        if (w.referenceId && handledTopupReceipts.has(w.referenceId)) return false;
+        const matchesTopup = topups.some((t: any) => 
+          Math.abs(t.createdAt.getTime() - w.createdAt.getTime()) < 60000 && t.amount === w.amount
+        );
+        if (matchesTopup) return false;
+      }
+      return true;
+    });
+
+    // 3. Process Jobs paid via member wallet that aren't in WalletTransaction
+    const orderDeducts = (customerJobs || []).filter((j: any) => {
+      if (handledJobIds.has(j.id) || (j.billNo && handledJobIds.has(j.billNo)) || (j.ticketNo && handledJobIds.has(j.ticketNo))) {
+        return false;
+      }
+      const ch = (j.paymentChannel || j.paymentMethod || "").toLowerCase();
+      const isMember = ch.includes("deduct") || ch.includes("member") || ch.includes("credit");
+      return isMember;
+    }).map((j: any) => ({
+      id: `job-deduct-${j.id}`,
+      createdAt: new Date(j.createdAt),
+      type: "DEDUCT",
+      direction: "DEBIT" as const,
+      amount: Number(j.totalAmount || j.fee || 0),
+      paidAmount: Number(j.totalAmount || j.fee || 0),
+      bonusAmount: 0,
+      packageName: `Order Payment #${j.billNo || j.ticketNo || j.id}`,
+      paymentChannel: j.paymentChannel || "Deduct Member",
+      slipImageUrl: null,
+      receiptData: null,
+      balanceBefore: null,
+      balanceAfter: j.walletBalanceAfter != null ? Number(j.walletBalanceAfter) : null,
+      approvalStatus: j.isPaid ? "APPROVED" : "PENDING",
+      source: "JobDeduct",
+      referenceId: j.id,
+      job: j,
+    }));
+
+    // 4. Process Manual Adjustments from customerAdjustments
+    const handledAdjIds = new Set(wts.map((w: any) => w.id));
+    const manualAdjustments = (customerAdjustments || []).filter((adj: any) => !handledAdjIds.has(adj.id)).map((adj: any) => {
+      const isAdd = adj.adjustMode === "add";
+      return {
+        id: adj.id,
+        createdAt: new Date(adj.createdAt),
+        type: isAdd ? "ADJUST_ADD" : "ADJUST_DEDUCT",
+        direction: (isAdd ? "CREDIT" : "DEBIT") as "CREDIT" | "DEBIT",
+        amount: Number(adj.amount || 0),
+        paidAmount: Number(adj.amount || 0),
+        bonusAmount: 0,
+        packageName: adj.reason || `Manual Adjust (${adj.actorName || "Staff"})`,
+        paymentChannel: adj.paymentChannel || "Manual Adjust",
+        slipImageUrl: adj.slipImageUrl || null,
+        receiptData: null,
+        balanceBefore: adj.balanceBefore != null ? Number(adj.balanceBefore) : null,
+        balanceAfter: adj.balanceAfter != null ? Number(adj.balanceAfter) : null,
+        approvalStatus: adj.approvalStatus || "APPROVED",
+        source: "ManualAdjustment",
+        referenceId: adj.id,
+      };
+    });
+
+    const allEvents: any[] = [...topups, ...nonDuplicateWts, ...orderDeducts, ...manualAdjustments];
+
+    // 5. If no events exist but customer has a credit balance, add an Opening Balance entry
+    if (allEvents.length === 0 && customer.creditBalance && customer.creditBalance > 0) {
+      allEvents.push({
+        id: `opening-bal-${customer.id}`,
+        createdAt: new Date(customer.memberStartDate || customer.createdAt || Date.now()),
+        type: "OPENING_BALANCE",
+        direction: "CREDIT" as const,
+        amount: Number(customer.creditBalance),
+        paidAmount: Number(customer.creditBalance),
+        bonusAmount: 0,
+        packageName: "Opening Balance / Initial Credit (ยอดยกมาจากระบบเดิม)",
+        paymentChannel: "Initial Balance",
+        slipImageUrl: null,
+        receiptData: null,
+        balanceBefore: 0,
+        balanceAfter: Number(customer.creditBalance),
+        approvalStatus: "APPROVED",
+        source: "OpeningBalance",
+        referenceId: customer.id,
+      });
+    }
+
+    // Prepare effectiveBalBefore for linking
+    allEvents.forEach((it: any) => {
+      if (it.balanceBefore == null && it.balanceAfter != null) {
+        it.effectiveBalBefore = it.direction === 'CREDIT' ? it.balanceAfter - it.amount : it.balanceAfter + it.amount;
+      } else {
+        it.effectiveBalBefore = it.balanceBefore;
+      }
+    });
+
+    // Check if earliest event started with an opening balance
+    const hasOpening = allEvents.some(e => e.type === "OPENING_BALANCE");
+    if (!hasOpening && allEvents.length > 0) {
+      const earliestWithBal = allEvents.reduce((min: any, cur: any) => {
+        if (cur.effectiveBalBefore != null && cur.effectiveBalBefore > 0) {
+          if (!min || cur.createdAt.getTime() < min.createdAt.getTime()) return cur;
+        }
+        return min;
+      }, null);
+
+      if (earliestWithBal && earliestWithBal.effectiveBalBefore > 0) {
+        allEvents.unshift({
+          id: `opening-bal-${customer.id}`,
+          createdAt: new Date(earliestWithBal.createdAt.getTime() - 60000),
+          type: "OPENING_BALANCE",
+          direction: "CREDIT" as const,
+          amount: Number(earliestWithBal.effectiveBalBefore),
+          paidAmount: Number(earliestWithBal.effectiveBalBefore),
+          bonusAmount: 0,
+          packageName: "Opening Balance / Initial Credit (ยอดยกมาก่อนรายการแรก)",
+          paymentChannel: "Initial Balance",
+          slipImageUrl: null,
+          receiptData: null,
+          balanceBefore: 0,
+          balanceAfter: Number(earliestWithBal.effectiveBalBefore),
+          effectiveBalBefore: 0,
+          approvalStatus: "APPROVED",
+          source: "OpeningBalance",
+          referenceId: customer.id,
+        });
+      }
+    }
+
+    // Chain comparator
+    allEvents.sort((a: any, b: any) => {
+      if (a.balanceAfter != null && b.effectiveBalBefore != null && a.balanceAfter === b.effectiveBalBefore) return -1;
+      if (b.balanceAfter != null && a.effectiveBalBefore != null && b.balanceAfter === a.effectiveBalBefore) return 1;
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    });
+
+    // Compute running balance forward
+    let runningBal = 0;
+    allEvents.forEach((item: any) => {
+      const isCredit = item.direction === "CREDIT";
+      if (item.balanceAfter != null && !isNaN(item.balanceAfter)) {
+        runningBal = item.balanceAfter;
+        item.displayBalance = runningBal;
+      } else {
+        if (item.approvalStatus === "PENDING" && item.type === "DEDUCT") {
+          item.displayBalance = runningBal - item.amount;
+        } else {
+          if (isCredit) {
+            runningBal += item.amount;
+          } else {
+            runningBal -= item.amount;
+          }
+          item.displayBalance = runningBal;
+        }
+      }
+    });
+
+    // Return newest first for display
+    return allEvents.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }, [customer, topUpTxs, walletTxs, customerJobs, customerAdjustments]);
+
 
   if (!customer) return null;
 
@@ -509,10 +763,10 @@ export function AdminCustomerProfileModal({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent 
           showCloseButton={false}
-          className="sm:max-w-4xl p-0 bg-white overflow-hidden rounded-3xl z-[999] border border-slate-200/90 shadow-2xl transition-all"
+          className="sm:max-w-5xl md:max-w-6xl w-[96vw] max-h-[92vh] h-[90vh] flex flex-col p-0 bg-white overflow-hidden rounded-3xl z-[999] border border-slate-200/90 shadow-2xl transition-all"
         >
           {/* HEADER SECTION */}
-          <div className="p-6 pb-4 bg-white border-b border-slate-200/80">
+          <div className="p-6 pb-4 bg-white border-b border-slate-200/80 shrink-0">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               
               {/* Left Identity Group */}
@@ -711,7 +965,7 @@ export function AdminCustomerProfileModal({
           </div>
 
           {/* MAIN MODAL BODY CONTAINER (Scrollable) */}
-          <div className="p-6 max-h-[78vh] overflow-y-auto space-y-6">
+          <div className="p-6 flex-1 overflow-y-auto space-y-5">
 
             {/* ========================================================================= */}
             {/* TAB 1: PROFILE, ADDRESSES & TAX                                          */}
@@ -1169,7 +1423,8 @@ export function AdminCustomerProfileModal({
             {activeTab === "orders" && (
               <div className="space-y-6 animate-in fade-in duration-200">
                 
-                {/* TOP METRICS SUMMARY CARD */}
+                {/* TOP METRICS SUMMARY CARD (Orders fulfillment only) */}
+                {ordersSubTab === "orders" && (
                 <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-2xs">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-100">
                     <div className="space-y-1">
@@ -1194,6 +1449,7 @@ export function AdminCustomerProfileModal({
                     </div>
                   </div>
                 </div>
+                )}
 
                 {/* Sub-Switch: Orders List vs Wallet Ledger vs Coupons */}
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1218,7 +1474,7 @@ export function AdminCustomerProfileModal({
                           : "text-slate-600 hover:text-slate-900"
                       }`}
                     >
-                      Credit Wallet Ledger ({walletTxs.length || topUpTxs.length})
+                      Credit Wallet Ledger ({unifiedLedger.length})
                     </button>
                     {canSeeCoupons && (
                       <button
@@ -1371,67 +1627,151 @@ export function AdminCustomerProfileModal({
                 {/* VIEW 2: WALLET & TOP-UP LEDGER */}
                 {ordersSubTab === "ledger" && (
                   <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
-                    <div className="max-h-[320px] overflow-y-auto">
+                    <div className="max-h-[calc(90vh-230px)] min-h-[500px] overflow-y-auto custom-scrollbar">
                       <Table>
-                        <TableHeader className="bg-emerald-50/70 sticky top-0 z-10 shadow-2xs">
+                        <TableHeader className="bg-emerald-50/90 sticky top-0 z-10 shadow-2xs backdrop-blur-xs">
                           <TableRow>
-                            <TableHead className="w-[120px] text-xs font-bold py-3 text-emerald-950 pl-4">Date & Time</TableHead>
-                            <TableHead className="text-xs font-bold py-3 text-emerald-950">Type & Details</TableHead>
-                            <TableHead className="text-xs font-bold py-3 text-emerald-950">Status</TableHead>
+                            <TableHead className="w-[125px] text-xs font-bold py-2.5 text-emerald-950 pl-4">Date & Time</TableHead>
+                            <TableHead className="text-xs font-bold py-2.5 text-emerald-950">Type & Details</TableHead>
+                            <TableHead className="text-xs font-bold py-2.5 text-emerald-950">Status</TableHead>
                             <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Amount (฿)</TableHead>
                             <TableHead className="text-right text-xs font-bold py-3 text-emerald-950">Balance</TableHead>
-                            <TableHead className="text-right text-xs font-bold py-3 text-emerald-950 pr-4">Action</TableHead>
+                            <TableHead className="text-right text-xs font-bold py-2.5 text-emerald-950 pr-4">Action</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {isLoadingWallet || isLoadingTopUps ? (
                             <TableRow>
-                              <TableCell colSpan={6} className="text-center h-24 text-slate-400 text-xs font-semibold">
-                                Loading wallet ledger...
+                              <TableCell colSpan={6} className="text-center h-28 text-slate-400 text-xs font-semibold">
+                                <div className="flex flex-col items-center justify-center gap-1.5 py-4">
+                                  <span className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+                                  <span>Loading full wallet ledger since day one...</span>
+                                </div>
                               </TableCell>
                             </TableRow>
-                          ) : walletTxs.length > 0 ? (
-                            walletTxs.map(tx => {
+                          ) : unifiedLedger.length > 0 ? (
+                            unifiedLedger.map((tx: any) => {
                               const isCredit = tx.direction === 'CREDIT';
                               return (
                                 <TableRow key={tx.id} className="hover:bg-emerald-50/30 transition-colors border-b border-slate-100 text-xs">
-                                  <TableCell className="text-[11px] font-bold text-slate-500 whitespace-nowrap pl-4 py-3">
+                                  <TableCell className="text-[11px] font-bold text-slate-500 whitespace-nowrap pl-4 py-2.5">
                                     {format(new Date(tx.createdAt), 'dd/MM/yyyy HH:mm')}
                                   </TableCell>
-                                  <TableCell className="py-3">
+                                  <TableCell className="py-2.5">
                                     <div className="flex flex-col gap-0.5">
-                                      <span className="font-bold text-slate-800">{tx.type}</span>
-                                      <span className="text-[10px] text-slate-400">{tx.packageName || tx.reason || "Wallet transaction"}</span>
+                                      <div className="flex items-center gap-1.5">
+                                        <span className={`font-black text-[10px] uppercase px-1.5 py-0.2 rounded ${
+                                          tx.type === "TOPUP" || tx.type === "ADJUST_ADD" || tx.type === "REFUND" || tx.type === "OPENING_BALANCE"
+                                            ? "bg-emerald-100 text-emerald-800"
+                                            : "bg-rose-100 text-rose-800"
+                                        }`}>
+                                          {tx.type}
+                                        </span>
+                                        {tx.paymentChannel && (
+                                          <span className="text-[10px] text-slate-400 font-medium">
+                                            • {tx.paymentChannel}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <span className="text-[11px] text-slate-700 font-semibold">
+                                        {tx.packageName || tx.reason || "Wallet transaction"}
+                                      </span>
                                     </div>
                                   </TableCell>
-                                  <TableCell className="py-3">
-                                    <Badge className="bg-emerald-100 text-emerald-800 border-none text-[9px] font-bold">
+                                  <TableCell className="py-2.5">
+                                    <Badge
+                                      className={`border-none text-[9px] font-bold ${
+                                        tx.approvalStatus === "PENDING"
+                                          ? "bg-amber-100 text-amber-800"
+                                          : tx.approvalStatus === "REJECTED"
+                                            ? "bg-rose-100 text-rose-800"
+                                            : "bg-emerald-100 text-emerald-800"
+                                      }`}
+                                    >
                                       {tx.approvalStatus || "APPROVED"}
                                     </Badge>
                                   </TableCell>
                                   <TableCell className={`text-right font-black py-3 text-xs ${isCredit ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                    {isCredit ? '+' : '-'}฿{Number(tx.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                    {isCredit ? '+' : '-'}฿{Number(tx.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </TableCell>
-                                  <TableCell className={`text-right text-[11px] font-mono font-bold py-3 whitespace-nowrap ${Number(tx.balanceAfter || 0) < 0 ? 'text-rose-600 font-black' : 'text-slate-600'}`}>
-                                    {formatBaht(Number(tx.balanceAfter || 0))}
+                                  <TableCell className={`text-right text-[11px] font-mono font-bold py-3 whitespace-nowrap ${Number(tx.displayBalance || 0) < 0 ? 'text-rose-600 font-black' : 'text-slate-700'}`}>
+                                    {formatBaht(Number(tx.displayBalance || 0))}
                                   </TableCell>
-                                  <TableCell className="text-right pr-4 py-3">
-                                    {tx.slipImageUrl && (
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-7 px-2 text-[11px] font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1 rounded-lg cursor-pointer"
-                                        onClick={() => {
-                                          setPreviewSlipUrl(tx.slipImageUrl);
-                                          setPreviewSlipTitle(`${customer.name} — Tx ${tx.id}`);
-                                          setPreviewSlipModalOpen(true);
-                                        }}
-                                      >
-                                        <ImageIcon size={12} />
-                                        Slip
-                                      </Button>
-                                    )}
+                                  <TableCell className="text-right pr-4 py-2.5">
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      {tx.slipImageUrl && (
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 px-2 text-[11px] font-bold text-emerald-700 border-emerald-200 hover:bg-emerald-50 gap-1 rounded-lg cursor-pointer shadow-2xs"
+                                          onClick={() => {
+                                            setPreviewSlipUrl(tx.slipImageUrl);
+                                            setPreviewSlipTitle(`${customer.name} — Slip (${tx.id})`);
+                                            setPreviewSlipModalOpen(true);
+                                          }}
+                                        >
+                                          <ImageIcon size={12} />
+                                          Slip
+                                        </Button>
+                                      )}
+
+                                      {tx.type === "TOPUP" && (
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 px-2 text-[11px] font-bold text-indigo-700 border-indigo-200 hover:bg-indigo-50 gap-1 rounded-lg cursor-pointer shadow-2xs"
+                                          onClick={() => {
+                                            if (tx.receiptData) {
+                                              setPreviewReceipt(tx.receiptData);
+                                            } else {
+                                              setPreviewReceipt({
+                                                id: tx.id,
+                                                receiptNumber: tx.id,
+                                                isDraft: false,
+                                                status: "completed",
+                                                createdAt: new Date(tx.createdAt),
+                                                customerName: customer.name,
+                                                customerPhone: customer.phone,
+                                                items: [{ name: tx.packageName || "Member Top-Up", quantity: 1, price: tx.paidAmount || tx.amount }],
+                                                subtotal: tx.paidAmount || tx.amount,
+                                                total: tx.paidAmount || tx.amount,
+                                                discount: 0,
+                                                deliveryFee: 0,
+                                                expressSurcharge: 0,
+                                                vatAmount: 0,
+                                                vatType: "none",
+                                                vatRate: 0,
+                                                paymentChannel: tx.paymentChannel || "Transfer",
+                                                isPaid: true,
+                                                proformaId: undefined,
+                                                adminNotesJson: null,
+                                                deliveryScheduledAt: null,
+                                                serviceSpeed: "standard",
+                                              });
+                                            }
+                                            setPreviewReceiptOpen(true);
+                                          }}
+                                        >
+                                          <Receipt size={12} />
+                                          Receipt
+                                        </Button>
+                                      )}
+
+                                      {tx.type === "DEDUCT" && tx.job && onViewJob && (
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 px-2 text-[11px] font-bold text-slate-700 border-slate-200 hover:bg-slate-100 gap-1 rounded-lg cursor-pointer shadow-2xs"
+                                          onClick={() => onViewJob(tx.job)}
+                                        >
+                                          <Eye size={12} />
+                                          View Job
+                                        </Button>
+                                      )}
+                                    </div>
                                   </TableCell>
                                 </TableRow>
                               );

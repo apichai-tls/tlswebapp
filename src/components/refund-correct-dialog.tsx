@@ -23,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/auth-provider";
-import { jobStore, customerStore, type Job, type Customer } from "@/lib/store";
+import { jobStore, customerStore, walletApprovalStore, type Job, type Customer } from "@/lib/store";
 import { api } from "@/lib/api";
 import { formatBaht, getJobPaymentBreakdown } from "@/lib/utils";
 
@@ -171,6 +171,7 @@ export function RefundCorrectDialog({ open, onClose, job, onSuccess }: RefundCor
       );
 
       // Trigger store refresh
+      walletApprovalStore.refreshPendingMap().catch(() => {});
       if (job.createdAt) {
         const d = new Date(job.createdAt);
         jobStore.fetchHistoricalJobs(d, d).catch(() => {});

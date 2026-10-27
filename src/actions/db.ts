@@ -843,19 +843,63 @@ export async function updateCustomerAction(
             }
           }
 
-          // 5. Wallet Idempotency Guard (when updating wallet)
+          // 5. Smart Wallet Idempotency Guard (when updating wallet)
           if (isWalletUpdate) {
-            const dedupRef = String(updates.idempotencyKey || updates.walletRefId || '').trim();
-            if (dedupRef) {
-              const existingWalletTx = await tx.walletTransaction.findFirst({
-                where: {
-                  customerId: id,
-                  referenceId: dedupRef,
-                },
-              });
-              if (existingWalletTx) {
-                console.warn(`[WalletIdempotency] Duplicate wallet adjustment ignored for reference: ${dedupRef}`);
-                return { savedCust: lockedCustomer, skippedDuplicateWallet: true };
+            const jobRefId = String(updates.walletRefId || updates.idempotencyKey || '').trim();
+            if (jobRefId) {
+              if (updates.walletRefType === 'job' || updates.walletTxType === 'DEDUCT') {
+                // Smart Net-Deduction Idempotency Guard for Job payments:
+                // Allows re-payment after Unlock Paid / Refund (when netDeducted <= 0 or latest tx is REFUND),
+                // while still blocking rapid accidental double-clicks of the exact same deduction.
+                const jobWalletTxs = await tx.walletTransaction.findMany({
+                  where: {
+                    customerId: id,
+                    referenceId: jobRefId,
+                    type: { in: ['DEDUCT', 'REFUND'] },
+                    approvalStatus: { not: 'REJECTED' },
+                  },
+                  orderBy: { createdAt: 'desc' },
+                });
+                const totalDeducted = jobWalletTxs
+                  .filter((t: any) => t.type === 'DEDUCT')
+                  .reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0);
+                const totalRefunded = jobWalletTxs
+                  .filter((t: any) => t.type === 'REFUND')
+                  .reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0);
+                const netDeducted = Math.round((totalDeducted - totalRefunded) * 100) / 100;
+                const latestTx = jobWalletTxs[0];
+                const incomingAbsAmt = Math.abs(
+                  updates.creditBalanceDelta !== undefined
+                    ? Number(updates.creditBalanceDelta)
+                    : Math.round(((data.creditBalance ?? lockedCustomer.creditBalance) - (lockedCustomer.creditBalance || 0)) * 100) / 100
+                );
+                const isRecentSameDeduct = Boolean(
+                  latestTx &&
+                  latestTx.type === 'DEDUCT' &&
+                  Math.abs((Number(latestTx.amount) || 0) - incomingAbsAmt) < 0.01 &&
+                  Date.now() - new Date(latestTx.createdAt).getTime() < 30000
+                );
+                const isSameIdempKey = Boolean(
+                  updates.idempotencyKey &&
+                  updates.idempotencyKey !== updates.walletRefId &&
+                  jobWalletTxs.some((t: any) => t.type === 'DEDUCT' && t.reason?.includes(`[Key:${updates.idempotencyKey}]`))
+                );
+                if (netDeducted > 0 && (isRecentSameDeduct || isSameIdempKey)) {
+                  console.warn(`[WalletIdempotency] Duplicate job wallet deduction ignored for job: ${jobRefId}`);
+                  return { savedCust: lockedCustomer, skippedDuplicateWallet: true };
+                }
+              } else {
+                const existingWalletTx = await tx.walletTransaction.findFirst({
+                  where: {
+                    customerId: id,
+                    referenceId: jobRefId,
+                    approvalStatus: { not: 'REJECTED' },
+                  },
+                });
+                if (existingWalletTx) {
+                  console.warn(`[WalletIdempotency] Duplicate wallet adjustment ignored for reference: ${jobRefId}`);
+                  return { savedCust: lockedCustomer, skippedDuplicateWallet: true };
+                }
               }
             }
           }
@@ -919,7 +963,7 @@ export async function updateCustomerAction(
                       balanceBefore: balBefore,
                       balanceAfter: balAfter,
                       reason: updates.adjustReason || updates.reason || null,
-                      referenceId: updates.idempotencyKey || updates.walletRefId || null,
+                      referenceId: updates.walletRefId || updates.idempotencyKey || null,
                       referenceType: refType,
                       createdById: updates.actorId || null,
                       createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
@@ -5545,6 +5589,7 @@ export async function createWalletTransactionAction(data: {
 
 export async function getWalletTransactionsAction(filters?: {
   customerId?: string;
+  referenceId?: string;
   approvalStatus?: string;
   type?: string;
   startDate?: string;
@@ -5567,6 +5612,7 @@ export async function getWalletTransactionsAction(filters?: {
   }
   const where: any = {};
   if (filters?.customerId) where.customerId = filters.customerId;
+  if (filters?.referenceId) where.referenceId = filters.referenceId;
   if (filters?.approvalStatus && filters.approvalStatus !== 'all') where.approvalStatus = filters.approvalStatus;
   if (filters?.type && filters.type !== 'all') where.type = filters.type;
   if (filters?.branchId && filters.branchId !== 'all') where.branchId = filters.branchId;
@@ -5719,13 +5765,22 @@ export async function rejectWalletTransactionAction(data: {
   }
   if (originalTx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${originalTx.approvalStatus}`);
 
-  const isCreditTopUp = originalTx.type === 'TOPUP' || originalTx.direction === 'CREDIT';
-  const shouldDeduct = Boolean(data.deductFromWallet && isCreditTopUp);
+  const isActualCreditBalanceIncrease =
+    originalTx.type === 'TOPUP' ||
+    (originalTx.direction === 'CREDIT' &&
+      originalTx.type !== 'UNLOCK_PAID' &&
+      Math.abs((Number(originalTx.balanceAfter) || 0) - (Number(originalTx.balanceBefore) || 0)) > 0.001);
+  const shouldDeduct = Boolean(data.deductFromWallet && isActualCreditBalanceIncrease);
 
   // 1. Create a follow-up Task so staff can investigate, resolve, and discuss
-  const cleanJobId = originalTx.referenceType === 'job' || originalTx.referenceId?.startsWith('RF-') || originalTx.type === 'DEDUCT'
-    ? originalTx.referenceId || undefined
-    : undefined;
+  const cleanJobId =
+    originalTx.referenceType === 'job' ||
+    originalTx.referenceId?.startsWith('RF-') ||
+    originalTx.type === 'DEDUCT' ||
+    originalTx.type === 'REFUND' ||
+    originalTx.type === 'UNLOCK_PAID'
+      ? originalTx.referenceId || undefined
+      : undefined;
 
   const taskTitle = `[Wallet Rejected] ${originalTx.type} ฿${originalTx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} - ${originalTx.customerName || "Customer"}`;
 
@@ -6332,7 +6387,7 @@ export async function processRefundAndCorrectAction(data: {
       data: { correctedJobId: duplicatedJob.id }
     });
 
-    // 6. Handle Wallet refund if walletRefundPortion > 0
+    // 6. Handle Wallet refund if walletRefundPortion > 0, and ALWAYS create a PENDING review record for Accounts
     if (walletRefundPortion > 0 && job.customerId) {
       await lockCustomerRowForWallet(tx, job.customerId);
       const currentCust = await tx.customer.findUnique({ where: { id: job.customerId } });
@@ -6345,7 +6400,7 @@ export async function processRefundAndCorrectAction(data: {
           data: { creditBalance: balAfter }
         });
 
-        // Create WalletTransaction record
+        // Create WalletTransaction record in PENDING state so Accounts reviews every refund
         const walletTx = await tx.walletTransaction.create({
           data: {
             customerId: job.customerId,
@@ -6355,13 +6410,14 @@ export async function processRefundAndCorrectAction(data: {
             direction: "CREDIT",
             balanceBefore: balBefore,
             balanceAfter: balAfter,
-            referenceId: creditNoteNumber,
-            referenceType: "refund",
+            referenceId: job.id,
+            referenceType: "job",
+            paymentChannel: data.refundChannel || "Wallet",
             reason: `Full Refund from Job #${job.id} (CN: ${creditNoteNumber}): ${data.reason}`,
             createdById: data.actorId || null,
             createdByName: data.actorName || "Staff",
             branchId: data.branchId || job.branchId || null,
-            approvalStatus: "APPROVED",
+            approvalStatus: "PENDING",
           }
         });
 
@@ -6370,6 +6426,34 @@ export async function processRefundAndCorrectAction(data: {
           data: { walletTxId: walletTx.id }
         });
       }
+    } else if (refundAmount > 0) {
+      const currentCust = job.customerId
+        ? await tx.customer.findUnique({ where: { id: job.customerId } })
+        : null;
+      const custBal = currentCust?.creditBalance || 0;
+      const auditTx = await tx.walletTransaction.create({
+        data: {
+          customerId: job.customerId || "walk-in",
+          customerName: currentCust?.name || job.customerName || "Customer",
+          type: "UNLOCK_PAID",
+          amount: refundAmount,
+          direction: "NEUTRAL",
+          balanceBefore: custBal,
+          balanceAfter: custBal,
+          referenceId: job.id,
+          referenceType: "job",
+          paymentChannel: data.refundChannel || job.paymentChannel || "Cash/Transfer",
+          reason: `Full Refund (${data.refundChannel}) from Job #${job.id} (CN: ${creditNoteNumber}): ${data.reason}`,
+          createdById: data.actorId || null,
+          createdByName: data.actorName || "Staff",
+          branchId: data.branchId || job.branchId || null,
+          approvalStatus: "PENDING",
+        }
+      });
+      await tx.jobRefund.update({
+        where: { id: jobRefund.id },
+        data: { walletTxId: auditTx.id }
+      });
     }
 
     // 7. Handle CashierShift if cashRefundPortion > 0 and active open shift exists
@@ -6578,6 +6662,32 @@ export async function unlockPaidJobAction(data: {
       const walletRefundAmount = existingPayments
         .filter(isWalletPay)
         .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+      const totalUnlockedAmount =
+        existingPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0) ||
+        Number(job.totalAmount) ||
+        0;
+      const unlockedChannels = Array.from(
+        new Set(existingPayments.map((p: any) => p.channel || p.method).filter(Boolean))
+      ).join(", ") || job.paymentChannel || job.paymentMethod || "Paid";
+
+      // Annotate any prior PENDING DEDUCT transactions for this job so Accounts sees that this payment was unlocked
+      const priorPendingDeducts = await tx.walletTransaction.findMany({
+        where: {
+          referenceId: job.id,
+          type: "DEDUCT",
+          approvalStatus: "PENDING",
+        },
+      });
+      for (const priorTx of priorPendingDeducts) {
+        if (!priorTx.reason?.includes("[Unlocked:")) {
+          await tx.walletTransaction.update({
+            where: { id: priorTx.id },
+            data: {
+              reason: `${priorTx.reason || `Order Payment #${job.billNo || job.id}`} [Unlocked: ${data.reason}]`,
+            },
+          });
+        }
+      }
 
       if (walletRefundAmount > 0 && job.customerId) {
         await lockCustomerRowForWallet(tx, job.customerId);
@@ -6600,15 +6710,42 @@ export async function unlockPaidJobAction(data: {
               direction: "CREDIT",
               balanceBefore: balBefore,
               balanceAfter: balAfter,
-              reason: `Unlock Paid: ${data.reason}`,
+              reason: `🔓 Unlock Paid: ${data.reason}`,
               referenceId: job.id,
               referenceType: "job",
+              paymentChannel: unlockedChannels,
+              branchId: job.branchId || null,
               createdById: data.actorId || null,
               createdByName: data.actorName || "CSO",
-              approvalStatus: "APPROVED",
+              approvalStatus: "PENDING",
             },
           });
         }
+      } else {
+        // Non-wallet payment unlocked (Cash, Transfer, Card, etc.) -> Create PENDING UNLOCK_PAID review record so Accounts is always notified!
+        const customer = job.customerId
+          ? await tx.customer.findUnique({ where: { id: job.customerId } })
+          : null;
+        const custBal = customer?.creditBalance || 0;
+        await tx.walletTransaction.create({
+          data: {
+            customerId: job.customerId || "walk-in",
+            customerName: customer?.name || job.customerName || "Customer",
+            type: "UNLOCK_PAID",
+            amount: totalUnlockedAmount,
+            direction: "NEUTRAL",
+            balanceBefore: custBal,
+            balanceAfter: custBal,
+            reason: `🔓 Unlock Paid (${unlockedChannels}): ${data.reason}`,
+            referenceId: job.id,
+            referenceType: "job",
+            paymentChannel: unlockedChannels,
+            branchId: job.branchId || null,
+            createdById: data.actorId || null,
+            createdByName: data.actorName || "CSO",
+            approvalStatus: "PENDING",
+          },
+        });
       }
 
       // ──── 4. Cashier Shift Adjustment (สำหรับกะที่ยังเปิดอยู่) ────
@@ -6861,9 +6998,10 @@ export async function recordJobPaymentAction(data: {
             referenceId: job.id,
             referenceType: "job",
             paymentChannel: data.channel,
+            branchId: job.branchId || null,
             createdById: data.actorId || null,
             createdByName: data.actorName || "Staff",
-            approvalStatus: "APPROVED",
+            approvalStatus: "PENDING",
           }
         });
 
@@ -7108,7 +7246,7 @@ export async function voidJobPaymentAction(data: {
       let refundedAmount = 0;
       let newBalance: number | undefined = undefined;
 
-      // 1. If method was credit (Member Wallet), refund back to wallet
+      // 1. If method was credit (Member Wallet), refund back to wallet and notify Accounts (PENDING)
       if (targetMethod === "credit" && job.customerId) {
         await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
@@ -7130,18 +7268,44 @@ export async function voidJobPaymentAction(data: {
               direction: "CREDIT",
               balanceBefore: balBefore,
               balanceAfter: balAfter,
-              reason: `ยกเลิกการชำระเงิน: ${data.reason.trim()}`,
+              reason: `🔓 ยกเลิกการชำระเงิน (Void Payment): ${data.reason.trim()}`,
               referenceId: job.id,
               referenceType: "job",
+              paymentChannel: targetChannel || "Deduct Member",
+              branchId: job.branchId || null,
               createdById: data.actorId || null,
               createdByName: data.actorName || "CSO",
-              approvalStatus: "APPROVED",
+              approvalStatus: "PENDING",
             }
           });
 
           refundedAmount = targetAmount;
           newBalance = balAfter;
         }
+      } else if (targetAmount > 0) {
+        const customer = job.customerId
+          ? await tx.customer.findUnique({ where: { id: job.customerId } })
+          : null;
+        const custBal = customer?.creditBalance || 0;
+        await tx.walletTransaction.create({
+          data: {
+            customerId: job.customerId || "walk-in",
+            customerName: customer?.name || job.customerName || "Customer",
+            type: "UNLOCK_PAID",
+            amount: targetAmount,
+            direction: "NEUTRAL",
+            balanceBefore: custBal,
+            balanceAfter: custBal,
+            reason: `🔓 ยกเลิกการชำระเงิน (${targetChannel || targetMethod}): ${data.reason.trim()}`,
+            referenceId: job.id,
+            referenceType: "job",
+            paymentChannel: targetChannel || targetMethod,
+            branchId: job.branchId || null,
+            createdById: data.actorId || null,
+            createdByName: data.actorName || "CSO",
+            approvalStatus: "PENDING",
+          }
+        });
       }
 
       // 2. If open shift, adjust shift sales by method

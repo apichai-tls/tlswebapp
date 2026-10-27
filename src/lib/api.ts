@@ -542,6 +542,12 @@ export function startRealtimeConnection(forceReconnect = false) {
 
   eventSourceUserId = currentUid;
   const params = new URLSearchParams();
+  if (authUser?.sessionToken) {
+    params.set('token', authUser.sessionToken);
+  }
+  if (currentUid) {
+    params.set('userId', currentUid);
+  }
   if (lastServerSyncMs > 0) params.set('since', String(lastServerSyncMs - 2000));
 
   const streamUrl = `/api/events/stream${params.toString() ? `?${params.toString()}` : ''}`;

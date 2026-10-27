@@ -97,6 +97,11 @@ export const getWalletTypeConfig = (type: string) => {
         label: "Refund",
         cls: "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800",
       };
+    case "UNLOCK_PAID":
+      return {
+        label: "Unlock Paid",
+        cls: "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/40 dark:text-orange-300 dark:border-orange-800",
+      };
     case "REVERSAL":
       return {
         label: "Reversal",
@@ -399,7 +404,11 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
 
     setIsProcessingAction(true);
     try {
-      const isTopUp = txToReject.type === "TOPUP" || txToReject.direction === "CREDIT";
+      const isTopUp =
+        txToReject.type === "TOPUP" ||
+        (txToReject.direction === "CREDIT" &&
+          txToReject.type !== "UNLOCK_PAID" &&
+          Math.abs((Number(txToReject.balanceAfter) || 0) - (Number(txToReject.balanceBefore) || 0)) > 0.001);
       const shouldDeduct = isTopUp ? deductFromWallet : false;
 
       const res = await walletApprovalStore.reject(
@@ -497,6 +506,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
     const isJob = tx.referenceType === "job" 
       || tx.type === "DEDUCT" 
       || tx.type === "REFUND"
+      || tx.type === "UNLOCK_PAID"
       || (tx.referenceId && (tx.referenceId.startsWith("RF-") || tx.referenceId.startsWith("TLS-")));
 
     if (isJob && tx.referenceId && onViewJob) {
@@ -565,6 +575,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
               <option value="ADJUST_ADD">Manual Adjust (+)</option>
               <option value="ADJUST_DEDUCT">Manual Adjust (-)</option>
               <option value="REFUND">Refund</option>
+              <option value="UNLOCK_PAID">Unlock Paid</option>
               <option value="REVERSAL">Reversal</option>
             </select>
           </div>
@@ -898,7 +909,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
 
                           {/* Line 2: Reference */}
                           {(() => {
-                            const isJob = tx.referenceType === "job" || tx.type === "DEDUCT" || (tx.referenceId && tx.referenceId.startsWith("RF-"));
+                            const isJob = tx.referenceType === "job" || tx.type === "DEDUCT" || tx.type === "REFUND" || tx.type === "UNLOCK_PAID" || (tx.referenceId && tx.referenceId.startsWith("RF-"));
                             const isManual = tx.referenceType === "manual" || tx.type.startsWith("ADJUST");
 
                             if (isJob && tx.referenceId) {
@@ -951,10 +962,14 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                       <TableCell className="py-3.5 text-right font-mono">
                         <span
                           className={`text-xs font-bold ${
-                            isCredit ? "text-emerald-600" : "text-rose-600"
+                            tx.type === "UNLOCK_PAID"
+                              ? "text-orange-600"
+                              : isCredit
+                                ? "text-emerald-600"
+                                : "text-rose-600"
                           }`}
                         >
-                          {isCredit ? "+" : "-"}฿{formatCurrency(tx.amount)}
+                          {tx.type === "UNLOCK_PAID" ? "" : isCredit ? "+" : "-"}฿{formatCurrency(tx.amount)}
                         </span>
                       </TableCell>
 
@@ -1090,7 +1105,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setTxToReject(tx);
-                                setDeductFromWallet(true);
+                                setDeductFromWallet(tx.type === "TOPUP");
                                 setRejectReason("");
                                 setRejectModalOpen(true);
                               }}
@@ -1255,7 +1270,11 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
           </DialogHeader>
 
           {txToReject && (() => {
-            const isTopUp = txToReject.type === "TOPUP" || txToReject.direction === "CREDIT";
+            const isTopUp =
+              txToReject.type === "TOPUP" ||
+              (txToReject.direction === "CREDIT" &&
+                txToReject.type !== "UNLOCK_PAID" &&
+                Math.abs((Number(txToReject.balanceAfter) || 0) - (Number(txToReject.balanceBefore) || 0)) > 0.001);
             const targetCustomer = customers.find((c) => c.id === txToReject.customerId);
             const currentBalance = Number(targetCustomer?.creditBalance ?? txToReject.balanceAfter ?? 0);
             const amountToDeduct = Number(txToReject.amount || 0);
@@ -1669,7 +1688,7 @@ export function ReportsWalletApprovals({ selectedBranch = "all", onViewJob }: Re
                           const target = inspectTx;
                           setInspectTx(null);
                           setTxToReject(target);
-                          setDeductFromWallet(true);
+                          setDeductFromWallet(target.type === "TOPUP");
                           setRejectReason("");
                           setRejectModalOpen(true);
                         }}

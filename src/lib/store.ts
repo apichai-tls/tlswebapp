@@ -1292,6 +1292,9 @@ export const walletApprovalStore = {
   getSnapshot(): PendingWalletMap {
     return pendingWalletState;
   },
+  async refresh() {
+    return this.refreshPendingMap();
+  },
   async refreshPendingMap() {
     try {
       const res = await api.getPendingWalletMap();
