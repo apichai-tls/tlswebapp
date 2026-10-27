@@ -731,6 +731,7 @@ export async function assertServerActionAuthorized(options?: {
 
   if (
     options?.targetBranchId &&
+    options.targetBranchId.toUpperCase() !== 'ONLINE' &&
     user.allowedBranchIds !== 'ALL' &&
     !user.allowedBranchIds.includes(options.targetBranchId)
   ) {
@@ -768,14 +769,43 @@ export function canAccessCustomerRecords(
     role === 'marketing'
   ) {
     if (user.allowedBranchIds === 'ALL') return true;
-    if (!customerBranchId) return true;
+    if (!customerBranchId || customerBranchId.toUpperCase() === 'ONLINE') return true;
     return user.allowedBranchIds.includes(customerBranchId);
   }
 
   // Branch staff / cashiers can only access customers of their branch or unassigned
   if (user.allowedBranchIds === 'ALL') return true;
-  if (!customerBranchId) return true;
+  if (!customerBranchId || customerBranchId.toUpperCase() === 'ONLINE') return true;
   return user.allowedBranchIds.includes(customerBranchId);
+}
+
+export async function canAccessCustomerOrLinkedJob(
+  user: ServerAuthUser | null,
+  customerId?: string | null,
+  customerBranchId?: string | null,
+  tx?: any
+): Promise<boolean> {
+  if (canAccessCustomerRecords(user, customerBranchId)) return true;
+  if (!user || !user.isActive || (user.role || '').toLowerCase() === 'rider') return false;
+  if (!customerId) return false;
+  if (user.allowedBranchIds === 'ALL') return true;
+  if (!Array.isArray(user.allowedBranchIds) || user.allowedBranchIds.length === 0) return false;
+  try {
+    const dbClient = tx || prisma;
+    const linkedJob = await dbClient.job.findFirst({
+      where: {
+        customerId,
+        OR: [
+          { branchId: { in: user.allowedBranchIds } },
+          { branchId: null },
+        ],
+      },
+      select: { id: true },
+    });
+    return Boolean(linkedJob);
+  } catch {
+    return false;
+  }
 }
 
 export function canAccessFinancialData(user: ServerAuthUser | null): boolean {

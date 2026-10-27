@@ -22,7 +22,7 @@ import {
 } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
 import { useCustomers } from "@/lib/use-customers";
-import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate, matchCustomerSearch, formatBaht } from "@/lib/utils";
+import { TOPUP_SEQ_KEY, generateTopUpReceiptNumber, calculateWalletExpiryDate, matchCustomerSearch, formatBaht, formatReceiptCustomerPhone } from "@/lib/utils";
 
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { getCustomerTodayTopUpAction } from "@/actions/db";
@@ -575,7 +575,7 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
         status: "completed",
         createdAt: now,
         customerName: selectedCustomer.name,
-        customerPhone: selectedCustomer.phone || "-",
+        customerPhone: formatReceiptCustomerPhone({ customer: selectedCustomer }),
         items: itemsPayload.map(i => ({ name: i.name, quantity: i.quantity, price: i.price, category: "PACKAGE" })),
         subtotal: cartTotal,
         total: cartTotal,

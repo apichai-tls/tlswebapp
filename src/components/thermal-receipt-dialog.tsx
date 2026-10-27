@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { type Job, customerStore, shopStore, serviceStore, type ServiceItem } from "@/lib/store";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, formatJobDisplayId, generateReceiptNumber, getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatBaht } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, formatJobDisplayId, generateReceiptNumber, getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatBaht, formatReceiptCustomerPhone } from "@/lib/utils";
 
 export interface ReceiptItem {
   name: string;
@@ -362,7 +362,7 @@ export function formatJobToReceiptData(job: Job): ReceiptData {
     receiptNumber: isJobPaid ? ((job as any).receiptNumber || (displayId ? generateReceiptNumber(displayId) : undefined)) : undefined,
     createdAt: receiptDate,
     customerName: job.customerName || "Walk-In",
-    customerPhone: (job.customerPhone && job.customerPhone !== "-") ? job.customerPhone : (cust?.whatsappId ? `WA: ${cust.whatsappId}` : "-"),
+    customerPhone: formatReceiptCustomerPhone({ jobPhone: job.customerPhone, customer: cust }),
     deliveryAddress: effectiveDeliveryAddress,
     items: jobItems.map((item: any) => ({
       name: item.name,
@@ -890,7 +890,7 @@ export function ThermalReceiptDialog({
           )}
           <div className="flex justify-between">
             <span>PHONE:</span>
-            <span>{receiptData.customerPhone}</span>
+            <span>{formatReceiptCustomerPhone({ jobPhone: receiptData.customerPhone, customer: findMatchingCustomer(customerStore.getSnapshot(), { customerId: receiptData.customerId, customerName: receiptData.customerName, customerPhone: receiptData.customerPhone }) })}</span>
           </div>
           {receiptData.deliveryAddress && (
             <div className="flex justify-between gap-2 text-left">

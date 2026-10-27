@@ -4,6 +4,7 @@ import { verifyBeamWebhookSignature } from '@/lib/external-api-auth'
 import { invalidateDbCache } from '@/lib/db-cache'
 import { publishOrderEvent } from '@/lib/realtime-bus'
 import { processTopUpAction, lockJobRowForUpdate } from '@/actions/db'
+import { generateProformaBaseNumber } from '@/lib/utils'
 import { runWithInternalSystemAuth } from '@/lib/server-auth'
 
 export const dynamic = 'force-dynamic'
@@ -399,6 +400,25 @@ export async function POST(req: Request) {
         delete adminNotesObj.lastBeamPaymentLink
       }
 
+      let hasLaundryItems = false
+      try {
+        if (freshJob.itemsJson) {
+          const parsedItems = JSON.parse(freshJob.itemsJson)
+          if (Array.isArray(parsedItems)) {
+            hasLaundryItems = parsedItems.some(
+              (item: any) => item.category !== "PACKAGE" && !String(item.name || "").toLowerCase().includes("package")
+            )
+          }
+        }
+      } catch {}
+      const autoProformaFields =
+        hasLaundryItems && !freshJob.proformaNumber
+          ? {
+              proformaNumber: generateProformaBaseNumber(freshJob.id),
+              proformaRevision: freshJob.proformaRevision ?? (freshJob.id.startsWith('RF-') ? 1 : 0),
+            }
+          : {}
+
       // Update Job payment state
       const savedJob = await tx.job.update({
         where: { id: freshJob.id },
@@ -411,6 +431,7 @@ export async function POST(req: Request) {
           ...(isFullyPaidNow ? { csoPaidAt: now, shopPaidAt: now } : {}),
           subStatus: isFullyPaidNow && freshJob.subStatus === 'billing' ? 'wash' : freshJob.subStatus,
           adminNotesJson: JSON.stringify(adminNotesObj),
+          ...autoProformaFields,
         },
       })
 

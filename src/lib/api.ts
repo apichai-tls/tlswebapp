@@ -76,7 +76,31 @@ const confirmedJobSnapshots = new Map<string, Job>();
 const lastSeenJobRevision = new Map<string, number>();
 const inFlightClientJobFetches = new Map<string, Promise<Job | null>>();
 let inFlightDeltaPromise: Promise<{ jobsUpdated: number; customersUpdated: number }> | null = null;
+const inFlightHistoricalFetches = new Map<string, Promise<Job[]>>();
+const historicalRangeCache = new Map<string, { jobs: Job[]; fetchedAt: number; syncMs: number }>();
 let lastServerSyncMs = 0;
+
+function withActionTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = 25000,
+  errorMessage = 'การเชื่อมต่อใช้เวลานานเกินไป กรุณาลองใหม่อีกครั้ง (Request timed out)'
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 export function getClientAuthUser(): {
   id?: string;
@@ -1117,47 +1141,117 @@ export const api = {
   },
 
   async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
-    if (typeof window === 'undefined' || !memoryDb) return [];
+    if (typeof window === 'undefined') return [];
     if (!startDate || !endDate || isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
       console.warn('Invalid start/end date passed to fetchHistoricalJobs', startDate, endDate);
       return [];
     }
-    try {
-      let url = `/api/jobs/history?start=${startDate.toISOString()}&end=${endDate.toISOString()}`;
-      if (riderId) {
-        url += `&riderId=${encodeURIComponent(riderId)}`;
-      }
-      const res = await fetch(url, { headers: getClientAuthHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        const parsedJobs = JSON.parse(JSON.stringify(data), dateReviver) as Job[];
 
-        const existingIds = new Set(memoryDb.jobs.map((j) => j.id));
-        const historyMap = new Map(parsedJobs.map((j) => [j.id, j]));
-
-        const updatedJobs = memoryDb.jobs.map((j) => {
-          if (historyMap.has(j.id)) {
-            return { ...j, ...historyMap.get(j.id)! };
-          }
-          return j;
-        });
-
-        const newJobs = parsedJobs.filter((j) => !existingIds.has(j.id));
-
-        memoryDb.jobs = [...updatedJobs, ...newJobs];
-        api.notify('jobs');
-        return parsedJobs;
-      }
-    } catch (error) {
-      console.error('Failed to fetch historical jobs', error);
+    // Ensure initial DB state is loaded first so historical jobs are never dropped on initial mount
+    if (!isDbLoaded || !memoryDb) {
+      try {
+        await ensureDbLoaded();
+      } catch {}
     }
-    return [];
+    const db = initDb();
+
+    // Normalize start/end to local day boundaries (00:00:00.000 .. 23:59:59.999)
+    const normStart = new Date(startDate);
+    if (normStart.getUTCHours() === 0 && normStart.getUTCMinutes() === 0 && normStart.getUTCSeconds() === 0) {
+      // Handle dates constructed via new Date("YYYY-MM-DD") (UTC midnight) by preserving the UTC calendar date in local time
+      normStart.setFullYear(normStart.getUTCFullYear(), normStart.getUTCMonth(), normStart.getUTCDate());
+    }
+    normStart.setHours(0, 0, 0, 0);
+
+    const normEnd = new Date(endDate);
+    if (normEnd.getUTCHours() === 0 && normEnd.getUTCMinutes() === 0 && normEnd.getUTCSeconds() === 0) {
+      normEnd.setFullYear(normEnd.getUTCFullYear(), normEnd.getUTCMonth(), normEnd.getUTCDate());
+    }
+    normEnd.setHours(23, 59, 59, 999);
+
+    const rangeKey = `${normStart.toISOString()}|${normEnd.toISOString()}|${riderId || ''}`;
+    const now = Date.now();
+    const cachedRange = historicalRangeCache.get(rangeKey);
+    if (cachedRange && now - cachedRange.fetchedAt < 10000 && cachedRange.syncMs === lastServerSyncMs) {
+      return cachedRange.jobs;
+    }
+
+    const existingPromise = inFlightHistoricalFetches.get(rangeKey);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const fetchPromise = (async (): Promise<Job[]> => {
+      try {
+        let url = `/api/jobs/history?start=${encodeURIComponent(normStart.toISOString())}&end=${encodeURIComponent(normEnd.toISOString())}`;
+        if (riderId) {
+          url += `&riderId=${encodeURIComponent(riderId)}`;
+        }
+        const res = await withActionTimeout(
+          fetch(url, { headers: getClientAuthHeaders() }),
+          20000,
+          'โหลดข้อมูลประวัติออเดอร์ใช้เวลานานเกินไป (Historical fetch timed out)'
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const parsedJobs = JSON.parse(JSON.stringify(data), dateReviver) as Job[];
+          const currentDb = initDb();
+
+          const existingMap = new Map(currentDb.jobs.map((j) => [j.id, j]));
+          const normalizedIncoming = parsedJobs.map((raw) => {
+            const existing = existingMap.get(raw.id);
+            // If this job currently has an active in-flight save, preserve its unconfirmed local fields
+            if (existing && (pendingJobSaves.get(raw.id) || 0) > 0) {
+              const dirtyFields = pendingFieldEdits.get(raw.id);
+              const merged = normalizeServerJob(raw, existing);
+              if (dirtyFields) {
+                for (const field of dirtyFields) {
+                  (merged as any)[field] = (existing as any)[field];
+                }
+              }
+              (merged as any)._saveStatus = (existing as any)._saveStatus || 'saving';
+              return merged;
+            }
+            return normalizeServerJob(raw, existing);
+          });
+
+          const historyMap = new Map(normalizedIncoming.map((j) => [j.id, j]));
+          const existingIds = new Set(currentDb.jobs.map((j) => j.id));
+
+          const updatedJobs = currentDb.jobs.map((j) => {
+            if (historyMap.has(j.id)) {
+              return historyMap.get(j.id)!;
+            }
+            return j;
+          });
+
+          const newJobs = normalizedIncoming.filter((j) => !existingIds.has(j.id));
+
+          currentDb.jobs = [...updatedJobs, ...newJobs];
+          historicalRangeCache.set(rangeKey, {
+            jobs: normalizedIncoming,
+            fetchedAt: Date.now(),
+            syncMs: lastServerSyncMs,
+          });
+          api.notify('jobs');
+          return normalizedIncoming;
+        }
+      } catch (error) {
+        console.error('Failed to fetch historical jobs', error);
+      }
+      return [];
+    })().finally(() => {
+      inFlightHistoricalFetches.delete(rangeKey);
+    });
+
+    inFlightHistoricalFetches.set(rangeKey, fetchPromise);
+    return fetchPromise;
   },
   
   async addCustomer(customer: Omit<Customer, 'id'> & Record<string, any>): Promise<Customer> {
     const db = initDb();
     // Let PostgreSQL generate the UUID; do NOT pass a pre-generated id
-    const res = await dbActions.addCustomerAction(customer);
+    const res = await withActionTimeout(dbActions.addCustomerAction(customer), 25000);
     if (res && typeof res === 'object' && 'success' in res) {
       if (!res.success) {
         throw new Error((res as any).error || "เกิดข้อผิดพลาดในการสร้างลูกค้าใหม่");
@@ -1182,7 +1276,7 @@ export const api = {
     const currentCustomer = db.customers.find(c => c.id === id);
     if (!currentCustomer) throw new Error("Customer not found");
 
-    const res = await dbActions.updateCustomerAction(id, updates);
+    const res = await withActionTimeout(dbActions.updateCustomerAction(id, updates), 25000);
     if (res && typeof res === 'object' && 'success' in res) {
       if (!res.success) {
         const err: any = new Error((res as any).error || "เกิดข้อผิดพลาดในการบันทึกข้อมูลลูกค้า");
@@ -1420,11 +1514,14 @@ export const api = {
       }
     };
 
-    const savedJobInDb = await dbActions.addJobAction({
-      ...newJob,
-      actorId: jobDetails.actorId,
-      actorName: jobDetails.actorName,
-    });
+    const savedJobInDb = await withActionTimeout(
+      dbActions.addJobAction({
+        ...newJob,
+        actorId: jobDetails.actorId,
+        actorName: jobDetails.actorName,
+      }),
+      25000
+    );
 
     const finalJob = normalizeServerJob(savedJobInDb, { ...newJob, id: savedJobInDb.id });
     (finalJob as any)._saveStatus = 'saved';
@@ -1469,7 +1566,7 @@ export const api = {
       pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
       setJobSaveState(id, 'saving');
       try {
-        const savedInDb = await dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true });
+        const savedInDb = await withActionTimeout(dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true }), 25000);
         if ((savedInDb as any)?.__actionError) {
           const actionErr: any = new Error((savedInDb as any).error || 'Save failed');
           actionErr.isConflict = Boolean((savedInDb as any).isConflict);
@@ -1555,9 +1652,19 @@ export const api = {
       cleanUpdates.status = 'pending';
     }
 
+    const isSilentMediaUpdate = Boolean(
+      (cleanUpdates as any).__silentBackground ||
+      Object.keys(cleanUpdates).every((k) =>
+        ['billImageUrl', 'actorId', 'actorName', 'actorRole', '__silentBackground', 'suppressThrow'].includes(k)
+      )
+    );
+    delete (cleanUpdates as any).__silentBackground;
+    delete (cleanUpdates as any).suppressThrow;
+
     // Attach base expectedUpdatedAt from the confirmed snapshot (or existingJob) so field-level concurrency check is active by default
+    // (skip for background receipt/proforma image attachments which merge atomically on server)
     const baseConfirmedSnapshot = confirmedJobSnapshots.get(id) || existingJob;
-    if (!(cleanUpdates as any).expectedUpdatedAt && !(cleanUpdates as any).checkConflict && baseConfirmedSnapshot?.updatedAt) {
+    if (!isSilentMediaUpdate && !(cleanUpdates as any).expectedUpdatedAt && !(cleanUpdates as any).checkConflict && baseConfirmedSnapshot?.updatedAt) {
       (cleanUpdates as any).expectedUpdatedAt = baseConfirmedSnapshot.updatedAt;
     }
     if (!(cleanUpdates as any).checkConflict) {
@@ -1573,29 +1680,38 @@ export const api = {
     }
     pendingFieldEdits.set(id, dirtySet);
 
-    // Mark local state as saving (unconfirmed) until server responds
+    // Mark local state as saving (unconfirmed) until server responds (unless silent background media attachment)
     const optimisticJob: Job = {
       ...existingJob,
       ...cleanUpdates,
       updatedAt: new Date(),
     };
-    (optimisticJob as any)._saveStatus = 'saving';
+    if (!isSilentMediaUpdate) {
+      (optimisticJob as any)._saveStatus = 'saving';
+    }
 
     const newJobs = [...db.jobs];
     newJobs[jobIndex] = optimisticJob;
     db.jobs = newJobs;
 
-    pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
-    setJobSaveState(id, 'saving');
+    if (!isSilentMediaUpdate) {
+      pendingJobSaves.set(id, (pendingJobSaves.get(id) || 0) + 1);
+      setJobSaveState(id, 'saving');
+    }
 
     try {
-      const savedInDb = await dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true });
+      const savedInDb = await withActionTimeout(
+        dbActions.updateJobAction(id, { ...cleanUpdates, __returnErrorObject: true }),
+        25000
+      );
       if ((savedInDb as any)?.__actionError) {
         const actionErr: any = new Error((savedInDb as any).error || 'Save failed');
         actionErr.isConflict = Boolean((savedInDb as any).isConflict);
         throw actionErr;
       }
-      const remainingSaves = Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
+      const remainingSaves = isSilentMediaUpdate
+        ? (pendingJobSaves.get(id) || 0)
+        : Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
       pendingJobSaves.set(id, remainingSaves);
 
       if (remainingSaves === 0) {
@@ -1627,8 +1743,14 @@ export const api = {
       api.notify('jobs');
       return confirmedJob;
     } catch (err: any) {
-      const remainingSaves = Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
+      const remainingSaves = isSilentMediaUpdate
+        ? (pendingJobSaves.get(id) || 0)
+        : Math.max(0, (pendingJobSaves.get(id) || 1) - 1);
       pendingJobSaves.set(id, remainingSaves);
+      if (isSilentMediaUpdate) {
+        console.warn('[api.updateJob] Silent background media update failed for', id, err);
+        return optimisticJob;
+      }
 
       const isConflict =
         String(err?.message || '').includes('409') ||
@@ -1743,16 +1865,28 @@ export const api = {
       cleanUpdates.status = 'pending';
     }
 
+    const isSilentMedia = Boolean(
+      (cleanUpdates as any).__silentBackground ||
+      Object.keys(cleanUpdates).every((k) =>
+        ['billImageUrl', 'actorId', 'actorName', 'actorRole', '__silentBackground', 'suppressThrow'].includes(k)
+      )
+    );
+    delete (cleanUpdates as any).__silentBackground;
+
     const updatedJob: Job = {
       ...existingJob,
       ...cleanUpdates,
       updatedAt: new Date(),
     };
-    (updatedJob as any)._saveStatus = 'saving';
+    if (!isSilentMedia) {
+      (updatedJob as any)._saveStatus = 'saving';
+    }
     const newJobs = [...db.jobs];
     newJobs[jobIndex] = updatedJob;
     db.jobs = newJobs;
-    setJobSaveState(id, 'saving');
+    if (!isSilentMedia) {
+      setJobSaveState(id, 'saving');
+    }
   },
 
   // --- SERVICES ---

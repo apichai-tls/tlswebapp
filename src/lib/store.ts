@@ -790,20 +790,64 @@ export const jobStore = {
         throw new Error(`Order #${formatJobDisplayId(job.id)} ยังไม่ได้ชำระเงิน${remainingStr} กรุณาชำระเงินก่อนส่งมอบผ้า`);
       }
 
-      const updatedLegs = job.legs ? {
-        ...job.legs,
-        deliveryOutbound: { ...job.legs.deliveryOutbound, status: "completed" as const, completedAt: new Date() },
-        deliveryInbound: { ...job.legs.deliveryInbound, status: "completed" as const, completedAt: new Date() }
-      } : undefined;
+      const nowDate = new Date();
+      const baseLegs = job.legs || {
+        pickupOutbound: { riderId: job.pickupRiderId || job.riderId || "", scheduledAt: job.pickupScheduledAt ? new Date(job.pickupScheduledAt) : nowDate, status: "completed" as const },
+        pickupInbound: { riderId: job.pickupRiderId || job.riderId || "", scheduledAt: job.pickupScheduledAt ? new Date(job.pickupScheduledAt) : nowDate, status: "completed" as const },
+        deliveryOutbound: { riderId: job.deliveryRiderId || job.riderId || "", scheduledAt: job.deliveryScheduledAt ? new Date(job.deliveryScheduledAt) : nowDate, status: "completed" as const, completedAt: nowDate },
+        deliveryInbound: { riderId: job.deliveryRiderId || job.riderId || "", scheduledAt: job.deliveryScheduledAt ? new Date(job.deliveryScheduledAt) : nowDate, status: "completed" as const, completedAt: nowDate },
+      };
+      const updatedLegs = {
+        ...baseLegs,
+        deliveryOutbound: { ...baseLegs.deliveryOutbound, status: "completed" as const, completedAt: nowDate },
+        deliveryInbound: { ...baseLegs.deliveryInbound, status: "completed" as const, completedAt: nowDate }
+      };
 
-      await api.updateJob(id, {
-        status: "completed",
-        completedAt: job.completedAt || new Date(),
-        deliveryProofImageUrl: proofJson,
-        proofImageUrl: proofJson,
-        legs: updatedLegs,
-        ...actorDetails
-      });
+      if (isWalkIn) {
+        await api.updateJob(id, {
+          status: "completed",
+          completedAt: job.completedAt || nowDate,
+          deliveryProofImageUrl: proofJson,
+          proofImageUrl: proofJson,
+          legs: updatedLegs,
+          ...actorDetails
+        });
+      } else {
+        let baseNotesObj: Record<string, any> = {};
+        let existingNotesArr: any[] = [];
+        let existingPaymentsArr: any[] = [];
+        if (job.adminNotesJson) {
+          try {
+            const parsed = JSON.parse(job.adminNotesJson);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              baseNotesObj = { ...parsed };
+              existingNotesArr = Array.isArray(parsed.notes) ? [...parsed.notes] : [];
+              existingPaymentsArr = Array.isArray(parsed.payments) ? [...parsed.payments] : [];
+            } else if (Array.isArray(parsed)) {
+              existingNotesArr = [...parsed];
+            }
+          } catch {}
+        }
+        const nextAdminNotesObj: Record<string, any> = {
+          ...baseNotesObj,
+          isDeliveryPhotoSent: Boolean(baseNotesObj.isDeliveryPhotoSent),
+          deliveredAt: nowDate.toISOString(),
+          notes: existingNotesArr,
+        };
+        if (existingPaymentsArr.length > 0 || Array.isArray(baseNotesObj.payments)) {
+          nextAdminNotesObj.payments = existingPaymentsArr;
+        }
+
+        await api.updateJob(id, {
+          status: "completed",
+          completedAt: job.completedAt || nowDate,
+          deliveryProofImageUrl: proofJson,
+          proofImageUrl: proofJson,
+          legs: updatedLegs,
+          adminNotesJson: JSON.stringify(nextAdminNotesObj),
+          ...actorDetails
+        });
+      }
     }
     emitJobChange();
   },

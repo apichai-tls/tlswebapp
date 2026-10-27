@@ -93,7 +93,7 @@ import { AdminCustomerDialog } from "@/components/admin-customer-dialog";
 import { generatePromptPayPayload } from "@/lib/promptpay";
 import { A5ReceiptDialog } from "@/components/a5-receipt-dialog";
 import { ThermalReceiptDialog, formatJobToReceiptData } from "@/components/thermal-receipt-dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, roundGrandTotal, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht, formatCustomerFullAddress, isJobFullyPaid, getJobPaymentBreakdown } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, isWalletExpired, calculateWalletExpiryDate, findMatchingCustomer, isValidPhoneNumber, safeCeil, roundGrandTotal, formatJobDisplayId, computeCartHash, matchCustomerSearch, formatBaht, formatCustomerFullAddress, isJobFullyPaid, getJobPaymentBreakdown, formatReceiptCustomerPhone } from "@/lib/utils";
 import { getActivePaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 
 
@@ -2604,7 +2604,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         createdAt: receiptDate,
         customerId: latestJob.customerId || selectedCustomer?.id,
         customerName: latestJob.customerName || "Walk-In",
-        customerPhone: latestJob.customerPhone || "-",
+        customerPhone: formatReceiptCustomerPhone({ jobPhone: latestJob.customerPhone, customer: selectedCustomer }),
         deliveryAddress: (latestJob as any).deliveryAddress || (latestJob.dropoffLocation && latestJob.dropoffLocation !== activeShop?.name ? latestJob.dropoffLocation : undefined) || selectedCustomer?.defaultAddress || undefined,
         items: jobItems,
         subtotal: jobSubtotal,
@@ -2674,7 +2674,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       createdAt: draftDate,
       customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
       customerId: selectedCustomer?.id,
-      customerPhone: selectedCustomer ? (selectedCustomer.phone || selectedCustomer.secondaryPhone || "-") : "-",
+      customerPhone: formatReceiptCustomerPhone({ customer: selectedCustomer }),
       deliveryAddress: resolvedDraftAddress,
       isMember: Boolean(selectedCustomer?.isMember || selectedCustomer?.memberId),
       memberId: selectedCustomer?.memberId || null,
@@ -2837,9 +2837,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     }
 
     setIsProcessing(true);
-    
-    // Simulate sync
-    await new Promise(resolve => setTimeout(resolve, 800));
 
     try {
       const isDeliveryCheck = Boolean(deliveryServiceType);
@@ -2873,104 +2870,6 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         setLastProformaCartHash(currentCartHash);
       }
 
-      // If a Proforma quote exists (whether newly issued, unchanged, or revised), ensure its PNG snapshot is captured and uploaded before saving the job
-      if (targetProformaNum) {
-        try {
-          const effectiveProformaId = `${targetProformaNum}${effectiveRevision !== null && effectiveRevision > 0 ? `-R${effectiveRevision}` : ""}`;
-          const filename = `proforma-${cleanProformaNumber(targetProformaNum)}-rev${effectiveRevision ?? 0}.png`;
-          const alreadyCaptured = capturedReceiptUrlsRef.current.some(url => url.includes(filename)) || sessionCapturedReceiptUrls.some(url => url.includes(filename));
-
-          if (!alreadyCaptured) {
-            const isDelivery = Boolean(deliveryServiceType);
-            const resolvedTempAddress = isDelivery 
-              ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined)
-              : undefined;
-            const resolvedTempFee = isDelivery ? (parseFloat(localDeliveryPrice) || 0) : 0;
-            const tempReceiptData: any = {
-              id: effectiveProformaId,
-              proformaId: cleanProformaNumber(targetProformaNum),
-              proformaRevision: effectiveRevision ?? 0,
-              createdAt: new Date(),
-              customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
-              customerPhone: selectedCustomer ? (selectedCustomer.phone && selectedCustomer.phone !== "-" ? selectedCustomer.phone : (selectedCustomer.secondaryPhone || (selectedCustomer.whatsappId ? `WA: ${selectedCustomer.whatsappId}` : "-"))) : "-",
-              deliveryAddress: resolvedTempAddress,
-              items: cart.map(item => ({ name: item.name, nameEn: item.nameEn, quantity: item.quantity, price: item.price, category: item.category, unit: item.unit })),
-              subtotal: subtotal,
-              expressSurcharge: expressSurcharge,
-              serviceSpeed: serviceSpeed,
-              discount: manualAdjustment + discountAmount,
-              discountPercent: discountPercent,
-              promoCode: appliedPromo?.code,
-              promoDiscount: effectivePromoDiscount,
-              promoTarget: appliedPromo?.applicableCategory && appliedPromo.applicableCategory !== "ALL" ? appliedPromo.applicableCategory : appliedPromo?.discountTarget,
-              total: total,
-              isPaid: isPaid,
-              paymentChannel: isPaid ? (effectivePaymentChannel || (paymentMethod === "cash" ? "Cash" : paymentMethod === "transfer" ? "Transfer" : paymentMethod === "card" ? "Card" : (selectedCustomer?.isMember ? memberWalletChannelName : "Credit Wallet"))) : undefined,
-              remark: [remark, selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "", vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : ""].filter(Boolean).join(" | ") || undefined,
-              isDraft: true,
-              isMember: Boolean(selectedCustomer?.isMember || selectedCustomer?.memberId),
-              memberId: selectedCustomer?.memberId || undefined,
-              walletBalance: selectedCustomer?.creditBalance || 0,
-              walletBalanceAfter: undefined,
-              vatType,
-              vatRate,
-              vatAmount,
-              deliveryScheduledAt: new Date(deliveryScheduledTime),
-              deliveryFee: resolvedTempFee
-            };
-            const blob = settings?.receiptPaperSize === "A5"
-              ? await (await import("@/lib/a5-canvas-generator")).generateA5ReceiptImage(tempReceiptData, activeShop)
-              : await (await import("@/lib/thermal-canvas-generator")).generateThermalReceiptImage(tempReceiptData, activeShop);
-            if (blob) {
-                let uploadJson: { success: boolean; publicUrl?: string } = { success: false };
-                try {
-                  const signRes = await fetch("/api/upload-url", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      entityType: "job",
-                      entityId: loadedJobId || effectiveProformaId,
-                      subType: "proofs",
-                      contentType: "image/png",
-                      filename
-                    })
-                  });
-                  const signData = await signRes.json();
-                  if (signData.uploadUrl && signData.publicUrl) {
-                    const putRes = await fetch(signData.uploadUrl, {
-                      method: "PUT",
-                      headers: { "Content-Type": "image/png" },
-                      body: blob
-                    });
-                    if (putRes.ok) {
-                      uploadJson = { success: true, publicUrl: signData.publicUrl };
-                    }
-                  }
-                } catch (gcsErr) {
-                  console.warn("GCS upload failed, falling back to local:", gcsErr);
-                  const file = new File([blob], filename, { type: "image/png" });
-                  const formData = new FormData();
-                  formData.append("file", file);
-                  formData.append("entityType", "jobs");
-                  formData.append("entityId", loadedJobId || effectiveProformaId);
-                  formData.append("subType", "proofs");
-                  const uploadRes = await fetch("/api/upload-local", { method: "POST", body: formData });
-                  uploadJson = await uploadRes.json();
-                }
-                if (uploadJson.success && uploadJson.publicUrl) {
-                  if (!sessionCapturedReceiptUrls.includes(uploadJson.publicUrl)) {
-                    sessionCapturedReceiptUrls.push(uploadJson.publicUrl);
-                  }
-                  if (!capturedReceiptUrlsRef.current.includes(uploadJson.publicUrl)) {
-                    capturedReceiptUrlsRef.current.push(uploadJson.publicUrl);
-                  }
-                }
-              }
-            }
-          } catch (e) {
-          console.error("Auto proforma revision capture failed:", e);
-        }
-      }
 
       const expressText = selectedExpressPercent > 0 ? `Express ${selectedExpressPercent}%` : "";
       const vatText = vatType !== "none" ? `VAT: ${vatType} (${vatRate}%)` : "";
@@ -3188,7 +3087,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           type: targetType,
           customerId: selectedCustomer?.id,
           customerName: selectedCustomer ? selectedCustomer.name : "Walk-In",
-          customerPhone: selectedCustomer ? (selectedCustomer.phone && selectedCustomer.phone !== "-" ? selectedCustomer.phone : (selectedCustomer.secondaryPhone || (selectedCustomer.whatsappId ? `WA: ${selectedCustomer.whatsappId}` : "-"))) : "-",
+          customerPhone: formatReceiptCustomerPhone({ customer: selectedCustomer }),
           pickupLocation: targetPickupLoc,
           dropoffLocation: resolvedDropoff,
           deliveryAddress: isDelivery ? (deliveryAddress.trim() || selectedCustomer?.defaultAddress || undefined) : undefined,

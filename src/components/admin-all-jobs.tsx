@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns, Split } from "lucide-react";
+import { CalendarDays, Clock, MapPin, Navigation, Truck, Package, CheckCircle2, Search, Filter, User, Zap, XCircle, Edit2, MoreHorizontal, LayoutList, LayoutGrid, Receipt, Droplets, Wind, Shirt, Banknote, Download, Printer, ArrowUpDown, RefreshCw, Wallet, RotateCcw, CreditCard, Send, AlertCircle, ArrowRight, FileCheck2, FileWarning, Maximize2, Minimize2, Monitor, SlidersHorizontal, ZoomIn, ZoomOut, Columns, Split, Camera, ExternalLink } from "lucide-react";
 import Papa from "papaparse";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/providers/auth-provider";
 import { jobStore, shopStore, customerStore, settingsStore, realtimeStore, type Job, type JobStatus } from "@/lib/store";
-import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId } from "@/lib/utils";
+import { isJobFullyPaid, findMatchingCustomer, formatJobDisplayId, getJobPaymentBreakdown, formatLocationWithRoom, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId } from "@/lib/utils";
 import { getPaymentChannels } from "@/lib/payment-channels";
 import { BranchFilterDropdown, getUserAssignedBranchIds, getCleanBranchName } from "@/components/branch-filter-dropdown";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
@@ -55,7 +55,7 @@ const statusIcon: Record<KanbanColumnId, React.ReactNode> = {
 };
 
 type FilterDate = "today" | "yesterday" | "custom";
-type BillingFilterMode = "ALL" | "NO_BILL" | "UNSENT_BILL";
+type BillingFilterMode = "ALL" | "NO_BILL" | "UNSENT_BILL" | "UNSENT_PHOTO";
 
 const KANBAN_COLUMNS: KanbanColumnId[] = ['tba', 'pending', 'pickup', 'billing', 'process', 'delivery', 'completed', 'cancel'];
 
@@ -88,6 +88,12 @@ export interface JobBillingMeta {
   billSentAt: string | null;
   billSentBy: string | null;
   kanbanStage: "billing" | "process" | null;
+  hasDeliveryPhoto: boolean;
+  deliveryPhotoCount: number;
+  deliveryPhotoUrls: string[];
+  isDeliveryPhotoSent: boolean;
+  deliveryPhotoSentAt: string | null;
+  deliveryPhotoSentBy: string | null;
 }
 
 export function getJobBillingMeta(job: Job): JobBillingMeta {
@@ -124,6 +130,25 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
   let billSentAt: string | null = null;
   let billSentBy: string | null = null;
   let kanbanStage: "billing" | "process" | null = null;
+  let isDeliveryPhotoSent = false;
+  let deliveryPhotoSentAt: string | null = null;
+  let deliveryPhotoSentBy: string | null = null;
+
+  let deliveryPhotoUrls: string[] = [];
+  if (job.deliveryProofImageUrl && job.deliveryProofImageUrl !== "[]") {
+    try {
+      let parsedUrls = JSON.parse(job.deliveryProofImageUrl);
+      if (typeof parsedUrls === "string") {
+        try { parsedUrls = JSON.parse(parsedUrls); } catch {}
+      }
+      const urls = Array.isArray(parsedUrls) ? parsedUrls : [parsedUrls];
+      deliveryPhotoUrls = urls.filter((u): u is string => typeof u === "string" && Boolean(u.trim()));
+    } catch {
+      if (typeof job.deliveryProofImageUrl === "string" && job.deliveryProofImageUrl.trim()) {
+        deliveryPhotoUrls = [job.deliveryProofImageUrl.trim()];
+      }
+    }
+  }
 
   if (job.adminNotesJson) {
     try {
@@ -133,6 +158,11 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
           isBillSent = parsed.isBillSent;
           billSentAt = parsed.billSentAt || null;
           billSentBy = parsed.billSentBy || null;
+        }
+        if (typeof parsed.isDeliveryPhotoSent === "boolean") {
+          isDeliveryPhotoSent = parsed.isDeliveryPhotoSent;
+          deliveryPhotoSentAt = parsed.deliveryPhotoSentAt || null;
+          deliveryPhotoSentBy = parsed.deliveryPhotoSentBy || null;
         }
         if (parsed.kanbanStage === "billing" || parsed.kanbanStage === "process") {
           kanbanStage = parsed.kanbanStage;
@@ -157,6 +187,12 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
     billSentAt,
     billSentBy,
     kanbanStage,
+    hasDeliveryPhoto: deliveryPhotoUrls.length > 0,
+    deliveryPhotoCount: deliveryPhotoUrls.length,
+    deliveryPhotoUrls,
+    isDeliveryPhotoSent,
+    deliveryPhotoSentAt,
+    deliveryPhotoSentBy,
   };
 }
 
@@ -167,7 +203,7 @@ export function getJobKanbanColumn(job: Job): KanbanColumnId {
   const meta = getJobBillingMeta(job);
   if (meta.kanbanStage === "process") return "process";
   if (meta.kanbanStage === "billing") return "billing";
-  if (job.subStatus && ["wash", "dry", "iron", "ready", "process"].includes(job.subStatus)) {
+  if (false && job.subStatus && ["wash", "dry", "iron", "ready", "process"].includes(job.subStatus || "")) {
     return "process";
   }
   return "billing";
@@ -198,6 +234,16 @@ export function getBranchShortName(nameOrShop?: string | { name?: string } | nul
   // Fallback: strip common prefix
   const cleaned = name.replace(/^(That Laundry Shop|TLS)\s*[-:—–]?\s*/i, '').trim();
   return cleaned || name;
+}
+
+export function isRiderDeliveryCompletedJob(job: Job): boolean {
+  if (job.status !== "completed") return false;
+  const isWalkIn =
+    (job.type as string) === "in_store" ||
+    (job.source === "pos" && (job.type as string) !== "delivery" && (job.type as string) !== "full_service");
+  if (isWalkIn && !job.deliveryRiderId && !job.deliveryProofImageUrl) return false;
+  if (job.dropoffLocation === "Customer Pickup at Shop" && !job.deliveryRiderId && !job.deliveryProofImageUrl) return false;
+  return true;
 }
 
 export function isRiderCashDeliveryJob(job: Job): boolean {
@@ -249,7 +295,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         setScreenFit(savedFit);
       } else {
         // Auto-detect screen: if < 1920px width, default to "fit" so all columns fit without scrolling
-        setScreenFit(window.innerWidth < 1920 ? "fit" : "standard");
+        setScreenFit(window.innerWidth < 2560 ? "fit" : "standard");
       }
       const savedZoom = localStorage.getItem("tls_kanban_zoom");
       if (savedZoom) {
@@ -410,6 +456,45 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       );
     } catch (err: any) {
       toast.error(err.message || "Failed to update bill sent status");
+    }
+  };
+
+  const handleToggleDeliveryPhotoSent = async (job: Job, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!canManageJobs) {
+      toast.error("You do not have permission to update Delivery Photo Sent status");
+      return;
+    }
+    const meta = getJobBillingMeta(job);
+    const nextSent = !meta.isDeliveryPhotoSent;
+    const staffName = (user as any)?.name || user?.email || "Staff";
+    const nowIso = new Date().toISOString();
+
+    try {
+      const updatedAdminNotesJson = buildUpdatedAdminNotesJson(
+        job,
+        {
+          isDeliveryPhotoSent: nextSent,
+          deliveryPhotoSentAt: nextSent ? nowIso : null,
+          deliveryPhotoSentBy: nextSent ? staffName : null,
+        },
+        nextSent
+          ? `Delivery photo sent to customer by ${staffName}`
+          : `Delivery photo sent status unmarked by ${staffName}`
+      );
+      const actorDetails = user ? { actorId: user.id, actorName: staffName, actorRole: user.role } : undefined;
+      await jobStore.updateJobDetails(
+        job.id,
+        { adminNotesJson: updatedAdminNotesJson },
+        actorDetails
+      );
+      toast.success(
+        nextSent
+          ? `Order #${formatJobDisplayId(job.id)}: Marked as Delivery Photo Sent to Customer`
+          : `Order #${formatJobDisplayId(job.id)}: Marked as Delivery Photo Not Sent`
+      );
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update delivery photo sent status");
     }
   };
 
@@ -582,7 +667,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const visibleKanbanColumns = KANBAN_COLUMNS.filter(
     status => {
       if (user?.role === 'manager' && !isCSO && status === 'tba') return false;
-      if (status === 'completed' && !showCompleted) return false;
+      if (status === 'completed' && !showCompleted && billingFilterMode !== "UNSENT_PHOTO") return false;
       if (status === 'cancel' && !showCancelled) return false;
       return true;
     }
@@ -594,25 +679,42 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     }
   }, [visibleKanbanColumns, activeKanbanColumn]);
 
+  const parseLocalDayDate = (ymdStr: string, isEnd: boolean): Date => {
+    const parts = (ymdStr || "").split("-").map(Number);
+    if (parts.length === 3 && !parts.some(isNaN)) {
+      return isEnd
+        ? new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999)
+        : new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+    }
+    const d = new Date(ymdStr);
+    if (isEnd) d.setHours(23, 59, 59, 999);
+    else d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
   useEffect(() => {
     let start: Date;
     let end: Date;
     
     if (dateFilter === "today") {
-      start = today;
-      end = today;
+      start = new Date(today);
+      start.setHours(0, 0, 0, 0);
+      end = new Date(today);
+      end.setHours(23, 59, 59, 999);
       // Today focuses on active work — hide completed/cancelled by default
       setShowCompleted(false);
       setShowCancelled(false);
     } else if (dateFilter === "yesterday") {
-      start = yesterday;
-      end = yesterday;
+      start = new Date(yesterday);
+      start.setHours(0, 0, 0, 0);
+      end = new Date(yesterday);
+      end.setHours(23, 59, 59, 999);
       // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
     } else if (dateFilter === "custom") {
-      start = new Date(startDate);
-      end = new Date(endDate);
+      start = parseLocalDayDate(startDate, false);
+      end = parseLocalDayDate(endDate, true);
       // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
@@ -633,6 +735,25 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     }
 
     if (isInitialBranchSetRef.current) return;
+
+    if (typeof window !== "undefined" && user?.id) {
+      try {
+        const savedRaw = localStorage.getItem(`tls_alljobs_branches_${user.id}`);
+        if (savedRaw) {
+          const parsed = JSON.parse(savedRaw);
+          if (Array.isArray(parsed)) {
+            const validPool = isAreaRestricted ? allowedBranches : shopLocations;
+            const validSet = new Set(validPool.map((s) => s.id));
+            const filteredSaved = parsed.filter((id: any) => typeof id === "string" && validSet.has(id));
+            if (filteredSaved.length > 0 || parsed.length === 0) {
+              setSelectedBranchIds(filteredSaved);
+              isInitialBranchSetRef.current = true;
+              return;
+            }
+          }
+        }
+      } catch {}
+    }
 
     if (isAreaRestricted) {
       const initialIds = allowedBranches.map((s) => s.id);
@@ -711,24 +832,26 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       isActive || 
                       (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
                       (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
+                      (job.pickupScheduledAt ? isSameDay(new Date(job.pickupScheduledAt), today) : false) ||
                       (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
       } else if (dateFilter === "yesterday") {
         matchesDate = isSameDay(new Date(job.createdAt), yesterday) || 
                       (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
                       (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
+                      (job.pickupScheduledAt ? isSameDay(new Date(job.pickupScheduledAt), yesterday) : false) ||
                       (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
                       (!job.completedAt && job.status === 'completed' && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
       } else if (dateFilter === "custom") {
         const jobDate = new Date(job.createdAt);
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
+        const start = parseLocalDayDate(startDate, false);
+        const end = parseLocalDayDate(endDate, true);
         matchesDate = (jobDate >= start && jobDate <= end) || 
                       (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
                       (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
-                      (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
+                      (job.pickupScheduledAt ? (new Date(job.pickupScheduledAt) >= start && new Date(job.pickupScheduledAt) <= end) : false) ||
+                      (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false) ||
+                      (!job.completedAt && job.status === 'completed' && job.updatedAt ? (new Date(job.updatedAt) >= start && new Date(job.updatedAt) <= end) : false);
       }
       if (!matchesDate) return false;
 
@@ -737,7 +860,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       if (statusFilter !== "all") {
         if (jobCol !== statusFilter) return false;
       } else {
-        if (job.status === 'completed' && !showCompleted) return false;
+        if (job.status === 'completed' && !showCompleted && billingFilterMode !== "UNSENT_PHOTO") return false;
         if (job.status === 'cancel' && !showCancelled) return false;
       }
 
@@ -747,7 +870,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     jobs, isAreaRestricted, allowedBranchIdSet, user?.role, isCSO, selectedBrand,
     jobSourceFilter, effectiveSelectedBranchIds, selectedBranchIds, allowedBranches,
     shopLocations, dateFilter, today, yesterday, startDate, endDate, statusFilter,
-    showCompleted, showCancelled
+    showCompleted, showCancelled, billingFilterMode
   ]);
 
   // 2. Quick summary counts for Billing, Stuck, CSO Paid, and Shop Unpaid
@@ -760,6 +883,59 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     let shopUnpaidCount = 0;
     let csoPaidShopUnpaidCount = 0;
     let riderCashCount = 0;
+    let unsentPhotoCount = 0;
+
+    const currentSelectedBranchIds = isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds;
+    const totalBranchCount = isAreaRestricted ? allowedBranches.length : shopLocations.length;
+    const isAllBranchesSelected = currentSelectedBranchIds.length >= totalBranchCount;
+
+    for (const job of jobs) {
+      if (!isRiderDeliveryCompletedJob(job)) continue;
+      if (isAreaRestricted && (!job.branchId || !allowedBranchIdSet.has(job.branchId))) continue;
+      if (selectedBrand !== "ALL" && (job.brand || "that_laundry_shop") !== selectedBrand) continue;
+      if (jobSourceFilter === "ONLINE") {
+        const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+        if (isPos) continue;
+      } else if (jobSourceFilter === "POS") {
+        const isPos = job.source === 'pos' || (job.type as string) === 'in_store';
+        if (!isPos) continue;
+      }
+      if (!isAllBranchesSelected && currentSelectedBranchIds.length > 0) {
+        if (!job.branchId || !currentSelectedBranchIds.includes(job.branchId)) continue;
+      } else if (currentSelectedBranchIds.length === 0) {
+        continue;
+      }
+      let matchesDate = true;
+      if (dateFilter === "today") {
+        matchesDate = isSameDay(new Date(job.createdAt), today) ||
+                      (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
+                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
+                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
+                      (!job.completedAt && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
+      } else if (dateFilter === "yesterday") {
+        matchesDate = isSameDay(new Date(job.createdAt), yesterday) ||
+                      (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
+                      (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), yesterday) : false) ||
+                      (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), yesterday) : false) ||
+                      (!job.completedAt && job.updatedAt ? isSameDay(new Date(job.updatedAt), yesterday) : false);
+      } else if (dateFilter === "custom") {
+        const jobDate = new Date(job.createdAt);
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        matchesDate = (jobDate >= start && jobDate <= end) ||
+                      (job.completedAt ? (new Date(job.completedAt) >= start && new Date(job.completedAt) <= end) : false) ||
+                      (job.scheduledAt ? (new Date(job.scheduledAt) >= start && new Date(job.scheduledAt) <= end) : false) ||
+                      (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
+      }
+      if (!matchesDate) continue;
+      if (statusFilter !== "all" && statusFilter !== "completed") continue;
+      const bm = getJobBillingMeta(job);
+      if (!bm.isDeliveryPhotoSent) {
+        unsentPhotoCount++;
+      }
+    }
 
     for (const j of scopedOverviewJobs) {
       if (j.isStuck && (showCompleted || !['completed', 'cancel', 'return'].includes(j.status))) {
@@ -790,8 +966,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
         if (!bm.isBillSent) unsentBillCount++;
       }
     }
-    return { noBillCount, unsentBillCount, stuckCount, csoPaidCount, shopUnpaidCount, csoPaidShopUnpaidCount, riderCashCount };
-  }, [scopedOverviewJobs, showCompleted]);
+    return { noBillCount, unsentBillCount, stuckCount, csoPaidCount, shopUnpaidCount, csoPaidShopUnpaidCount, riderCashCount, unsentPhotoCount };
+  }, [scopedOverviewJobs, showCompleted, jobs, isAreaRestricted, allowedBranchIdSet, selectedBrand, jobSourceFilter, effectiveSelectedBranchIds, selectedBranchIds, allowedBranches, shopLocations, dateFilter, today, yesterday, startDate, endDate, statusFilter]);
 
   // 3. Payment counts across scoped jobs for quick filter pill badges
   const csoOverviewCounts = useMemo(() => {
@@ -866,7 +1042,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
       }
 
       // Billing Quick Filter (No Bill Issued / Bill Not Sent to Customer)
-      if (billingFilterMode !== "ALL") {
+      if (billingFilterMode === "UNSENT_PHOTO") {
+        if (!isRiderDeliveryCompletedJob(job)) return false;
+        const bMeta = getJobBillingMeta(job);
+        if (bMeta.isDeliveryPhotoSent) return false;
+      } else if (billingFilterMode !== "ALL") {
         // Focus on active in-shop / delivery jobs after pickup (excluding completed)
         if (["tba", "pending", "pickup", "cancel", "return", "completed", "topup"].includes(job.status)) return false;
         const bMeta = getJobBillingMeta(job);
@@ -1564,6 +1744,34 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 </span>
               </button>
 
+              {/* 6.5 Delivery Photo Not Sent (Cyan / Indigo) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setBillingFilterMode(prev => {
+                    const next = prev === "UNSENT_PHOTO" ? "ALL" : "UNSENT_PHOTO";
+                    if (next === "UNSENT_PHOTO") {
+                      setActiveKanbanColumn("completed");
+                    }
+                    return next;
+                  });
+                }}
+                className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-[11px] font-bold border transition-all cursor-pointer ${
+                  billingFilterMode === "UNSENT_PHOTO"
+                    ? "bg-cyan-600 text-white border-cyan-600 shadow-xs"
+                    : "bg-cyan-50/90 text-cyan-900 border-cyan-200/90 hover:bg-cyan-100/80"
+                }`}
+                title="Show completed delivery orders where the delivery photo has not been sent to the customer yet"
+              >
+                <Camera size={13} className={billingFilterMode === "UNSENT_PHOTO" ? "text-white" : "text-cyan-600"} />
+                <span>Photo Not Sent</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  billingFilterMode === "UNSENT_PHOTO" ? "bg-white/20 text-white" : "bg-cyan-200/90 text-cyan-950"
+                }`}>
+                  {billingOverview.unsentPhotoCount}
+                </span>
+              </button>
+
               {/* 7. Stuck (Rose / Red) */}
               <button
                 type="button"
@@ -1592,7 +1800,14 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               <BranchFilterDropdown
                 branches={allowedBranches}
                 selectedIds={isAreaRestricted ? effectiveSelectedBranchIds : selectedBranchIds}
-                onChange={setSelectedBranchIds}
+                onChange={(ids) => {
+                  setSelectedBranchIds(ids);
+                  if (typeof window !== "undefined" && user?.id) {
+                    try {
+                      localStorage.setItem(`tls_alljobs_branches_${user.id}`, JSON.stringify(ids));
+                    } catch {}
+                  }
+                }}
                 placeholder={isAreaRestricted && allowedBranches.length === 1 ? getCleanBranchName(allowedBranches[0]?.name) : "All Branches"}
               />
 
@@ -1813,14 +2028,29 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             {job.branchId && (() => {
                               const shop = shopLocations.find(s => s.id === job.branchId);
                               const shortName = getBranchShortName(shop?.name);
-                              if (!shortName) return null;
+                              const procBranchId = getJobProcessingBranchId(job);
+                              const procShop = procBranchId && procBranchId !== job.branchId ? shopLocations.find(s => s.id === procBranchId) : null;
+                              const procShortName = getBranchShortName(procShop?.name);
+                              if (!shortName && !procShortName) return null;
                               return (
-                                <span 
-                                  title={shop?.name}
-                                  className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-md truncate max-w-[110px] border border-slate-200/70"
-                                >
-                                  {shortName}
-                                </span>
+                                <>
+                                  {shortName && (
+                                    <span 
+                                      title={`Origin Branch: ${shop?.name}`}
+                                      className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-md truncate max-w-[110px] border border-slate-200/70"
+                                    >
+                                      {shortName}
+                                    </span>
+                                  )}
+                                  {procShortName && (
+                                    <span
+                                      title={`Processing Branch (ซักที่สาขา): ${procShop?.name}`}
+                                      className="text-[9px] font-extrabold uppercase tracking-wider bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded-md truncate max-w-[125px] border border-indigo-200 inline-flex items-center gap-0.5"
+                                    >
+                                      <span>➔ {procShortName}</span>
+                                    </span>
+                                  )}
+                                </>
                               );
                             })()}
                             <Badge variant="secondary" className="text-[9px] font-bold bg-purple-50 text-purple-700 border-purple-200/70 px-1.5 py-0 h-4">
@@ -2341,11 +2571,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             })}
           </div>
 
-          <div className={`flex-1 pb-4 ${screenFit === "fit" ? "overflow-x-auto lg:overflow-x-hidden" : "overflow-x-auto custom-scrollbar"}`}>
+          <div className={`flex-1 pb-4 ${(screenFit === "fit" || dateFilter !== "today") ? "overflow-x-auto lg:overflow-x-hidden" : "overflow-x-auto custom-scrollbar"}`}>
             <div 
               style={zoomLevel !== 100 ? ({ zoom: `${zoomLevel}%` } as React.CSSProperties) : undefined}
               className={`flex h-full min-h-[640px] transition-all duration-200 ${
-                screenFit === "fit"
+                (screenFit === "fit" || dateFilter !== "today")
                   ? "w-full min-w-0 gap-2 xl:gap-2.5"
                   : "gap-3.5 min-w-full lg:min-w-max"
               }`}
@@ -2355,20 +2585,21 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 const colJobs = filteredJobs.filter(j => getJobKanbanColumn(j) === status);
                 const colNoBillCount = status === "billing" ? colJobs.filter(j => !getJobBillingMeta(j).isBillIssued).length : 0;
                 const colUnsentCount = status === "billing" ? colJobs.filter(j => !getJobBillingMeta(j).isBillSent).length : 0;
+                const colUnsentPhotoCount = status === "completed" ? colJobs.filter(j => isRiderDeliveryCompletedJob(j) && !getJobBillingMeta(j).isDeliveryPhotoSent).length : 0;
 
                 return (
                   <div 
                     key={status} 
                     data-status={status}
                     className={`flex flex-col bg-slate-100/70 rounded-2xl border border-slate-200/85 border-t-4 ${statusConfig[status].topBorder} h-full max-h-[76vh] shadow-2xs transition-all ${
-                      screenFit === "fit"
+                      (screenFit === "fit" || dateFilter !== "today")
                         ? "w-full lg:flex-1 lg:min-w-0 min-w-0 shrink"
                         : "w-full lg:w-[292px] shrink-0"
                     } ${
                       isTabActive ? "flex" : "hidden lg:flex"
                     }`}
                     onDragOver={(e) => {
-                      if (status === 'completed') return;
+                      if (status === 'completed' || (status === 'process' && !isCsoOrAdmin)) return;
                       e.preventDefault();
                       e.currentTarget.classList.add('bg-indigo-50/50', 'ring-2', 'ring-indigo-400/30');
                     }}
@@ -2385,6 +2616,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       }
 
                       const jobId = e.dataTransfer.getData('jobId');
+                      if (status === 'process' && !isCsoOrAdmin) {
+                        toast.error("กรุณากดปุ่ม 'Move to Process' บนการ์ดเพื่อย้ายงานไปช่อง Process เท่านั้น");
+                        return;
+                      }
                       if (jobId) {
                         try {
                           const job = filteredJobs.find(j => j.id === jobId);
@@ -2407,6 +2642,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                             <span className={`font-extrabold ${screenFit === "fit" ? "text-xs" : "text-[13px]"} text-slate-900 tracking-tight truncate block`}>
                               {statusConfig[status].label}
                             </span>
+                            {status === "completed" && (
+                              <span className="hidden sm:block text-[9px] font-medium text-slate-400 leading-none mt-0.5 truncate">
+                                Done • Send Photo
+                              </span>
+                            )}
                             {status === "billing" && (
                               <span className="hidden sm:block text-[9px] font-medium text-slate-400 leading-none mt-0.5 truncate">
                                 Issue & Send Bill
@@ -2423,6 +2663,18 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           {colJobs.length}
                         </span>
                       </div>
+
+                      {/* Completed Column Summary Sub-bar */}
+                      {status === "completed" && colJobs.length > 0 && (
+                        <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-slate-100">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                            colUnsentPhotoCount > 0 ? "bg-cyan-50 text-cyan-900 border-cyan-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          }`}>
+                            <Camera size={10} className={colUnsentPhotoCount > 0 ? "text-cyan-600" : "text-emerald-600"} />
+                            {colUnsentPhotoCount > 0 ? `${colUnsentPhotoCount} Photo Not Sent` : "All Photos Sent ✓"}
+                          </span>
+                        </div>
+                      )}
 
                       {/* Billing Column Summary Sub-bar */}
                       {status === "billing" && colJobs.length > 0 && (
@@ -2455,6 +2707,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       ) : colJobs
                         .sort((a, b) => {
                           if (status === 'completed') {
+                            const unsentPhotoA = isRiderDeliveryCompletedJob(a) && !getJobBillingMeta(a).isDeliveryPhotoSent;
+                            const unsentPhotoB = isRiderDeliveryCompletedJob(b) && !getJobBillingMeta(b).isDeliveryPhotoSent;
+                            if (unsentPhotoA && !unsentPhotoB) return -1;
+                            if (!unsentPhotoA && unsentPhotoB) return 1;
                             const isPinnedA = checkIsPinned(a, user);
                             const isPinnedB = checkIsPinned(b, user);
                             if (isPinnedA && !isPinnedB) return -1;
@@ -2516,6 +2772,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         } else if (billingFilterMode === "NO_BILL") {
                           cardBgClass = "bg-amber-50/45 border-amber-300/90 hover:border-amber-400";
                           csoBorderAccent = "border-l-[4px] border-l-amber-500 shadow-amber-500/10";
+                        } else if (billingFilterMode === "UNSENT_PHOTO") {
+                          cardBgClass = "bg-cyan-50/45 border-cyan-300/90 hover:border-cyan-400";
+                          csoBorderAccent = "border-l-[4px] border-l-cyan-500 shadow-cyan-500/10";
                         } else if (billingFilterMode === "UNSENT_BILL") {
                           cardBgClass = "bg-violet-50/45 border-violet-300/90 hover:border-violet-400";
                           csoBorderAccent = "border-l-[4px] border-l-violet-500 shadow-violet-500/10";
@@ -2579,14 +2838,29 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                 {job.branchId && (() => {
                                   const shop = shopLocations.find(s => s.id === job.branchId);
                                   const shortName = getBranchShortName(shop?.name);
-                                  if (!shortName) return null;
+                                  const procBranchId = getJobProcessingBranchId(job);
+                                  const procShop = procBranchId && procBranchId !== job.branchId ? shopLocations.find(s => s.id === procBranchId) : null;
+                                  const procShortName = getBranchShortName(procShop?.name);
+                                  if (!shortName && !procShortName) return null;
                                   return (
-                                    <span 
-                                      title={shop?.name}
-                                      className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-md truncate max-w-[110px] border border-slate-200/70"
-                                    >
-                                      {shortName}
-                                    </span>
+                                    <>
+                                      {shortName && (
+                                        <span 
+                                          title={`Origin Branch: ${shop?.name}`}
+                                          className="text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded-md truncate max-w-[110px] border border-slate-200/70"
+                                        >
+                                          {shortName}
+                                        </span>
+                                      )}
+                                      {procShortName && (
+                                        <span
+                                          title={`Processing Branch (ซักที่สาขา): ${procShop?.name}`}
+                                          className="text-[9px] font-extrabold uppercase tracking-wider bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded-md truncate max-w-[125px] border border-indigo-200 inline-flex items-center gap-0.5"
+                                        >
+                                          <span>➔ {procShortName}</span>
+                                        </span>
+                                      )}
+                                    </>
                                   );
                                 })()}
                                 {job.laundryTypes && job.laundryTypes.length > 0 && (
@@ -2594,6 +2868,24 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     {job.laundryTypes.join(', ')}
                                   </span>
                                 )}
+                                {(() => {
+                                  const packing = getJobPackingCounts(job);
+                                  if (packing.hangerCount <= 0 && packing.foldedCount <= 0) return null;
+                                  return (
+                                    <>
+                                      {packing.hangerCount > 0 && (
+                                        <span className="text-[9px] font-extrabold text-indigo-500 bg-transparent px-1.5 py-0.5 rounded-md border border-indigo-200">
+                                          {packing.hangerCount}H
+                                        </span>
+                                      )}
+                                      {packing.foldedCount > 0 && (
+                                        <span className="text-[9px] font-extrabold text-emerald-500 bg-transparent px-1.5 py-0.5 rounded-md border border-emerald-200">
+                                          {packing.foldedCount}F
+                                        </span>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
 
                               <div className="flex gap-1 items-center flex-wrap justify-end shrink-0">
@@ -3010,6 +3302,86 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                  )}
                               </div>
                             </div>
+
+                            {status === 'completed' && isRiderDeliveryCompletedJob(job) && (() => {
+                              const isPhotoSent = bMeta.isDeliveryPhotoSent;
+                              const hasPhoto = bMeta.hasDeliveryPhoto;
+                              return (
+                                <div
+                                  className="rounded-xl p-2 bg-slate-50/90 border border-slate-200/80 space-y-1.5"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    {/* Left: View Delivery Proof Photo */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (hasPhoto && bMeta.deliveryPhotoUrls[0]) {
+                                          window.open(bMeta.deliveryPhotoUrls[0], "_blank", "noopener,noreferrer");
+                                        } else if (onEditJob) {
+                                          onEditJob(job);
+                                        }
+                                      }}
+                                      className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-left text-[10px] font-bold transition-colors cursor-pointer ${
+                                        hasPhoto
+                                          ? "bg-white text-slate-700 border-slate-200/90 hover:bg-slate-50 shadow-2xs"
+                                          : "bg-white/80 text-slate-400 border-slate-200/70 hover:bg-white"
+                                      }`}
+                                      title={
+                                        hasPhoto
+                                          ? `Click to view rider delivery photo (${bMeta.deliveryPhotoCount} photo)`
+                                          : "No delivery photo uploaded yet — Click to open job details"
+                                      }
+                                    >
+                                      <Camera size={12} className={hasPhoto ? "text-emerald-600 shrink-0" : "text-slate-400 shrink-0"} />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="text-[8.5px] uppercase tracking-wider opacity-75 leading-none">
+                                          Delivery Photo
+                                        </div>
+                                        <div className="truncate leading-tight mt-0.5 flex items-center gap-0.5">
+                                          <span>{hasPhoto ? `View Photo (${bMeta.deliveryPhotoCount})` : "No Photo"}</span>
+                                          {hasPhoto && <ExternalLink size={9} className="opacity-60 shrink-0" />}
+                                        </div>
+                                      </div>
+                                    </button>
+
+                                    {/* Right: Checklist Toggle Photo Sent to Customer */}
+                                    <button
+                                      type="button"
+                                      disabled={!canManageJobs}
+                                      onClick={(e) => handleToggleDeliveryPhotoSent(job, e)}
+                                      className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-left text-[10px] font-bold transition-all ${
+                                        !canManageJobs
+                                          ? "opacity-60 cursor-not-allowed " + (isPhotoSent ? "bg-emerald-50 text-emerald-700 border-emerald-200/90" : "bg-cyan-50/70 text-cyan-800 border-cyan-200/70")
+                                          : isPhotoSent
+                                            ? "bg-emerald-50 text-emerald-700 border-emerald-200/90 hover:bg-emerald-100/80 shadow-2xs cursor-pointer"
+                                            : "bg-cyan-50/90 text-cyan-800 border-cyan-200/90 hover:bg-cyan-100/80 cursor-pointer"
+                                      }`}
+                                      title={
+                                        isPhotoSent
+                                          ? `Sent to Customer${bMeta.deliveryPhotoSentBy ? ` by ${bMeta.deliveryPhotoSentBy}` : ""}${bMeta.deliveryPhotoSentAt ? ` (${format(new Date(bMeta.deliveryPhotoSentAt), "dd/MM HH:mm")})` : ""} — Click to toggle`
+                                          : "Delivery photo not sent to customer yet — Click to mark as Sent"
+                                      }
+                                    >
+                                      {isPhotoSent ? (
+                                        <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
+                                      ) : (
+                                        <Send size={11} className="text-cyan-600 shrink-0" />
+                                      )}
+                                      <div className="min-w-0 flex-1">
+                                        <div className="text-[8.5px] uppercase tracking-wider opacity-75 leading-none">
+                                          Customer
+                                        </div>
+                                        <div className="truncate leading-tight mt-0.5">
+                                          {isPhotoSent ? "Photo Sent ✓" : "Not Sent"}
+                                        </div>
+                                      </div>
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {status === 'delivery' && ((job.type as string) === 'in_store' || (job.source === 'pos' && (job.type as string) !== 'delivery' && (job.type as string) !== 'full_service')) && (() => {
                               const isPaid = isJobFullyPaid(job);

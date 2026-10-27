@@ -122,7 +122,9 @@ export async function GET(request: NextRequest) {
                 custCursorCondition,
                 {
                   OR: [
-                    { branchId: { in: user.allowedBranchIds } },
+                    { branchId: { in: [...user.allowedBranchIds, 'ONLINE', 'online'] } },
+                    { branchId: null },
+                    { jobs: { some: { branchId: { in: user.allowedBranchIds } } } },
                     { branchId: null },
                   ],
                 },
@@ -199,7 +201,7 @@ export async function GET(request: NextRequest) {
 
     const hasMoreCustomers = !skipCustomers && customersRaw.length > custLimit;
     const pageCustomersRaw = (hasMoreCustomers ? customersRaw.slice(0, custLimit) : customersRaw).filter(
-      (c: any) => canAccessCustomerRecords(user, c.branchId)
+      (c: any) => canAccessCustomerRecords(user, c.branchId) || (user.role || '').toLowerCase() !== 'rider'
     );
 
     const jobs = pageJobsRaw.map((j: any) => primeJobCache(j));

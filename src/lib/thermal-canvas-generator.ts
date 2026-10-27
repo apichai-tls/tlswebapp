@@ -1,7 +1,8 @@
 import { format } from "date-fns";
 import type { ReceiptData, ShopInfo } from "@/components/thermal-receipt-dialog";
 import { ensureReceiptFontsLoaded } from "@/lib/receipt-font-loader";
-import { getTransportFeeBreakdown, safeCeil, roundGrandTotal } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatReceiptCustomerPhone } from "@/lib/utils";
+import { customerStore } from "@/lib/store";
 
 
 
@@ -134,7 +135,7 @@ async function generateThermalReceiptImageInternal(
         ` : ""}
         <div style="display: flex; justify-content: space-between;">
           <span>PHONE:</span>
-          <span>${receiptData.customerPhone || "-"}</span>
+          <span>${formatReceiptCustomerPhone({ jobPhone: receiptData.customerPhone, customer: findMatchingCustomer(customerStore.getSnapshot(), { customerId: receiptData.customerId, customerName: receiptData.customerName, customerPhone: receiptData.customerPhone }) })}</span>
         </div>
         <div style="border-top: 1px dashed #a3a3a3; margin: 8px 0;"></div>
       </div>

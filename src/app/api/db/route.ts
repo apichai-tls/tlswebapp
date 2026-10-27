@@ -83,7 +83,13 @@ export function filterPayloadForUser(payload: any, user: ServerAuthUser): any {
       ? [user.branchId]
       : [];
     const filteredJobs = (payload.jobs || []).filter((j: any) => canUserAccessJob(user, j));
-    const filteredCustomers = (payload.customers || []).filter((c: any) => canAccessCustomerRecords(user, c.branchId));
+    const linkedCustomerIds = new Set<string>();
+    for (const j of filteredJobs) {
+      if (j?.customerId) linkedCustomerIds.add(j.customerId);
+    }
+    const filteredCustomers = (payload.customers || []).filter(
+      (c: any) => canAccessCustomerRecords(user, c.branchId) || (c?.id && linkedCustomerIds.has(c.id))
+    );
     const filteredOpenShifts = (payload.openShifts || []).filter((s: any) => canAccessShifts(user, s.branchId));
     const filteredCashierShifts = (payload.cashierShifts || []).filter((s: any) => canAccessShifts(user, s.branchId));
     const hasFinAccess = canAccessFinancialData(user);
