@@ -8,7 +8,7 @@ import { Printer, X, Loader2, Wallet, RefreshCw } from "lucide-react";
 import { ReceiptData, ReceiptItem, getCategoryDisplayName, resolveItemCategory, CATEGORY_ORDER } from "@/components/thermal-receipt-dialog";
 import { createPortal } from "react-dom";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
-import { getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber, formatBaht } from "@/lib/utils";
+import { getTransportFeeBreakdown, safeCeil, roundGrandTotal, findMatchingCustomer, formatJobDisplayId, generateReceiptNumber, formatBaht, formatReceiptCustomerPhone } from "@/lib/utils";
 
 import { customerStore, serviceStore } from "@/lib/store";
 
@@ -1000,7 +1000,7 @@ export function A5ReceiptContent({
                 )}
               </p>
               <div className="flex items-center gap-2 mt-0.5 text-xs text-neutral-600 font-mono">
-                <span>{receiptData.customerPhone}</span>
+                <span>{formatReceiptCustomerPhone({ jobPhone: receiptData.customerPhone, customer: targetCustomer })}</span>
               </div>
               {receiptData.deliveryAddress && (
                 <p className={`${isUltraCompact ? "text-[10px]" : "text-[11px]"} text-neutral-600 mt-0.5 leading-snug break-words`}>

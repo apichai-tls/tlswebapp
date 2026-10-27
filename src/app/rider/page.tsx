@@ -9,7 +9,7 @@ import { addJobLogAction, updateJobAction } from "@/actions/db";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, Job, type AdminNoteLog } from "@/lib/store";
 import { Input } from "@/components/ui/input";
-import { findMatchingCustomer, isJobFullyPaid } from "@/lib/utils";
+import { findMatchingCustomer, isJobFullyPaid, getJobPackingCounts, getJobProcessingBranchId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { MiniMap } from "@/components/map-loader";
 import { Badge } from "@/components/ui/badge";
@@ -333,7 +333,7 @@ export interface RiderTask {
 }
 
 
-function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false, branchName }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean, branchName?: string }) {
+function RiderJobCard({ task, customer, onClick, showCommission, isHistory = false, branchName, processingBranchName }: { task: RiderTask, customer: any, onClick: () => void, showCommission: boolean, isHistory?: boolean, branchName?: string, processingBranchName?: string }) {
   const job = task.job;
   const legType = task.legType;
   const customerIsVip = customer?.isVIP || false;
@@ -350,6 +350,13 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
     const match = branchName.match(/\(([^)]+)\)/);
     const clean = match ? match[1].trim() : branchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
     return clean.length > 10 ? clean.slice(0, 10) + '...' : clean;
+  })();
+
+  const formattedProcessingBranch = (() => {
+    if (!processingBranchName || processingBranchName === branchName) return null;
+    const match = processingBranchName.match(/\(([^)]+)\)/);
+    const clean = match ? match[1].trim() : processingBranchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
+    return clean.length > 12 ? clean.slice(0, 12) + '...' : clean;
   })();
 
   // Parse Remark for specific tags
@@ -409,6 +416,14 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
                   </span>
                 </>
               )}
+              {formattedProcessingBranch && (
+                <span
+                  className="text-white bg-indigo-600 px-1.5 py-0.5 rounded text-[10px] font-black tracking-wide"
+                  title={`สาขาที่รับผ้า/ซัก: ${processingBranchName}`}
+                >
+                  ➔ {formattedProcessingBranch}
+                </span>
+              )}
             </div>
             <h3 className="text-base font-black text-slate-900 leading-tight flex items-center gap-1.5 flex-wrap">
               {job.customerName || "Customer Guest"}
@@ -435,6 +450,24 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
               {job.subStatus === 'dry' && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-200 flex items-center gap-1"><Wind size={10} /> DRY</span>}
               {job.subStatus === 'iron' && <span className="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-indigo-200 flex items-center gap-1"><Shirt size={10} /> IRON</span>}
               {job.subStatus === 'ready' && <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-emerald-200 flex items-center gap-1"><CheckCircle2 size={10} /> READY</span>}
+              {(() => {
+                const packing = getJobPackingCounts(job);
+                if (packing.hangerCount <= 0 && packing.foldedCount <= 0) return null;
+                return (
+                  <>
+                    {packing.hangerCount > 0 && (
+                      <span className="bg-transparent text-indigo-600 text-[13px] leading-tight px-2 py-0.5 rounded-md font-black border border-indigo-300">
+                        {packing.hangerCount}H
+                      </span>
+                    )}
+                    {packing.foldedCount > 0 && (
+                      <span className="bg-transparent text-emerald-600 text-[13px] leading-tight px-2 py-0.5 rounded-md font-black border border-emerald-300">
+                        {packing.foldedCount}F
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
           
@@ -503,7 +536,7 @@ function RiderJobCard({ task, customer, onClick, showCommission, isHistory = fal
             );
           })()}
         </div>
-        
+
         {cleanRemark && (
           <div className="flex items-start gap-2 text-slate-500 mt-2 bg-rose-50 p-2 rounded-lg border border-rose-100">
             <span className="text-xs font-semibold text-rose-700 line-clamp-2">{cleanRemark}</span>
@@ -1094,7 +1127,20 @@ export default function RiderPage() {
         });
       }
       if (j.deliveryRiderId === activeRider.id) {
-        const isTerminal = ["completed", "cancel"].includes(j.status);
+        let isDeliveredStage = false;
+        let deliveredAtTime: Date | null = null;
+        if (j.status === "delivery" && j.adminNotesJson) {
+          try {
+            const parsed = JSON.parse(j.adminNotesJson);
+            if (parsed?.kanbanStage === "delivered") {
+              isDeliveredStage = true;
+              if (parsed?.deliveredAt) deliveredAtTime = new Date(parsed.deliveredAt);
+            } else if (parsed?.kanbanStage === "delivery") {
+              isDeliveredStage = false;
+            }
+          } catch {}
+        }
+        const isTerminal = ["delivered", "completed", "cancel"].includes(j.status) || isDeliveredStage || j.legs?.deliveryOutbound?.status === "completed";
         allTasks.push({
           taskId: `${j.id}-delivery`,
           job: j,
@@ -1105,8 +1151,9 @@ export default function RiderPage() {
           // For history: use actual deliveryOutbound completion time, fallback to job.completedAt, then scheduled times
           completedAt: isTerminal ? (
             j.legs?.deliveryOutbound?.completedAt ? new Date(j.legs.deliveryOutbound.completedAt) :
+            (deliveredAtTime ? deliveredAtTime :
             (j.completedAt ? new Date(j.completedAt) :
-            (j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date())))
+            (j.deliveryScheduledAt ? new Date(j.deliveryScheduledAt) : (j.scheduledAt ? new Date(j.scheduledAt) : new Date()))))
           ) : undefined,
           targetLocation: j.dropoffLocation,
           targetCoords: j.dropoffCoords,
@@ -1598,6 +1645,10 @@ export default function RiderPage() {
                           showCommission={showCommission} 
                           onClick={() => setSelectedJob(task)} 
                           branchName={shopLocations.find(s => s.id === task.job.branchId)?.name}
+                          processingBranchName={(() => {
+                            const procId = getJobProcessingBranchId(task.job);
+                            return procId && procId !== task.job.branchId ? shopLocations.find(s => s.id === procId)?.name : undefined;
+                          })()}
                         />
                       </motion.div>
                     );
@@ -1728,6 +1779,10 @@ export default function RiderPage() {
                           showCommission={showCommission} 
                           isHistory={true}
                           branchName={shopLocations.find(s => s.id === task.job.branchId)?.name}
+                          processingBranchName={(() => {
+                            const procId = getJobProcessingBranchId(task.job);
+                            return procId && procId !== task.job.branchId ? shopLocations.find(s => s.id === procId)?.name : undefined;
+                          })()}
                           onClick={() => setSelectedJob(task)} 
                         />
                       </motion.div>
@@ -1815,6 +1870,14 @@ export default function RiderPage() {
               const clean = match ? match[1].trim() : branchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
               return clean.length > 10 ? clean.slice(0, 10) + '...' : clean;
             })();
+            const procBranchId = getJobProcessingBranchId(selectedJob.job);
+            const processingBranchName = procBranchId && procBranchId !== selectedJob.job.branchId ? shopLocations.find(s => s.id === procBranchId)?.name : undefined;
+            const formattedProcessingBranch = (() => {
+              if (!processingBranchName) return null;
+              const match = processingBranchName.match(/\(([^)]+)\)/);
+              const clean = match ? match[1].trim() : processingBranchName.replace(/^That Laundry Shop\s*\(?/i, '').replace(/\)$/, '').trim();
+              return clean.length > 12 ? clean.slice(0, 12) + '...' : clean;
+            })();
 
             const cleanRemark = remarks.filter(r => {
               const t = r.trim();
@@ -1858,6 +1921,24 @@ export default function RiderPage() {
                         {selectedJob.job.subStatus === 'dry' && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-orange-200 flex items-center gap-1"><Wind size={10} /> DRY</span>}
                         {selectedJob.job.subStatus === 'iron' && <span className="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-indigo-200 flex items-center gap-1"><Shirt size={10} /> IRON</span>}
                         {selectedJob.job.subStatus === 'ready' && <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold border border-emerald-200 flex items-center gap-1"><CheckCircle2 size={10} /> READY</span>}
+                        {(() => {
+                          const modalPacking = getJobPackingCounts(selectedJob.job);
+                          if (modalPacking.hangerCount <= 0 && modalPacking.foldedCount <= 0) return null;
+                          return (
+                            <>
+                              {modalPacking.hangerCount > 0 && (
+                                <span className="bg-transparent text-indigo-600 text-[13px] leading-tight px-2 py-0.5 rounded-md font-black border border-indigo-300">
+                                  {modalPacking.hangerCount}H
+                                </span>
+                              )}
+                              {modalPacking.foldedCount > 0 && (
+                                <span className="bg-transparent text-emerald-600 text-[13px] leading-tight px-2 py-0.5 rounded-md font-black border border-emerald-300">
+                                  {modalPacking.foldedCount}F
+                                </span>
+                              )}
+                            </>
+                          );
+                        })()}
                       </DialogTitle>
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <span className="font-mono text-[10px] font-bold tracking-wider text-slate-500">
@@ -1870,6 +1951,11 @@ export default function RiderPage() {
                               {formattedBranch}
                             </span>
                           </>
+                        )}
+                        {formattedProcessingBranch && (
+                          <span className="text-white bg-indigo-600 px-1.5 py-0.5 rounded text-[10px] font-black tracking-wide" title={`สาขาที่รับผ้า/ซัก: ${processingBranchName}`}>
+                            ➔ {formattedProcessingBranch}
+                          </span>
                         )}
                       </div>
                       <div className="mt-1.5">

@@ -43,6 +43,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     localStorage.removeItem('lastLoginDate');
     localStorage.removeItem('authBuildTime');
     localStorage.removeItem('lastActivityAt');
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('tls_alljobs_branches_')) {
+          localStorage.removeItem(k);
+        }
+      }
+    } catch {}
     if (typeof document !== 'undefined') {
       document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
     }

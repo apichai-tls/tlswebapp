@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId, formatReceiptCustomerPhone } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
@@ -851,6 +851,95 @@ function AdminPageContent() {
   const [isPickupMeet, setIsPickupMeet] = useState(false);
   const [isDeliveryLobby, setIsDeliveryLobby] = useState(false);
   const [isDeliveryMeet, setIsDeliveryMeet] = useState(false);
+  const [hasHanger, setHasHanger] = useState(false);
+  const [hangerCount, setHangerCount] = useState<number>(0);
+  const [hasFolded, setHasFolded] = useState(false);
+  const [foldedCount, setFoldedCount] = useState<number>(0);
+  const [processingBranchId, setProcessingBranchId] = useState<string>("");
+  const packingSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const persistProcessingBranchToDb = useCallback(
+    async (nextProcBranchId: string) => {
+      if (!editingJobId) return;
+      try {
+        const existingJob = jobs.find(j => j.id === editingJobId) || originalJobRef.current;
+        const originBranchId = shopLocations[selectedStoreIndex]?.id || existingJob?.branchId || "";
+        const effectiveId = nextProcBranchId && nextProcBranchId !== originBranchId ? nextProcBranchId : null;
+
+        let parsedObj: Record<string, any> = { notes: adminLogs.map(({ isNew, ...rest }) => rest) };
+        if (existingJob?.adminNotesJson) {
+          try {
+            const parsed = JSON.parse(existingJob.adminNotesJson);
+            if (Array.isArray(parsed)) {
+              parsedObj = { notes: parsed };
+            } else if (parsed && typeof parsed === "object") {
+              parsedObj = { ...parsed };
+            }
+          } catch {}
+        }
+        parsedObj.processingBranchId = effectiveId;
+        const updatedJson = JSON.stringify(parsedObj);
+
+        const updated = await jobStore.updateJobDetails(editingJobId, {
+          adminNotesJson: updatedJson,
+          actorId: user?.id,
+          actorName: user?.name || user?.email,
+          actorRole: user?.role,
+        });
+        if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+          (originalJobRef.current as any).adminNotesJson = (updated as any)?.adminNotesJson ?? updatedJson;
+          if ((updated as any)?.updatedAt) {
+            (originalJobRef.current as any).updatedAt = (updated as any).updatedAt;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to save processing branch:", err);
+      }
+    },
+    [editingJobId, jobs, shopLocations, selectedStoreIndex, adminLogs, user]
+  );
+
+  const persistPackingCountsToDb = useCallback(
+    (nextHasHanger: boolean, nextHanger: number, nextHasFolded: boolean, nextFolded: number) => {
+      if (!editingJobId) return;
+      if (packingSaveTimerRef.current) clearTimeout(packingSaveTimerRef.current);
+      packingSaveTimerRef.current = setTimeout(async () => {
+        try {
+          const existingJob = jobs.find(j => j.id === editingJobId) || originalJobRef.current;
+          let parsedObj: Record<string, any> = { notes: adminLogs.map(({ isNew, ...rest }) => rest) };
+          if (existingJob?.adminNotesJson) {
+            try {
+              const parsed = JSON.parse(existingJob.adminNotesJson);
+              if (Array.isArray(parsed)) {
+                parsedObj = { notes: parsed };
+              } else if (parsed && typeof parsed === "object") {
+                parsedObj = { ...parsed };
+              }
+            } catch {}
+          }
+          parsedObj.hangerCount = nextHasHanger ? Math.max(0, Number(nextHanger) || 0) : 0;
+          parsedObj.foldedCount = nextHasFolded ? Math.max(0, Number(nextFolded) || 0) : 0;
+          const updatedJson = JSON.stringify(parsedObj);
+
+          const updated = await jobStore.updateJobDetails(editingJobId, {
+            adminNotesJson: updatedJson,
+            actorId: user?.id,
+            actorName: user?.name || user?.email,
+            actorRole: user?.role,
+          });
+          if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+            (originalJobRef.current as any).adminNotesJson = (updated as any)?.adminNotesJson ?? updatedJson;
+            if ((updated as any)?.updatedAt) {
+              (originalJobRef.current as any).updatedAt = (updated as any).updatedAt;
+            }
+          }
+        } catch (err) {
+          console.error("Failed to save packing counts:", err);
+        }
+      }, 450);
+    },
+    [editingJobId, jobs, adminLogs, user]
+  );
   const [isRewashJob, setIsRewashJob] = useState(false);
   const [rewashFromJobId, setRewashFromJobId] = useState<string | null>(null);
   const [noRiderCommission, setNoRiderCommission] = useState(false);
@@ -1349,7 +1438,7 @@ function AdminPageContent() {
 
   // Auto-populate customerPhone if empty but customer has international or alternate phone
   useEffect(() => {
-    if (!customerPhone && phoneResolution.primaryPhone) {
+    if ((!customerPhone || customerPhone.trim() === "-" || customerPhone.trim() === "--") && phoneResolution.primaryPhone) {
       setCustomerPhone(phoneResolution.primaryPhone);
     }
   }, [customerPhone, phoneResolution.primaryPhone]);
@@ -2023,6 +2112,11 @@ function AdminPageContent() {
     setIsPickupMeet(false);
     setIsDeliveryLobby(false);
     setIsDeliveryMeet(false);
+    setHasHanger(false);
+    setHangerCount(0);
+    setHasFolded(false);
+    setFoldedCount(0);
+    setProcessingBranchId("");
     setIsFreeDelivery(false);
     setIsRewashJob(false);
     setRewashFromJobId(null);
@@ -2993,6 +3087,12 @@ function AdminPageContent() {
     setIsPickupMeet(job.remark ? job.remark.includes("Pickup: Meet up") : false);
     setIsDeliveryLobby(job.remark ? job.remark.includes("Delivery: Leave at Lobby") : false);
     setIsDeliveryMeet(job.remark ? job.remark.includes("Delivery: Meet up") : false);
+    const loadedPacking = getJobPackingCounts(job);
+    setHasHanger(loadedPacking.hangerCount > 0);
+    setHangerCount(loadedPacking.hangerCount);
+    setHasFolded(loadedPacking.foldedCount > 0);
+    setFoldedCount(loadedPacking.foldedCount);
+    setProcessingBranchId(getJobProcessingBranchId(job) || "");
     const loadedIsRewash = isRewashOrNoChargeJob(job);
     const loadedIsSplitChild = isSplitDeliveryChildJob(job);
     const loadedRewashFrom = getRewashFromJobId(job);
@@ -3420,7 +3520,7 @@ function AdminPageContent() {
     // Billing stage transition guard on save:
     // Orders in Billing stage can only advance to the next stage by CSO, Admin, or Branch Manager, with Bill Sent clicked.
     const isCurrentlyInBilling = existingJob && existingJob.status === "billing" && (!existingJob.subStatus || existingJob.subStatus === "billing");
-    const isAdvancingToNextStage = editingSubStatus && ["wash", "dry", "iron", "ready"].includes(editingSubStatus);
+    const isAdvancingToNextStage = false;
     if (isCurrentlyInBilling && isAdvancingToNextStage) {
       if (!canAdvanceBilling) {
         toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
@@ -3533,7 +3633,7 @@ function AdminPageContent() {
       deliveryCommission: (isRewashJob || noRiderCommission)
         ? 0
         : (isDelivery 
-          ? ((editingJobId && existingJob && existingJob.status === 'completed' && (existingJob.deliveryCommission ?? 0) > 0) 
+          ? ((editingJobId && existingJob && (existingJob.status === 'completed' || existingJob.legs?.deliveryOutbound?.status === 'completed') && (existingJob.deliveryCommission ?? 0) > 0) 
               ? (existingJob.deliveryCommission ?? 0) 
               : calculateRiderCommission({
                   customer: selectedProfileCustomer || (editingJobId ? findMatchingCustomer(customers, { customerId: existingJob?.customerId, customerName: existingJob?.customerName, customerPhone: existingJob?.customerPhone }) : null),
@@ -3607,13 +3707,16 @@ function AdminPageContent() {
           isRewash: Boolean(isRewashJob),
           rewashFromJobId: isRewashJob ? (rewashFromJobId || null) : null,
           noRiderCommission: Boolean(noRiderCommission || isRewashJob),
+          hangerCount: hasHanger ? Math.max(0, Number(hangerCount) || 0) : 0,
+          foldedCount: hasFolded ? Math.max(0, Number(foldedCount) || 0) : 0,
+          processingBranchId: (processingBranchId && processingBranchId !== shop.id) ? processingBranchId : null,
         };
         if (isNoChargePrepaidJob) {
           notesObj.isBillSent = true;
         }
-        if (editingSubStatus && ['wash', 'dry', 'iron', 'ready'].includes(editingSubStatus)) {
+        if (false && editingSubStatus && ['wash', 'dry', 'iron', 'ready'].includes(editingSubStatus || '')) {
           notesObj.kanbanStage = 'process';
-        } else if (editingSubStatus === 'billing') {
+        } else if (editingSubStatus === 'billing' && existingJob?.status !== 'delivery') {
           notesObj.kanbanStage = 'billing';
         }
         if (finalPayments.length > 0) {
@@ -3688,7 +3791,7 @@ function AdminPageContent() {
           }
 
           const normAdminNotes = (raw: any) => {
-            if (!raw) return JSON.stringify({ notes: [], payments: [], isTaxInvoiceRequested: false, isRewash: false, rewashFromJobId: null, noRiderCommission: false });
+            if (!raw) return JSON.stringify({ notes: [], payments: [], isTaxInvoiceRequested: false, isRewash: false, rewashFromJobId: null, noRiderCommission: false, hangerCount: 0, foldedCount: 0, processingBranchId: null });
             try {
               const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
               const notes = (Array.isArray(p) ? p : (Array.isArray(p?.notes) ? p.notes : [])).map(({ isNew, ...rest }: any) => rest);
@@ -3697,7 +3800,10 @@ function AdminPageContent() {
               const isRewash = Boolean(p?.isRewash);
               const rewashFromJobId = p?.rewashFromJobId || null;
               const noRiderCommission = Boolean(p?.noRiderCommission);
-              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission });
+              const hangerCountVal = Math.max(0, Number(p?.hangerCount) || 0);
+              const foldedCountVal = Math.max(0, Number(p?.foldedCount) || 0);
+              const processingBranchIdVal = p?.processingBranchId || null;
+              return JSON.stringify({ notes, payments, isTaxInvoiceRequested: isTax, isRewash, rewashFromJobId, noRiderCommission, hangerCount: hangerCountVal, foldedCount: foldedCountVal, processingBranchId: processingBranchIdVal });
             } catch {
               return String(raw);
             }
@@ -3817,17 +3923,23 @@ function AdminPageContent() {
           }
         }
 
-        // 1. Optimistic memory update first — Kanban reflects change in 0ms!
+        // 1. Optimistic memory update & session backup FIRST (before awaiting uploads) so clicking Refresh never loses edits!
         if (Object.keys(payload).length > 0) {
+          savePendingJobToSession(targetEditingJobId, payload);
           api.optimisticUpdate(targetEditingJobId, payload);
         }
 
-        // 2. Complete uploads concurrently
-        const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
-          bagUploadPromise,
-          billUploadPromise,
-          pickupUploadPromise,
-          deliveryUploadPromise
+        // 2. Complete uploads concurrently (with 20s safety cap so hung uploads cannot freeze the modal)
+        const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.race([
+          Promise.all([
+            bagUploadPromise,
+            billUploadPromise,
+            pickupUploadPromise,
+            deliveryUploadPromise
+          ]),
+          new Promise<[string[], string[], string[], string[]]>((resolve) =>
+            setTimeout(() => resolve([bagImageUrls, billImageUrls, pickupProofImageUrls, deliveryProofImageUrls]), 20000)
+          ),
         ]);
 
         // Defense-in-depth: Ensure unauthorized roles cannot delete existing images
@@ -3954,7 +4066,13 @@ function AdminPageContent() {
             jobStore.notify();
             return saved;
           }).catch((err) => {
-            clearPendingJobFromSession(targetEditingJobId);
+            const isConflictErr =
+              Boolean(err?.isConflict) ||
+              String(err?.message || '').includes('409') ||
+              String(err?.message || '').toLowerCase().includes('conflict');
+            if (isConflictErr) {
+              clearPendingJobFromSession(targetEditingJobId);
+            }
             throw err;
           });
 
@@ -4230,12 +4348,17 @@ function AdminPageContent() {
         toast.success(`Job updated successfully!`);
 
       } else {
-        // Upload images for NEW job
-        const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.all([
-          bagUploadPromise,
-          billUploadPromise,
-          pickupUploadPromise,
-          deliveryUploadPromise
+        // Upload images for NEW job (with 20s safety cap so hung uploads cannot freeze creation)
+        const [bagUrls, billUrls, pickupUrls, deliveryUrls] = await Promise.race([
+          Promise.all([
+            bagUploadPromise,
+            billUploadPromise,
+            pickupUploadPromise,
+            deliveryUploadPromise
+          ]),
+          new Promise<[string[], string[], string[], string[]]>((resolve) =>
+            setTimeout(() => resolve([bagImageUrls, billImageUrls, pickupProofImageUrls, deliveryProofImageUrls]), 20000)
+          ),
         ]);
         newJobData.bagImageUrl = bagUrls.length > 0 ? JSON.stringify(bagUrls) : null;
         const safeNewBillUrls = billUrls.filter(u => typeof u === "string" && !u.includes("proforma-DRAFT") && !u.includes("/DRAFT/") && !u.includes("proforma-") && !u.includes("receipt-"));
@@ -4670,7 +4793,7 @@ function AdminPageContent() {
         customerId: selectedProfileCustomer?.id || (editingJobId ? jobs.find(j => j.id === editingJobId)?.customerId : undefined),
         createdAt: draftCreatedAt,
         customerName: customerName || "Walk-In",
-        customerPhone: customerPhone || selectedProfileCustomer?.phone || selectedProfileCustomer?.secondaryPhone || "-",
+        customerPhone: formatReceiptCustomerPhone({ jobPhone: customerPhone, customer: selectedProfileCustomer }),
         isMember: selectedProfileCustomer?.isMember !== undefined ? selectedProfileCustomer.isMember : (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.isMember : undefined),
         memberId: selectedProfileCustomer?.memberId || (editingJobId ? (jobs.find(j => j.id === editingJobId) as any)?.memberId : undefined) || null,
         walletBalance: effectiveWalletBalanceForProforma,
@@ -4916,6 +5039,59 @@ function AdminPageContent() {
         ? (subtotal + surcharge) * (dialogDiscountPercent / 100)
         : 0;
 
+      const hasActualItems = dialogCart.some(
+        (item) => item.category !== "PACKAGE" && !String(item.name || "").toLowerCase().includes("package")
+      );
+      const currentCartHash = computeCartHash({
+        items: dialogCart,
+        serviceSpeed,
+        fee,
+        discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
+        promoCode: appliedPromo?.code || promoCodeInput.trim() || null,
+        promoDiscount: appliedPromo ? promoDiscountAmount : 0,
+        vatType: dialogVatType,
+        vatRate: dialogVatRate,
+      });
+
+      const isRfJob = editingJobId.startsWith("RF-");
+      let targetPfNum: string | null = null;
+      let targetPfRev: number | null = null;
+      let targetPfHash: string | null = null;
+
+      if (hasActualItems) {
+        const existingPf = cleanProformaNumber(
+          (current as any).proformaNumber ||
+            (current as any).proformaReceiptNumber ||
+            (proformaReceiptNumber && proformaReceiptNumber !== "DRAFT" ? proformaReceiptNumber : null)
+        );
+        if (existingPf) {
+          targetPfNum = existingPf;
+          const prevHash = (current as any).proformaCartHash || lastProformaCartHash;
+          const isCartChanged = Boolean(prevHash && prevHash !== currentCartHash);
+          const baseRev =
+            (current as any).proformaRevision !== null && (current as any).proformaRevision !== undefined
+              ? Number((current as any).proformaRevision)
+              : proformaRevision !== null && proformaRevision !== undefined
+                ? Number(proformaRevision)
+                : isRfJob
+                  ? 1
+                  : 0;
+          targetPfRev =
+            isCartChanged && !proformaPressedSinceLastEdit && !current.isPaid && !(current as any).isShopPaid
+              ? baseRev + 1
+              : baseRev;
+          targetPfHash = currentCartHash;
+        } else {
+          targetPfNum = generateProformaBaseNumber(editingJobId);
+          targetPfRev = isRfJob ? 1 : 0;
+          targetPfHash = currentCartHash;
+        }
+
+        setProformaReceiptNumber(targetPfNum);
+        setProformaRevision(targetPfRev);
+        setLastProformaCartHash(targetPfHash);
+      }
+
       const updatedData: Partial<Job> = {
         items: itemsPayload as any,
         totalAmount: dialogTotal,
@@ -4925,7 +5101,14 @@ function AdminPageContent() {
         paymentChannel: paymentChannel || "Gateway",
         serviceType: dialogCart[0]?.id || current.serviceType || "wash_fold",
         ...(derivedLaundryTypes ? { laundryTypes: derivedLaundryTypes as any } : {}),
-      };
+        ...(targetPfNum
+          ? {
+              proformaNumber: targetPfNum,
+              proformaRevision: targetPfRev ?? 0,
+              proformaCartHash: targetPfHash,
+            }
+          : {}),
+      } as any;
 
       // Persist to store & DB immediately so the job reflects the new price and items
       await jobStore.updateJobDetails(editingJobId, updatedData);
@@ -6420,7 +6603,7 @@ function AdminPageContent() {
                             onClick={() => {
                               const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
                               const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
-                              if (isCurrentlyInBilling && editingSubStatus !== 'wash') {
+                              if (false && isCurrentlyInBilling && editingSubStatus !== 'wash') {
                                 if (!canAdvanceBilling) {
                                   toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
                                   return;
@@ -6451,7 +6634,7 @@ function AdminPageContent() {
                             onClick={() => {
                               const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
                               const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
-                              if (isCurrentlyInBilling && editingSubStatus !== 'dry') {
+                              if (false && isCurrentlyInBilling && editingSubStatus !== 'dry') {
                                 if (!canAdvanceBilling) {
                                   toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
                                   return;
@@ -6482,7 +6665,7 @@ function AdminPageContent() {
                             onClick={() => {
                               const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
                               const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
-                              if (isCurrentlyInBilling && editingSubStatus !== 'iron') {
+                              if (false && isCurrentlyInBilling && editingSubStatus !== 'iron') {
                                 if (!canAdvanceBilling) {
                                   toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
                                   return;
@@ -6513,7 +6696,7 @@ function AdminPageContent() {
                             onClick={() => {
                               const currentJobObj = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
                               const isCurrentlyInBilling = currentJobObj && currentJobObj.status === "billing" && (!currentJobObj.subStatus || currentJobObj.subStatus === "billing");
-                              if (isCurrentlyInBilling && editingSubStatus !== 'ready') {
+                              if (false && isCurrentlyInBilling && editingSubStatus !== 'ready') {
                                 if (!canAdvanceBilling) {
                                   toast.error("Orders in Billing stage can only be moved to the next stage by CSO, Admin, or Branch Managers");
                                   return;
@@ -6963,21 +7146,75 @@ function AdminPageContent() {
                             </div>
                           </div>
 
-                          <select 
-                            id="store-select"
-                            disabled={isPaidJob}
-                            className="flex h-9 w-full rounded-xl border border-slate-200/90 bg-slate-50/70 hover:bg-white px-3 py-1 text-xs font-semibold text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                            value={selectedStoreIndex}
-                            onChange={(e) => {
-                              if (isPaidJob) return;
-                              setSelectedStoreIndex(Number(e.target.value));
-                              setEditingFeeLock(null);
-                            }}
-                          >
-                            {shopLocations.map((shop, idx) => (
-                              <option key={shop.id} value={idx}>{shop.name}</option>
-                            ))}
-                          </select>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <span className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wider block">
+                                {currentLanguage === "en" ? "Nearest Branch (Fee Calc)" : "สาขาใกล้สุด (คิดค่าส่ง)"}
+                              </span>
+                              <select 
+                                id="store-select"
+                                disabled={isPaidJob}
+                                className="flex h-9 w-full rounded-xl border border-slate-200/90 bg-slate-50/70 hover:bg-white px-2.5 py-1 text-xs font-semibold text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                                value={selectedStoreIndex}
+                                onChange={(e) => {
+                                  if (isPaidJob) return;
+                                  const nextIdx = Number(e.target.value);
+                                  const prevOriginId = shopLocations[selectedStoreIndex]?.id || "";
+                                  setSelectedStoreIndex(nextIdx);
+                                  setEditingFeeLock(null);
+                                  if (processingBranchId && processingBranchId === prevOriginId) {
+                                    setProcessingBranchId("");
+                                  }
+                                }}
+                              >
+                                {shopLocations.map((shop, idx) => {
+                                  const shortName = shop.name.match(/\(([^)]+)\)/)?.[1]?.trim() || shop.name.replace(/^That Laundry Shop\s*\(?/i, "").replace(/\)$/, "").trim();
+                                  return (
+                                    <option key={shop.id} value={idx}>{shortName}</option>
+                                  );
+                                })}
+                              </select>
+                            </div>
+
+                            <div className="space-y-1">
+                              {(() => {
+                                const originId = shopLocations[selectedStoreIndex]?.id || "";
+                                const effectiveProcId = processingBranchId || originId;
+                                const isDifferentProc = Boolean(processingBranchId && processingBranchId !== originId);
+                                return (
+                                  <>
+                                    <span className={`text-[9.5px] font-bold uppercase tracking-wider block ${isDifferentProc ? "text-indigo-700" : "text-slate-500"}`}>
+                                      {currentLanguage === "en" ? "Processing Branch (Wash)" : "สาขาที่รับผ้า/ซัก"}
+                                    </span>
+                                    <select
+                                      id="processing-store-select"
+                                      className={`flex h-9 w-full rounded-xl border px-2.5 py-1 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20 transition-colors ${
+                                        isDifferentProc
+                                          ? "bg-indigo-50/80 border-indigo-400 text-indigo-900 font-bold"
+                                          : "bg-slate-50/70 hover:bg-white border-slate-200/90 text-slate-800"
+                                      }`}
+                                      value={effectiveProcId}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        const nextVal = val === originId ? "" : val;
+                                        setProcessingBranchId(nextVal);
+                                        persistProcessingBranchToDb(nextVal);
+                                      }}
+                                    >
+                                      {shopLocations.map((shop) => {
+                                        const shortName = shop.name.match(/\(([^)]+)\)/)?.[1]?.trim() || shop.name.replace(/^That Laundry Shop\s*\(?/i, "").replace(/\)$/, "").trim();
+                                        return (
+                                          <option key={shop.id} value={shop.id}>
+                                            {shortName}
+                                          </option>
+                                        );
+                                      })}
+                                    </select>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          </div>
                         </div>
 
                         {/* Pickup & Delivery Address Section */}
@@ -7614,26 +7851,137 @@ function AdminPageContent() {
 
                       {/* Admin Notes & Activity Feed Card */}
                       <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2 flex-1 min-h-[220px] overflow-hidden">
-                        <div className="flex items-center justify-between shrink-0">
-                          <Label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
-                            <MessageSquare size={13} className="text-indigo-500" />
+                        <div className="flex items-center justify-between gap-1.5 shrink-0">
+                          <Label className="text-[10.5px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1 shrink-0">
+                            <MessageSquare size={12} className="text-indigo-500 shrink-0" />
                             <span>Admin Note Logs</span>
                             {adminLogs.length > 0 && (
-                              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                              <span className="px-1.5 py-0.2 rounded-full text-[9.5px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
                                 {adminLogs.length}
                               </span>
                             )}
                           </Label>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer"
-                            onClick={() => setNoteLogsModalOpen(true)}
-                            title="Expand Notes"
-                          >
-                            <Maximize2 size={12} />
-                          </Button>
+
+                          <div className="flex items-center gap-1 ml-auto">
+                            {/* Hanger (H) */}
+                            <div
+                              title="จำนวนผ้าแขวน (H) แจ้ง Rider"
+                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border transition-colors ${
+                                hangerCount > 0
+                                  ? "bg-indigo-50/60 border-indigo-400 shadow-2xs"
+                                  : "bg-slate-50/70 border-slate-200/90"
+                              }`}
+                            >
+                              <div className="flex items-center gap-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextQty = Math.max(0, (Number(hangerCount) || 0) - 1);
+                                    const nextHas = nextQty > 0;
+                                    setHasHanger(nextHas);
+                                    setHangerCount(nextQty);
+                                    persistPackingCountsToDb(nextHas, nextQty, foldedCount > 0, foldedCount);
+                                  }}
+                                  className="w-4 h-4 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={999}
+                                  value={hangerCount || 0}
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                    const nextHas = val > 0;
+                                    setHasHanger(nextHas);
+                                    setHangerCount(val);
+                                    persistPackingCountsToDb(nextHas, val, foldedCount > 0, foldedCount);
+                                  }}
+                                  className="w-6 h-4 text-center text-[11px] font-black bg-white border border-slate-200 rounded text-indigo-900 focus:outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextQty = Math.min(999, (Number(hangerCount) || 0) + 1);
+                                    setHasHanger(true);
+                                    setHangerCount(nextQty);
+                                    persistPackingCountsToDb(true, nextQty, foldedCount > 0, foldedCount);
+                                  }}
+                                  className="w-4 h-4 rounded bg-indigo-100/80 hover:bg-indigo-200 text-indigo-700 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                >
+                                  +
+                                </button>
+                              </div>
+                              <span className="text-[11px] font-black text-indigo-700 leading-none select-none">H</span>
+                            </div>
+
+                            {/* Folded (F) */}
+                            <div
+                              title="จำนวนผ้าพับ (F) แจ้ง Rider"
+                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border transition-colors ${
+                                foldedCount > 0
+                                  ? "bg-emerald-50/60 border-emerald-400 shadow-2xs"
+                                  : "bg-slate-50/70 border-slate-200/90"
+                              }`}
+                            >
+                              <div className="flex items-center gap-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextQty = Math.max(0, (Number(foldedCount) || 0) - 1);
+                                    const nextHas = nextQty > 0;
+                                    setHasFolded(nextHas);
+                                    setFoldedCount(nextQty);
+                                    persistPackingCountsToDb(hangerCount > 0, hangerCount, nextHas, nextQty);
+                                  }}
+                                  className="w-4 h-4 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={999}
+                                  value={foldedCount || 0}
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                    const nextHas = val > 0;
+                                    setHasFolded(nextHas);
+                                    setFoldedCount(val);
+                                    persistPackingCountsToDb(hangerCount > 0, hangerCount, nextHas, val);
+                                  }}
+                                  className="w-6 h-4 text-center text-[11px] font-black bg-white border border-slate-200 rounded text-emerald-900 focus:outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextQty = Math.min(999, (Number(foldedCount) || 0) + 1);
+                                    setHasFolded(true);
+                                    setFoldedCount(nextQty);
+                                    persistPackingCountsToDb(hangerCount > 0, hangerCount, true, nextQty);
+                                  }}
+                                  className="w-4 h-4 rounded bg-emerald-100/80 hover:bg-emerald-200 text-emerald-700 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                >
+                                  +
+                                </button>
+                              </div>
+                              <span className="text-[11px] font-black text-emerald-700 leading-none select-none">F</span>
+                            </div>
+
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer shrink-0"
+                              onClick={() => setNoteLogsModalOpen(true)}
+                              title="Expand Notes"
+                            >
+                              <Maximize2 size={12} />
+                            </Button>
+                          </div>
                         </div>
                         <div className="flex flex-col gap-2 flex-1 overflow-hidden">
                           {adminLogs.length > 0 ? (

@@ -5,6 +5,7 @@ import { invalidateDbCache } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
 import { assertServerActionAuthorized, canUserAccessJob } from '@/lib/server-auth';
 import { processTopUpAction, evaluateAndIssuePromotionCouponsAction, lockJobRowForUpdate } from '@/actions/db';
+import { generateProformaBaseNumber } from '@/lib/utils';
 import {
   createBeamPaymentLink,
   getBeamPaymentLink,
@@ -88,6 +89,25 @@ async function markJobAsPaidInDb(params: {
       delete adminNotesObj.lastBeamPaymentLink;
     }
 
+    let hasLaundryItems = false;
+    try {
+      if (job.itemsJson) {
+        const parsedItems = JSON.parse(job.itemsJson);
+        if (Array.isArray(parsedItems)) {
+          hasLaundryItems = parsedItems.some(
+            (item: any) => item.category !== "PACKAGE" && !String(item.name || "").toLowerCase().includes("package")
+          );
+        }
+      }
+    } catch {}
+    const autoProformaFields =
+      hasLaundryItems && !job.proformaNumber
+        ? {
+            proformaNumber: generateProformaBaseNumber(job.id),
+            proformaRevision: job.proformaRevision ?? (job.id.startsWith('RF-') ? 1 : 0),
+          }
+        : {};
+
     const didTransition = Boolean(isFullyPaidNow && !job.isShopPaid);
     const savedJob = await tx.job.update({
       where: { id: job.id },
@@ -100,6 +120,7 @@ async function markJobAsPaidInDb(params: {
         ...(isFullyPaidNow && !job.shopPaidAt ? { csoPaidAt: now, shopPaidAt: now } : {}),
         subStatus: isFullyPaidNow && job.subStatus === 'billing' ? 'wash' : job.subStatus,
         adminNotesJson: JSON.stringify(adminNotesObj),
+        ...autoProformaFields,
       },
     });
 
@@ -268,11 +289,23 @@ export async function createJobOnlinePaymentAction(
         createdAt: new Date().toISOString(),
       };
 
+      const hasLaundryItems = jobItems.some(
+        (item: any) => item.category !== "PACKAGE" && !String(item.name || "").toLowerCase().includes("package")
+      );
+      const autoProformaFields =
+        hasLaundryItems && !job.proformaNumber
+          ? {
+              proformaNumber: generateProformaBaseNumber(job.id),
+              proformaRevision: job.proformaRevision ?? (job.id.startsWith('RF-') ? 1 : 0),
+            }
+          : {};
+
       const updatedWithLink = await prisma.job.update({
         where: { id: job.id },
         data: {
           adminNotesJson: JSON.stringify(adminNotesObj),
           ...(alreadyPaid === 0 && amount > (job.totalAmount || 0) ? { totalAmount: amount } : {}),
+          ...autoProformaFields,
         },
       });
       await publishOrderEvent({

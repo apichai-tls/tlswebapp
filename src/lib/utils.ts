@@ -451,6 +451,58 @@ export function isNoRiderCommissionJob(job?: {
   return false;
 }
 
+export function getJobPackingCounts(job?: {
+  remark?: string | null;
+  adminNotesJson?: string | null;
+} | null): { hangerCount: number; foldedCount: number } {
+  if (!job) return { hangerCount: 0, foldedCount: 0 };
+
+  if (job.adminNotesJson) {
+    try {
+      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        if (parsed.hangerCount !== undefined || parsed.foldedCount !== undefined) {
+          return {
+            hangerCount: Math.max(0, parseInt(String(parsed.hangerCount), 10) || 0),
+            foldedCount: Math.max(0, parseInt(String(parsed.foldedCount), 10) || 0),
+          };
+        }
+      }
+      // Fallback: check notes array for legacy patterns like "H5 F4" or "H5" or "F4"
+      const notesList = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.notes) ? parsed.notes : []);
+      for (let i = notesList.length - 1; i >= 0; i--) {
+        const txt = String(notesList[i]?.text || "").trim();
+        if (!txt || txt.startsWith("[Audit]")) continue;
+        const hMatch = txt.match(/(?:^|\s|[,/|])H\s*[:=-]?\s*(\d{1,3})(?=$|\s|[,/|]|[Ff])/i);
+        const fMatch = txt.match(/(?:^|\s|[,/|]|[Hh]\d+\s*)F\s*[:=-]?\s*(\d{1,3})(?=$|\s|[,/|])/i);
+        if (hMatch || fMatch) {
+          return {
+            hangerCount: hMatch ? Math.max(0, parseInt(hMatch[1], 10) || 0) : 0,
+            foldedCount: fMatch ? Math.max(0, parseInt(fMatch[1], 10) || 0) : 0,
+          };
+        }
+      }
+    } catch {}
+  }
+
+  return { hangerCount: 0, foldedCount: 0 };
+}
+
+export function getJobProcessingBranchId(job?: {
+  branchId?: string | null;
+  adminNotesJson?: string | null;
+} | null): string | null {
+  if (!job?.adminNotesJson) return null;
+  try {
+    const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.processingBranchId) {
+      const val = String(parsed.processingBranchId).trim();
+      return val || null;
+    }
+  } catch {}
+  return null;
+}
+
 export function getJobPaymentBreakdown(job?: {
   totalAmount?: number | null;
   isPaid?: boolean | null;
@@ -1287,3 +1339,64 @@ export function findDuplicateCustomerByPhone({
 }
 
 
+/**
+ * Formats the customer phone / contact line for INV (Proforma) and REC (Receipt):
+ * 1. Primary phone (`customer.phone` if valid and not `-` / `--`)
+ * 2. WhatsApp / Secondary phone (`customer.secondaryPhone` if valid and not `-` / `--`)
+ * 3. Direct non-WA phone entered on the job (`jobPhone` if valid and not `-` / `--` / `WA:`)
+ * 4. WhatsApp ID formatted as `WA: <WhatsApp ID>`
+ * 5. Fallback `-` when nothing is found
+ */
+export function formatReceiptCustomerPhone(params: {
+  jobPhone?: string | null;
+  customer?: {
+    phone?: string | null;
+    secondaryPhone?: string | null;
+    whatsappId?: string | null;
+  } | null;
+}): string {
+  const isCleanVal = (v?: string | null): v is string => {
+    if (!v) return false;
+    const t = String(v).trim();
+    return t.length > 0 && t !== "-" && t !== "--";
+  };
+
+  const rawJobPhone = isCleanVal(params.jobPhone) ? String(params.jobPhone).trim() : "";
+  const isJobPhoneWa = rawJobPhone.toUpperCase().startsWith("WA:");
+
+  const custPhone = isCleanVal(params.customer?.phone) ? String(params.customer!.phone).trim() : "";
+  const custSecPhone = isCleanVal(params.customer?.secondaryPhone) ? String(params.customer!.secondaryPhone).trim() : "";
+  const custWaId = isCleanVal(params.customer?.whatsappId) ? String(params.customer!.whatsappId).trim() : "";
+
+  // 1. Primary phone from CRM
+  if (custPhone && !custPhone.toUpperCase().startsWith("WA:")) {
+    return custPhone;
+  }
+
+  // 2. Secondary / WhatsApp phone from CRM
+  if (custSecPhone && !custSecPhone.toUpperCase().startsWith("WA:")) {
+    return custSecPhone;
+  }
+
+  // 3. Phone directly entered on job (e.g., Walk-In or manual phone override)
+  if (rawJobPhone && !isJobPhoneWa) {
+    return rawJobPhone;
+  }
+
+  // 4. WhatsApp ID -> "WA: <WhatsApp ID>"
+  if (custWaId) {
+    const cleanWa = custWaId.replace(/^WA:\s*/i, "").trim();
+    if (cleanWa && cleanWa !== "-" && cleanWa !== "--") {
+      return `WA: ${cleanWa}`;
+    }
+  }
+  if (rawJobPhone && isJobPhoneWa) {
+    const cleanWa = rawJobPhone.replace(/^WA:\s*/i, "").trim();
+    if (cleanWa && cleanWa !== "-" && cleanWa !== "--") {
+      return `WA: ${cleanWa}`;
+    }
+  }
+
+  // 5. Fallback
+  return "-";
+}

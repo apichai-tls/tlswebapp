@@ -134,11 +134,27 @@ export const printImageUrl = (url: string) => {
   }
 };
 
+async function fetchWithUploadTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = 15000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function compressImage(file: File, maxWidth = 1600, maxHeight = 1600, quality = 0.85): Promise<File> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     if (!file.type.startsWith("image/")) {
       return resolve(file);
     }
+    const safetyTimer = setTimeout(() => resolve(file), 6000);
+    const origResolve = resolve;
+    resolve = (val: File | PromiseLike<File>) => {
+      clearTimeout(safetyTimer);
+      origResolve(val);
+    };
     const img = new Image();
     img.src = URL.createObjectURL(file);
     img.onload = () => {
@@ -261,7 +277,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
 
               try {
                 // 1. Get Signed URL
-                const response = await fetch("/api/upload-url", {
+                const response = await fetchWithUploadTimeout("/api/upload-url", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -278,7 +294,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
                 updateFileStatus(uploadData.id, { progress: 40 });
 
                 // 2. Upload file directly to Cloud Storage
-                const uploadResponse = await fetch(uploadUrl, {
+                const uploadResponse = await fetchWithUploadTimeout(uploadUrl, {
                   method: "PUT",
                   headers: { "Content-Type": compressedFile.type },
                   body: compressedFile,
@@ -298,7 +314,7 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
                 localFormData.append("entityId", entityId);
                 if (subType) localFormData.append("subType", subType);
 
-                const fallbackResponse = await fetch("/api/upload-local", {
+                const fallbackResponse = await fetchWithUploadTimeout("/api/upload-local", {
                   method: "POST",
                   body: localFormData,
                 });

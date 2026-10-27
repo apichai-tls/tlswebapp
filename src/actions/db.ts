@@ -8,7 +8,7 @@ import { type CouponTemplate } from '@/lib/store';
 import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode, isItemMatchingCategory, getCategoryLabel } from '@/lib/promotions';
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
-import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, isAdminOrSuperadmin } from '@/lib/server-auth';
+import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, isAdminOrSuperadmin } from '@/lib/server-auth';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -94,24 +94,40 @@ export async function addCustomerAction(data: any): Promise<{ success: boolean; 
       }
     }
 
-    // Check duplicate phone (both Thai and international)
+    // Check duplicate phone (both Thai and international) using targeted tail-digit filter
     if (data.phone || data.secondaryPhone) {
-      const existingCustomers = await prisma.customer.findMany({
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          secondaryPhone: true,
-          memberId: true,
-        },
-      });
-      const duplicate = findDuplicateCustomerByPhone({
-        phone: data.phone,
-        secondaryPhone: data.secondaryPhone,
-        customers: existingCustomers,
-      });
-      if (duplicate) {
-        return { success: false, error: `เบอร์โทรศัพท์ ${duplicate.matchedPhone} มีอยู่ในระบบแล้ว (ลูกค้า: ${duplicate.customer.name || "ไม่ระบุชื่อ"}${duplicate.customer.memberId ? ` - รหัส ${duplicate.customer.memberId}` : ""})` };
+      const tailConditions: any[] = [];
+      for (const rawP of [data.phone, data.secondaryPhone]) {
+        const digits = String(rawP || '').replace(/\D/g, '');
+        if (digits.length >= 7) {
+          const tail = digits.slice(-7);
+          tailConditions.push({ phone: { contains: tail } });
+          tailConditions.push({ secondaryPhone: { contains: tail } });
+        } else if (rawP && String(rawP).trim() && String(rawP).trim() !== '-') {
+          const clean = String(rawP).trim();
+          tailConditions.push({ phone: clean });
+          tailConditions.push({ secondaryPhone: clean });
+        }
+      }
+      if (tailConditions.length > 0) {
+        const existingCustomers = await prisma.customer.findMany({
+          where: { OR: tailConditions },
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            secondaryPhone: true,
+            memberId: true,
+          },
+        });
+        const duplicate = findDuplicateCustomerByPhone({
+          phone: data.phone,
+          secondaryPhone: data.secondaryPhone,
+          customers: existingCustomers,
+        });
+        if (duplicate) {
+          return { success: false, error: `เบอร์โทรศัพท์ ${duplicate.matchedPhone} มีอยู่ในระบบแล้ว (ลูกค้า: ${duplicate.customer.name || "ไม่ระบุชื่อ"}${duplicate.customer.memberId ? ` - รหัส ${duplicate.customer.memberId}` : ""})` };
+        }
       }
     }
 
@@ -562,7 +578,7 @@ export async function updateCustomerAction(
               },
             };
           }
-          if (!canAccessCustomerRecords(authUser, lockedCustomer.branchId)) {
+          if (!(await canAccessCustomerOrLinkedJob(authUser, lockedCustomer.id, lockedCustomer.branchId, tx))) {
             return {
               earlyReturn: {
                 success: false,
@@ -1162,7 +1178,7 @@ export async function deleteCustomerAction(id: string, actorId?: string, actorNa
   if (!targetCustomer) {
     throw new Error("Customer not found");
   }
-  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+  if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
     throw new Error("Forbidden: You do not have access to customer records in this branch");
   }
   const jobsCount = await prisma.job.count({ where: { customerId: id } });
@@ -1557,7 +1573,7 @@ export async function addCustomerAddressAction(customerId: string, addressData: 
   if (!targetCustomer) {
     throw new Error("Customer not found");
   }
-  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+  if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
     throw new Error("Forbidden: You do not have access to customer records in this branch");
   }
   const created = await prisma.$transaction(async (tx) => {
@@ -1628,7 +1644,7 @@ export async function deleteCustomerAddressAction(addressId: string, customerId:
   if (customerId && address.customerId !== customerId) {
     throw new Error("Forbidden: Address does not belong to the specified customer");
   }
-  if (!canAccessCustomerRecords(authUser, address.customer.branchId)) {
+  if (!(await canAccessCustomerOrLinkedJob(authUser, address.customer.id, address.customer.branchId))) {
     throw new Error("Forbidden: You do not have access to customer records in this branch");
   }
   await prisma.customerAddress.delete({
@@ -1657,7 +1673,7 @@ export async function setPrimaryCustomerAddressAction(customerId: string, addres
   if (address.customerId !== customerId) {
     throw new Error("Forbidden: Address does not belong to the specified customer");
   }
-  if (!canAccessCustomerRecords(authUser, address.customer.branchId)) {
+  if (!(await canAccessCustomerOrLinkedJob(authUser, address.customer.id, address.customer.branchId))) {
     throw new Error("Forbidden: You do not have access to customer records in this branch");
   }
   const updated = await prisma.$transaction(async (tx) => {
@@ -2231,7 +2247,7 @@ export async function getCustomerJobsAction(customerId: string, customerPhone?: 
       where: { id: customerId },
       select: { id: true, branchId: true },
     });
-    if (targetCustomer && !canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    if (targetCustomer && !(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
   }
@@ -2293,7 +2309,7 @@ export async function getCustomerWalletAdjustmentsAction(customerId: string) {
     select: { id: true, branchId: true },
   });
   if (!targetCustomer) return [];
-  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+  if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
     throw new Error("Forbidden: Customer branch restriction");
   }
   try {
@@ -3167,7 +3183,7 @@ async function updateJobActionInternal(id: string, updates: any) {
 
   const commissionRelevantFields = [
     'status', 'isPaid', 'isShopPaid', 'pickupRiderId', 'deliveryRiderId', 'riderId',
-    'pickupCommission', 'deliveryCommission', 'remark', 'adminNotesJson', 'paymentChannel', 'source', 'type'
+    'pickupCommission', 'deliveryCommission', 'remark', 'adminNotesJson', 'legsJson', 'deliveryProofImageUrl', 'proofImageUrl', 'paymentChannel', 'source', 'type'
   ];
   const hasCommissionChange = commissionRelevantFields.some((k) => k in effectiveChanges);
   const hasAnyRiderOrPayment = Boolean(
@@ -3175,7 +3191,7 @@ async function updateJobActionInternal(id: string, updates: any) {
     existingJob?.pickupRiderId || existingJob?.deliveryRiderId ||
     updatedJob.isShopPaid || existingJob?.isShopPaid
   );
-  if (hasCommissionChange || hasAnyRiderOrPayment) {
+  if (hasCommissionChange && hasAnyRiderOrPayment) {
     try {
       await syncRiderCommissionsForJob(id, updatedJob, true);
     } catch (commErr: any) {
@@ -4928,9 +4944,24 @@ export async function syncRiderCommissionsForJob(jobId: string, preloadedJob?: a
     // 2. Delivery Commission Check
     const deliveryRiderId = job.deliveryRiderId;
     const deliveryCommission = isZeroCommForced ? 0 : (job.deliveryCommission || 0);
-    const isDeliveryDone = job.status === 'completed';
+    let isDeliveredStage = false;
+    if (job.status === 'delivery') {
+      try {
+        const parsedLegs = typeof job.legsJson === 'string' && job.legsJson ? JSON.parse(job.legsJson) : (job.legs || null);
+        if (parsedLegs?.deliveryOutbound?.status === 'completed') isDeliveredStage = true;
+      } catch {}
+      if (job.adminNotesJson) {
+        try {
+          const parsedNotes = typeof job.adminNotesJson === 'string' ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+          if (parsedNotes?.kanbanStage === 'delivered') isDeliveredStage = true;
+          else if (parsedNotes?.kanbanStage === 'delivery') isDeliveredStage = false;
+        } catch {}
+      }
+    }
+    const isDeliveryDone = job.status === 'completed' || isDeliveredStage;
+    const isDeliveryEligible = isEligible || isDeliveredStage;
 
-    if (isEligible && isDeliveryDone && deliveryRiderId && deliveryCommission > 0) {
+    if (isDeliveryEligible && isDeliveryDone && deliveryRiderId && deliveryCommission > 0) {
       if (!existingDeliveryTx) {
         await prisma.riderTransaction.create({
           data: {
@@ -4964,7 +4995,7 @@ export async function syncRiderCommissionsForJob(jobId: string, preloadedJob?: a
           data: { commissionBalance: { increment: deliveryCommission } }
         });
       }
-    } else if ((!isEligible || !isDeliveryDone || !deliveryRiderId || deliveryCommission <= 0) && existingDeliveryTx) {
+    } else if ((!isDeliveryEligible || !isDeliveryDone || !deliveryRiderId || deliveryCommission <= 0) && existingDeliveryTx) {
       await prisma.rider.update({
         where: { id: existingDeliveryTx.riderId },
         data: { commissionBalance: { decrement: existingDeliveryTx.amount } }
@@ -5311,7 +5342,7 @@ export async function getTopUpTransactionsAction(
       select: { id: true, branchId: true },
     });
     if (!targetCustomer) return [];
-    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
   }
@@ -5483,7 +5514,7 @@ export async function getCustomerTodayTopUpAction(customerId: string) {
       select: { id: true, branchId: true },
     });
     if (!targetCustomer) return null;
-    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
   }
@@ -5557,7 +5588,7 @@ export async function createWalletTransactionAction(data: {
     select: { id: true, branchId: true },
   });
   if (!targetCustomer) throw new Error("Customer not found");
-  if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+  if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
     throw new Error("Forbidden: Customer branch restriction");
   }
   data.createdById = authUser.id;
@@ -5603,7 +5634,7 @@ export async function getWalletTransactionsAction(filters?: {
       select: { id: true, branchId: true },
     });
     if (!targetCustomer) return [];
-    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
   }
@@ -5661,7 +5692,7 @@ export async function getPendingWalletCountAction(customerId?: string) {
       select: { id: true, branchId: true },
     });
     if (!targetCustomer) return 0;
-    if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
   }
@@ -7483,7 +7514,7 @@ export async function createCustomerCouponAction(data: {
       select: { id: true, name: true, phone: true, brand: true, branchId: true },
     });
     if (!customer) throw new Error("ไม่พบข้อมูลลูกค้า");
-    if (!canAccessCustomerRecords(authUser, customer.branchId)) {
+    if (!(await canAccessCustomerOrLinkedJob(authUser, customer.id, customer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
 
@@ -7556,7 +7587,7 @@ export async function getCustomerCouponsAction(filters?: {
         select: { id: true, branchId: true },
       });
       if (!targetCustomer) return { success: true, coupons: [] };
-      if (!canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+      if (!(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
         throw new Error("Forbidden: Customer branch restriction");
       }
     }
@@ -7641,7 +7672,7 @@ export async function updateCustomerCouponStatusAction(
       where: { id: existingCoupon.customerId },
       select: { id: true, branchId: true },
     });
-    if (targetCustomer && !canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    if (targetCustomer && !(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
     details = { ...(details || {}), actorId: authUser.id, actorName: authUser.name || authUser.email };
@@ -7693,7 +7724,7 @@ export async function deleteCustomerCouponAction(id: string, actor?: { id?: stri
       where: { id: coupon.customerId },
       select: { id: true, branchId: true },
     });
-    if (targetCustomer && !canAccessCustomerRecords(authUser, targetCustomer.branchId)) {
+    if (targetCustomer && !(await canAccessCustomerOrLinkedJob(authUser, targetCustomer.id, targetCustomer.branchId))) {
       throw new Error("Forbidden: Customer branch restriction");
     }
 
