@@ -469,7 +469,7 @@ export function AdminCustomerProfileModal({
         return false;
       }
       const ch = (j.paymentChannel || j.paymentMethod || "").toLowerCase();
-      const isMember = ch.includes("deduct") || ch.includes("member") || ch.includes("credit");
+      const isMember = Boolean(customer?.isMember) && !ch.includes("hq") && (ch.includes("deduct") || ch.includes("member") || ch.includes("credit") || ch.includes("wallet"));
       return isMember;
     }).map((j: any) => ({
       id: `job-deduct-${j.id}`,

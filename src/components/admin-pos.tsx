@@ -2995,8 +2995,8 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           initialWalletBalanceAfter = Math.round(((selectedCustomer.creditBalance || 0) - finalCreditAlloc) * 100) / 100;
         } else if (topUpTotal > 0 && !wasAlreadyShopPaid) {
           initialWalletBalanceAfter = Math.round(((selectedCustomer.creditBalance || 0) + topUpTotal) * 100) / 100;
-        } else if (initialWalletBalanceAfter === null) {
-          initialWalletBalanceAfter = selectedCustomer.creditBalance ?? null;
+        } else if (!wasAlreadyShopPaid || initialWalletBalanceAfter === null) {
+          initialWalletBalanceAfter = selectedCustomer.isMember ? (selectedCustomer.creditBalance ?? null) : null;
         }
       }
 
@@ -3024,7 +3024,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
         const allSessionUrls = Array.from(new Set([...capturedReceiptUrlsRef.current, ...sessionCapturedReceiptUrls]))
           .filter(u => isPosBillUrlBelongingToJob(u, loadedJobId));
         const cleanExistingBills = existingBills.filter(u => isPosBillUrlBelongingToJob(u, loadedJobId));
-        const mergedBills = Array.from(new Set([...cleanExistingBills, ...allSessionUrls]));
+        const mergedBills = Array.from(new Set([...cleanExistingBills, ...allSessionUrls])).filter(u => !isPaidFlag || (!u.includes(`receipt-${loadedJobId}`) && !u.includes("/receipt-")));
 
         const updateType = isPickupAndDelivery ? "full_service" : (isDelivery ? "delivery" : "in_store");
         const updateStatus = hasPosPackage 
@@ -3355,9 +3355,10 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
           try {
             const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
             const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+            clearReceiptCaptureLock(receiptFilename);
             if (!markReceiptCaptureStarted(receiptFilename)) return;
 
-            const currentDbJob = jobStore.getSnapshot().find(j => j.id === targetJobId) || capturedFinalJob;
+            const currentDbJob = { ...(jobStore.getSnapshot().find(j => j.id === targetJobId) || {}), ...capturedFinalJob };
             const recData = formatJobToReceiptData({
               ...currentDbJob,
               isPaid: true,
