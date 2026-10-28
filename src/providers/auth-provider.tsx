@@ -80,7 +80,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     await logout();
     if (typeof window !== 'undefined') {
       const currentPath = window.location.pathname;
-      if (!currentPath.startsWith('/login')) {
+      if (!currentPath.startsWith('/login') && !currentPath.startsWith('/portal')) {
         window.location.replace(`/login?reason=${reason}`);
       }
     }
@@ -88,6 +88,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   // 1. Initial hydration from localStorage + build version & timeout check
   useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/portal')) {
+      setIsLoading(false);
+      return;
+    }
     const savedUser = localStorage.getItem('authUser');
     const lastLoginDate = localStorage.getItem('lastLoginDate');
     const savedBuildTime = localStorage.getItem('authBuildTime');
@@ -140,7 +144,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
         }
         const currentPath = typeof window !== 'undefined' ? window.location.pathname : '';
-        if (currentPath !== '/' && !currentPath.startsWith('/login')) {
+        if (currentPath !== '/' && !currentPath.startsWith('/login') && !currentPath.startsWith('/portal')) {
           import('@/lib/api').then(({ ensureDbLoaded, startRealtimeConnection }) => {
             ensureDbLoaded();
             startRealtimeConnection(false);
@@ -180,7 +184,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === 'authUser' && !e.newValue) {
         setUser(null);
-        if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+        if (
+          typeof window !== 'undefined' &&
+          !window.location.pathname.startsWith('/login') &&
+          !window.location.pathname.startsWith('/portal')
+        ) {
           window.location.replace('/login');
         }
       } else if (e.key === 'lastActivityAt' && e.newValue) {

@@ -10,6 +10,7 @@ import {
   ServerAuthUser,
 } from '@/lib/server-auth';
 import { generateDownloadUrl } from '@/lib/gcs';
+import { resolvePortalCustomer } from '@/lib/portal-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -585,13 +586,14 @@ export async function serveSecureLocalUpload(
   rawLocalPath: string
 ): Promise<Response> {
   const { user } = await resolveRequestUser(request);
-  if (!user) {
+  const portalCustomer = !user ? resolvePortalCustomer(request) : null;
+  if (!user && !portalCustomer) {
     return NextResponse.json(
-      { error: 'Unauthorized: Valid staff session required to view media' },
+      { error: 'Unauthorized: Valid staff or customer session required to view media' },
       { status: 401 }
     );
   }
-  if (!user.isActive) {
+  if (user && !user.isActive) {
     return NextResponse.json(
       { error: 'Forbidden: This account has been deactivated' },
       { status: 403 }
@@ -664,18 +666,24 @@ export async function serveSecureLocalUpload(
 
   const pathEntityId = extractEntityIdFromFilename(resolvedPath);
 
-  const authCheck = await authorizeMediaEntityAccess({
-    user,
-    entityKind,
-    pathEntityId,
-    fileSearchNeedle: fileBaseName,
-    explicitJobId,
-    explicitCustomerId,
-    explicitTaskId,
-  });
+  if (user) {
+    const authCheck = await authorizeMediaEntityAccess({
+      user,
+      entityKind,
+      pathEntityId,
+      fileSearchNeedle: fileBaseName,
+      explicitJobId,
+      explicitCustomerId,
+      explicitTaskId,
+    });
 
-  if (!authCheck.allowed) {
-    return NextResponse.json({ error: authCheck.error }, { status: authCheck.status });
+    if (!authCheck.allowed) {
+      return NextResponse.json({ error: authCheck.error }, { status: authCheck.status });
+    }
+  } else if (portalCustomer) {
+    if (entityKind === 'rider' || entityKind === 'task') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
   }
 
   if (!fs.existsSync(resolvedPath)) {
