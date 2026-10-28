@@ -66,6 +66,10 @@ export function A5ReceiptDialog({
   onBillImageUploadedRef.current = onBillImageUploaded;
 
   useEffect(() => {
+    if (!open) capturedKeysRef.current.clear();
+  }, [open]);
+
+  useEffect(() => {
     setMounted(true);
     return () => setMounted(false);
   }, []);
@@ -105,7 +109,7 @@ export function A5ReceiptDialog({
     }
 
     const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${
-      snapshotData.proformaRevision || 0
+      snapshotData.proformaRevision || 0}_${snapshotData.total ?? ""}_${snapshotData.walletBalanceAfter ?? ""
     }`;
 
     const filename = snapshotData.isDraft
@@ -151,7 +155,7 @@ export function A5ReceiptDialog({
             body: blob,
           });
           if (putRes.ok) {
-            uploadResult = { success: true, publicUrl: signData.publicUrl };
+            uploadResult = { success: true, publicUrl: snapshotData.isDraft ? signData.publicUrl : `${signData.publicUrl}?v=${Date.now()}` };
           } else {
             throw new Error(`GCS PUT failed: ${putRes.status}`);
           }
@@ -233,7 +237,7 @@ export function A5ReceiptDialog({
         try {
           const parsed = JSON.parse(currentJob.billImageUrl);
           const existingBills = Array.isArray(parsed) ? parsed : [parsed];
-          if (existingBills.some((url: string) => url.includes(filename))) {
+          if ((snapshotData.isDraft || !snapshotData.autoCapture) && existingBills.some((url: string) => url.includes(filename))) {
             capturedKeysRef.current.add(captureKey);
             return;
           }

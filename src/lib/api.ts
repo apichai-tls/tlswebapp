@@ -1723,7 +1723,7 @@ export const api = {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
-          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid === true || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined);
+          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
             ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
             : existingUrls;
@@ -1936,7 +1936,7 @@ export const api = {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
-          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid === true || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined);
+          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
             ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
             : existingUrls;
