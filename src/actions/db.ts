@@ -2779,7 +2779,7 @@ async function updateJobActionInternal(id: string, updates: any) {
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           // If incoming has a receipt, replace older receipt from existing
-          const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-"))) || Boolean(updates.isShopPaid === true && !existingJob?.isShopPaid);
+          const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-"))) || Boolean(updates.isShopPaid !== undefined || updates.isPaid !== undefined || updates.items !== undefined || updates.totalAmount !== undefined || updates.walletBalanceAfter !== undefined);
           let baseExisting = incomingHasReceipt
             ? existingUrls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes("receipt-"))
             : existingUrls;
@@ -6670,13 +6670,14 @@ export async function unlockPaidJobAction(data: {
         existingPayments = [{
           amount: job.totalAmount || 0,
           method:
-            legacyMethod.includes("credit") || legacyMethod.includes("wallet") || legacyMethod.includes("member")
+            !legacyMethod.includes("hq") && (legacyMethod.includes("credit") || legacyMethod.includes("wallet") || legacyMethod.includes("member"))
               ? "credit"
               : legacyMethod.includes("transfer") || legacyMethod.includes("promptpay") || legacyMethod.includes("qr") || legacyMethod.includes("bank") || legacyMethod.includes("beam") || legacyMethod.includes("online")
               ? "transfer"
               : legacyMethod.includes("card") || legacyMethod.includes("edc") || legacyMethod.includes("visa") || legacyMethod.includes("master")
               ? "card"
               : "cash",
+          channel: job.paymentChannel || job.paymentMethod || undefined,
           shiftId: job.shiftId || undefined,
           timestamp: job.updatedAt?.toISOString() || new Date().toISOString(),
           paidBy: "Legacy Record"
@@ -6687,10 +6688,11 @@ export async function unlockPaidJobAction(data: {
       const isWalletPay = (p: any) => {
         const m = (p.method || "").toLowerCase();
         const ch = (p.channel || "").toLowerCase();
+        if (ch.includes("hq")) return false;
         return m === "credit" || m.includes("wallet") || m.includes("deduct") || ch.includes("deduct") || ch.includes("wallet") || ch.includes("member");
       };
 
-      const walletRefundAmount = existingPayments
+      const rawWalletRefundAmount = existingPayments
         .filter(isWalletPay)
         .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
       const totalUnlockedAmount =
@@ -6720,7 +6722,10 @@ export async function unlockPaidJobAction(data: {
         }
       }
 
-      if (walletRefundAmount > 0 && job.customerId) {
+      let walletRefundAmount = 0;
+      const preCheckCustomer = job.customerId ? await tx.customer.findUnique({ where: { id: job.customerId }, select: { id: true, isMember: true } }) : null;
+      if (rawWalletRefundAmount > 0 && job.customerId && preCheckCustomer?.isMember) {
+        walletRefundAmount = rawWalletRefundAmount;
         await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
         if (customer) {
@@ -6872,6 +6877,7 @@ export async function unlockPaidJobAction(data: {
           isShopPaid: false,
           shopPaidAt: null,
           csoPaidAt: null,
+          walletBalanceAfter: null,
           adminNotesJson: updatedNotesJson,
           billImageUrl: updatedBillImageUrl,
         },
@@ -6908,7 +6914,7 @@ export async function unlockPaidJobAction(data: {
         type: 'job.updated',
         job: unlockRes.updatedJob,
         action: 'unlock_paid',
-        changedFields: ['isPaid', 'isShopPaid', 'adminNotesJson', 'billImageUrl'],
+        changedFields: ['isPaid', 'isShopPaid', 'walletBalanceAfter', 'adminNotesJson', 'billImageUrl'],
         actorId: data.actorId,
         actorName: data.actorName,
       });
@@ -7138,9 +7144,10 @@ export async function recordJobPaymentAction(data: {
           isPaid: isFullyPaid ? true : job.isPaid,
           isShopPaid: isFullyPaid ? true : job.isShopPaid,
           csoPaidAt: isFullyPaid ? (job.csoPaidAt || new Date()) : job.csoPaidAt,
+          walletBalanceAfter: newBalance !== undefined ? newBalance : (isFullyPaid && job.customerId ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { isMember: true, creditBalance: true } }))?.isMember ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { creditBalance: true } }))?.creditBalance ?? 0) : null) : job.walletBalanceAfter),
           shopPaidAt: isFullyPaid ? (job.shopPaidAt || new Date()) : job.shopPaidAt,
           paymentChannel: finalChannel,
-          walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+
           billImageUrl: updatedBillImageUrl,
           adminNotesJson: updatedAdminNotesJson,
         }
@@ -7278,7 +7285,9 @@ export async function voidJobPaymentAction(data: {
       let newBalance: number | undefined = undefined;
 
       // 1. If method was credit (Member Wallet), refund back to wallet and notify Accounts (PENDING)
-      if (targetMethod === "credit" && job.customerId) {
+      const isTargetMemberWallet = !String(targetChannel || "").toLowerCase().includes("hq") && (targetMethod === "credit" || String(targetChannel || "").toLowerCase().includes("wallet") || String(targetChannel || "").toLowerCase().includes("member"));
+      const preCheckVoidCust = job.customerId ? await tx.customer.findUnique({ where: { id: job.customerId }, select: { id: true, isMember: true } }) : null;
+      if (isTargetMemberWallet && job.customerId && preCheckVoidCust?.isMember) {
         await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
         if (customer) {
@@ -7428,9 +7437,10 @@ export async function voidJobPaymentAction(data: {
           isPaid: isStillFullyPaid,
           isShopPaid: isStillFullyPaid,
           csoPaidAt: isStillFullyPaid ? job.csoPaidAt : null,
+          walletBalanceAfter: newBalance !== undefined ? newBalance : (isStillFullyPaid ? job.walletBalanceAfter : null),
           shopPaidAt: isStillFullyPaid ? job.shopPaidAt : null,
           paymentChannel: finalChannel,
-          walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+
           billImageUrl: updatedBillImageUrl,
           adminNotesJson: updatedAdminNotesJson,
         }

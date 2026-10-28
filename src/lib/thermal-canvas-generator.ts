@@ -275,7 +275,7 @@ export async function uploadReceiptImage(blob: Blob, entityId: string, filename:
             headers: { "Content-Type": "image/png" },
             body: blob
           });
-          if (putRes.ok) return signData.publicUrl;
+          if (putRes.ok) return filename.startsWith("receipt-") ? `${signData.publicUrl}?v=${Date.now()}` : signData.publicUrl;
         }
       }
     } catch (gcsErr) {
@@ -295,7 +295,7 @@ export async function uploadReceiptImage(blob: Blob, entityId: string, filename:
     formData.append("subType", "proofs");
     const res = await fetch("/api/upload-local", { method: "POST", body: formData });
     const data = await res.json();
-    if (data.success && data.publicUrl) return data.publicUrl;
+    if (data.success && data.publicUrl) return filename.startsWith("receipt-") ? `${data.publicUrl}?v=${Date.now()}` : data.publicUrl;
   } catch (localErr) {
     console.error("Local upload failed:", localErr);
   }

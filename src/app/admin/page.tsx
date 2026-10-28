@@ -1530,6 +1530,8 @@ function AdminPageContent() {
 
   useEffect(() => {
     if (dialogOpen && editingJobId) {
+      walletApprovalStore.refresh().catch(() => {});
+      import("@/lib/a5-canvas-generator").then(({ clearReceiptCaptureLock }) => clearReceiptCaptureLock(`receipt-${editingJobId}.png`)).catch(() => {});
       loadJobPendingWalletTxs(editingJobId);
     } else if (!dialogOpen) {
       setJobPendingWalletTxs([]);
@@ -3895,6 +3897,7 @@ function AdminPageContent() {
           }
           const packageItems_u = !wasShopPaidBefore_update ? dialogCart.filter(item => item.category === "PACKAGE") : [];
           if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+          payload.walletBalanceAfter = (selectedProfileCustomer.isMember ? (selectedProfileCustomer.creditBalance ?? 0) : null) as any;
           if (balAdj !== 0) {
             const isDeduct = balAdj < 0;
             const refDisplay = (existingJob as any)?.billNo || targetEditingJobId;
@@ -4252,9 +4255,10 @@ function AdminPageContent() {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              clearReceiptCaptureLock(receiptFilename);
               if (!markReceiptCaptureStarted(receiptFilename)) return;
 
-              const currentTargetJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId) || existingJob;
+              const currentTargetJob = { ...(jobStore.getSnapshot().find(j => j.id === targetEditingJobId) || existingJob), ...newJobData, ...payload };
               if (!currentTargetJob) {
                 clearReceiptCaptureLock(receiptFilename);
                 return;
@@ -4593,9 +4597,10 @@ function AdminPageContent() {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              clearReceiptCaptureLock(receiptFilename);
               if (!markReceiptCaptureStarted(receiptFilename)) return;
 
-              const currentTargetJob = jobStore.getSnapshot().find(j => j.id === capturedNewJobId) || job;
+              const currentTargetJob = { ...job, ...(jobStore.getSnapshot().find(j => j.id === capturedNewJobId) || {}) };
               if (!currentTargetJob) {
                 clearReceiptCaptureLock(receiptFilename);
                 return;
@@ -4959,6 +4964,7 @@ function AdminPageContent() {
         originalJobRef.current.isShopPaid = false;
         originalJobRef.current.shopPaidAt = null;
         originalJobRef.current.csoPaidAt = null;
+        originalJobRef.current.walletBalanceAfter = null;
         originalJobRef.current.adminNotesJson = result.updatedJob?.adminNotesJson;
         if (result.updatedJob?.billImageUrl !== undefined) {
           originalJobRef.current.billImageUrl = result.updatedJob.billImageUrl;
@@ -4972,6 +4978,7 @@ function AdminPageContent() {
         shopPaidAt: null,
         csoPaidAt: null,
         adminNotesJson: result.updatedJob?.adminNotesJson,
+        walletBalanceAfter: null,
         billImageUrl: result.updatedJob?.billImageUrl ?? null,
       } as any);
       jobStore.notify();
@@ -4988,6 +4995,8 @@ function AdminPageContent() {
 
       // 5. Notify Accounts Pending Approvals store & load pending banner for this job immediately
       walletApprovalStore.refresh().catch(() => {});
+      walletApprovalStore.refresh().catch(() => {});
+      import("@/lib/a5-canvas-generator").then(({ clearReceiptCaptureLock }) => clearReceiptCaptureLock(`receipt-${editingJobId}.png`)).catch(() => {});
       loadJobPendingWalletTxs(editingJobId);
 
       toast.success(
@@ -10688,7 +10697,7 @@ function AdminPageContent() {
                       : (activeJob?.totalAmount || 0);
 
                     const walletAmount = payments
-                      .filter(p => (p.method || "").toLowerCase() === "credit")
+                      .filter(p => Boolean(selectedProfileCustomer?.isMember) && !(p.channel || "").toLowerCase().includes("hq") && ((p.method || "").toLowerCase() === "credit" || (p.channel || "").toLowerCase().includes("member") || (p.channel || "").toLowerCase().includes("wallet")))
                       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
 
                     const cashAmount = payments

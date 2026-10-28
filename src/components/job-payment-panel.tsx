@@ -506,7 +506,7 @@ export function JobPaymentPanel({
                 </div>
               </div>
 
-              {((voidingPayment.method || "").toLowerCase() === "credit" || (voidingPayment.channel || "").toLowerCase().includes("member")) && (
+              {Boolean(customer?.isMember) && !(voidingPayment.channel || "").toLowerCase().includes("hq") && ((voidingPayment.method || "").toLowerCase() === "credit" || (voidingPayment.channel || "").toLowerCase().includes("member") || (voidingPayment.channel || "").toLowerCase().includes("wallet")) && (
                 <div className="p-2 rounded bg-amber-950/80 border border-amber-700 text-amber-200 text-[11px] flex items-center gap-1.5">
                   <Wallet size={13} className="text-amber-400 shrink-0" />
                   <span>ระบบจะคืนเงิน <strong>฿{voidingPayment.amount.toLocaleString()}</strong> กลับเข้ากระเป๋าเงินสมาชิกให้โดยอัตโนมัติ</span>
