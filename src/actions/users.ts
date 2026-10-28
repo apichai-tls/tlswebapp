@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { hashPassword } from "@/lib/crypto";
 import { assertServerActionAuthorized, invalidateServerAuthCache, revokeAllUserSessions } from "@/lib/server-auth";
+import { invalidateDbCache } from "@/lib/db-cache";
 
 const SAFE_USER_SELECT = {
   id: true,
@@ -20,7 +21,12 @@ const SAFE_USER_SELECT = {
   updatedAt: true,
 } as const;
 
+let usersCache: { data: any[]; cachedAt: number } | null = null;
+const USERS_CACHE_TTL_MS = 30000;
+
 function safeRevalidatePath(path: string) {
+  usersCache = null;
+  invalidateDbCache('riders');
   try {
     revalidatePath(path);
   } catch (e) {
@@ -31,10 +37,14 @@ function safeRevalidatePath(path: string) {
 export async function getUsers() {
   try {
     await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    if (usersCache && Date.now() - usersCache.cachedAt < USERS_CACHE_TTL_MS) {
+      return { success: true, data: usersCache.data };
+    }
     const users = await prisma.adminUser.findMany({
       select: SAFE_USER_SELECT,
       orderBy: { createdAt: "desc" },
     });
+    usersCache = { data: users, cachedAt: Date.now() };
     return { success: true, data: users };
   } catch (error: any) {
     console.error("Failed to fetch users:", error);

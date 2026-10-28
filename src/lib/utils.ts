@@ -331,6 +331,25 @@ export interface JobPaymentBreakdown {
   channels: string[];
 }
 
+const adminNotesParseCache = new Map<string, any>();
+export function parseAdminNotesCached(raw: unknown): any {
+  if (!raw) return null;
+  if (typeof raw !== "string") return raw;
+  const cached = adminNotesParseCache.get(raw);
+  if (cached !== undefined) return cached;
+  try {
+    const parsed = JSON.parse(raw);
+    if (adminNotesParseCache.size > 3000) {
+      adminNotesParseCache.clear();
+    }
+    adminNotesParseCache.set(raw, parsed);
+    return parsed;
+  } catch {
+    adminNotesParseCache.set(raw, null);
+    return null;
+  }
+}
+
 export function isSplitDeliveryChildJob(job?: {
   remark?: string | null;
   paymentChannel?: string | null;
@@ -341,7 +360,7 @@ export function isSplitDeliveryChildJob(job?: {
   if (typeof job.remark === "string" && /Split Delivery\s*\(Part\s*2\)/i.test(job.remark)) return true;
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object" && parsed.isSplitDelivery === true) return true;
     } catch {}
   }
@@ -359,7 +378,7 @@ export function isRewashOrNoChargeJob(job?: {
   if (typeof job.remark === "string" && /\bRewash\b/i.test(job.remark)) return true;
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object" && parsed.isRewash === true) return true;
     } catch {}
   }
@@ -376,7 +395,7 @@ export function isSplitDeliveryJob(job?: {
   if (typeof job.remark === "string" && /\bSplit Deliv/i.test(job.remark)) return true;
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (
         parsed &&
         typeof parsed === "object" &&
@@ -397,7 +416,7 @@ export function getSplitDeliveryFromJobId(job?: {
   if (!job) return null;
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object") {
         if (typeof parsed.splitFromJobId === "string" && parsed.splitFromJobId.trim()) {
           return parsed.splitFromJobId.trim();
@@ -421,7 +440,7 @@ export function getRewashFromJobId(job?: {
   if (!job) return null;
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object" && typeof parsed.rewashFromJobId === "string" && parsed.rewashFromJobId.trim()) {
         return parsed.rewashFromJobId.trim();
       }
@@ -442,7 +461,7 @@ export function isNoRiderCommissionJob(job?: {
   if (typeof job.remark === "string" && /\bNo Rider Comm\b/i.test(job.remark)) return true;
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object") {
         if (parsed.isRewash === true || parsed.noRiderCommission === true) return true;
       }
@@ -459,7 +478,7 @@ export function getJobPackingCounts(job?: {
 
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         if (parsed.hangerCount !== undefined || parsed.foldedCount !== undefined) {
           return {
@@ -494,7 +513,7 @@ export function getJobProcessingBranchId(job?: {
 } | null): string | null {
   if (!job?.adminNotesJson) return null;
   try {
-    const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+    const parsed = parseAdminNotesCached(job.adminNotesJson);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.processingBranchId) {
       const val = String(parsed.processingBranchId).trim();
       return val || null;
@@ -520,7 +539,7 @@ export function getJobPaymentBreakdown(job?: {
   
   if (job?.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments)) {
         payments = parsed.payments
           .filter((p: any) => p && typeof p === "object" && Number(p.amount) > 0)
@@ -592,7 +611,7 @@ export function isJobFullyPaid(job?: {
   if (jobTotal <= 0) return false;
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (parsed && typeof parsed === "object" && Array.isArray(parsed.payments) && parsed.payments.length > 0) {
         const totalPaid = parsed.payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
         if (totalPaid >= jobTotal - 0.01) {
@@ -920,7 +939,7 @@ export function getJobPaymentDate(job: any): Date | null {
   if (job.csoPaidAt) return new Date(job.csoPaidAt);
   if (job.adminNotesJson) {
     try {
-      const parsed = typeof job.adminNotesJson === "string" ? JSON.parse(job.adminNotesJson) : job.adminNotesJson;
+      const parsed = parseAdminNotesCached(job.adminNotesJson);
       if (Array.isArray(parsed?.payments) && parsed.payments.length > 0) {
         const lastPay = parsed.payments[parsed.payments.length - 1];
         if (lastPay?.timestamp) return new Date(lastPay.timestamp);

@@ -204,11 +204,14 @@ export function ReportsReceipts({ jobs, selectedBranch = "all", onViewJob }: Rep
     setDatePreset("custom");
   };
 
-  // Trigger historical jobs load for full range
+  // Trigger historical jobs load for full range (debounced)
   useEffect(() => {
-    jobStore.fetchHistoricalJobs(startDate, endDate).catch(err => {
-      console.error("Failed to load historical jobs for receipts:", err);
-    });
+    const timer = setTimeout(() => {
+      jobStore.fetchHistoricalJobs(startDate, endDate).catch(err => {
+        console.error("Failed to load historical jobs for receipts:", err);
+      });
+    }, 300);
+    return () => clearTimeout(timer);
   }, [startDate, endDate]);
 
   // Load Top-up Transactions

@@ -3394,7 +3394,9 @@ export async function addRiderAction(data: any) {
     rData.currentLng = data.currentLocation.lng;
     delete rData.currentLocation;
   }
-  return prisma.rider.create({ data: rData });
+  const created = await prisma.rider.create({ data: rData });
+  invalidateDbCache('riders');
+  return created;
 }
 
 export async function updateRiderAction(id: string, updates: any) {
@@ -3408,7 +3410,9 @@ export async function updateRiderAction(id: string, updates: any) {
     data.currentLng = updates.currentLocation.lng;
     delete data.currentLocation;
   }
+  if (data.isActive === false) data.status = 'offline';
   const updatedRider = await prisma.rider.update({ where: { id }, data });
+  invalidateDbCache('riders');
   if (data.isActive !== undefined) {
     try {
       await prisma.adminUser.update({
@@ -3424,7 +3428,9 @@ export async function updateRiderAction(id: string, updates: any) {
 
 export async function deleteRiderAction(id: string) {
   await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-  return prisma.rider.delete({ where: { id } });
+  const deleted = await prisma.rider.delete({ where: { id } });
+  invalidateDbCache('riders');
+  return deleted;
 }
 
 export async function getRiderTransactionsAction(riderId: string) {

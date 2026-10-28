@@ -22,10 +22,10 @@ import {
 export { invalidateDbCache };
 export const dynamic = 'force-dynamic';
 
-const CACHE_TTL_MS = 45000;           // 45s overall payload cache (patched in-place across instances via PG LISTEN/NOTIFY)
-const CUSTOMERS_TTL_MS = 45000;       // 45s customer master data cache (invalidated on customer mutations)
-const MASTER_DATA_TTL_MS = 60000;     // 60s services, price lists, shop locations, settings cache
-const RIDER_EARNINGS_TTL_MS = 60000;  // 60s rider earnings aggregations cache
+const CACHE_TTL_MS = 120000;          // 120s overall payload cache (patched in-place across instances via PG LISTEN/NOTIFY)
+const CUSTOMERS_TTL_MS = 300000;      // 300s customer master data cache (invalidated immediately on customer mutations)
+const MASTER_DATA_TTL_MS = 300000;    // 300s services, price lists, shop locations, settings cache
+const RIDER_EARNINGS_TTL_MS = 180000; // 180s rider earnings aggregations cache
 
 const INTERNAL_SETTING_KEYS = new Set(['auth_session_revocations']);
 
@@ -304,8 +304,8 @@ export async function GET(request?: NextRequest) {
               {
                 status: { in: ['completed', 'cancel'] },
                 OR: [
-                  { completedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
-                  { updatedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+                  { completedAt: { gte: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) } },
+                  { updatedAt: { gte: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) } },
                 ],
               },
             ],

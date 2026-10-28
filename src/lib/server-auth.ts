@@ -87,8 +87,8 @@ if (process.env.NEXT_PHASE !== 'phase-production-build') {
 }
 
 export const SESSION_TTL_MS = 18 * 60 * 60 * 1000; // 18 hours max session expiry
-const USER_CACHE_TTL_MS = 30000;             // 30s cache for authoritative DB user lookup
-const BRANCH_CACHE_TTL_MS = 60000;           // 60s cache for branch locations
+const USER_CACHE_TTL_MS = 120000;            // 120s cache for authoritative DB user lookup (invalidated on write)
+const BRANCH_CACHE_TTL_MS = 300000;          // 300s cache for branch locations
 
 interface CachedUserEntry {
   user: ServerAuthUser;
@@ -132,7 +132,7 @@ function pruneExpiredRevocations(now = Date.now()) {
   }
 }
 
-const REVOCATION_SYNC_TTL_MS = 10000;
+const REVOCATION_SYNC_TTL_MS = 60000;
 let inFlightRevocationSync: Promise<void> | null = null;
 
 export async function syncRevocationsFromDb(force = false): Promise<void> {

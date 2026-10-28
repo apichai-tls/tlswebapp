@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { resolveRequestUser } from '@/lib/server-auth';
 
+let riderLocationCache: { data: any[]; cachedAt: number } | null = null;
+const RIDER_LOC_CACHE_TTL_MS = 5000;
+
 /**
  * PATCH /api/rider-location
  * Lightweight GPS-only update for Rider APK.
@@ -37,6 +40,7 @@ export async function PATCH(req: NextRequest) {
         currentLng: lng,
       },
     });
+    riderLocationCache = null;
 
     return NextResponse.json({ ok: true });
   } catch (err) {
@@ -60,6 +64,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden: Account is deactivated' }, { status: 403 });
     }
 
+    if (riderLocationCache && Date.now() - riderLocationCache.cachedAt < RIDER_LOC_CACHE_TTL_MS) {
+      return NextResponse.json(riderLocationCache.data);
+    }
+
     const riders = await prisma.rider.findMany({
       where: { isActive: true },
       select: {
@@ -78,6 +86,7 @@ export async function GET(req: NextRequest) {
       },
     });
 
+    riderLocationCache = { data: riders, cachedAt: Date.now() };
     return NextResponse.json(riders);
   } catch (err) {
     console.error('[rider-location] Failed to fetch locations:', err);

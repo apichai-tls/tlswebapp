@@ -16,6 +16,9 @@ export interface AppNotification {
   createdAt: string; // ISO string
 }
 
+const userNotifCache = new Map<string, { res: any; cachedAt: number }>();
+const NOTIF_CACHE_TTL_MS = 75000;
+
 export async function createNotification(data: {
   userId: string;
   taskId?: string;
@@ -36,6 +39,7 @@ export async function createNotification(data: {
         isRead: false,
       },
     });
+    userNotifCache.delete(data.userId);
     return { success: true, data: notif };
   } catch (e: any) {
     console.error("Failed to create notification:", e);
@@ -50,34 +54,40 @@ export async function getUserNotifications(userId: string, _userRole?: string) {
     const isAdmin = role === "admin" || role === "superadmin";
     const effectiveUserId = isAdmin && userId ? userId : authUser.id;
 
+    const cacheKey = `${effectiveUserId}:${isAdmin ? "admin" : "staff"}`;
+    const cached = userNotifCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < NOTIF_CACHE_TTL_MS) {
+      return cached.res;
+    }
+
     const todayStart = startOfDay(new Date());
 
-    // 1. Fetch persistent DB notifications for this user
-    const dbNotifs = await prisma.notification.findMany({
-      where: { userId: effectiveUserId },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    });
-
-    // 2. Fetch active tasks relevant to this user (Assigned or Created by them, or all if Admin)
-    const userTasks = await prisma.task.findMany({
-      where: {
-        isArchived: false,
-        status: { not: "done" },
-        ...(isAdmin
-          ? {}
-          : { OR: [{ assignedToId: { contains: effectiveUserId } }, { createdById: effectiveUserId }] }),
-      },
-      select: {
-        id: true,
-        title: true,
-        dueDate: true,
-        status: true,
-        priority: true,
-        assignedToId: true,
-        assignedToName: true,
-      },
-    });
+    // 1 & 2. Fetch persistent DB notifications and active tasks in parallel
+    const [dbNotifs, userTasks] = await Promise.all([
+      prisma.notification.findMany({
+        where: { userId: effectiveUserId },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
+      prisma.task.findMany({
+        where: {
+          isArchived: false,
+          status: { not: "done" },
+          ...(isAdmin
+            ? {}
+            : { OR: [{ assignedToId: { contains: effectiveUserId } }, { createdById: effectiveUserId }] }),
+        },
+        select: {
+          id: true,
+          title: true,
+          dueDate: true,
+          status: true,
+          priority: true,
+          assignedToId: true,
+          assignedToName: true,
+        },
+      }),
+    ]);
 
     // 3. Generate dynamic Overdue and Due Today alerts
     const dynamicAlerts: AppNotification[] = [];
@@ -131,13 +141,15 @@ export async function getUserNotifications(userId: string, _userRole?: string) {
     const overdueCount = dynamicAlerts.filter((a) => a.type === "overdue").length;
     const dueTodayCount = dynamicAlerts.filter((a) => a.type === "due_today").length;
 
-    return {
+    const result = {
       success: true,
       data: combined,
       unreadCount,
       overdueCount,
       dueTodayCount,
     };
+    userNotifCache.set(cacheKey, { res: result, cachedAt: Date.now() });
+    return result;
   } catch (e: any) {
     console.error("Failed to get notifications:", e);
     return { success: false, error: e.message, data: [], unreadCount: 0, overdueCount: 0, dueTodayCount: 0 };
@@ -159,6 +171,7 @@ export async function markNotificationAsRead(id: string) {
       where: isAdmin ? { id } : { id, userId: authUser.id },
       data: { isRead: true },
     });
+    userNotifCache.clear();
     return { success: true };
   } catch (e: any) {
     return { success: false, error: e.message };
@@ -176,6 +189,7 @@ export async function markAllNotificationsAsRead(userId: string) {
       where: { userId: effectiveUserId, isRead: false },
       data: { isRead: true },
     });
+    userNotifCache.clear();
     return { success: true };
   } catch (e: any) {
     return { success: false, error: e.message };

@@ -239,11 +239,14 @@ export function ReportsSalesByPaymentType({ jobs, selectedBranch = "all", onView
     setDatePreset("custom");
   };
 
-  // Trigger historical jobs load for full range
+  // Trigger historical jobs load for full range (debounced)
   useEffect(() => {
-    jobStore.fetchHistoricalJobs(startDate, endDate).catch(err => {
-      console.error("Failed to load historical jobs for sales by payment type:", err);
-    });
+    const timer = setTimeout(() => {
+      jobStore.fetchHistoricalJobs(startDate, endDate).catch(err => {
+        console.error("Failed to load historical jobs for sales by payment type:", err);
+      });
+    }, 300);
+    return () => clearTimeout(timer);
   }, [startDate, endDate]);
 
   // Load Top-up Transactions

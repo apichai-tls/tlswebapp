@@ -97,6 +97,16 @@ function MapLineAndDistance({
   );
 }
 
+function BranchCenterSync({ branchCoords, hasDestination }: { branchCoords: LatLng; hasDestination: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!hasDestination && branchCoords) {
+      map.setView([branchCoords.lat, branchCoords.lng], 13, { animate: true });
+    }
+  }, [branchCoords?.lat, branchCoords?.lng, hasDestination, map]);
+  return null;
+}
+
 export function CreateJobMap({ branchCoords, pickupCoords, deliveryCoords, onMarkerDrag, onDistanceCalculated, className = "h-full w-full" }: CreateJobMapProps) {
   const branchMarkerRef = useRef<L.Marker>(null);
   const pickupMarkerRef = useRef<L.Marker>(null);
@@ -132,6 +142,7 @@ export function CreateJobMap({ branchCoords, pickupCoords, deliveryCoords, onMar
         style={{ minHeight: "100%", zIndex: 0 }}
         zoomControl={true}
       >
+        <BranchCenterSync branchCoords={branchCoords} hasDestination={Boolean(pickupCoords || deliveryCoords)} />
         <TileLayer
           attribution='&copy; <a href="https://maps.google.com">Google Maps</a>'
           url="https://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}"

@@ -45,8 +45,8 @@ export function NotificationBell({
 
   useEffect(() => {
     fetchNotifications();
-    // Poll notifications every 30 seconds when tab is active
-    const interval = setInterval(fetchNotifications, 30000);
+    // Poll notifications every 60 seconds when tab is active
+    const interval = setInterval(fetchNotifications, 60000);
     const handleVisibility = () => {
       if (!document.hidden) fetchNotifications();
     };

@@ -226,9 +226,12 @@ export function AdminReports({ onViewJob }: AdminReportsProps) {
       start = startOfDay(subDays(today, 30));
     }
 
-    jobStore.fetchHistoricalJobs(start, end).catch(err => {
-      console.error("Failed to load historical jobs for reports:", err);
-    });
+    const timer = setTimeout(() => {
+      jobStore.fetchHistoricalJobs(start, end).catch(err => {
+        console.error("Failed to load historical jobs for reports:", err);
+      });
+    }, 250);
+    return () => clearTimeout(timer);
   }, [dateRange, customStartDate, customEndDate]);
 
   useEffect(() => {

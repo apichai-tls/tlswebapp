@@ -52,7 +52,9 @@ import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
 import { AdminReports } from "@/components/admin-reports";
+import { AdminBuildingReport } from "@/components/admin-building-report";
 import { AdminMarketing } from "@/components/admin-marketing";
+import { AdminTopSpenders } from "@/components/admin-top-spenders";
 import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
@@ -283,7 +285,7 @@ function AdminPageContent() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "building-report" | "marketing" | "top-spenders" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -317,7 +319,7 @@ function AdminPageContent() {
     const searchParams = new URLSearchParams(window.location.search);
     const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "marketing", "tasks"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "building-report", "marketing", "top-spenders", "tasks"];
     const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
     if (validTabs.includes(targetTab)) {
@@ -341,12 +343,13 @@ function AdminPageContent() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks"> = [
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "building-report" | "marketing" | "top-spenders" | "tasks"> = [
       "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "marketing", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
       if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
+    if (key === 'building-report' || key === 'top-spenders') return Boolean(user?.permissions?.includes('reports') || user?.permissions?.includes('marketing') || user?.permissions?.includes('customers') || user?.permissions?.includes('building-report') || user?.permissions?.includes('top-spenders'));
       return user.permissions?.includes(key) ?? false;
     };
     const firstTab = tabOrder.find(tab => hasPermission(tab));
@@ -380,7 +383,7 @@ function AdminPageContent() {
 
       if (activeTab === "map") {
         refreshDb();
-      } else {
+      } else if (tickCount % 2 === 0 || realtimeStore.getSnapshot().connectionStatus !== "connected") {
         api.reconcileDelta().catch(() => {});
       }
     }, intervalMs);
@@ -388,7 +391,7 @@ function AdminPageContent() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "building-report" | "marketing" | "top-spenders" | "tasks") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -1115,6 +1118,7 @@ function AdminPageContent() {
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
     if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
+    if (key === 'building-report' || key === 'top-spenders') return Boolean(user?.permissions?.includes('reports') || user?.permissions?.includes('marketing') || user?.permissions?.includes('customers') || user?.permissions?.includes('building-report') || user?.permissions?.includes('top-spenders'));
     return user?.permissions?.includes(key) ?? false;
   };
 
@@ -5272,7 +5276,7 @@ function AdminPageContent() {
             )}
 
             {/* Group 2: Sales & CRM */}
-            {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing")) && (
+            {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing") || hasAccess("top-spenders")) && (
               <div className="space-y-1">
                 {!isSidebarCollapsed ? (
                   <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none">
@@ -5353,6 +5357,26 @@ function AdminPageContent() {
                     )}
                     <Megaphone size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "marketing" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
                     {!isSidebarCollapsed && <span className="truncate">Marketing & Promos</span>}
+                  </motion.a>
+                )}
+
+                {hasAccess("top-spenders") && (
+                  <motion.a
+                    href="#top-spenders"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("top-spenders"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "top-spenders"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Top Spenders (฿)"
+                  >
+                    {activeTab === "top-spenders" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Sparkles size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "top-spenders" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Top Spenders (฿)</span>}
                   </motion.a>
                 )}
               </div>
@@ -5478,6 +5502,26 @@ function AdminPageContent() {
                   )}
                   <BarChart3 size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "reports" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
                   {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("building-report") && (
+                <motion.a
+                  href="#building-report"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("building-report"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "building-report"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Building BD Report"
+                >
+                  {activeTab === "building-report" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <Building size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "building-report" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Building BD Report</span>}
                 </motion.a>
               )}
 
@@ -5712,7 +5756,7 @@ function AdminPageContent() {
                   </div>
 
                   {/* Sales & CRM */}
-                  {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing")) && (
+                  {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing") || hasAccess("top-spenders")) && (
                     <div className="space-y-1">
                       <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Sales & CRM</p>
                       {hasAccess("customers") && (
@@ -5766,6 +5810,22 @@ function AdminPageContent() {
                         >
                           <Megaphone size={17} className={activeTab === "marketing" ? "text-indigo-600" : "text-slate-400"} />
                           <span>Marketing & Promos</span>
+                        </a>
+                      )}
+                      {hasAccess("top-spenders") && (
+                        <a
+                          href="#top-spenders"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("top-spenders");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "top-spenders" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Sparkles size={17} className={activeTab === "top-spenders" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Top Spenders (฿)</span>
                         </a>
                       )}
                     </div>
@@ -5861,7 +5921,27 @@ function AdminPageContent() {
                         <span>Reports & Analytics</span>
                       </a>
                     )}
-                    {hasAccess("activity-logs") && (
+                    {hasAccess("building-report") && (
+                <motion.a
+                  href="#building-report"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("building-report"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "building-report"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Building BD Report"
+                >
+                  {activeTab === "building-report" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <Building size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "building-report" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Building BD Report</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("activity-logs") && (
                       <a
                         href="#activity-logs"
                         onClick={(e) => {
@@ -6002,12 +6082,14 @@ function AdminPageContent() {
                 customers: { section: "Sales & CRM", title: "Customers (CRM)", subtitle: "Profiles, corporate accounts, wallets & vouchers" },
                 services: { section: "Sales & CRM", title: "Service Menu", subtitle: "Pricing tiers, laundry packages & catalog" },
                 marketing: { section: "Sales & CRM", title: "Marketing & Promos", subtitle: "Campaigns, vouchers & customer acquisition" },
+                "top-spenders": { section: "Sales & CRM", title: "Top Spenders & Loyalty (฿)", subtitle: "Members, VIP & Corporate leaderboards by Baht spent, top-ups & service frequency" },
                 dispatch: { section: "Fleet & Map", title: "Dispatch Schedule", subtitle: "Rider shifts, pickup & delivery routing" },
                 riders: { section: "Fleet & Map", title: "Rider Fleet", subtitle: "Rider profiles, commissions & status" },
                 map: { section: "Fleet & Map", title: "Live GPS Map", subtitle: "Real-time rider locations & branch hubs" },
                 calculator: { section: "Fleet & Map", title: "Distance Calculator", subtitle: "Route fee estimation & POI management" },
                 pois: { section: "Fleet & Map", title: "POI Locations", subtitle: "Saved buildings, condos & coordinates" },
                 reports: { section: "Management", title: "Reports & Analytics", subtitle: "Revenue, payment splits & historical insights" },
+                "building-report": { section: "Management", title: "Building Sales & BD Report", subtitle: "Top condos, hotels & buildings in Bangkok & Pattaya for B2B outreach" },
                 "activity-logs": { section: "Management", title: "Activity Logs", subtitle: "System audit trail & staff actions" },
                 users: { section: "Management", title: "Manage Users", subtitle: "Staff accounts, roles & branch permissions" },
                 settings: { section: "Management", title: "System Settings", subtitle: "Branches, payment channels & configurations" },
@@ -7850,29 +7932,29 @@ function AdminPageContent() {
                       </div>
 
                       {/* Admin Notes & Activity Feed Card */}
-                      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2 flex-1 min-h-[220px] overflow-hidden">
-                        <div className="flex items-center justify-between gap-1.5 shrink-0">
-                          <Label className="text-[10.5px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1 shrink-0">
-                            <MessageSquare size={12} className="text-indigo-500 shrink-0" />
+                      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2.5 flex-1 min-h-[250px] overflow-hidden">
+                        <div className="flex items-center justify-between gap-2 shrink-0 flex-wrap">
+                          <Label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+                            <MessageSquare size={15} className="text-indigo-600 shrink-0" />
                             <span>Admin Note Logs</span>
                             {adminLogs.length > 0 && (
-                              <span className="px-1.5 py-0.2 rounded-full text-[9.5px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200">
                                 {adminLogs.length}
                               </span>
                             )}
                           </Label>
 
-                          <div className="flex items-center gap-1 ml-auto">
+                          <div className="flex items-center gap-1.5 ml-auto">
                             {/* Hanger (H) */}
                             <div
                               title="จำนวนผ้าแขวน (H) แจ้ง Rider"
-                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border transition-colors ${
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded-xl border transition-all ${
                                 hangerCount > 0
-                                  ? "bg-indigo-50/60 border-indigo-400 shadow-2xs"
-                                  : "bg-slate-50/70 border-slate-200/90"
+                                  ? "bg-indigo-50/80 border-indigo-400 shadow-xs"
+                                  : "bg-slate-50/90 border-slate-200/90"
                               }`}
                             >
-                              <div className="flex items-center gap-0.5">
+                              <div className="flex items-center gap-1">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -7882,7 +7964,7 @@ function AdminPageContent() {
                                     setHangerCount(nextQty);
                                     persistPackingCountsToDb(nextHas, nextQty, foldedCount > 0, foldedCount);
                                   }}
-                                  className="w-4 h-4 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-white hover:bg-slate-100 border border-slate-200/90 text-slate-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   -
                                 </button>
@@ -7899,7 +7981,7 @@ function AdminPageContent() {
                                     setHangerCount(val);
                                     persistPackingCountsToDb(nextHas, val, foldedCount > 0, foldedCount);
                                   }}
-                                  className="w-6 h-4 text-center text-[11px] font-black bg-white border border-slate-200 rounded text-indigo-900 focus:outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  className="w-9 h-6 text-center text-[13px] font-black bg-white border border-slate-200/90 rounded-lg text-indigo-950 focus:outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <button
                                   type="button"
@@ -7909,24 +7991,24 @@ function AdminPageContent() {
                                     setHangerCount(nextQty);
                                     persistPackingCountsToDb(true, nextQty, foldedCount > 0, foldedCount);
                                   }}
-                                  className="w-4 h-4 rounded bg-indigo-100/80 hover:bg-indigo-200 text-indigo-700 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   +
                                 </button>
                               </div>
-                              <span className="text-[11px] font-black text-indigo-700 leading-none select-none">H</span>
+                              <span className="text-xs font-black text-indigo-700 leading-none select-none px-0.5">H</span>
                             </div>
 
                             {/* Folded (F) */}
                             <div
                               title="จำนวนผ้าพับ (F) แจ้ง Rider"
-                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border transition-colors ${
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded-xl border transition-all ${
                                 foldedCount > 0
-                                  ? "bg-emerald-50/60 border-emerald-400 shadow-2xs"
-                                  : "bg-slate-50/70 border-slate-200/90"
+                                  ? "bg-emerald-50/80 border-emerald-400 shadow-xs"
+                                  : "bg-slate-50/90 border-slate-200/90"
                               }`}
                             >
-                              <div className="flex items-center gap-0.5">
+                              <div className="flex items-center gap-1">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -7936,7 +8018,7 @@ function AdminPageContent() {
                                     setFoldedCount(nextQty);
                                     persistPackingCountsToDb(hangerCount > 0, hangerCount, nextHas, nextQty);
                                   }}
-                                  className="w-4 h-4 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-white hover:bg-slate-100 border border-slate-200/90 text-slate-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   -
                                 </button>
@@ -7953,7 +8035,7 @@ function AdminPageContent() {
                                     setFoldedCount(val);
                                     persistPackingCountsToDb(hangerCount > 0, hangerCount, nextHas, val);
                                   }}
-                                  className="w-6 h-4 text-center text-[11px] font-black bg-white border border-slate-200 rounded text-emerald-900 focus:outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  className="w-9 h-6 text-center text-[13px] font-black bg-white border border-slate-200/90 rounded-lg text-emerald-950 focus:outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <button
                                   type="button"
@@ -7963,23 +8045,23 @@ function AdminPageContent() {
                                     setFoldedCount(nextQty);
                                     persistPackingCountsToDb(hangerCount > 0, hangerCount, true, nextQty);
                                   }}
-                                  className="w-4 h-4 rounded bg-emerald-100/80 hover:bg-emerald-200 text-emerald-700 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   +
                                 </button>
                               </div>
-                              <span className="text-[11px] font-black text-emerald-700 leading-none select-none">F</span>
+                              <span className="text-xs font-black text-emerald-700 leading-none select-none px-0.5">F</span>
                             </div>
 
                             <Button
                               type="button"
                               variant="ghost"
                               size="icon"
-                              className="h-6 w-6 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer shrink-0"
+                              className="h-8 w-8 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 border border-transparent hover:border-indigo-200/60 rounded-xl cursor-pointer shrink-0"
                               onClick={() => setNoteLogsModalOpen(true)}
                               title="Expand Notes"
                             >
-                              <Maximize2 size={12} />
+                              <Maximize2 size={15} />
                             </Button>
                           </div>
                         </div>
@@ -10505,7 +10587,7 @@ function AdminPageContent() {
                           className="flex h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs outline-none focus:ring-1 focus:ring-purple-500"
                         >
                           <option value="">{currentLanguage === "en" ? "Assign Later (ยังไม่ระบุไรเดอร์)" : "ยังไม่ระบุไรเดอร์ (Assign Later)"}</option>
-                          {riders.map((r: any) => (
+                          {riders.filter((r: any) => r.isActive !== false || (splitRiderId && r.id === splitRiderId)).map((r: any) => (
                             <option key={r.id} value={r.id}>
                               {r.name || r.phone}
                             </option>
@@ -10977,7 +11059,9 @@ function AdminPageContent() {
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
           {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
+          {activeTab === "building-report" && hasAccess("building-report") && <AdminBuildingReport onViewJob={stableHandleEditFullJob} />}
           {activeTab === "marketing" && hasAccess("marketing") && <AdminMarketing onViewJob={stableHandleEditFullJob} />}
+          {activeTab === "top-spenders" && hasAccess("top-spenders") && <AdminTopSpenders onViewJob={stableHandleEditFullJob} />}
 
           {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
 
