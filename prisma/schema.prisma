@@ -666,3 +666,50 @@ model CustomerVoucher {
   @@index([applicableCategory])
   @@index([sourceJobId])
 }
+
+model PettyCashTransaction {
+  id               String    @id @default(uuid())
+  txNumber         String?
+  type             String    // "EXPENSE" | "TOPUP" | "TRANSFER_OUT" | "TRANSFER_IN" | "RETURN" | "ADJUST_ADD" | "ADJUST_DEDUCT"
+  direction        String    // "DEBIT" (-) | "CREDIT" (+)
+  amount           Float
+  balanceBefore    Float     @default(0)
+  balanceAfter     Float     @default(0)
+
+  holderId         String
+  holderName       String
+  branchId         String?
+
+  relatedTxId      String?
+  counterpartyId   String?
+  counterpartyName String?
+
+  category         String
+  description     String
+  vendorName      String?
+  invoiceNo       String?
+  paymentMethod   String?   // "Cash" | "Transfer" | "QR"
+
+  receiptUrls     String?   @db.Text // JSON string array of receipt/document URLs
+  slipUrls        String?   @db.Text // JSON string array of transfer slip URLs
+
+  status          String    @default("PENDING") // "PENDING" | "APPROVED" | "REJECTED" | "VOID"
+  transactionDate DateTime  @default(now())
+
+  createdById     String?
+  createdByName   String?
+  approvedById    String?
+  approvedByName  String?
+  approvedAt      DateTime?
+  rejectReason    String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([holderId, transactionDate])
+  @@index([branchId])
+  @@index([status])
+  @@index([category])
+  @@index([transactionDate])
+}
+

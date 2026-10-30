@@ -561,8 +561,14 @@ export default function RiderPage() {
   const { user, logout } = useAuth();
   // ✅ FIX: Track the status the rider intentionally set in this session.
   // refreshDb() can overwrite the in-memory status from DB (which may be stale).
-  // This ref lets us restore the correct status after each refresh.
+  // This ref lets us restore the correct status after each refresh, scoped to the current Bangkok calendar day.
   const intendedStatusRef = useRef<string | null>(null);
+  const intendedStatusDateRef = useRef<string | null>(null);
+
+  function getBangkokDateString(now: Date = new Date()): string {
+    const bkk = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+    return bkk.toISOString().slice(0, 10);
+  }
   
   const [selectedJob, setSelectedJob] = useState<RiderTask | null>(null);
   const [jobToComplete, setJobToComplete] = useState<RiderTask | null>(null);
@@ -813,17 +819,36 @@ export default function RiderPage() {
   const showCommission = !riderBranch?.noCommission;
 
   useEffect(() => {
-    if (activeRider && activeRider.status === "offline") {
-      const hasSeenPopup = sessionStorage.getItem("riderWelcomed");
-      if (!hasSeenPopup) {
+    if (!activeRider) return;
+    const todayBkk = getBangkokDateString();
+    const welcomedDate = sessionStorage.getItem("riderWelcomedDate");
+    if (activeRider.status === "offline") {
+      if (welcomedDate !== todayBkk) {
         setShowOnlinePopup(true);
       }
+    } else {
+      // Rider is already online/busy on the server for today
+      intendedStatusDateRef.current = todayBkk;
     }
   }, [activeRider?.id]); // ✅ only fire on rider ID change, not on every status update
 
-  // ✅ FIX: After every refreshDb, if DB returned a stale status, restore the intended status.
+  // ✅ FIX: After every refreshDb, if DB returned a stale status within the SAME Bangkok day, restore intended status.
+  // If a new Bangkok day has started (after 00:00), clear intendedStatusRef so midnight auto-offline takes effect.
   useEffect(() => {
-    if (!activeRider || !intendedStatusRef.current) return;
+    if (!activeRider) return;
+    const todayBkk = getBangkokDateString();
+    if (intendedStatusDateRef.current && intendedStatusDateRef.current !== todayBkk) {
+      intendedStatusRef.current = null;
+      intendedStatusDateRef.current = null;
+      sessionStorage.removeItem("riderWelcomedDate");
+      sessionStorage.removeItem("riderWelcomed");
+      if (activeRider.status !== "offline") {
+        riderStore.updateRider(activeRider.id, { status: "offline" });
+      }
+      setShowOnlinePopup(true);
+      return;
+    }
+    if (!intendedStatusRef.current) return;
     if (activeRider.status !== intendedStatusRef.current) {
       riderStore.updateRider(activeRider.id, { status: intendedStatusRef.current as any });
     }
@@ -884,9 +909,12 @@ export default function RiderPage() {
 
   function handleGoOnline() {
     if (activeRider) {
+      const todayBkk = getBangkokDateString();
       intendedStatusRef.current = "online"; // ✅ lock intended status
+      intendedStatusDateRef.current = todayBkk;
       riderStore.updateRider(activeRider.id, { status: "online" });
       sessionStorage.setItem("riderWelcomed", "true");
+      sessionStorage.setItem("riderWelcomedDate", todayBkk);
       setShowOnlinePopup(false);
       toast.success("You are now online!");
     }
@@ -896,9 +924,11 @@ export default function RiderPage() {
   // ✅ Native Background Geolocation (Capacitor Android APK) with Web fallback
   // In native APK: runs an Android Foreground Service so GPS continues when using Google Maps or screen is locked.
   // In Web: uses navigator.geolocation.watchPosition + Screen WakeLock API.
+  // Only tracks & pushes GPS while rider is online or busy (paused when offline so yesterday's last coordinate is preserved).
   const activeRiderIdRef = useRef<string | undefined>(undefined);
+  const isRiderOffline = !activeRider?.id || activeRider?.status === "offline";
   useEffect(() => {
-    if (!activeRider?.id) {
+    if (!activeRider?.id || isRiderOffline) {
       setGpsActive(false);
       return;
     }
@@ -935,7 +965,8 @@ export default function RiderPage() {
       lastPushTime = Date.now();
       const riderId = activeRiderIdRef.current;
       if (!riderId) return;
-      riderStore.updateRider(riderId, { currentLocation: { lat, lng } });
+      const nowIso = new Date().toISOString();
+      riderStore.updateRiderLocal(riderId, { currentLocation: { lat, lng }, gpsUpdatedAt: nowIso });
 
       if (isNative) {
         try {
@@ -1101,7 +1132,7 @@ export default function RiderPage() {
         }).catch(() => {});
       }
     };
-  }, [activeRider?.id]); // ✅ Only restart GPS when rider ID changes
+  }, [activeRider?.id, isRiderOffline]); // ✅ Start/stop GPS when rider goes online/offline
 
   const allTasks: RiderTask[] = [];
   if (activeRider) {
@@ -1407,9 +1438,13 @@ export default function RiderPage() {
     intendedStatusRef.current = newStatus; // ✅ lock intended status so refreshDb can't overwrite it
     riderStore.updateRider(activeRider.id, { status: newStatus });
     if (newStatus === "online") {
+      const todayBkk = getBangkokDateString();
+      intendedStatusDateRef.current = todayBkk;
+      sessionStorage.setItem("riderWelcomedDate", todayBkk);
       toast.success("You are now online!");
     } else {
       intendedStatusRef.current = null; // ✅ allow DB to sync when going offline intentionally
+      intendedStatusDateRef.current = null;
       toast("You are now offline.", { icon: "💤" });
     }
   }

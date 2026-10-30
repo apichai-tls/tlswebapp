@@ -9,6 +9,7 @@ import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
 import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, isAdminOrSuperadmin } from '@/lib/server-auth';
+import { ensureDailyRiderOfflineReset, recordRiderGpsTimestamp } from '@/lib/rider-presence';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -3404,14 +3405,24 @@ export async function updateRiderAction(id: string, updates: any) {
   if (authUser.role === 'rider' && authUser.id !== id) {
     throw new Error('403 Forbidden: Riders can only update their own profile');
   }
+  await ensureDailyRiderOfflineReset();
   const data: any = { ...updates };
+  let hasGpsUpdate = false;
   if (updates.currentLocation) {
     data.currentLat = updates.currentLocation.lat;
     data.currentLng = updates.currentLocation.lng;
     delete data.currentLocation;
+    hasGpsUpdate = true;
+  } else if (typeof updates.currentLat === 'number' && typeof updates.currentLng === 'number') {
+    hasGpsUpdate = true;
   }
+  delete data.gpsUpdatedAt;
   if (data.isActive === false) data.status = 'offline';
   const updatedRider = await prisma.rider.update({ where: { id }, data });
+  let gpsUpdatedAt: string | undefined;
+  if (hasGpsUpdate) {
+    gpsUpdatedAt = await recordRiderGpsTimestamp(id);
+  }
   invalidateDbCache('riders');
   if (data.isActive !== undefined) {
     try {
@@ -3423,7 +3434,7 @@ export async function updateRiderAction(id: string, updates: any) {
       // Ignore if no linked AdminUser
     }
   }
-  return updatedRider;
+  return gpsUpdatedAt ? { ...updatedRider, gpsUpdatedAt } : updatedRider;
 }
 
 export async function deleteRiderAction(id: string) {
@@ -6950,6 +6961,8 @@ export async function recordJobPaymentAction(data: {
   shiftId?: string | null;
   slipUrl?: string | null;
   note?: string | null;
+  received?: number;
+  change?: number;
 }): Promise<{
   success: boolean;
   error?: string;
@@ -7090,6 +7103,12 @@ export async function recordJobPaymentAction(data: {
       }
 
       // Construct payment entry
+      const effReceived = method === "cash" && data.received != null && !isNaN(Number(data.received)) && Number(data.received) > 0
+        ? Math.round(Number(data.received) * 100) / 100
+        : undefined;
+      const effChange = effReceived !== undefined
+        ? (data.change != null && !isNaN(Number(data.change)) ? Math.max(0, Math.round(Number(data.change) * 100) / 100) : Math.max(0, Math.round((effReceived - amount) * 100) / 100))
+        : undefined;
       const paymentEntry = {
         id: crypto.randomUUID(),
         amount,
@@ -7100,6 +7119,7 @@ export async function recordJobPaymentAction(data: {
         paidBy: data.actorName || "Staff",
         slipUrl: data.slipUrl || null,
         note: data.note || null,
+        ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
       };
 
       const updatedPayments = [...existingPayments, paymentEntry];
@@ -8773,5 +8793,527 @@ export async function getPromotionReportAction(filters?: {
 }
 
 
+// ==========================================
+// PETTY CASH (??????????????????) ACTIONS
+// ==========================================
 
+const DEFAULT_PETTY_CASH_CATEGORIES = [
+  "Laundry Supplies (\u0E19\u0E49\u0E33\u0E22\u0E32/\u0E2D\u0E38\u0E1B\u0E01\u0E23\u0E13\u0E4C\u0E0B\u0E31\u0E01\u0E23\u0E35\u0E14)",
+  "Transport & Fuel (\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E21\u0E31\u0E19/\u0E17\u0E32\u0E07\u0E14\u0E48\u0E27\u0E19/\u0E04\u0E48\u0E32\u0E23\u0E16)",
+  "Maintenance & Parts (\u0E04\u0E48\u0E32\u0E0B\u0E48\u0E2D\u0E21\u0E1A\u0E33\u0E23\u0E38\u0E07/\u0E2D\u0E30\u0E44\u0E2B\u0E25\u0E48)",
+  "Store Misc (\u0E04\u0E48\u0E32\u0E43\u0E0A\u0E49\u0E08\u0E48\u0E32\u0E22\u0E2B\u0E19\u0E49\u0E32\u0E23\u0E49\u0E32\u0E19/\u0E40\u0E1A\u0E47\u0E14\u0E40\u0E15\u0E25\u0E47\u0E14)",
+  "Shipping & Postage (\u0E04\u0E48\u0E32\u0E1E\u0E31\u0E2A\u0E14\u0E38/\u0E44\u0E1B\u0E23\u0E29\u0E13\u0E35\u0E22\u0E4C)",
+  "Office Supplies (\u0E04\u0E48\u0E32\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E40\u0E02\u0E35\u0E22\u0E19/\u0E2D\u0E38\u0E1B\u0E01\u0E23\u0E13\u0E4C)",
+  "Staff Welfare (\u0E2A\u0E27\u0E31\u0E2A\u0E14\u0E34\u0E01\u0E32\u0E23/\u0E19\u0E49\u0E33\u0E14\u0E37\u0E48\u0E21/\u0E2D\u0E32\u0E2B\u0E32\u0E23)",
+];
 
+let pettyCashTableReady = false;
+async function ensurePettyCashTableExists() {
+  if (pettyCashTableReady) return;
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "PettyCashTransaction" (
+        "id" TEXT NOT NULL,
+        "txNumber" TEXT,
+        "type" TEXT NOT NULL,
+        "direction" TEXT NOT NULL,
+        "amount" DOUBLE PRECISION NOT NULL,
+        "balanceBefore" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "balanceAfter" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "holderId" TEXT NOT NULL,
+        "holderName" TEXT NOT NULL,
+        "branchId" TEXT,
+        "relatedTxId" TEXT,
+        "counterpartyId" TEXT,
+        "counterpartyName" TEXT,
+        "category" TEXT NOT NULL,
+        "description" TEXT NOT NULL,
+        "vendorName" TEXT,
+        "invoiceNo" TEXT,
+        "paymentMethod" TEXT,
+        "receiptUrls" TEXT,
+        "slipUrls" TEXT,
+        "status" TEXT NOT NULL DEFAULT 'PENDING',
+        "transactionDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "createdById" TEXT,
+        "createdByName" TEXT,
+        "approvedById" TEXT,
+        "approvedByName" TEXT,
+        "approvedAt" TIMESTAMP(3),
+        "rejectReason" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "PettyCashTransaction_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "relatedTxId" TEXT;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyId" TEXT;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyName" TEXT;`);
+    pettyCashTableReady = true;
+  } catch (e) {
+    console.warn("[ensurePettyCashTableExists]", e);
+  }
+}
+
+async function recalculateHolderPettyCashBalances(holderId: string) {
+  if (!holderId) return;
+  const rows: any[] = await prisma.$queryRaw`
+    SELECT * FROM "PettyCashTransaction"
+    WHERE "holderId" = ${holderId}
+    ORDER BY "transactionDate" ASC, "createdAt" ASC, "id" ASC
+  `;
+
+  let runningBal = 0;
+  for (const row of rows) {
+    const isRejectedOrVoid = row.status === "REJECTED" || row.status === "VOID";
+    const amt = Math.round((Number(row.amount) || 0) * 100) / 100;
+    const balBefore = runningBal;
+    let balAfter = runningBal;
+    if (!isRejectedOrVoid) {
+      if (row.direction === "CREDIT") {
+        balAfter = Math.round((runningBal + amt) * 100) / 100;
+      } else {
+        balAfter = Math.round((runningBal - amt) * 100) / 100;
+      }
+      runningBal = balAfter;
+    }
+    if (Math.abs((Number(row.balanceBefore) || 0) - balBefore) > 0.001 || Math.abs((Number(row.balanceAfter) || 0) - balAfter) > 0.001) {
+      await prisma.$executeRaw`
+        UPDATE "PettyCashTransaction"
+        SET "balanceBefore" = ${balBefore}, "balanceAfter" = ${balAfter}
+        WHERE "id" = ${row.id}
+      `;
+    }
+  }
+}
+
+export async function getPettyCashDataAction(): Promise<{
+  success: boolean;
+  error?: string;
+  transactions: any[];
+  categories: string[];
+}> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const [rows, catSetting] = await Promise.all([
+      prisma.$queryRaw<any[]>`
+        SELECT * FROM "PettyCashTransaction"
+        ORDER BY "transactionDate" DESC, "createdAt" DESC
+      `,
+      prisma.setting.findUnique({ where: { key: "pettyCashCategories" } }),
+    ]);
+
+    let categories = DEFAULT_PETTY_CASH_CATEGORIES;
+    if (catSetting?.value) {
+      try {
+        const parsed = JSON.parse(catSetting.value);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          categories = parsed.map((c: any) => String(c).trim()).filter(Boolean);
+        }
+      } catch {}
+    }
+
+    const transactions = (rows || []).map((r: any) => {
+      let receiptUrls: string[] = [];
+      let slipUrls: string[] = [];
+      try { if (r.receiptUrls) receiptUrls = JSON.parse(r.receiptUrls); } catch {}
+      try { if (r.slipUrls) slipUrls = JSON.parse(r.slipUrls); } catch {}
+      return {
+        ...r,
+        amount: Number(r.amount) || 0,
+        balanceBefore: Number(r.balanceBefore) || 0,
+        balanceAfter: Number(r.balanceAfter) || 0,
+        receiptUrls: Array.isArray(receiptUrls) ? receiptUrls : [],
+        slipUrls: Array.isArray(slipUrls) ? slipUrls : [],
+      };
+    });
+
+    return {
+      success: true,
+      transactions,
+      categories,
+    };
+  } catch (err: any) {
+    console.error("[getPettyCashDataAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message || "Failed to load petty cash data",
+      transactions: [],
+      categories: DEFAULT_PETTY_CASH_CATEGORIES,
+    };
+  }
+}
+
+export async function createPettyCashTransactionAction(data: {
+  type: "EXPENSE" | "TOPUP" | "RETURN" | "ADJUST_ADD" | "ADJUST_DEDUCT";
+  amount: number;
+  holderId: string;
+  holderName: string;
+  branchId?: string | null;
+  category: string;
+  description: string;
+  vendorName?: string | null;
+  invoiceNo?: string | null;
+  paymentMethod?: string | null;
+  receiptUrls?: string[];
+  slipUrls?: string[];
+  transactionDate?: string | Date;
+}): Promise<{ success: boolean; error?: string; id?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const amt = Math.round((Number(data.amount) || 0) * 100) / 100;
+    if (isNaN(amt) || amt <= 0) {
+      return { success: false, error: "\u0E01\u0E23\u0E38\u0E13\u0E32\u0E23\u0E30\u0E1A\u0E38\u0E08\u0E33\u0E19\u0E27\u0E19\u0E40\u0E07\u0E34\u0E19\u0E17\u0E35\u0E48\u0E21\u0E32\u0E01\u0E01\u0E27\u0E48\u0E32 0" };
+    }
+    if (!data.holderId || !data.holderName) {
+      return { success: false, error: "\u0E01\u0E23\u0E38\u0E13\u0E32\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E1C\u0E39\u0E49\u0E16\u0E37\u0E2D\u0E40\u0E07\u0E34\u0E19\u0E2A\u0E14\u0E22\u0E48\u0E2D\u0E22 (\u0E23\u0E32\u0E22\u0E1A\u0E38\u0E04\u0E04\u0E25)" };
+    }
+
+    const isCredit = data.type === "TOPUP" || data.type === "ADJUST_ADD";
+    const direction = isCredit ? "CREDIT" : "DEBIT";
+
+    // TOPUP / ADJUST_ADD by Accounting/Admin is auto-approved; EXPENSE starts as PENDING (but deducts balance immediately per rule #1!)
+    const initialStatus = isCredit ? "APPROVED" : "PENDING";
+    const now = new Date();
+    const txDate = data.transactionDate ? new Date(data.transactionDate) : now;
+    const id = crypto.randomUUID();
+    const ym = `${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const randSuffix = String(Math.floor(1000 + Math.random() * 9000));
+    const txNumber = `PC-${ym}-${randSuffix}`;
+
+    const receiptJson = JSON.stringify(Array.isArray(data.receiptUrls) ? data.receiptUrls : []);
+    const slipJson = JSON.stringify(Array.isArray(data.slipUrls) ? data.slipUrls : []);
+    const actorName = authUser.name || authUser.email || "Staff";
+
+    await prisma.$executeRaw`
+      INSERT INTO "PettyCashTransaction" (
+        "id", "txNumber", "type", "direction", "amount", "balanceBefore", "balanceAfter",
+        "holderId", "holderName", "branchId", "category", "description", "vendorName",
+        "invoiceNo", "paymentMethod", "receiptUrls", "slipUrls", "status", "transactionDate",
+        "createdById", "createdByName", "approvedById", "approvedByName", "approvedAt",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        ${id}, ${txNumber}, ${data.type}, ${direction}, ${amt}, 0, 0,
+        ${data.holderId}, ${data.holderName}, ${data.branchId || null}, ${data.category.trim()}, ${data.description.trim()}, ${data.vendorName?.trim() || null},
+        ${data.invoiceNo?.trim() || null}, ${data.paymentMethod || (isCredit ? "Transfer" : "Cash")}, ${receiptJson}, ${slipJson}, ${initialStatus}, ${txDate},
+        ${authUser.id}, ${actorName}, ${isCredit ? authUser.id : null}, ${isCredit ? actorName : null}, ${isCredit ? now : null},
+        ${now}, ${now}
+      )
+    `;
+
+    await recalculateHolderPettyCashBalances(data.holderId);
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: isCredit ? "PETTY_CASH_TOPUP" : "PETTY_CASH_EXPENSE",
+        entityType: "petty_cash",
+        entityId: id,
+        details: `[${txNumber}] ${isCredit ? "+" : "-"}฿${amt.toLocaleString()} (${data.holderName}) - ${data.category}: ${data.description}`,
+      },
+    }).catch(() => {});
+
+    return { success: true, id };
+  } catch (err: any) {
+    console.error("[createPettyCashTransactionAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to record petty cash transaction" };
+  }
+}
+
+export async function updatePettyCashTransactionAction(
+  id: string,
+  data: {
+    amount?: number;
+    holderId?: string;
+    holderName?: string;
+    branchId?: string | null;
+    category?: string;
+    description?: string;
+    vendorName?: string | null;
+    invoiceNo?: string | null;
+    paymentMethod?: string | null;
+    receiptUrls?: string[];
+    slipUrls?: string[];
+    transactionDate?: string | Date;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const existingRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${id} LIMIT 1`;
+    const existing = existingRows[0];
+    if (!existing) return { success: false, error: "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E19\u0E35\u0E49\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A" };
+
+    const amt = data.amount !== undefined ? Math.round((Number(data.amount) || 0) * 100) / 100 : Number(existing.amount);
+    if (isNaN(amt) || amt <= 0) {
+      return { success: false, error: "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E40\u0E07\u0E34\u0E19\u0E15\u0E49\u0E2D\u0E07\u0E21\u0E32\u0E01\u0E01\u0E27\u0E48\u0E32 0" };
+    }
+
+    const nextHolderId = data.holderId || existing.holderId;
+    const nextHolderName = data.holderName || existing.holderName;
+    const nextBranchId = data.branchId !== undefined ? data.branchId : existing.branchId;
+    const nextCategory = data.category !== undefined ? data.category.trim() : existing.category;
+    const nextDesc = data.description !== undefined ? data.description.trim() : existing.description;
+    const nextVendor = data.vendorName !== undefined ? (data.vendorName?.trim() || null) : existing.vendorName;
+    const nextInvoice = data.invoiceNo !== undefined ? (data.invoiceNo?.trim() || null) : existing.invoiceNo;
+    const nextMethod = data.paymentMethod !== undefined ? data.paymentMethod : existing.paymentMethod;
+    const nextReceipts = data.receiptUrls !== undefined ? JSON.stringify(data.receiptUrls) : existing.receiptUrls;
+    const nextSlips = data.slipUrls !== undefined ? JSON.stringify(data.slipUrls) : existing.slipUrls;
+    const nextTxDate = data.transactionDate ? new Date(data.transactionDate) : new Date(existing.transactionDate);
+    const now = new Date();
+
+    await prisma.$executeRaw`
+      UPDATE "PettyCashTransaction"
+      SET
+        "amount" = ${amt},
+        "holderId" = ${nextHolderId},
+        "holderName" = ${nextHolderName},
+        "branchId" = ${nextBranchId},
+        "category" = ${nextCategory},
+        "description" = ${nextDesc},
+        "vendorName" = ${nextVendor},
+        "invoiceNo" = ${nextInvoice},
+        "paymentMethod" = ${nextMethod},
+        "receiptUrls" = ${nextReceipts},
+        "slipUrls" = ${nextSlips},
+        "transactionDate" = ${nextTxDate},
+        "updatedAt" = ${now}
+      WHERE "id" = ${id}
+    `;
+
+    await recalculateHolderPettyCashBalances(existing.holderId);
+    if (nextHolderId !== existing.holderId) {
+      await recalculateHolderPettyCashBalances(nextHolderId);
+    }
+
+    // If this transaction is part of a 2-leg internal transfer (TRANSFER_OUT / TRANSFER_IN), sync amount/date/files/description to its paired leg
+    if (existing.relatedTxId) {
+      const pairedRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${existing.relatedTxId} LIMIT 1`;
+      const paired = pairedRows[0];
+      if (paired) {
+        await prisma.$executeRaw`
+          UPDATE "PettyCashTransaction"
+          SET
+            "amount" = ${amt},
+            "description" = ${nextDesc},
+            "paymentMethod" = ${nextMethod},
+            "receiptUrls" = ${nextReceipts},
+            "slipUrls" = ${nextSlips},
+            "transactionDate" = ${nextTxDate},
+            "updatedAt" = ${now}
+          WHERE "id" = ${paired.id}
+        `;
+        await recalculateHolderPettyCashBalances(paired.holderId);
+      }
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("[updatePettyCashTransactionAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to update petty cash transaction" };
+  }
+}
+
+export async function reviewPettyCashTransactionAction(data: {
+  id: string;
+  action: "APPROVE" | "REJECT" | "VOID";
+  reason?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const existingRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${data.id} LIMIT 1`;
+    const existing = existingRows[0];
+    if (!existing) return { success: false, error: "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E19\u0E35\u0E49\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A" };
+
+    const nextStatus = data.action === "APPROVE" ? "APPROVED" : data.action === "REJECT" ? "REJECTED" : "VOID";
+    const now = new Date();
+    const actorName = authUser.name || authUser.email || "Accounting";
+
+    await prisma.$executeRaw`
+      UPDATE "PettyCashTransaction"
+      SET
+        "status" = ${nextStatus},
+        "approvedById" = ${authUser.id},
+        "approvedByName" = ${actorName},
+        "approvedAt" = ${now},
+        "rejectReason" = ${data.reason?.trim() || null},
+        "updatedAt" = ${now}
+      WHERE "id" = ${data.id}
+    `;
+
+    await recalculateHolderPettyCashBalances(existing.holderId);
+
+    // If voiding/rejecting/approving a 2-leg transfer, sync status to the paired leg and recalculate its holder's balance
+    if (existing.relatedTxId) {
+      const pairedRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${existing.relatedTxId} LIMIT 1`;
+      const paired = pairedRows[0];
+      if (paired) {
+        await prisma.$executeRaw`
+          UPDATE "PettyCashTransaction"
+          SET
+            "status" = ${nextStatus},
+            "approvedById" = ${authUser.id},
+            "approvedByName" = ${actorName},
+            "approvedAt" = ${now},
+            "rejectReason" = ${data.reason?.trim() || null},
+            "updatedAt" = ${now}
+          WHERE "id" = ${paired.id}
+        `;
+        await recalculateHolderPettyCashBalances(paired.holderId);
+      }
+    }
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: `PETTY_CASH_${nextStatus}`,
+        entityType: "petty_cash",
+        entityId: data.id,
+        details: `[${existing.txNumber || data.id}] ${nextStatus} (฿${Number(existing.amount).toLocaleString()} - ${existing.holderName})${data.reason ? ` เหตุผล: ${data.reason}` : ""}`,
+      },
+    }).catch(() => {});
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("[reviewPettyCashTransactionAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to review petty cash transaction" };
+  }
+}
+
+export async function transferPettyCashAction(data: {
+  fromHolderId: string;
+  fromHolderName: string;
+  fromBranchId?: string | null;
+  toHolderId: string;
+  toHolderName: string;
+  toBranchId?: string | null;
+  amount: number;
+  description: string;
+  paymentMethod?: string | null;
+  receiptUrls?: string[];
+  slipUrls?: string[];
+  transactionDate?: string | Date;
+}): Promise<{ success: boolean; error?: string; outId?: string; inId?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const amt = Math.round((Number(data.amount) || 0) * 100) / 100;
+    if (isNaN(amt) || amt <= 0) {
+      return { success: false, error: "กรุณาระบุจำนวนเงินที่มากกว่า 0" };
+    }
+    if (!data.fromHolderId || !data.fromHolderName) {
+      return { success: false, error: "ไม่พบข้อมูลผู้โอนต้นทาง" };
+    }
+    if (!data.toHolderId || !data.toHolderName) {
+      return { success: false, error: "กรุณาเลือกผู้รับโอนปลายทาง (หน้าร้าน / พนักงาน)" };
+    }
+    if (data.fromHolderId === data.toHolderId) {
+      return { success: false, error: "ผู้โอนต้นทางและผู้รับปลายทางต้องไม่ใช่คนเดียวกัน" };
+    }
+
+    const now = new Date();
+    const txDate = data.transactionDate ? new Date(data.transactionDate) : now;
+    const outId = crypto.randomUUID();
+    const inId = crypto.randomUUID();
+    const ym = `${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const randSuffix = String(Math.floor(1000 + Math.random() * 9000));
+    const outTxNo = `PC-TR-${ym}-${randSuffix}-OUT`;
+    const inTxNo = `PC-TR-${ym}-${randSuffix}-IN`;
+
+    const receiptJson = JSON.stringify(Array.isArray(data.receiptUrls) ? data.receiptUrls : []);
+    const slipJson = JSON.stringify(Array.isArray(data.slipUrls) ? data.slipUrls : []);
+    const actorName = authUser.name || authUser.email || data.fromHolderName;
+    const cleanDesc = data.description.trim() || `โอนวงเงินสดย่อยให้ ${data.toHolderName}`;
+    const method = data.paymentMethod || "Transfer";
+
+    // Leg 1: TRANSFER_OUT (DEBIT from Accounting staff wallet)
+    await prisma.$executeRaw`
+      INSERT INTO "PettyCashTransaction" (
+        "id", "txNumber", "type", "direction", "amount", "balanceBefore", "balanceAfter",
+        "holderId", "holderName", "branchId", "relatedTxId", "counterpartyId", "counterpartyName",
+        "category", "description", "vendorName", "invoiceNo", "paymentMethod",
+        "receiptUrls", "slipUrls", "status", "transactionDate",
+        "createdById", "createdByName", "approvedById", "approvedByName", "approvedAt",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        ${outId}, ${outTxNo}, 'TRANSFER_OUT', 'DEBIT', ${amt}, 0, 0,
+        ${data.fromHolderId}, ${data.fromHolderName}, ${data.fromBranchId || "HQ"}, ${inId}, ${data.toHolderId}, ${data.toHolderName},
+        'โอนกระจายวงเงินให้หน้าร้าน (Transfer to Store)', ${cleanDesc}, ${data.toHolderName}, null, ${method},
+        ${receiptJson}, ${slipJson}, 'APPROVED', ${txDate},
+        ${authUser.id}, ${actorName}, ${authUser.id}, ${actorName}, ${now},
+        ${now}, ${now}
+      )
+    `;
+
+    // Leg 2: TRANSFER_IN (CREDIT to Store/Branch staff wallet)
+    await prisma.$executeRaw`
+      INSERT INTO "PettyCashTransaction" (
+        "id", "txNumber", "type", "direction", "amount", "balanceBefore", "balanceAfter",
+        "holderId", "holderName", "branchId", "relatedTxId", "counterpartyId", "counterpartyName",
+        "category", "description", "vendorName", "invoiceNo", "paymentMethod",
+        "receiptUrls", "slipUrls", "status", "transactionDate",
+        "createdById", "createdByName", "approvedById", "approvedByName", "approvedAt",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        ${inId}, ${inTxNo}, 'TRANSFER_IN', 'CREDIT', ${amt}, 0, 0,
+        ${data.toHolderId}, ${data.toHolderName}, ${data.toBranchId || "HQ"}, ${outId}, ${data.fromHolderId}, ${data.fromHolderName},
+        'รับโอนวงเงินจากฝ่ายบัญชี (Received from Accounting)', ${cleanDesc}, ${data.fromHolderName}, null, ${method},
+        ${receiptJson}, ${slipJson}, 'APPROVED', ${txDate},
+        ${authUser.id}, ${actorName}, ${authUser.id}, ${actorName}, ${now},
+        ${now}, ${now}
+      )
+    `;
+
+    await recalculateHolderPettyCashBalances(data.fromHolderId);
+    await recalculateHolderPettyCashBalances(data.toHolderId);
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: "PETTY_CASH_TRANSFER",
+        entityType: "petty_cash",
+        entityId: outId,
+        details: `[PC-TR-${ym}-${randSuffix}] โอนวงเงินสดย่อย ฿${amt.toLocaleString()} จาก ${data.fromHolderName} -> ${data.toHolderName} (${cleanDesc})`,
+      },
+    }).catch(() => {});
+
+    return { success: true, outId, inId };
+  } catch (err: any) {
+    console.error("[transferPettyCashAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to transfer petty cash" };
+  }
+}
+
+export async function savePettyCashCategoriesAction(categories: string[]): Promise<{
+  success: boolean;
+  error?: string;
+  categories?: string[];
+}> {
+  try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const cleaned = Array.from(new Set((categories || []).map((c) => String(c).trim()).filter(Boolean)));
+    if (cleaned.length === 0) {
+      return { success: false, error: "\u0E15\u0E49\u0E2D\u0E07\u0E21\u0E35\u0E2B\u0E21\u0E27\u0E14\u0E2B\u0E21\u0E39\u0E48\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E19\u0E49\u0E2D\u0E22 1 \u0E23\u0E32\u0E22\u0E01\u0E32\u0E23" };
+    }
+    await prisma.setting.upsert({
+      where: { key: "pettyCashCategories" },
+      update: { value: JSON.stringify(cleaned) },
+      create: { key: "pettyCashCategories", value: JSON.stringify(cleaned) },
+    });
+    return { success: true, categories: cleaned };
+  } catch (err: any) {
+    console.error("[savePettyCashCategoriesAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save categories" };
+  }
+}

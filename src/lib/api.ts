@@ -469,7 +469,17 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
             memRider.currentLocation &&
             (serverRider.status === 'online' || serverRider.status === 'busy')
           ) {
-            return { ...serverRider, currentLocation: memRider.currentLocation };
+            const bestGpsUpdatedAt =
+              serverRider.gpsUpdatedAt && memRider.gpsUpdatedAt
+                ? new Date(serverRider.gpsUpdatedAt).getTime() >= new Date(memRider.gpsUpdatedAt).getTime()
+                  ? serverRider.gpsUpdatedAt
+                  : memRider.gpsUpdatedAt
+                : serverRider.gpsUpdatedAt || memRider.gpsUpdatedAt || null;
+            return {
+              ...serverRider,
+              currentLocation: memRider.currentLocation,
+              gpsUpdatedAt: bestGpsUpdatedAt,
+            };
           }
           return serverRider;
         });
@@ -2188,7 +2198,9 @@ export const api = {
         updates.currentLocation === undefined ||
         (curr.currentLocation?.lat === updates.currentLocation?.lat &&
           curr.currentLocation?.lng === updates.currentLocation?.lng);
-      if (statusSame && locSame) return false;
+      const gpsTimeSame =
+        updates.gpsUpdatedAt === undefined || curr.gpsUpdatedAt === updates.gpsUpdatedAt;
+      if (statusSame && locSame && gpsTimeSame) return false;
       const next = [...db.riders];
       next[idx] = { ...curr, ...updates };
       db.riders = next;

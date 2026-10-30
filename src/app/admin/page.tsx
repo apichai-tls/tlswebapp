@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId, formatReceiptCustomerPhone } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId, formatReceiptCustomerPhone, getCashSuggestions } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
@@ -52,6 +52,7 @@ import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
 import { AdminReports } from "@/components/admin-reports";
+import { AdminPettyCash } from "@/components/admin-petty-cash";
 import { AdminBuildingReport } from "@/components/admin-building-report";
 import { AdminMarketing } from "@/components/admin-marketing";
 import { AdminTopSpenders } from "@/components/admin-top-spenders";
@@ -285,7 +286,7 @@ function AdminPageContent() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "building-report" | "marketing" | "top-spenders" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -319,7 +320,7 @@ function AdminPageContent() {
     const searchParams = new URLSearchParams(window.location.search);
     const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "building-report", "marketing", "top-spenders", "tasks"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks"];
     const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
     if (validTabs.includes(targetTab)) {
@@ -343,8 +344,8 @@ function AdminPageContent() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "building-report" | "marketing" | "top-spenders" | "tasks"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "marketing", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
@@ -391,7 +392,7 @@ function AdminPageContent() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "building-report" | "marketing" | "top-spenders" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -406,6 +407,7 @@ function AdminPageContent() {
   const [showSplitPaymentDialog, setShowSplitPaymentDialog] = useState(false);
   const [splitPayments, setSplitPayments] = useState<SplitPaymentLine[]>([]);
   const [cashPlaced, setCashPlaced] = useState(false);
+  const [dialogReceivedCash, setDialogReceivedCash] = useState<string>("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
@@ -1682,6 +1684,66 @@ function AdminPageContent() {
     (paymentChannel === "Split Payment" && splitMemberDeductAmt > 0 && (isWalletInsufficient || isCustomerWalletExpired))
   );
 
+  const isDialogCashChannel = useMemo(() => {
+    if (isPaidJob || isRewashJob) return false;
+    if (paymentChannel === "Split Payment") {
+      return splitPayments.some((sp) => (sp.channel || "").toLowerCase().includes("cash"));
+    }
+    return Boolean(paymentChannel && paymentChannel.toLowerCase().includes("cash"));
+  }, [isPaidJob, isRewashJob, paymentChannel, splitPayments]);
+
+  const dialogCashTargetAmount = useMemo(() => {
+    if (!isDialogCashChannel) return 0;
+    if (paymentChannel === "Split Payment") {
+      return Math.round(
+        splitPayments
+          .filter((sp) => (sp.channel || "").toLowerCase().includes("cash"))
+          .reduce((s, sp) => s + (Number(sp.amount) || 0), 0) * 100
+      ) / 100;
+    }
+    const existingJobObj = editingJobId ? jobs.find((j) => j.id === editingJobId) : null;
+    const existingPaid = existingJobObj ? getJobPaymentBreakdown(existingJobObj).totalPaid : 0;
+    return Math.max(0, Math.round((dialogTotal - existingPaid) * 100) / 100);
+  }, [isDialogCashChannel, paymentChannel, splitPayments, dialogTotal, editingJobId, jobs]);
+
+  const parsedDialogCashReceived = useMemo(() => {
+    if (!dialogReceivedCash || !dialogReceivedCash.trim()) return NaN;
+    return parseFloat(dialogReceivedCash);
+  }, [dialogReceivedCash]);
+
+  const isDialogCashInsufficient = Boolean(
+    isDialogCashChannel &&
+    dialogCashTargetAmount > 0 &&
+    dialogReceivedCash.trim() !== "" &&
+    (isNaN(parsedDialogCashReceived) || parsedDialogCashReceived < dialogCashTargetAmount - 0.01)
+  );
+
+  const paidJobCashInfo = useMemo(() => {
+    if (!editingJobId) return null;
+    const j = jobs.find((item) => item.id === editingJobId);
+    if (!j?.adminNotesJson) return null;
+    try {
+      const parsed = JSON.parse(j.adminNotesJson);
+      if (parsed && Array.isArray(parsed.payments)) {
+        const cashEntry = [...parsed.payments].reverse().find(
+          (p: any) =>
+            p &&
+            ((p.method || "").toLowerCase() === "cash" || (p.channel || "").toLowerCase().includes("cash")) &&
+            p.received != null &&
+            Number(p.received) > 0
+        );
+        if (cashEntry) {
+          return {
+            amount: Number(cashEntry.amount) || 0,
+            received: Number(cashEntry.received) || 0,
+            change: Number(cashEntry.change) || 0,
+          };
+        }
+      }
+    } catch {}
+    return null;
+  }, [editingJobId, jobs]);
+
   useEffect(() => {
     if (isWalletBlocked && !isPaidJob) {
       if (paymentMethod === 'paid') setPaymentMethod('unpaid');
@@ -2075,6 +2137,7 @@ function AdminPageContent() {
     setPaymentMethod("unpaid");
     setPaymentChannel("");
     setCashPlaced(false);
+    setDialogReceivedCash("");
     setServiceType("wash_fold");
     setServiceWeight(2);
     setLaundryTypes([]); // H3 Fix: clear laundryTypes to prevent data bleeding from previous Edit Job
@@ -2912,6 +2975,7 @@ function AdminPageContent() {
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
     setShopPaymentMethod(job.isShopPaid ? 'paid' : 'unpaid');
     setCashPlaced(job.cashPlaced || false);
+    setDialogReceivedCash("");
     let fallbackChannel = job.paymentChannel || "";
     if (!fallbackChannel && job.paymentMethod) {
       const pm = job.paymentMethod.toLowerCase();
@@ -3677,22 +3741,35 @@ function AdminPageContent() {
         const finalPayments = [...existingPayments];
 
         if (isPayment && remainingToPay > 0 && !isNoChargePrepaidJob) {
+          const rawCashReceived = dialogReceivedCash.trim() !== "" ? parseFloat(dialogReceivedCash) : NaN;
           if (isSplitPayment) {
             splitPayments.forEach((sp) => {
               const pMethod = mapChannelNameToMethod(sp.channel, getPaymentChannels(systemSettings));
+              const spAmt = Number(sp.amount) || 0;
+              const isCashLeg = pMethod === "cash" || (sp.channel || "").toLowerCase().includes("cash");
+              const effReceived = isCashLeg && spAmt > 0
+                ? (!isNaN(rawCashReceived) && rawCashReceived >= spAmt - 0.01 ? Math.round(rawCashReceived * 100) / 100 : spAmt)
+                : undefined;
+              const effChange = effReceived !== undefined ? Math.max(0, Math.round((effReceived - spAmt) * 100) / 100) : undefined;
               finalPayments.push({
                 id: sp.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`),
-                amount: Number(sp.amount) || 0,
+                amount: spAmt,
                 method: pMethod,
                 channel: sp.channel,
                 timestamp: new Date().toISOString(),
                 shiftId: targetShiftId,
                 paidBy: user?.name || user?.email || "Admin",
                 note: sp.note || null,
+                ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
               });
             });
           } else {
             const pMethod = mapChannelNameToMethod(paymentChannel, getPaymentChannels(systemSettings));
+            const isCashLeg = pMethod === "cash" || (paymentChannel || "").toLowerCase().includes("cash");
+            const effReceived = isCashLeg && remainingToPay > 0
+              ? (!isNaN(rawCashReceived) && rawCashReceived >= remainingToPay - 0.01 ? Math.round(rawCashReceived * 100) / 100 : remainingToPay)
+              : undefined;
+            const effChange = effReceived !== undefined ? Math.max(0, Math.round((effReceived - remainingToPay) * 100) / 100) : undefined;
             finalPayments.push({
               id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
               amount: remainingToPay,
@@ -3700,7 +3777,8 @@ function AdminPageContent() {
               channel: paymentChannel || "Cash / COD",
               timestamp: new Date().toISOString(),
               shiftId: targetShiftId,
-              paidBy: user?.name || user?.email || "Admin"
+              paidBy: user?.name || user?.email || "Admin",
+              ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
             });
           }
         }
@@ -4353,7 +4431,11 @@ function AdminPageContent() {
           resetDialogForm();
         }
 
-        toast.success(`Job updated successfully!`);
+        const editCashChange = isPayment && isDialogCashChannel && !isNaN(parsedDialogCashReceived) && parsedDialogCashReceived > dialogCashTargetAmount
+          ? Math.round((parsedDialogCashReceived - dialogCashTargetAmount) * 100) / 100
+          : 0;
+        toast.success(editCashChange > 0 ? `บันทึกรายการสำเร็จ! เงินทอนที่ต้องคืน: ฿${editCashChange.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `Job updated successfully!`);
+        setDialogReceivedCash("");
 
       } else {
         // Upload images for NEW job (with 20s safety cap so hung uploads cannot freeze creation)
@@ -4694,7 +4776,11 @@ function AdminPageContent() {
         }
 
 
-        toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+        const newCashChange = isPayment && isDialogCashChannel && !isNaN(parsedDialogCashReceived) && parsedDialogCashReceived > dialogCashTargetAmount
+          ? Math.round((parsedDialogCashReceived - dialogCashTargetAmount) * 100) / 100
+          : 0;
+        toast.success(newCashChange > 0 ? `Job ${job.id} created — เงินทอนที่ต้องคืน: ฿${newCashChange.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+        setDialogReceivedCash("");
       }
 
       // Auto-create Tax Invoice Task for Accounting Team if requested
@@ -5514,6 +5600,26 @@ function AdminPageContent() {
                 </motion.a>
               )}
 
+              {hasAccess("petty-cash") && (
+                <motion.a
+                  href="#petty-cash"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("petty-cash"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "petty-cash"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Petty Cash (เงินสดย่อย)"
+                >
+                  {activeTab === "petty-cash" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <Wallet size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "petty-cash" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Petty Cash</span>}
+                </motion.a>
+              )}
+
               {hasAccess("building-report") && (
                 <motion.a
                   href="#building-report"
@@ -5930,6 +6036,22 @@ function AdminPageContent() {
                         <span>Reports & Analytics</span>
                       </a>
                     )}
+                    {hasAccess("petty-cash") && (
+                      <a
+                        href="#petty-cash"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("petty-cash");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "petty-cash" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <Wallet size={17} className={activeTab === "petty-cash" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Petty Cash</span>
+                      </a>
+                    )}
                     {hasAccess("building-report") && (
                 <motion.a
                   href="#building-report"
@@ -6098,6 +6220,7 @@ function AdminPageContent() {
                 calculator: { section: "Fleet & Map", title: "Distance Calculator", subtitle: "Route fee estimation & POI management" },
                 pois: { section: "Fleet & Map", title: "POI Locations", subtitle: "Saved buildings, condos & coordinates" },
                 reports: { section: "Management", title: "Reports & Analytics", subtitle: "Revenue, payment splits & historical insights" },
+                "petty-cash": { section: "Management", title: "Petty Cash (ระบบเงินสดย่อยรายบุคคล)", subtitle: "Individual petty cash wallets, immediate expense deduction & accounting approvals" },
                 "building-report": { section: "Management", title: "Building Sales & BD Report", subtitle: "Top condos, hotels & buildings in Bangkok & Pattaya for B2B outreach" },
                 "activity-logs": { section: "Management", title: "Activity Logs", subtitle: "System audit trail & staff actions" },
                 users: { section: "Management", title: "Manage Users", subtitle: "Staff accounts, roles & branch permissions" },
@@ -8351,6 +8474,27 @@ function AdminPageContent() {
                                     {dialogCart.length} items ({dialogCart.reduce((sum, i) => sum + (typeof i.quantity === 'number' ? i.quantity : 1), 0)})
                                   </span>
                                 </div>
+                                {paidJobCashInfo && (
+                                  <div className="col-span-2 p-2 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between text-xs shadow-2xs">
+                                    <div className="flex items-center gap-1.5">
+                                      <Banknote size={13} className="text-emerald-600" />
+                                      <span className="text-[10.5px] font-bold text-slate-600">
+                                        {currentLanguage === "en" ? "Cash Received:" : "รับเงินสด:"}
+                                      </span>
+                                      <span className="font-mono font-extrabold text-slate-900">
+                                        ฿{paidJobCashInfo.received.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10.5px] font-bold text-emerald-700">
+                                        {currentLanguage === "en" ? "Change:" : "เงินทอน:"}
+                                      </span>
+                                      <span className="font-mono font-black text-emerald-700 bg-white px-2 py-0.5 rounded-md border border-emerald-200">
+                                        ฿{paidJobCashInfo.change.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
 
                               {/* Mini Cart Breakdown */}
@@ -9306,6 +9450,82 @@ function AdminPageContent() {
                               </div>
                             </div>
 
+                            {/* Cash Received & Change Panel (when Cash / COD or Split Cash is selected) */}
+                            {!isPaidJob && isDialogCashChannel && dialogCashTargetAmount > 0 && (
+                              <div className="p-2 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <Label htmlFor="dialog-cash-received" className="flex items-center gap-1 text-[9.5px] font-bold text-amber-400 uppercase tracking-wider shrink-0">
+                                    <Banknote size={11} className="text-amber-400" />
+                                    <span>{currentLanguage === "en" ? "Cash Received (฿)" : "รับเงินสด (฿)"}</span>
+                                  </Label>
+                                  <div className="relative w-32">
+                                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400">฿</span>
+                                    <input
+                                      id="dialog-cash-received"
+                                      type="number"
+                                      step="any"
+                                      min="0"
+                                      placeholder={dialogCashTargetAmount.toFixed(2)}
+                                      value={dialogReceivedCash}
+                                      onChange={(e) => setDialogReceivedCash(e.target.value)}
+                                      className="h-7 w-full rounded-lg border border-slate-700 bg-slate-800 pl-5 pr-2 text-right font-mono text-xs font-black text-white placeholder:text-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                                    />
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-1 justify-end">
+                                  {getCashSuggestions(dialogCashTargetAmount).map((sug) => (
+                                    <button
+                                      key={sug}
+                                      type="button"
+                                      onClick={() => setDialogReceivedCash(sug.toString())}
+                                      className={`px-2 py-0.5 text-[9.5px] font-bold rounded-md border transition-all cursor-pointer whitespace-nowrap ${
+                                        !isNaN(parsedDialogCashReceived) && Math.abs(parsedDialogCashReceived - sug) < 0.01
+                                          ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
+                                          : "bg-slate-800/90 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white"
+                                      }`}
+                                    >
+                                      {Math.abs(sug - dialogCashTargetAmount) < 0.01
+                                        ? (currentLanguage === "en" ? `Exact (฿${sug.toLocaleString()})` : `พอดี (฿${sug.toLocaleString()})`)
+                                        : `฿${sug.toLocaleString()}`}
+                                    </button>
+                                  ))}
+                                </div>
+                                {dialogReceivedCash.trim() !== "" && !isNaN(parsedDialogCashReceived) && (
+                                  <div className="pt-1 border-t border-dashed border-slate-800 flex items-center justify-between">
+                                    <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">
+                                      {parsedDialogCashReceived >= dialogCashTargetAmount - 0.01
+                                        ? (currentLanguage === "en" ? "Change to Return" : "เงินทอน (Change)")
+                                        : (currentLanguage === "en" ? "Short Amount" : "ยอดเงินไม่พอ")}
+                                    </span>
+                                    {parsedDialogCashReceived >= dialogCashTargetAmount - 0.01 ? (
+                                      <span className="text-xs font-black font-mono text-emerald-400">
+                                        ฿{Math.max(0, parsedDialogCashReceived - dialogCashTargetAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    ) : (
+                                      <span className="text-xs font-black font-mono text-rose-400">
+                                        {currentLanguage === "en"
+                                          ? `Short by ฿${(dialogCashTargetAmount - parsedDialogCashReceived).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                          : `ขาดอีก ฿${(dialogCashTargetAmount - parsedDialogCashReceived).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Paid Cash Summary on Right Panel */}
+                            {isPaidJob && paidJobCashInfo && (
+                              <div className="p-2 rounded-xl bg-slate-950/80 border border-emerald-800/60 flex items-center justify-between text-[10px]">
+                                <span className="text-slate-300 font-bold flex items-center gap-1">
+                                  <Banknote size={11} className="text-amber-400" />
+                                  {currentLanguage === "en" ? "Cash:" : "รับเงินสด:"} <strong className="font-mono text-white">฿{paidJobCashInfo.received.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                                </span>
+                                <span className="text-emerald-400 font-bold">
+                                  {currentLanguage === "en" ? "Change:" : "เงินทอน:"} <strong className="font-mono text-emerald-300">฿{paidJobCashInfo.change.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                                </span>
+                              </div>
+                            )}
+
                             {/* Row 2: CSO Status & SHOP Status */}
                             <div className="grid grid-cols-2 gap-2 pt-1">
                               {/* Col 1: CSO Status */}
@@ -9568,6 +9788,7 @@ function AdminPageContent() {
                                 isWalletInsufficient || 
                                 (paymentChannel === "Deduct Member" && isCustomerWalletExpired) ||
                                 isSplitAmountInvalid ||
+                                isDialogCashInsufficient ||
                                 (paymentChannel === "Split Payment" && splitPayments.length < 2)
                               }
                               onClick={() => handleCreate(true)}
@@ -11068,6 +11289,7 @@ function AdminPageContent() {
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
           {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
+          {activeTab === "petty-cash" && hasAccess("petty-cash") && <AdminPettyCash currentUser={user} />}
           {activeTab === "building-report" && hasAccess("building-report") && <AdminBuildingReport onViewJob={stableHandleEditFullJob} />}
           {activeTab === "marketing" && hasAccess("marketing") && <AdminMarketing onViewJob={stableHandleEditFullJob} />}
           {activeTab === "top-spenders" && hasAccess("top-spenders") && <AdminTopSpenders onViewJob={stableHandleEditFullJob} />}

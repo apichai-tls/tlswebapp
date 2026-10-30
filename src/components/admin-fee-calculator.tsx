@@ -24,7 +24,7 @@ import {
   Info,
   X,
 } from "lucide-react";
-import { poiStore, shopStore, type LatLng } from "@/lib/store";
+import { poiStore, shopStore, getClosestShopId, type LatLng } from "@/lib/store";
 import { getClosestShopByRoute } from "@/lib/map-api";
 import { Button } from "@/components/ui/button";
 import { LocationInput } from "@/components/location-input";
@@ -133,6 +133,12 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
       coords: newCoords,
       placeId: loc.placeId,
     };
+    if (isAutoSelectShop && shops.length > 0) {
+      const immediateClosestId = getClosestShopId(newCoords, shops);
+      if (immediateClosestId) {
+        setSelectedShopId(immediateClosestId);
+      }
+    }
     setPickupLoc(nextLoc);
     if (!isDeliveryDirty) {
       setDeliverySearchQuery(loc.name);
@@ -218,7 +224,7 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
   }
 
   return (
-    <div className="flex-1 bg-slate-50/70 p-4 lg:p-5 flex flex-col min-h-0 lg:h-[calc(100vh-4rem)] overflow-y-auto lg:overflow-hidden">
+    <div className="w-full bg-slate-50/70 p-4 lg:p-5 flex flex-col min-h-0 lg:h-[calc(100vh-4rem)] lg:max-h-[calc(100vh-4rem)] overflow-y-auto lg:overflow-hidden">
       {/* Top Header Bar */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-3.5">
@@ -289,9 +295,9 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
       </div>
 
       {/* Main Content Grid */}
-      <div className="flex flex-col lg:flex-row gap-4 flex-1 min-h-0">
+      <div className="flex flex-col lg:flex-row gap-4 flex-1 min-h-0 lg:h-full lg:overflow-hidden">
         {/* LEFT SIDEBAR: Route Planner, Service Tier & Saved POIs Quick List */}
-        <div className="w-full lg:w-[390px] xl:w-[415px] flex flex-col gap-3.5 shrink-0 min-h-0 lg:h-full">
+        <div className="w-full lg:w-[390px] xl:w-[415px] flex flex-col gap-3.5 shrink-0 min-h-0 lg:h-full lg:max-h-full lg:overflow-hidden">
           {/* Card 1: Origin Branch & Pickup / Delivery Inputs */}
           <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/90 p-4 space-y-3.5 shrink-0">
             {/* Origin Branch Selector */}
@@ -562,7 +568,7 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
           </div>
 
           {/* Card 2: Saved Locations / Quick-Select POIs List */}
-          <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/90 flex-1 min-h-[240px] flex flex-col overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/90 flex-1 min-h-[240px] lg:min-h-0 flex flex-col overflow-hidden">
             <div className="p-3.5 border-b border-slate-100 space-y-2.5 shrink-0">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -701,7 +707,7 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
         </div>
 
         {/* RIGHT PANEL: KPI Summary Strip + Interactive Live Map */}
-        <div className="flex-1 flex flex-col gap-3.5 min-h-0">
+        <div className="flex-1 flex flex-col gap-3.5 min-h-0 lg:h-full lg:max-h-full lg:overflow-hidden">
           {/* Top 4-Card Summary Strip */}
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 shrink-0">
             {/* KPI 1: Origin Branch */}
@@ -815,7 +821,7 @@ export default function AdminFeeCalculator({ onNavigateToPois }: AdminFeeCalcula
           </div>
 
           {/* Interactive Live Map Container (Always Rendered!) */}
-          <div className="flex-1 min-h-[420px] bg-white rounded-2xl shadow-2xs border border-slate-200/90 overflow-hidden relative">
+          <div className="flex-1 min-h-[420px] lg:min-h-0 bg-white rounded-2xl shadow-2xs border border-slate-200/90 overflow-hidden relative">
             <CreateJobMap
               branchCoords={activeShop?.coords || { lat: 13.7367, lng: 100.5231 }}
               pickupCoords={pickupLoc?.coords || null}

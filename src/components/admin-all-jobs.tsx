@@ -2456,6 +2456,15 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     <Banknote size={10} /> COD
                                   </span>
                                 )}
+                                {(() => {
+                                  const cashWithChange = breakdown.payments.find(p => ((p.method || "").toLowerCase() === "cash" || (p.channel || "").toLowerCase().includes("cash")) && p.received !== undefined && p.received > 0 && p.change !== undefined && p.change > 0);
+                                  if (!cashWithChange) return null;
+                                  return (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0 h-4 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-mono font-bold" title={`รับเงินสด ฿${cashWithChange.received?.toLocaleString()} / เงินทอน ฿${cashWithChange.change?.toLocaleString()}`}>
+                                      รับ ฿{cashWithChange.received?.toLocaleString()} • ทอน ฿{cashWithChange.change?.toLocaleString()}
+                                    </span>
+                                  );
+                                })()}
                               </div>
 
                               {/* Bottom Line: CSO & Shop Status Pills with Timestamps */}

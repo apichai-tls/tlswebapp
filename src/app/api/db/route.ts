@@ -18,6 +18,10 @@ import {
   canAccessFinancialData,
   type ServerAuthUser
 } from '@/lib/server-auth';
+import {
+  ensureDailyRiderOfflineReset,
+  getRiderGpsTimestampsMap,
+} from '@/lib/rider-presence';
 
 export { invalidateDbCache };
 export const dynamic = 'force-dynamic';
@@ -27,14 +31,14 @@ const CUSTOMERS_TTL_MS = 300000;      // 300s customer master data cache (invali
 const MASTER_DATA_TTL_MS = 300000;    // 300s services, price lists, shop locations, settings cache
 const RIDER_EARNINGS_TTL_MS = 180000; // 180s rider earnings aggregations cache
 
-const INTERNAL_SETTING_KEYS = new Set(['auth_session_revocations']);
+const INTERNAL_SETTING_KEYS = new Set(['auth_session_revocations', 'rider_daily_reset_date']);
 
 export function filterPayloadForUser(payload: any, user: ServerAuthUser): any {
   const role = (user.role || '').toLowerCase();
   const safeSettings: Record<string, string> = {};
   if (payload.settings && typeof payload.settings === 'object') {
     for (const [k, v] of Object.entries(payload.settings)) {
-      if (!INTERNAL_SETTING_KEYS.has(k)) {
+      if (!INTERNAL_SETTING_KEYS.has(k) && !k.startsWith('rider_gps_at:')) {
         safeSettings[k] = String(v);
       }
     }
@@ -145,6 +149,8 @@ export async function GET(request?: NextRequest) {
         { status: 403 }
       );
     }
+
+    await ensureDailyRiderOfflineReset();
 
     const forceFresh = request ? new URL(request.url).searchParams.get('fresh') === 'true' : false;
     const ifNoneMatch = request?.headers.get('if-none-match');
@@ -374,10 +380,13 @@ export async function GET(request?: NextRequest) {
         coords: { lat: s.lat, lng: s.lng },
       }));
 
+      const gpsMap = await getRiderGpsTimestampsMap();
+
       const formattedRiders = riders.map((r: any) => {
         const lifeSum = lifetimeEarnings.find((e: any) => e.riderId === r.id)?._sum?.amount || 0;
         const monSum = monthEarnings.find((e: any) => e.riderId === r.id)?._sum?.amount || 0;
         const jobCnt = completedJobsCounts.find((e: any) => e.riderId === r.id)?._count?.id || 0;
+        const gpsUpdatedAt = gpsMap.get(r.id) || settings[`rider_gps_at:${r.id}`] || null;
 
         return {
           ...r,
@@ -386,6 +395,7 @@ export async function GET(request?: NextRequest) {
           completedJobsCount: jobCnt,
           currentLocation:
             r.currentLat && r.currentLng ? { lat: r.currentLat, lng: r.currentLng } : undefined,
+          gpsUpdatedAt,
         };
       });
 

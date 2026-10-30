@@ -451,14 +451,27 @@ export function AdminCustomerProfileModal({
       };
     });
 
-    // Filter out walletTransactions that duplicate topups
+    // Filter out walletTransactions that duplicate topups, while preserving balanceBefore/balanceAfter on the matched topup
     const nonDuplicateWts = wts.filter((w: any) => {
       if (w.type === "TOPUP") {
+        let matchedTopup = w.referenceId
+          ? topups.find((t: any) => t.id === w.referenceId || t.rawTx?.id === w.referenceId)
+          : null;
+        if (!matchedTopup) {
+          matchedTopup = topups.find((t: any) =>
+            Math.abs(t.createdAt.getTime() - w.createdAt.getTime()) < 60000 && t.amount === w.amount
+          );
+        }
+        if (matchedTopup) {
+          if (matchedTopup.balanceBefore == null && w.balanceBefore != null) {
+            matchedTopup.balanceBefore = w.balanceBefore;
+          }
+          if (matchedTopup.balanceAfter == null && w.balanceAfter != null) {
+            matchedTopup.balanceAfter = w.balanceAfter;
+          }
+          return false;
+        }
         if (w.referenceId && handledTopupReceipts.has(w.referenceId)) return false;
-        const matchesTopup = topups.some((t: any) => 
-          Math.abs(t.createdAt.getTime() - w.createdAt.getTime()) < 60000 && t.amount === w.amount
-        );
-        if (matchesTopup) return false;
       }
       return true;
     });
@@ -551,33 +564,50 @@ export function AdminCustomerProfileModal({
     // Check if earliest event started with an opening balance
     const hasOpening = allEvents.some(e => e.type === "OPENING_BALANCE");
     if (!hasOpening && allEvents.length > 0) {
-      const earliestWithBal = allEvents.reduce((min: any, cur: any) => {
-        if (cur.effectiveBalBefore != null && cur.effectiveBalBefore > 0) {
+      const earliestOverall = allEvents.reduce((min: any, cur: any) => {
+        return !min || cur.createdAt.getTime() < min.createdAt.getTime() ? cur : min;
+      }, null);
+
+      const earliestWithKnownBal = allEvents.reduce((min: any, cur: any) => {
+        if (cur.effectiveBalBefore != null && !isNaN(cur.effectiveBalBefore)) {
           if (!min || cur.createdAt.getTime() < min.createdAt.getTime()) return cur;
         }
         return min;
       }, null);
 
-      if (earliestWithBal && earliestWithBal.effectiveBalBefore > 0) {
-        allEvents.unshift({
-          id: `opening-bal-${customer.id}`,
-          createdAt: new Date(earliestWithBal.createdAt.getTime() - 60000),
-          type: "OPENING_BALANCE",
-          direction: "CREDIT" as const,
-          amount: Number(earliestWithBal.effectiveBalBefore),
-          paidAmount: Number(earliestWithBal.effectiveBalBefore),
-          bonusAmount: 0,
+      if (earliestWithKnownBal) {
+        const priorNetChange = allEvents.reduce((sum: number, cur: any) => {
+          if (cur === earliestWithKnownBal) return sum;
+          if (cur.createdAt.getTime() < earliestWithKnownBal.createdAt.getTime() && cur.approvalStatus !== "REJECTED") {
+            return sum + (cur.direction === "CREDIT" ? Number(cur.amount || 0) : -Number(cur.amount || 0));
+          }
+          return sum;
+        }, 0);
+
+        const inferredOpeningBal = Math.round((Number(earliestWithKnownBal.effectiveBalBefore) - priorNetChange) * 100) / 100;
+
+        if (inferredOpeningBal > 0) {
+          const baseTime = earliestOverall ? earliestOverall.createdAt.getTime() : earliestWithKnownBal.createdAt.getTime();
+          allEvents.unshift({
+            id: `opening-bal-${customer.id}`,
+            createdAt: new Date(baseTime - 60000),
+            type: "OPENING_BALANCE",
+            direction: "CREDIT" as const,
+            amount: inferredOpeningBal,
+            paidAmount: inferredOpeningBal,
+            bonusAmount: 0,
           packageName: "Opening Balance / Initial Credit (ยอดยกมาก่อนรายการแรก)",
-          paymentChannel: "Initial Balance",
-          slipImageUrl: null,
-          receiptData: null,
-          balanceBefore: 0,
-          balanceAfter: Number(earliestWithBal.effectiveBalBefore),
-          effectiveBalBefore: 0,
-          approvalStatus: "APPROVED",
-          source: "OpeningBalance",
-          referenceId: customer.id,
-        });
+            paymentChannel: "Initial Balance",
+            slipImageUrl: null,
+            receiptData: null,
+            balanceBefore: 0,
+            balanceAfter: inferredOpeningBal,
+            effectiveBalBefore: 0,
+            approvalStatus: "APPROVED",
+            source: "OpeningBalance",
+            referenceId: customer.id,
+          });
+        }
       }
     }
 

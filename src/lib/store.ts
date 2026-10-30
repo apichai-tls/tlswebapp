@@ -357,6 +357,7 @@ export interface Rider {
   phone: string;
   status: "online" | "offline" | "busy";
   currentLocation?: LatLng;
+  gpsUpdatedAt?: string | null;
   avatarUrl?: string;
   rating: number;
   completedJobs: number;

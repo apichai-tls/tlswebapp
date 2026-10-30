@@ -123,6 +123,38 @@ function MapUpdater({ center, zoom }: { center: [number, number]; zoom: number }
   return null;
 }
 
+function formatRiderGpsTimestamp(iso?: string | null): { label: string; isToday: boolean } | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const bkkOffsetMs = 7 * 60 * 60 * 1000;
+  const nowBkk = new Date(Date.now() + bkkOffsetMs);
+  const dBkk = new Date(d.getTime() + bkkOffsetMs);
+
+  const todayKey = nowBkk.toISOString().slice(0, 10);
+  const dateKey = dBkk.toISOString().slice(0, 10);
+  const isToday = todayKey === dateKey;
+
+  const yesterdayBkk = new Date(nowBkk.getTime() - 24 * 60 * 60 * 1000);
+  const isYesterday = yesterdayBkk.toISOString().slice(0, 10) === dateKey;
+
+  const hh = String(dBkk.getUTCHours()).padStart(2, "0");
+  const mm = String(dBkk.getUTCMinutes()).padStart(2, "0");
+  const ss = String(dBkk.getUTCSeconds()).padStart(2, "0");
+
+  if (isToday) {
+    return { label: `วันนี้ ${hh}:${mm}:${ss} น.`, isToday: true };
+  }
+  if (isYesterday) {
+    return { label: `เมื่อวาน ${hh}:${mm} น.`, isToday: false };
+  }
+  const day = dBkk.getUTCDate();
+  const monthsTh = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+  const month = monthsTh[dBkk.getUTCMonth()] || "";
+  return { label: `${day} ${month} ${hh}:${mm} น.`, isToday: false };
+}
+
 export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }: { minimal?: boolean }) {
   const riders = useRiders();
   const { user } = useAuth();
@@ -162,6 +194,9 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
           const updates: Partial<Rider> = { status: r.status };
           if (r.currentLat && r.currentLng) {
             updates.currentLocation = { lat: r.currentLat, lng: r.currentLng };
+          }
+          if (r.gpsUpdatedAt !== undefined) {
+            updates.gpsUpdatedAt = r.gpsUpdatedAt;
           }
           riderStore.updateRiderLocal(r.id, updates);
         }
@@ -747,6 +782,19 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
                               )}
                             </div>
 
+                            {(() => {
+                              const gpsInfo = formatRiderGpsTimestamp(rider.gpsUpdatedAt);
+                              if (!gpsInfo) return null;
+                              return (
+                                <div className="flex items-center gap-1 mt-1">
+                                  <Clock size={10} className={gpsInfo.isToday ? "text-emerald-600" : "text-slate-400"} />
+                                  <span className={`text-[10px] font-semibold ${gpsInfo.isToday ? "text-emerald-700" : "text-slate-500"}`}>
+                                    พิกัดล่าสุด: {gpsInfo.label}
+                                  </span>
+                                </div>
+                              );
+                            })()}
+
                             {tasks && tasks.total > 0 && (
                               <div className="flex items-center gap-1.5 mt-1">
                                 {tasks.pickup > 0 && (
@@ -876,6 +924,15 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
                     <p className="text-[11px] font-medium text-slate-500 mt-0.5">
                       {shopLocations.find((s) => s.id === selectedRider.branchId)?.name || "All Branches"}
                     </p>
+                    {(() => {
+                      const gpsInfo = formatRiderGpsTimestamp(selectedRider.gpsUpdatedAt);
+                      return (
+                        <p className={`text-[10.5px] font-bold mt-1 flex items-center gap-1 ${gpsInfo?.isToday ? "text-emerald-700" : "text-slate-500"}`}>
+                          <Clock size={11} />
+                          <span>อัปเดตพิกัดล่าสุด: {gpsInfo ? gpsInfo.label : "ยังไม่มีข้อมูลเวลา"}</span>
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
                 <button
@@ -1016,6 +1073,19 @@ export const AdminLiveMap = React.memo(function AdminLiveMap({ minimal = false }
                         <span className="flex items-center gap-1 text-amber-500">★ {rider.rating.toFixed(1)}</span>
                         <span>{rider.completedJobs} completed</span>
                       </div>
+                      {(() => {
+                        const gpsInfo = formatRiderGpsTimestamp(rider.gpsUpdatedAt);
+                        return (
+                          <div className={`mt-1.5 text-[10.5px] px-2 py-1 rounded-md border flex items-center justify-center gap-1 font-semibold ${
+                            gpsInfo?.isToday
+                              ? "bg-emerald-50/70 text-emerald-800 border-emerald-200/80"
+                              : "bg-slate-50 text-slate-600 border-slate-200"
+                          }`}>
+                            <Clock size={10.5} />
+                            <span>พิกัดล่าสุด: {gpsInfo ? gpsInfo.label : "ยังไม่มีข้อมูลเวลา"}</span>
+                          </div>
+                        );
+                      })()}
                       {rider.vehiclePlate && (
                         <div className="mt-2 text-[10px] text-slate-500 bg-slate-50 p-1.5 rounded-md text-center border border-slate-200 font-semibold">
                           {rider.vehicleType === "motorcycle" ? "🏍️" : rider.vehicleType === "truck" ? "🚚" : "🚗"}{" "}

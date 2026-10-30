@@ -318,6 +318,26 @@ export interface JobPaymentEntry {
   paidBy?: string;
   slipUrl?: string | null;
   note?: string | null;
+  received?: number;
+  change?: number;
+}
+
+export function getCashSuggestions(totalVal: number): number[] {
+  const cleanTotal = Math.max(0, Math.round(totalVal * 100) / 100);
+  if (cleanTotal <= 0) return [];
+  const suggestions = new Set<number>();
+  const standardBills = [100, 500, 1000];
+  standardBills.forEach(bill => {
+    if (bill > cleanTotal) suggestions.add(bill);
+  });
+  const next100 = Math.ceil(cleanTotal / 100) * 100;
+  const next500 = Math.ceil(cleanTotal / 500) * 500;
+  const next1000 = Math.ceil(cleanTotal / 1000) * 1000;
+  if (next100 > cleanTotal) suggestions.add(next100);
+  if (next500 > cleanTotal) suggestions.add(next500);
+  if (next1000 > cleanTotal) suggestions.add(next1000);
+  const sortedBills = Array.from(suggestions).sort((a, b) => a - b).slice(0, 4);
+  return [cleanTotal, ...sortedBills];
 }
 
 export interface JobPaymentBreakdown {
@@ -553,6 +573,8 @@ export function getJobPaymentBreakdown(job?: {
             paidBy: p.paidBy || undefined,
             slipUrl: p.slipUrl || null,
             note: p.note || null,
+            received: p.received != null && !isNaN(Number(p.received)) ? Number(p.received) : undefined,
+            change: p.change != null && !isNaN(Number(p.change)) ? Number(p.change) : undefined,
           }));
       }
     } catch {}
