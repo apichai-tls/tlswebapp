@@ -61,7 +61,7 @@ const CustomerAuthContext = createContext<CustomerAuthContextType>({
   token: null,
   isLoading: true,
   portalEnabled: false,
-  portalAllowed: true,
+  portalAllowed: false,
   isStaffPreview: false,
   enableStaffPreview: () => {},
   disableStaffPreview: () => {},
@@ -87,7 +87,7 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [portalEnabled, setPortalEnabled] = useState(false);
-  const [portalAllowed, setPortalAllowed] = useState(true);
+  const [portalAllowed, setPortalAllowed] = useState(false);
   const [isStaffPreview, setIsStaffPreview] = useState(false);
   const [lang, setLangState] = useState<PortalLang>("en");
 
@@ -116,7 +116,7 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
         headers.set("Authorization", `Bearer ${savedToken}`);
       }
       if (typeof window !== "undefined") {
-        const previewPref = localStorage.getItem(PREVIEW_STORAGE_KEY);
+        const previewPref = sessionStorage.getItem(PREVIEW_STORAGE_KEY);
         if (previewPref === "1") {
           headers.set("x-portal-preview", "1");
         }
@@ -152,16 +152,20 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
       if (typeof data?.portalEnabled === "boolean") {
         setPortalEnabled(data.portalEnabled);
       }
-      if (typeof data?.allowed === "boolean") {
-        const previewPref = typeof window !== "undefined" ? localStorage.getItem(PREVIEW_STORAGE_KEY) : null;
-        if (previewPref === "0" && !data.portalEnabled) {
-          setPortalAllowed(false);
-          setIsStaffPreview(false);
-          return;
+
+      if (data?.allowed === false) {
+        setPortalAllowed(false);
+        setIsStaffPreview(false);
+        if (typeof window !== "undefined") {
+          window.top
+            ? (window.top.location.href = "/login")
+            : window.location.replace("/login");
         }
-        setPortalAllowed(data.allowed);
-        setIsStaffPreview(Boolean(data.isStaffPreview));
+        return;
       }
+
+      setPortalAllowed(true);
+      setIsStaffPreview(Boolean(data?.isStaffPreview));
 
       if (res.ok && data?.authenticated && data?.customer) {
         setCustomer(data.customer);
@@ -186,7 +190,7 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
 
   const enableStaffPreview = useCallback(() => {
     try {
-      localStorage.setItem(PREVIEW_STORAGE_KEY, "1");
+      sessionStorage.setItem(PREVIEW_STORAGE_KEY, "1");
       document.cookie = "tls_portal_preview=1; path=/; max-age=86400; SameSite=Lax";
     } catch {}
     setPortalAllowed(true);
@@ -196,12 +200,18 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
 
   const disableStaffPreview = useCallback(() => {
     try {
-      localStorage.setItem(PREVIEW_STORAGE_KEY, "0");
+      sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
+      localStorage.removeItem(PREVIEW_STORAGE_KEY);
       document.cookie = "tls_portal_preview=; path=/; max-age=0; SameSite=Lax";
     } catch {}
     if (!portalEnabled) {
       setPortalAllowed(false);
       setIsStaffPreview(false);
+      if (typeof window !== "undefined") {
+        window.top
+          ? (window.top.location.href = "/login")
+          : window.location.replace("/login");
+      }
     }
   }, [portalEnabled]);
 
@@ -212,24 +222,19 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
         setLangState(savedLang);
       }
 
-      // Check URL ?preview=tls or ?preview=1 or active staff session
+      // Clean up legacy localStorage preview flag so regular /portal visits redirect to /login when disabled
+      localStorage.removeItem(PREVIEW_STORAGE_KEY);
+
       const params = new URLSearchParams(window.location.search);
       const previewParam = params.get("preview");
-      const currentPreviewPref = localStorage.getItem(PREVIEW_STORAGE_KEY);
-      const hasStaffAuthUser = Boolean(localStorage.getItem("authUser"));
-
       if (previewParam === "1" || previewParam === "tls" || previewParam === "true") {
-        localStorage.setItem(PREVIEW_STORAGE_KEY, "1");
+        sessionStorage.setItem(PREVIEW_STORAGE_KEY, "1");
         document.cookie = "tls_portal_preview=1; path=/; max-age=86400; SameSite=Lax";
       } else if (previewParam === "0" || previewParam === "public") {
-        localStorage.setItem(PREVIEW_STORAGE_KEY, "0");
+        sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
         document.cookie = "tls_portal_preview=; path=/; max-age=0; SameSite=Lax";
-      } else if (currentPreviewPref === null && hasStaffAuthUser) {
-        // Automatically enable preview for logged-in staff/admin on the same browser unless they explicitly exited preview
-        localStorage.setItem(PREVIEW_STORAGE_KEY, "1");
-        document.cookie = "tls_portal_preview=1; path=/; max-age=86400; SameSite=Lax";
-      } else if (currentPreviewPref === "1") {
-        document.cookie = "tls_portal_preview=1; path=/; max-age=86400; SameSite=Lax";
+      } else if (sessionStorage.getItem(PREVIEW_STORAGE_KEY) !== "1") {
+        document.cookie = "tls_portal_preview=; path=/; max-age=0; SameSite=Lax";
       }
 
       const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY);

@@ -87,7 +87,7 @@ export function AdminSettings() {
       toast.success(
         nextVal
           ? "เปิดใช้งาน Customer Portal (/portal) สำหรับลูกค้าทั่วไปเรียบร้อยแล้ว"
-          : "ปิด Customer Portal สำหรับลูกค้าทั่วไปแล้ว (แสดงหน้า Coming Soon — ทีมงานยังเข้าโหมด Preview ได้)"
+          : "ปิด Customer Portal แล้ว (ผู้ที่เข้า /portal จะถูกดีดไปหน้า /login ทันที — ทีมงานยังเข้าผ่านปุ่ม Preview ได้)"
       );
     } catch (err) {
       toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -1521,12 +1521,12 @@ export function AdminSettings() {
                         className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full ${
                           enableCustomerPortal
                             ? "bg-emerald-100 text-emerald-800"
-                            : "bg-amber-100 text-amber-800"
+                            : "bg-slate-200 text-slate-700"
                         }`}
                       >
                         {enableCustomerPortal
                           ? "Public Live (เปิดใช้งานจริง)"
-                          : "Closed / Coming Soon (ปิดสำหรับลูกค้าทั่วไป)"}
+                          : "Disabled (ปิดระบบ — ดีดไปหน้า /login)"}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 font-medium">
@@ -1560,9 +1560,9 @@ export function AdminSettings() {
                         เปิดให้ลูกค้าทั่วไปเข้าใช้งาน Customer Portal (/portal)
                       </span>
                       <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                        เมื่อ<strong>ปิด</strong> ลูกค้าทั่วไปที่เข้าลิงก์ <code>/portal</code> จะเห็นหน้า{" "}
-                        <strong>&ldquo;Coming Soon&rdquo;</strong> และไม่สามารถล็อกอินหรือสั่งจองคิวได้
-                        แต่ทีมงานยังสามารถกดปุ่ม Preview ด้านล่างเพื่อทดสอบระบบได้ทุกฟีเจอร์
+                        เมื่อ<strong>ปิด</strong> ผู้ที่เข้าลิงก์ <code>/portal</code> ทั้งหมดจะถูกดีด (Redirect) ไปหน้า{" "}
+                        <code>/login</code> ของพนักงานทันทีโดยไม่แสดงหน้า Customer Portal ให้เห็นเลย
+                        (เฉพาะแอดมินที่กดปุ่ม Preview ด้านล่างเท่านั้นที่จะเปิดทดสอบได้)
                       </p>
                     </div>
                   </div>
@@ -1589,15 +1589,6 @@ export function AdminSettings() {
                   >
                     <Eye size={14} className="text-sky-400" />
                     <span>เปิดโหมดทดสอบสำหรับทีมงาน (/portal?preview=tls)</span>
-                  </a>
-                  <a
-                    href="/portal?preview=public"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition-all"
-                  >
-                    <EyeOff size={14} className="text-slate-500" />
-                    <span>ดูหน้าจอที่ลูกค้าทั่วไปเห็น (/portal?preview=public)</span>
                   </a>
                 </div>
               </div>

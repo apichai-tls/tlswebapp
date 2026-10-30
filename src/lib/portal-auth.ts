@@ -445,34 +445,38 @@ export async function checkPortalPublicAccess(req: Request): Promise<{
     return { portalEnabled: true, isStaffPreview: false, allowed: true }
   }
 
-  let hasPreviewAccess = false
+  // When disabled, only allow access if explicitly requested via x-portal-preview: 1 AND authenticated with a staff session (or preview cookie)
   const previewHeader = req.headers.get('x-portal-preview')
-  if (previewHeader === '1' || previewHeader === 'true') {
-    hasPreviewAccess = true
+  if (previewHeader !== '1' && previewHeader !== 'true') {
+    return {
+      portalEnabled: false,
+      isStaffPreview: false,
+      allowed: false
+    }
   }
 
+  let hasStaffPreview = false
   const cookieHeader = req.headers.get('cookie') || ''
-  if (!hasPreviewAccess && cookieHeader) {
+  if (cookieHeader) {
     const cookies = cookieHeader.split(';').map(c => c.trim())
-    const previewCookie = cookies.find(c => c.startsWith('tls_portal_preview='))
-    if (previewCookie && previewCookie.slice('tls_portal_preview='.length).trim() === '1') {
-      hasPreviewAccess = true
+    const staffSessionCookie = cookies.find(c => c.startsWith('tls_session='))
+    if (staffSessionCookie) {
+      const tokenVal = decodeURIComponent(staffSessionCookie.slice('tls_session='.length).trim())
+      if (verifyStaffSessionToken(tokenVal)) {
+        hasStaffPreview = true
+      }
     }
-
-    if (!hasPreviewAccess) {
-      const staffSessionCookie = cookies.find(c => c.startsWith('tls_session='))
-      if (staffSessionCookie) {
-        const tokenVal = decodeURIComponent(staffSessionCookie.slice('tls_session='.length).trim())
-        if (verifyStaffSessionToken(tokenVal)) {
-          hasPreviewAccess = true
-        }
+    if (!hasStaffPreview) {
+      const previewCookie = cookies.find(c => c.startsWith('tls_portal_preview='))
+      if (previewCookie && previewCookie.slice('tls_portal_preview='.length).trim() === '1') {
+        hasStaffPreview = true
       }
     }
   }
 
   return {
     portalEnabled: false,
-    isStaffPreview: hasPreviewAccess,
-    allowed: hasPreviewAccess
+    isStaffPreview: hasStaffPreview,
+    allowed: hasStaffPreview
   }
 }

@@ -132,6 +132,21 @@ function PortalShell({ children }: { children: React.ReactNode }) {
     }
   };
 
+  useEffect(() => {
+    if (!isLoading && !portalAllowed && typeof window !== "undefined") {
+      if (window.top && window.top !== window.self) {
+        window.top.location.href = "/login";
+      } else {
+        window.location.replace("/login");
+      }
+    }
+  }, [isLoading, portalAllowed]);
+
+  // Do not render any Customer Portal UI or Simulator frame while checking access or when disabled (redirects to /login)
+  if (isLoading || !portalAllowed) {
+    return <div className="min-h-screen bg-slate-50" />;
+  }
+
   // Render Mobile / iPad App Simulator Frame when on Desktop & Simulator Mode is ON & not already inside the iframe
   if (mounted && !isInsideIframe && !isMobileScreen && simulatorMode) {
     const isIpad = devicePreset === "ipad_portrait" || devicePreset === "ipad_landscape";
@@ -333,123 +348,6 @@ function PortalShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // If Customer Portal is closed in Admin Settings and visitor is NOT in Staff Preview Mode -> Show Coming Soon Gate
-  if (!isLoading && !portalAllowed) {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-indigo-950 text-white flex flex-col justify-between p-6">
-        <div className="max-w-md w-full mx-auto flex items-center justify-between pt-2">
-          <div className="flex items-center gap-2.5">
-            <div className="bg-white px-2.5 py-1.5 rounded-xl shadow-md flex items-center justify-center">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/logo.png"
-                alt="That Laundry Shop"
-                className="h-7 w-auto object-contain"
-              />
-            </div>
-            <span className="font-extrabold text-sm tracking-tight">That Laundry Shop</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setLang(lang === "en" ? "th" : "en")}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold border border-white/10 transition-colors"
-          >
-            <Globe className="w-3.5 h-3.5 text-sky-400" />
-            <span>{lang === "en" ? "EN / ไทย" : "ไทย / EN"}</span>
-          </button>
-        </div>
-
-        <div className="max-w-md w-full mx-auto my-auto py-8 text-center space-y-6">
-          <div className="flex justify-center">
-            <div className="bg-white/95 px-6 py-4 rounded-3xl shadow-2xl shadow-black/40 border border-white/20 inline-flex items-center justify-center">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/logo.png"
-                alt="That Laundry Shop Logo"
-                className="h-20 w-auto object-contain"
-              />
-            </div>
-          </div>
-
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-500/15 border border-sky-400/30 text-sky-300 text-xs font-bold">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>{lang === "en" ? "Launching Soon" : "เตรียมพบกันเร็วๆ นี้"}</span>
-          </div>
-
-          <div className="space-y-2.5">
-            <h1 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
-              {lang === "en"
-                ? "New Customer Portal & Laundry Tracker"
-                : "ระบบสมาชิกและติดตามผ้าออนไลน์โฉมใหม่"}
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              {lang === "en"
-                ? "We are putting the finishing touches on our new digital customer experience. Soon you will be able to book pickups, track orders live, and view digital receipts."
-                : "เรากำลังเตรียมเปิดให้บริการระบบสมาชิกออนไลน์โฉมใหม่ ให้คุณสามารถนัดรับ-ส่งผ้า เช็คสถานะผ้าแบบเรียลไทม์ และดูบิลดิจิทัลได้สะดวกยิ่งขึ้น"}
-            </p>
-          </div>
-
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-left space-y-2.5">
-            {[
-              lang === "en"
-                ? "Real-time 6-step laundry status & photo proof"
-                : "ติดตามสถานะผ้าแบบเรียลไทม์ 6 ขั้นตอน พร้อมรูปถ่ายยืนยัน",
-              lang === "en"
-                ? "Instant online pickup booking & Express options"
-                : "จองคิวรับ-ส่งผ้าออนไลน์ พร้อมตัวเลือกบริการด่วน Express",
-              lang === "en"
-                ? "Digital proforma invoices, receipts & member wallet"
-                : "ดูใบแจ้งหนี้ ใบเสร็จดิจิทัล เช็คยอดเงินคงเหลือและคูปองส่วนลด",
-            ].map((item, idx) => (
-              <div key={idx} className="flex items-start gap-2.5 text-xs text-slate-200">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                <span>{item}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="space-y-2.5 pt-2">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              {lang === "en"
-                ? "Need laundry pickup today? Contact our concierge:"
-                : "ต้องการเรียกไรเดอร์รับผ้าวันนี้ ติดต่อทีมงานได้ทันที:"}
-            </p>
-            <div className="grid grid-cols-2 gap-2.5">
-              <a
-                href="https://wa.me/66614122245"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-900/30 transition-all"
-              >
-                <MessageCircle className="w-4 h-4" />
-                <span>WhatsApp</span>
-              </a>
-              <a
-                href="tel:0614122245"
-                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs border border-white/15 transition-all"
-              >
-                <PhoneCall className="w-4 h-4 text-sky-400" />
-                <span>061-412-2245</span>
-              </a>
-            </div>
-          </div>
-        </div>
-
-        <div className="max-w-md w-full mx-auto pt-4 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
-          <span>© That Laundry Shop</span>
-          <button
-            type="button"
-            onClick={enableStaffPreview}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/15 text-slate-300 font-semibold transition-colors cursor-pointer"
-          >
-            <Eye className="w-3.5 h-3.5 text-amber-400" />
-            <span>{lang === "en" ? "Staff Preview" : "สำหรับทีมงานทดสอบ"}</span>
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   const navItems = [
     {
       href: "/portal",
@@ -509,10 +407,10 @@ function PortalShell({ children }: { children: React.ReactNode }) {
         type="button"
         onClick={disableStaffPreview}
         className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-800/80 hover:bg-amber-700 text-amber-100 font-bold text-[10px] shrink-0 transition-colors cursor-pointer"
-        title="ดูหน้า Coming Soon ที่ลูกค้าทั่วไปเห็น"
+        title="ออกจากโหมดทดสอบและดีดกลับไปหน้า /login"
       >
         <EyeOff className="w-3 h-3" />
-        <span>{lang === "en" ? "View Public Screen" : "ดูหน้าลูกค้าทั่วไป"}</span>
+        <span>{lang === "en" ? "Exit Preview (/login)" : "ออกจากโหมดทดสอบ (/login)"}</span>
       </button>
     </div>
   );
