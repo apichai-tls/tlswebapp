@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { resolvePortalCustomer } from '@/lib/portal-auth'
+import { resolvePortalCustomer, checkPortalPublicAccess } from '@/lib/portal-auth'
 import { formatPortalOrder } from '@/lib/portal-utils'
 import { invalidateDbCache } from '@/lib/db-cache'
 
@@ -8,6 +8,10 @@ export const dynamic = 'force-dynamic'
 
 export async function GET(req: Request) {
   try {
+    const access = await checkPortalPublicAccess(req)
+    if (!access.allowed) {
+      return NextResponse.json({ error: 'Customer Portal is currently closed / Coming Soon', portalClosed: true }, { status: 503 })
+    }
     const session = resolvePortalCustomer(req)
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -55,6 +59,10 @@ function parseSlotHours(timeSlot: string): { startHour: number; endHour: number 
 
 export async function POST(req: Request) {
   try {
+    const access = await checkPortalPublicAccess(req)
+    if (!access.allowed) {
+      return NextResponse.json({ error: 'Customer Portal is currently closed / Coming Soon', portalClosed: true }, { status: 503 })
+    }
     const session = resolvePortalCustomer(req)
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

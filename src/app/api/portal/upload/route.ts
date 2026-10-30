@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
-import { resolvePortalCustomer } from '@/lib/portal-auth'
+import { resolvePortalCustomer, checkPortalPublicAccess } from '@/lib/portal-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -10,6 +10,10 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 // 10 MB
 
 export async function POST(req: NextRequest) {
   try {
+    const access = await checkPortalPublicAccess(req)
+    if (!access.allowed) {
+      return NextResponse.json({ error: 'Customer Portal is currently closed / Coming Soon', portalClosed: true }, { status: 503 })
+    }
     const session = resolvePortalCustomer(req)
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

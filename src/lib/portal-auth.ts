@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { hashPassword, verifyPassword } from '@/lib/external-api-auth'
-import { assertSessionSecretConfigured } from '@/lib/server-auth'
+import { assertSessionSecretConfigured, verifyStaffSessionToken } from '@/lib/server-auth'
+import { prisma } from '@/lib/prisma'
 
 export { hashPassword, verifyPassword }
 
@@ -416,5 +417,62 @@ export function computeOrderTrackingStep(job: {
     stageLabelTh: 'นัดรับผ้าแล้ว',
     stageDescEn: 'Your pickup request is scheduled and assigned to our team.',
     stageDescTh: 'รับรายการนัดหมายเข้ารับผ้าเรียบร้อยแล้ว'
+  }
+}
+
+
+/**
+ * Checks whether the Customer Portal (/portal) is publicly enabled in System Settings (`enableCustomerPortal === 'true'`).
+ * Defaults to `false` (Closed / Coming Soon) when not explicitly enabled, so deploying to production keeps it hidden from the public
+ * while still allowing authenticated staff or preview testers (`tls_session` cookie or `x-portal-preview: 1` / `tls_portal_preview=1`) to test.
+ */
+export async function checkPortalPublicAccess(req: Request): Promise<{
+  portalEnabled: boolean
+  isStaffPreview: boolean
+  allowed: boolean
+}> {
+  let portalEnabled = false
+  try {
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'enableCustomerPortal' }
+    })
+    portalEnabled = setting?.value === 'true'
+  } catch {
+    portalEnabled = false
+  }
+
+  if (portalEnabled) {
+    return { portalEnabled: true, isStaffPreview: false, allowed: true }
+  }
+
+  let hasPreviewAccess = false
+  const previewHeader = req.headers.get('x-portal-preview')
+  if (previewHeader === '1' || previewHeader === 'true') {
+    hasPreviewAccess = true
+  }
+
+  const cookieHeader = req.headers.get('cookie') || ''
+  if (!hasPreviewAccess && cookieHeader) {
+    const cookies = cookieHeader.split(';').map(c => c.trim())
+    const previewCookie = cookies.find(c => c.startsWith('tls_portal_preview='))
+    if (previewCookie && previewCookie.slice('tls_portal_preview='.length).trim() === '1') {
+      hasPreviewAccess = true
+    }
+
+    if (!hasPreviewAccess) {
+      const staffSessionCookie = cookies.find(c => c.startsWith('tls_session='))
+      if (staffSessionCookie) {
+        const tokenVal = decodeURIComponent(staffSessionCookie.slice('tls_session='.length).trim())
+        if (verifyStaffSessionToken(tokenVal)) {
+          hasPreviewAccess = true
+        }
+      }
+    }
+  }
+
+  return {
+    portalEnabled: false,
+    isStaffPreview: hasPreviewAccess,
+    allowed: hasPreviewAccess
   }
 }

@@ -76,6 +76,23 @@ export function AdminSettings() {
   const [vatTypeInput, setVatTypeInput] = useState("none");
   const [vatRateInput, setVatRateInput] = useState("7");
   const [sessionTimeoutInput, setSessionTimeoutInput] = useState("20");
+  const [enableCustomerPortal, setEnableCustomerPortal] = useState(false);
+
+  const handleToggleCustomerPortal = async (nextVal: boolean) => {
+    setEnableCustomerPortal(nextVal);
+    try {
+      await settingsStore.updateSetting("enableCustomerPortal", nextVal ? "true" : "false");
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success(
+        nextVal
+          ? "เปิดใช้งาน Customer Portal (/portal) สำหรับลูกค้าทั่วไปเรียบร้อยแล้ว"
+          : "ปิด Customer Portal สำหรับลูกค้าทั่วไปแล้ว (แสดงหน้า Coming Soon — ทีมงานยังเข้าโหมด Preview ได้)"
+      );
+    } catch (err) {
+      toast.error("Failed to save setting: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
 
   const handleSaveSessionTimeout = async (valStr?: string) => {
     const raw = (valStr !== undefined ? valStr : sessionTimeoutInput).trim();
@@ -226,6 +243,7 @@ export function AdminSettings() {
       setVatTypeInput(systemSettings.vatType || "none");
       setVatRateInput(systemSettings.vatRate || "7");
       setSessionTimeoutInput(systemSettings.sessionTimeoutMinutes ?? "20");
+      setEnableCustomerPortal(systemSettings.enableCustomerPortal === "true");
 
       // Cash drawer settings
       setCashDrawerAutoOpenOnPay(systemSettings.cashDrawerAutoOpenOnPay !== "false");
@@ -1485,8 +1503,106 @@ export function AdminSettings() {
       {/* SECTION 5: SYSTEM, INTEGRATIONS & SECURITY                                */}
       {/* ========================================================================= */}
       {(activeSettingsTab === "all" || activeSettingsTab === "system") && (
-        (!settingsSearch || "system api google maps rider commission rate timeout session security deploy".includes(settingsSearch.toLowerCase())) && (
+        (!settingsSearch || "system api google maps rider commission rate timeout session security deploy customer portal app member".includes(settingsSearch.toLowerCase())) && (
           <div className="space-y-6 animate-in fade-in duration-300">
+            {/* Customer Portal & Mobile App Switch Card */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-500 to-indigo-600 text-white flex items-center justify-center shadow-md shadow-sky-500/20">
+                    <Sparkles size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
+                        Customer Portal &amp; Mobile Web App (/portal)
+                      </h3>
+                      <span
+                        className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full ${
+                          enableCustomerPortal
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-amber-100 text-amber-800"
+                        }`}
+                      >
+                        {enableCustomerPortal
+                          ? "Public Live (เปิดใช้งานจริง)"
+                          : "Closed / Coming Soon (ปิดสำหรับลูกค้าทั่วไป)"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium">
+                      สวิตช์ควบคุมการเปิด-ปิดระบบสมาชิก ติดตามสถานะผ้า และจองคิวรับผ้าออนไลน์สำหรับลูกค้าทั่วไป
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="max-w-3xl space-y-4">
+                <div
+                  onClick={() => handleToggleCustomerPortal(!enableCustomerPortal)}
+                  className={`flex items-start justify-between gap-4 p-4.5 rounded-2xl border transition-all cursor-pointer ${
+                    enableCustomerPortal
+                      ? "bg-emerald-50/50 border-emerald-200/90 shadow-2xs"
+                      : "bg-slate-50/80 border-slate-200/80 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-start gap-3.5">
+                    <div
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                        enableCustomerPortal
+                          ? "bg-emerald-600 text-white shadow-xs"
+                          : "bg-slate-200 text-slate-500"
+                      }`}
+                    >
+                      <Sparkles size={18} />
+                    </div>
+                    <div>
+                      <span className="text-sm font-extrabold text-slate-900 block">
+                        เปิดให้ลูกค้าทั่วไปเข้าใช้งาน Customer Portal (/portal)
+                      </span>
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        เมื่อ<strong>ปิด</strong> ลูกค้าทั่วไปที่เข้าลิงก์ <code>/portal</code> จะเห็นหน้า{" "}
+                        <strong>&ldquo;Coming Soon&rdquo;</strong> และไม่สามารถล็อกอินหรือสั่งจองคิวได้
+                        แต่ทีมงานยังสามารถกดปุ่ม Preview ด้านล่างเพื่อทดสอบระบบได้ทุกฟีเจอร์
+                      </p>
+                    </div>
+                  </div>
+
+                  <div
+                    className={`w-11 h-6 rounded-full transition-colors relative shrink-0 mt-1 ${
+                      enableCustomerPortal ? "bg-emerald-600" : "bg-slate-300"
+                    }`}
+                  >
+                    <div
+                      className={`w-5 h-5 rounded-full bg-white shadow-sm absolute top-0.5 transition-transform ${
+                        enableCustomerPortal ? "translate-x-5.5" : "translate-x-0.5"
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                  <a
+                    href="/portal?preview=tls"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-xs transition-all"
+                  >
+                    <Eye size={14} className="text-sky-400" />
+                    <span>เปิดโหมดทดสอบสำหรับทีมงาน (/portal?preview=tls)</span>
+                  </a>
+                  <a
+                    href="/portal?preview=public"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition-all"
+                  >
+                    <EyeOff size={14} className="text-slate-500" />
+                    <span>ดูหน้าจอที่ลูกค้าทั่วไปเห็น (/portal?preview=public)</span>
+                  </a>
+                </div>
+              </div>
+            </div>
+
             {/* Google Maps API Key Card */}
             <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
               <div className="flex items-center gap-3 pb-4 border-b border-slate-100">

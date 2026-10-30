@@ -9,6 +9,7 @@ import {
   extractCorePhoneDigits,
   generateOtpChallenge,
   verifyOtpChallenge,
+  checkPortalPublicAccess,
   type OtpPurpose
 } from '@/lib/portal-auth'
 
@@ -135,9 +136,26 @@ function buildAuthResponse(customer: any, token: string, message: string) {
 
 export async function GET(req: Request) {
   try {
+    const access = await checkPortalPublicAccess(req)
+    if (!access.allowed) {
+      return NextResponse.json({
+        authenticated: false,
+        customer: null,
+        portalEnabled: false,
+        isStaffPreview: false,
+        allowed: false
+      })
+    }
+
     const session = resolvePortalCustomer(req)
     if (!session) {
-      return NextResponse.json({ authenticated: false, customer: null }, { status: 401 })
+      return NextResponse.json({
+        authenticated: false,
+        customer: null,
+        portalEnabled: access.portalEnabled,
+        isStaffPreview: access.isStaffPreview,
+        allowed: true
+      })
     }
 
     const customer = await prisma.customer.findUnique({
@@ -150,11 +168,20 @@ export async function GET(req: Request) {
     })
 
     if (!customer) {
-      return NextResponse.json({ authenticated: false, customer: null }, { status: 401 })
+      return NextResponse.json({
+        authenticated: false,
+        customer: null,
+        portalEnabled: access.portalEnabled,
+        isStaffPreview: access.isStaffPreview,
+        allowed: true
+      })
     }
 
     return NextResponse.json({
       authenticated: true,
+      portalEnabled: access.portalEnabled,
+      isStaffPreview: access.isStaffPreview,
+      allowed: true,
       customer: {
         id: customer.id,
         name: customer.name,
@@ -184,6 +211,17 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const access = await checkPortalPublicAccess(req)
+    if (!access.allowed) {
+      return NextResponse.json(
+        {
+          error: 'Customer Portal is currently closed / Coming Soon',
+          portalClosed: true
+        },
+        { status: 503 }
+      )
+    }
+
     const body = await req.json()
     const { action = 'login', identifier, password, brand, otpToken, otpCode } = body
 

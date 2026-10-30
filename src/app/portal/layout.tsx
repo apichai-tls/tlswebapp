@@ -24,6 +24,11 @@ import {
   Wifi,
   BatteryCharging,
   Signal,
+  Lock,
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  PhoneCall,
 } from "lucide-react";
 
 type DevicePreset = "iphone" | "max" | "ipad_portrait" | "ipad_landscape";
@@ -31,7 +36,18 @@ type DevicePreset = "iphone" | "max" | "ipad_portrait" | "ipad_landscape";
 function PortalShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { customer, lang, setLang, logout, isLoading } = useCustomerAuth();
+  const {
+    customer,
+    lang,
+    setLang,
+    logout,
+    isLoading,
+    portalEnabled,
+    portalAllowed,
+    isStaffPreview,
+    enableStaffPreview,
+    disableStaffPreview,
+  } = useCustomerAuth();
   const isLoginPage = pathname?.startsWith("/portal/login");
 
   const [mounted, setMounted] = useState(false);
@@ -145,8 +161,17 @@ function PortalShell({ children }: { children: React.ReactNode }) {
               {isIpad ? <Tablet className="w-4 h-4" /> : <Smartphone className="w-4 h-4" />}
             </div>
             <div>
-              <div className="text-xs font-extrabold text-white tracking-tight">
-                {isIpad ? "Customer iPad App Simulator" : "Customer Mobile App Simulator"}
+              <div className="text-xs font-extrabold text-white tracking-tight flex items-center gap-2">
+                <span>{isIpad ? "Customer iPad App Simulator" : "Customer Mobile App Simulator"}</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                    portalEnabled
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                  }`}
+                >
+                  {portalEnabled ? "Public Live" : "Public Closed (Preview)"}
+                </span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono">
                 {iframePath}
@@ -269,7 +294,6 @@ function PortalShell({ children }: { children: React.ReactNode }) {
                   )}
                 </div>
 
-                {/* Dynamic Island Notch for iPhone vs Camera Dot for iPad */}
                 {isIpad ? (
                   <div className="w-2.5 h-2.5 rounded-full bg-slate-800 ring-2 ring-slate-200" />
                 ) : (
@@ -304,6 +328,107 @@ function PortalShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // If Customer Portal is closed in Admin Settings and visitor is NOT in Staff Preview Mode -> Show Coming Soon Gate
+  if (!isLoading && !portalAllowed) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-indigo-950 text-white flex flex-col justify-between p-6">
+        <div className="max-w-md w-full mx-auto flex items-center justify-between pt-2">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <span className="font-extrabold text-sm tracking-tight">That Laundry Shop</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLang(lang === "en" ? "th" : "en")}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold border border-white/10 transition-colors"
+          >
+            <Globe className="w-3.5 h-3.5 text-sky-400" />
+            <span>{lang === "en" ? "EN / ไทย" : "ไทย / EN"}</span>
+          </button>
+        </div>
+
+        <div className="max-w-md w-full mx-auto my-auto py-8 text-center space-y-6">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-500/15 border border-sky-400/30 text-sky-300 text-xs font-bold">
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>{lang === "en" ? "Launching Soon" : "เตรียมพบกันเร็วๆ นี้"}</span>
+          </div>
+
+          <div className="space-y-2.5">
+            <h1 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
+              {lang === "en"
+                ? "New Customer Portal & Laundry Tracker"
+                : "ระบบสมาชิกและติดตามผ้าออนไลน์โฉมใหม่"}
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              {lang === "en"
+                ? "We are putting the finishing touches on our new digital customer experience. Soon you will be able to book pickups, track orders live, and view digital receipts."
+                : "เรากำลังเตรียมเปิดให้บริการระบบสมาชิกออนไลน์โฉมใหม่ ให้คุณสามารถนัดรับ-ส่งผ้า เช็คสถานะผ้าแบบเรียลไทม์ และดูบิลดิจิทัลได้สะดวกยิ่งขึ้น"}
+            </p>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-left space-y-2.5">
+            {[
+              lang === "en"
+                ? "Real-time 6-step laundry status & photo proof"
+                : "ติดตามสถานะผ้าแบบเรียลไทม์ 6 ขั้นตอน พร้อมรูปถ่ายยืนยัน",
+              lang === "en"
+                ? "Instant online pickup booking & Express options"
+                : "จองคิวรับ-ส่งผ้าออนไลน์ พร้อมตัวเลือกบริการด่วน Express",
+              lang === "en"
+                ? "Digital proforma invoices, receipts & member wallet"
+                : "ดูใบแจ้งหนี้ ใบเสร็จดิจิทัล เช็คยอดเงินคงเหลือและคูปองส่วนลด",
+            ].map((item, idx) => (
+              <div key={idx} className="flex items-start gap-2.5 text-xs text-slate-200">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <span>{item}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-2.5 pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              {lang === "en"
+                ? "Need laundry pickup today? Contact our concierge:"
+                : "ต้องการเรียกไรเดอร์รับผ้าวันนี้ ติดต่อทีมงานได้ทันที:"}
+            </p>
+            <div className="grid grid-cols-2 gap-2.5">
+              <a
+                href="https://wa.me/66614122245"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-900/30 transition-all"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span>WhatsApp</span>
+              </a>
+              <a
+                href="tel:0614122245"
+                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs border border-white/15 transition-all"
+              >
+                <PhoneCall className="w-4 h-4 text-sky-400" />
+                <span>061-412-2245</span>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div className="max-w-md w-full mx-auto pt-4 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
+          <span>© That Laundry Shop</span>
+          <button
+            type="button"
+            onClick={enableStaffPreview}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/15 text-slate-300 font-semibold transition-colors cursor-pointer"
+          >
+            <Eye className="w-3.5 h-3.5 text-amber-400" />
+            <span>{lang === "en" ? "Staff Preview" : "สำหรับทีมงานทดสอบ"}</span>
+          </button>
         </div>
       </div>
     );
@@ -354,9 +479,32 @@ function PortalShell({ children }: { children: React.ReactNode }) {
     return pathname === href || pathname.startsWith(href + "/");
   };
 
+  const staffPreviewBanner = !portalEnabled && isStaffPreview && (
+    <div className="bg-amber-950 text-amber-100 border-b border-amber-800/80 px-3 py-1.5 text-[11px] flex items-center justify-between gap-2 z-50">
+      <div className="flex items-center gap-1.5 font-semibold truncate">
+        <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+        <span className="truncate">
+          {lang === "en"
+            ? "Staff Preview Mode (Closed to public — Enable in Admin Settings)"
+            : "โหมดทดสอบสำหรับทีมงาน (ยังไม่เปิดให้ลูกค้าทั่วไปใช้งาน)"}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={disableStaffPreview}
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-800/80 hover:bg-amber-700 text-amber-100 font-bold text-[10px] shrink-0 transition-colors cursor-pointer"
+        title="ดูหน้า Coming Soon ที่ลูกค้าทั่วไปเห็น"
+      >
+        <EyeOff className="w-3 h-3" />
+        <span>{lang === "en" ? "View Public Screen" : "ดูหน้าลูกค้าทั่วไป"}</span>
+      </button>
+    </div>
+  );
+
   if (isLoginPage) {
     return (
-      <div className="min-h-screen bg-slate-50 relative">
+      <div className="min-h-screen bg-slate-50 relative flex flex-col">
+        {staffPreviewBanner}
         {mounted && !isInsideIframe && !isMobileScreen && (
           <div className="fixed bottom-4 right-4 z-50">
             <button
@@ -369,13 +517,14 @@ function PortalShell({ children }: { children: React.ReactNode }) {
             </button>
           </div>
         )}
-        {children}
+        <div className="flex-1">{children}</div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col pb-20 md:pb-8">
+      {staffPreviewBanner}
       {/* Top Navigation Header */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between gap-3">
