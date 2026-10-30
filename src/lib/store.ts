@@ -357,6 +357,7 @@ export interface Rider {
   phone: string;
   status: "online" | "offline" | "busy";
   currentLocation?: LatLng;
+  gpsUpdatedAt?: string | null;
   avatarUrl?: string;
   rating: number;
   completedJobs: number;
@@ -489,8 +490,8 @@ export const riderStore = {
     emitRiderChange();
   },
   updateRiderLocal(id: string, updates: Partial<Rider>) {
-    api.sync.updateRiderLocal(id, updates);
-    emitRiderChange();
+    const changed = api.sync.updateRiderLocal(id, updates);
+    if (changed) emitRiderChange();
   },
   async addRider(rider: Omit<Rider, 'id'> & { id?: string }) {
     const newRider = await api.addRider(rider);
@@ -710,6 +711,10 @@ export const jobStore = {
     return await api.fetchHistoricalJobs(startDate, endDate, riderId);
   },
 
+  pruneHistoricalJobs() {
+    api.pruneHistoricalJobs();
+  },
+
   async assignPickupRider(id: string, riderId: string, scheduledAt?: Date, actorDetails?: { actorId?: string, actorName?: string, actorRole?: string }) {
     const jobs = api.sync.getJobs();
     const job = jobs.find(j => j.id === id);
@@ -803,17 +808,19 @@ export const jobStore = {
         deliveryInbound: { ...baseLegs.deliveryInbound, status: "completed" as const, completedAt: nowDate }
       };
 
+      let baseNotesObj: Record<string, any> = {};
       if (isWalkIn) {
         await api.updateJob(id, {
-          status: "completed",
-          completedAt: job.completedAt || nowDate,
+          status: (isWalkIn || baseNotesObj.isDeliveryPhotoSent ? "completed" : "delivery") as any,
+          completedAt: (isWalkIn || baseNotesObj.isDeliveryPhotoSent) ? (job.completedAt || nowDate) : undefined,
+
           deliveryProofImageUrl: proofJson,
           proofImageUrl: proofJson,
           legs: updatedLegs,
           ...actorDetails
         });
       } else {
-        let baseNotesObj: Record<string, any> = {};
+        baseNotesObj = {};
         let existingNotesArr: any[] = [];
         let existingPaymentsArr: any[] = [];
         if (job.adminNotesJson) {
@@ -830,6 +837,8 @@ export const jobStore = {
         }
         const nextAdminNotesObj: Record<string, any> = {
           ...baseNotesObj,
+          kanbanStage: "delivered",
+          isRiderDelivered: true,
           isDeliveryPhotoSent: Boolean(baseNotesObj.isDeliveryPhotoSent),
           deliveredAt: nowDate.toISOString(),
           notes: existingNotesArr,
@@ -839,12 +848,15 @@ export const jobStore = {
         }
 
         await api.updateJob(id, {
-          status: "completed",
-          completedAt: job.completedAt || nowDate,
+          status: (isWalkIn || baseNotesObj.isDeliveryPhotoSent ? "completed" : "delivery") as any,
+          completedAt: (isWalkIn || baseNotesObj.isDeliveryPhotoSent) ? (job.completedAt || nowDate) : undefined,
+
           deliveryProofImageUrl: proofJson,
           proofImageUrl: proofJson,
           legs: updatedLegs,
           adminNotesJson: JSON.stringify(nextAdminNotesObj),
+
+
           ...actorDetails
         });
       }
@@ -1327,6 +1339,8 @@ function emitWalletApprovalChange() {
 }
 
 let pendingWalletState: PendingWalletMap = { total: 0, byCustomer: {} };
+let inFlightPendingWallet: Promise<PendingWalletMap> | null = null;
+let lastPendingWalletFetchAt = 0;
 
 export const walletApprovalStore = {
   subscribe(listener: Listener): () => void {
@@ -1336,28 +1350,41 @@ export const walletApprovalStore = {
   getSnapshot(): PendingWalletMap {
     return pendingWalletState;
   },
-  async refreshPendingMap() {
-    try {
-      const res = await api.getPendingWalletMap();
-      pendingWalletState = res;
-      emitWalletApprovalChange();
-      return res;
-    } catch (e) {
-      console.error("Failed to load pending wallet approvals:", e);
+  async refresh(force = false) {
+    return this.refreshPendingMap(force);
+  },
+  async refreshPendingMap(force = false) {
+    if (!force && Date.now() - lastPendingWalletFetchAt < 10000) {
       return pendingWalletState;
     }
+    if (inFlightPendingWallet) return inFlightPendingWallet;
+    inFlightPendingWallet = (async () => {
+      try {
+        const res = await api.getPendingWalletMap();
+        pendingWalletState = res;
+        lastPendingWalletFetchAt = Date.now();
+        emitWalletApprovalChange();
+        return res;
+      } catch (e) {
+        console.error("Failed to load pending wallet approvals:", e);
+        return pendingWalletState;
+      } finally {
+        inFlightPendingWallet = null;
+      }
+    })();
+    return inFlightPendingWallet;
   },
   async getTransactions(filters?: Parameters<typeof api.getWalletTransactions>[0]) {
     return api.getWalletTransactions(filters);
   },
   async approve(id: string, userId: string, userName: string) {
     const res = await api.approveWalletTransaction({ id, approvedById: userId, approvedByName: userName });
-    await this.refreshPendingMap();
+    await this.refreshPendingMap(true);
     return res;
   },
   async reject(id: string, userId: string, userName: string, rejectReason: string, deductFromWallet?: boolean) {
     const res = await api.rejectWalletTransaction({ id, approvedById: userId, approvedByName: userName, rejectReason, deductFromWallet });
-    await this.refreshPendingMap();
+    await this.refreshPendingMap(true);
     if ((res as any)?.updatedCustomer) {
       emitCustomerChange();
     }
@@ -1365,12 +1392,12 @@ export const walletApprovalStore = {
   },
   async bulkApprove(ids: string[], userId: string, userName: string) {
     const res = await api.bulkApproveWallet({ ids, approvedById: userId, approvedByName: userName });
-    await this.refreshPendingMap();
+    await this.refreshPendingMap(true);
     return res;
   },
   async createTransaction(data: Parameters<typeof api.createWalletTransaction>[0]) {
     const res = await api.createWalletTransaction(data);
-    await this.refreshPendingMap();
+    await this.refreshPendingMap(true);
     return res;
   }
 };

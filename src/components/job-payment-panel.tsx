@@ -22,7 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Job, Customer } from "@/lib/store";
-import { formatBaht, getJobPaymentBreakdown, JobPaymentEntry } from "@/lib/utils";
+import { formatBaht, getJobPaymentBreakdown, JobPaymentEntry, getCashSuggestions } from "@/lib/utils";
 import { recordJobPaymentAction, voidJobPaymentAction } from "@/actions/db";
 
 interface PaymentChannel {
@@ -66,6 +66,7 @@ export function JobPaymentPanel({
   // Form state for adding payment
   const [payAmount, setPayAmount] = useState<string>("");
   const [selectedChannel, setSelectedChannel] = useState<string>("");
+  const [receivedCash, setReceivedCash] = useState<string>("");
   const [payNote, setPayNote] = useState<string>("");
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
@@ -87,7 +88,10 @@ export function JobPaymentPanel({
   // Current amount to pay (defaults to remaining balance if input is empty)
   const effectiveAmount = payAmount !== "" ? parseFloat(payAmount) : remaining;
 
-  // Check Member wallet constraints
+  // Check Cash & Member wallet constraints
+  const isSelectedCash = activeChannelName.toLowerCase().includes("cash");
+  const parsedReceivedCash = receivedCash.trim() !== "" ? parseFloat(receivedCash) : NaN;
+  const isCashInsufficient = isSelectedCash && receivedCash.trim() !== "" && (isNaN(parsedReceivedCash) || parsedReceivedCash < effectiveAmount - 0.01);
   const isSelectedMemberWallet = activeChannelName.toLowerCase().includes("member") || activeChannelName.toLowerCase().includes("wallet");
   const customerWalletBalance = customer?.creditBalance || 0;
   const isWalletExpired = Boolean(
@@ -137,6 +141,10 @@ export function JobPaymentPanel({
 
     setIsProcessing(true);
     try {
+      const effReceived = isSelectedCash
+        ? (!isNaN(parsedReceivedCash) && parsedReceivedCash >= amt - 0.01 ? Math.round(parsedReceivedCash * 100) / 100 : amt)
+        : undefined;
+      const effChange = effReceived !== undefined ? Math.max(0, Math.round((effReceived - amt) * 100) / 100) : undefined;
       const res = await recordJobPaymentAction({
         jobId: job.id,
         amount: amt,
@@ -146,6 +154,7 @@ export function JobPaymentPanel({
         actorRole: user?.role,
         shiftId: activeShift?.id || job.shiftId || null,
         note: payNote.trim() || undefined,
+        ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
       });
 
       if (!res.success) {
@@ -162,6 +171,7 @@ export function JobPaymentPanel({
         triggerCashDrawerIfEnabled("pay", activeChannelName);
       }).catch(() => {});
       setPayAmount("");
+      setReceivedCash("");
       setPayNote("");
 
       if (onPaymentSuccess && res.updatedJob) {
@@ -287,6 +297,11 @@ export function JobPaymentPanel({
                           โดย: {p.paidBy} {p.note ? `• ${p.note}` : ""}
                         </div>
                       )}
+                      {isCash && p.received !== undefined && p.received > 0 && (
+                        <div className="text-[8.5px] text-emerald-300 font-mono">
+                          รับ ฿{p.received.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} • ทอน ฿{(p.change || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -362,6 +377,62 @@ export function JobPaymentPanel({
               </select>
             </div>
           </div>
+
+          {/* Cash Received & Change Panel */}
+          {isSelectedCash && effectiveAmount > 0 && (
+            <div className="p-2 rounded-lg bg-slate-800/90 border border-slate-700 text-[10px] space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-amber-300 font-bold flex items-center gap-1">
+                  <Banknote size={11} className="text-amber-400" />
+                  รับเงินสด (Cash Received):
+                </span>
+                <div className="relative w-28">
+                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">฿</span>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={receivedCash}
+                    onChange={(e) => setReceivedCash(e.target.value)}
+                    placeholder={effectiveAmount.toFixed(2)}
+                    className="h-6 w-full rounded border border-slate-600 bg-slate-900 pl-4 pr-1.5 text-right font-mono text-[11px] font-bold text-white focus:border-emerald-500 outline-none"
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1 justify-end">
+                {getCashSuggestions(effectiveAmount).map((sug) => (
+                  <button
+                    key={sug}
+                    type="button"
+                    onClick={() => setReceivedCash(sug.toString())}
+                    className={`px-1.5 py-0.5 text-[8.5px] font-bold rounded border transition-colors cursor-pointer ${
+                      !isNaN(parsedReceivedCash) && Math.abs(parsedReceivedCash - sug) < 0.01
+                        ? "bg-emerald-600 text-white border-emerald-500"
+                        : "bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-700"
+                    }`}
+                  >
+                    {Math.abs(sug - effectiveAmount) < 0.01 ? `พอดี (฿${sug.toLocaleString()})` : `฿${sug.toLocaleString()}`}
+                  </button>
+                ))}
+              </div>
+              {receivedCash.trim() !== "" && !isNaN(parsedReceivedCash) && (
+                <div className="pt-1 border-t border-dashed border-slate-700 flex items-center justify-between">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase">
+                    {parsedReceivedCash >= effectiveAmount - 0.01 ? "เงินทอน (Change):" : "ยอดเงินไม่พอ:"}
+                  </span>
+                  {parsedReceivedCash >= effectiveAmount - 0.01 ? (
+                    <span className="font-mono font-black text-emerald-400 text-xs">
+                      ฿{Math.max(0, parsedReceivedCash - effectiveAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  ) : (
+                    <span className="font-mono font-black text-rose-400 text-[10px]">
+                      ขาดอีก ฿{(effectiveAmount - parsedReceivedCash).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Member Wallet info & Quick-Action Pill */}
           {isSelectedMemberWallet && customer?.isMember && (
@@ -506,7 +577,7 @@ export function JobPaymentPanel({
                 </div>
               </div>
 
-              {((voidingPayment.method || "").toLowerCase() === "credit" || (voidingPayment.channel || "").toLowerCase().includes("member")) && (
+              {Boolean(customer?.isMember) && !(voidingPayment.channel || "").toLowerCase().includes("hq") && ((voidingPayment.method || "").toLowerCase() === "credit" || (voidingPayment.channel || "").toLowerCase().includes("member") || (voidingPayment.channel || "").toLowerCase().includes("wallet")) && (
                 <div className="p-2 rounded bg-amber-950/80 border border-amber-700 text-amber-200 text-[11px] flex items-center gap-1.5">
                   <Wallet size={13} className="text-amber-400 shrink-0" />
                   <span>ระบบจะคืนเงิน <strong>฿{voidingPayment.amount.toLocaleString()}</strong> กลับเข้ากระเป๋าเงินสมาชิกให้โดยอัตโนมัติ</span>

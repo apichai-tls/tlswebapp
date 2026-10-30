@@ -170,7 +170,7 @@ export async function POST(req: Request) {
       : null
     if (!targetBranch) {
       targetBranch = await prisma.shopLocation.findFirst({
-        orderBy: { createdAt: 'asc' }
+        orderBy: { id: 'asc' }
       })
     }
 

@@ -234,9 +234,76 @@ function isJobShopSettled(j?: { isShopPaid?: boolean; isPaid?: boolean; source?:
   return Boolean(j.isShopPaid || (isPosJob && j.isPaid));
 }
 
+const JOB_DATE_KEYS = [
+  'createdAt',
+  'updatedAt',
+  'scheduledAt',
+  'completedAt',
+  'pickupScheduledAt',
+  'pickupScheduledEndAt',
+  'deliveryScheduledAt',
+  'deliveryScheduledEndAt',
+  'csoPaidAt',
+  'shopPaidAt',
+] as const;
+
+const CUSTOMER_DATE_KEYS = [
+  'createdAt',
+  'updatedAt',
+  'memberStartDate',
+  'memberExpiryDate',
+] as const;
+
+function hydrateJobDatesInPlace(j: any): any {
+  if (!j || typeof j !== 'object') return j;
+  for (const k of JOB_DATE_KEYS) {
+    const v = j[k];
+    if (typeof v === 'string' && v) {
+      const t = Date.parse(v);
+      if (!isNaN(t)) j[k] = new Date(t);
+    }
+  }
+  if (j.legs && typeof j.legs === 'object') {
+    for (const leg of Object.values(j.legs) as any[]) {
+      if (leg && typeof leg === 'object') {
+        if (typeof leg.scheduledAt === 'string') leg.scheduledAt = new Date(leg.scheduledAt);
+        if (typeof leg.completedAt === 'string') leg.completedAt = new Date(leg.completedAt);
+      }
+    }
+  }
+  return j;
+}
+
+function hydrateCustomerDatesInPlace(c: any): any {
+  if (!c || typeof c !== 'object') return c;
+  for (const k of CUSTOMER_DATE_KEYS) {
+    const v = c[k];
+    if (typeof v === 'string' && v) {
+      const t = Date.parse(v);
+      if (!isNaN(t)) c[k] = new Date(t);
+    }
+  }
+  return c;
+}
+
+function hydrateDbPayloadInPlace(data: any): any {
+  if (!data || typeof data !== 'object') return data;
+  if (Array.isArray(data.jobs)) {
+    for (let i = 0; i < data.jobs.length; i++) {
+      hydrateJobDatesInPlace(data.jobs[i]);
+    }
+  }
+  if (Array.isArray(data.customers)) {
+    for (let i = 0; i < data.customers.length; i++) {
+      hydrateCustomerDatesInPlace(data.customers[i]);
+    }
+  }
+  return data;
+}
+
 // Helper to normalize a server or Prisma job record into client Job structure
 function normalizeServerJob(raw: any, existing?: Job): Job {
-  const parsed = raw?.createdAt instanceof Date ? raw : JSON.parse(JSON.stringify(raw), dateReviver);
+  const parsed = raw?.createdAt instanceof Date ? raw : hydrateJobDatesInPlace({ ...raw });
   const pickupCoords =
     parsed.pickupCoords ||
     (parsed.pickupLat !== undefined && parsed.pickupLng !== undefined
@@ -356,7 +423,7 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
       const cachedRes = await cache.match('/api/db-cache');
       if (cachedRes) {
         const cached = await cachedRes.json();
-        const parsed = JSON.parse(JSON.stringify(cached), dateReviver);
+        const parsed = hydrateDbPayloadInPlace(cached);
         memoryDb = parseMockDb(parsed);
         isDbLoaded = true;
         api.notify('all');
@@ -372,6 +439,7 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
     const res = await fetch('/api/db', { headers });
     if (res.status === 304) {
       isDbLoaded = true;
+      lastServerSyncMs = Math.max(lastServerSyncMs, Date.now());
       realtimeState.lastSyncAt = Date.now();
       return;
     }
@@ -381,15 +449,14 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
       const data = await res.json();
 
       if (isInitial && !isTestEnv) {
-        try {
-          const cache = await caches.open('tls-cache');
-          await cache.put('/api/db-cache', new Response(JSON.stringify(data)));
-        } catch (e) {
-          console.error('Failed to save to Cache API', e);
-        }
+        setTimeout(() => {
+          caches.open('tls-cache')
+            .then((cache) => cache.put('/api/db-cache', new Response(JSON.stringify(data))))
+            .catch(() => {});
+        }, 200);
       }
 
-      const parsed = JSON.parse(JSON.stringify(data), dateReviver);
+      const parsed = hydrateDbPayloadInPlace(data);
       if (memoryDb && memoryDb.pois.length > 0) {
         parsed.pois = memoryDb.pois;
       }
@@ -402,7 +469,17 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
             memRider.currentLocation &&
             (serverRider.status === 'online' || serverRider.status === 'busy')
           ) {
-            return { ...serverRider, currentLocation: memRider.currentLocation };
+            const bestGpsUpdatedAt =
+              serverRider.gpsUpdatedAt && memRider.gpsUpdatedAt
+                ? new Date(serverRider.gpsUpdatedAt).getTime() >= new Date(memRider.gpsUpdatedAt).getTime()
+                  ? serverRider.gpsUpdatedAt
+                  : memRider.gpsUpdatedAt
+                : serverRider.gpsUpdatedAt || memRider.gpsUpdatedAt || null;
+            return {
+              ...serverRider,
+              currentLocation: memRider.currentLocation,
+              gpsUpdatedAt: bestGpsUpdatedAt,
+            };
           }
           return serverRider;
         });
@@ -420,8 +497,9 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
       }
 
       if (memoryDb && parsed.jobs) {
+        const memJobMap = new Map(memoryDb.jobs.map((j) => [j.id, j]));
         parsed.jobs = parsed.jobs.map((serverJob: any) => {
-          const memJob = memoryDb!.jobs.find((j) => j.id === serverJob.id);
+          const memJob = memJobMap.get(serverJob.id);
           if (memJob) {
             const hasInFlightSave = (pendingJobSaves.get(serverJob.id) || 0) > 0;
             const hasDirtyEdits = (pendingFieldEdits.get(serverJob.id)?.size || 0) > 0;
@@ -449,7 +527,7 @@ async function performDbFetch(isInitial: boolean): Promise<void> {
 
       memoryDb = parseMockDb(parsed);
       isDbLoaded = true;
-      if (lastServerSyncMs === 0) lastServerSyncMs = Date.now();
+      lastServerSyncMs = Math.max(lastServerSyncMs, Date.now());
       realtimeState.lastSyncAt = Date.now();
       api.notify('all');
 
@@ -566,6 +644,12 @@ export function startRealtimeConnection(forceReconnect = false) {
 
   eventSourceUserId = currentUid;
   const params = new URLSearchParams();
+  if (authUser?.sessionToken) {
+    params.set('token', authUser.sessionToken);
+  }
+  if (currentUid) {
+    params.set('userId', currentUid);
+  }
   if (lastServerSyncMs > 0) params.set('since', String(lastServerSyncMs - 2000));
 
   const streamUrl = `/api/events/stream${params.toString() ? `?${params.toString()}` : ''}`;
@@ -987,7 +1071,7 @@ export const api = {
 
           // 2. Customer merging strictly by record ID
         if (Array.isArray(data.customers) && data.customers.length > 0 && memoryDb) {
-          const parsedCustomers = JSON.parse(JSON.stringify(data.customers), dateReviver) as Customer[];
+          const parsedCustomers = (data.customers as any[]).map((c) => hydrateCustomerDatesInPlace({ ...c })) as Customer[];
             const custMap = new Map<string, Customer>();
             for (const c of memoryDb.customers) {
               custMap.set(c.id, c);
@@ -1140,6 +1224,25 @@ export const api = {
     return initDb().customers;
   },
 
+  pruneHistoricalJobs() {
+    if (!memoryDb || memoryDb.jobs.length <= 350) return;
+    const recentCutoffMs = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    const beforeLen = memoryDb.jobs.length;
+    memoryDb.jobs = memoryDb.jobs.filter((j) => {
+      if (j.status !== 'completed' && j.status !== 'cancel') return true;
+      if ((pendingJobSaves.get(j.id) || 0) > 0) return true;
+      const t = j.updatedAt
+        ? new Date(j.updatedAt).getTime()
+        : j.createdAt
+          ? new Date(j.createdAt).getTime()
+          : 0;
+      return t >= recentCutoffMs;
+    });
+    if (memoryDb.jobs.length !== beforeLen) {
+      api.notify('jobs');
+    }
+  },
+
   async fetchHistoricalJobs(startDate: Date, endDate: Date, riderId?: string) {
     if (typeof window === 'undefined') return [];
     if (!startDate || !endDate || isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
@@ -1172,7 +1275,7 @@ export const api = {
     const rangeKey = `${normStart.toISOString()}|${normEnd.toISOString()}|${riderId || ''}`;
     const now = Date.now();
     const cachedRange = historicalRangeCache.get(rangeKey);
-    if (cachedRange && now - cachedRange.fetchedAt < 10000 && cachedRange.syncMs === lastServerSyncMs) {
+    if (cachedRange && now - cachedRange.fetchedAt < 60000 && cachedRange.syncMs === lastServerSyncMs) {
       return cachedRange.jobs;
     }
 
@@ -1194,7 +1297,7 @@ export const api = {
         );
         if (res.ok) {
           const data = await res.json();
-          const parsedJobs = JSON.parse(JSON.stringify(data), dateReviver) as Job[];
+          const parsedJobs = (Array.isArray(data) ? data : []).map((j: any) => hydrateJobDatesInPlace({ ...j })) as Job[];
           const currentDb = initDb();
 
           const existingMap = new Map(currentDb.jobs.map((j) => [j.id, j]));
@@ -1226,8 +1329,23 @@ export const api = {
           });
 
           const newJobs = normalizedIncoming.filter((j) => !existingIds.has(j.id));
+          const recentCutoffMs = Date.now() - 2 * 24 * 60 * 60 * 1000;
+          const prunedExisting =
+            updatedJobs.length + newJobs.length > 500
+              ? updatedJobs.filter((j) => {
+                  if (j.status !== 'completed' && j.status !== 'cancel') return true;
+                  if (historyMap.has(j.id)) return true;
+                  if ((pendingJobSaves.get(j.id) || 0) > 0) return true;
+                  const t = j.updatedAt
+                    ? new Date(j.updatedAt).getTime()
+                    : j.createdAt
+                      ? new Date(j.createdAt).getTime()
+                      : 0;
+                  return t >= recentCutoffMs;
+                })
+              : updatedJobs;
 
-          currentDb.jobs = [...updatedJobs, ...newJobs];
+          currentDb.jobs = [...prunedExisting, ...newJobs];
           historicalRangeCache.set(rangeKey, {
             jobs: normalizedIncoming,
             fetchedAt: Date.now(),
@@ -1615,7 +1733,7 @@ export const api = {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
-          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid === true || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined);
+          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
             ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
             : existingUrls;
@@ -1828,7 +1946,7 @@ export const api = {
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           const isMediaOnly = Object.keys(cleanUpdates).every(k => ['billImageUrl', 'actorId', 'actorName', 'actorRole'].includes(k));
           const incomingHasReceipt = incomingUrls.some((u: string) => typeof u === 'string' && (u.includes('/receipt-') || u.includes('receipt-')));
-          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid === true || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined);
+          const isRebillingOrPaying = Boolean(cleanUpdates.isShopPaid !== undefined || cleanUpdates.isPaid !== undefined || cleanUpdates.items !== undefined || cleanUpdates.totalAmount !== undefined || cleanUpdates.walletBalanceAfter !== undefined);
           let baseExisting = (incomingHasReceipt || isRebillingOrPaying)
             ? existingUrls.filter((u: string) => typeof u === 'string' && !u.includes('/receipt-') && !u.includes('receipt-'))
             : existingUrls;
@@ -2070,10 +2188,24 @@ export const api = {
     getShopLocations: () => initDb().shopLocations,
     getPOIs: () => initDb().pois,
     getSettings: () => initDb().settings,
-    updateRiderLocal: (id: string, updates: Partial<Rider>) => {
+    updateRiderLocal: (id: string, updates: Partial<Rider>): boolean => {
       const db = initDb();
-      db.riders = db.riders.map(r => r.id === id ? { ...r, ...updates } : r);
+      const idx = db.riders.findIndex(r => r.id === id);
+      if (idx === -1) return false;
+      const curr = db.riders[idx];
+      const statusSame = updates.status === undefined || curr.status === updates.status;
+      const locSame =
+        updates.currentLocation === undefined ||
+        (curr.currentLocation?.lat === updates.currentLocation?.lat &&
+          curr.currentLocation?.lng === updates.currentLocation?.lng);
+      const gpsTimeSame =
+        updates.gpsUpdatedAt === undefined || curr.gpsUpdatedAt === updates.gpsUpdatedAt;
+      if (statusSame && locSame && gpsTimeSame) return false;
+      const next = [...db.riders];
+      next[idx] = { ...curr, ...updates };
+      db.riders = next;
       api.notify('riders');
+      return true;
     },
   },
 

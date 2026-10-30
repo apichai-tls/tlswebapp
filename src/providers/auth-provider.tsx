@@ -140,6 +140,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         const parsed = JSON.parse(savedUser);
         setUser(parsed);
         localStorage.setItem('lastActivityAt', String(Date.now()));
+        if (parsed.sessionToken) {
+          import('@/actions/auth').then(({ syncSessionCookieAction }) => {
+            syncSessionCookieAction(parsed.sessionToken).catch(() => {});
+          }).catch(() => {});
+        }
         if (typeof document !== 'undefined') {
           document.cookie = 'tls_user_id=; path=/; max-age=0; SameSite=Lax';
         }

@@ -239,18 +239,22 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
     setDatePreset("custom");
   };
 
-  // Trigger historical jobs load for full range (including previous comparison window)
+  // Trigger historical jobs load for full range (debounced to prevent query storm during date navigation)
   useEffect(() => {
-    jobStore.fetchHistoricalJobs(prevStartDate, endDate).catch(err => {
-      console.error("Failed to load historical jobs for sales summary:", err);
-    });
+    const timer = setTimeout(() => {
+      jobStore.fetchHistoricalJobs(prevStartDate, endDate).catch(err => {
+        console.error("Failed to load historical jobs for sales summary:", err);
+      });
+    }, 300);
+    return () => clearTimeout(timer);
   }, [prevStartDate, endDate]);
 
-  // Load Top-up Transactions
+  // Load Top-up Transactions (debounced to prevent query storm during date navigation)
   useEffect(() => {
     let isMounted = true;
-    setIsLoadingTopups(true);
-    getTopUpTransactionsAction({
+    const timer = setTimeout(() => {
+      setIsLoadingTopups(true);
+      getTopUpTransactionsAction({
       startDate: prevStartDate.toISOString(),
       endDate: endDate.toISOString(),
     })
@@ -266,8 +270,11 @@ export function ReportsSalesSummary({ jobs, selectedBranch = "all", onViewJob }:
         if (isMounted) setIsLoadingTopups(false);
       });
 
+    }, 300);
+
     return () => {
       isMounted = false;
+      clearTimeout(timer);
     };
   }, [prevStartDate, endDate]);
 

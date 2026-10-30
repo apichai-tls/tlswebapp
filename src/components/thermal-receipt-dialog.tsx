@@ -473,7 +473,7 @@ export function ThermalReceiptDialog({
       return;
     }
 
-    const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}`;
+    const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${snapshotData.proformaRevision || 0}_${snapshotData.total ?? ""}_${snapshotData.walletBalanceAfter ?? ""}`;
 
     const shouldCapture =
       snapshotData.isDraft ||
@@ -496,7 +496,7 @@ export function ThermalReceiptDialog({
         try {
           const parsed = JSON.parse(currentJob.billImageUrl);
           const existingBills = Array.isArray(parsed) ? parsed : [parsed];
-          if (existingBills.some(url => url.includes(filename))) {
+          if ((snapshotData.isDraft || !snapshotData.autoCapture) && existingBills.some(url => url.includes(filename))) {
             capturedKeysRef.current.add(captureKey);
             return;
           }
@@ -587,7 +587,7 @@ export function ThermalReceiptDialog({
                 body: b
               });
               if (putRes.ok) {
-                uploadResult = { success: true, publicUrl: signData.publicUrl };
+                uploadResult = { success: true, publicUrl: snapshotData.isDraft ? signData.publicUrl : `${signData.publicUrl}?v=${Date.now()}` };
               } else {
                 throw new Error(`GCS PUT failed: ${putRes.status}`);
               }

@@ -85,6 +85,7 @@ const MENU_PERMISSIONS = [
   { id: "riders", label: "Riders" },
   { id: "map", label: "Live Map" },
   { id: "calculator", label: "Distance Calculator" },
+  { id: "petty-cash", label: "Petty Cash (เงินสดย่อย)" },
   { id: "reports", label: "Reports & Analytics" },
   { id: "marketing", label: "Marketing & Analytics" },
   { id: "activity-logs", label: "Activity Logs" },
@@ -116,6 +117,12 @@ export const ACTION_PERMISSIONS = [
     label: "CSO",
     labelTh: "CSO",
     description: "สิทธิ์การทำงาน CSO (กรอก/แก้ไขเลขบิล Bill No., ขอใบกำกับภาษี Req Tax Inv, Stuck, จัดการสถานะชำระเงินและออเดอร์)",
+  },
+  {
+    id: "approve-petty-cash",
+    label: "Approve & Top-up Petty Cash",
+    labelTh: "อนุมัติและโอนเติมเงินสดย่อย (Petty Cash)",
+    description: "สิทธิ์ฝ่ายบัญชีในการโอนเติมวงเงินสดย่อยรายบุคคล อนุมัติ/ปฏิเสธรายการเบิกจ่าย และจัดการหมวดหมู่",
   },
 ];
 

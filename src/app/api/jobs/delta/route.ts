@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { JOB_SELECT_FIELDS, primeJobCache, sanitizeCustomerRecord } from '@/lib/db-cache';
+import { dbCache, JOB_SELECT_FIELDS, primeJobCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import {
   resolveRequestUser,
   buildJobAuthWhereClause,
@@ -12,6 +12,14 @@ import {
 export const dynamic = 'force-dynamic';
 
 const inFlightDeltaQueries = new Map<string, Promise<any>>();
+
+let deltaWatermarkState: {
+  checkedAt: number;
+  dbVersion: number;
+  maxJobUpdatedAt: number;
+  maxCustUpdatedAt: number;
+  openShifts: any[];
+} | null = null;
 
 function parseTimestampParam(raw: string | null): number | null {
   if (!raw) return null;
@@ -67,7 +75,43 @@ export async function GET(request: NextRequest) {
       ? `${scopeKey}:init:${Math.floor(effectiveSinceDate.getTime() / 250)}`
       : `${scopeKey}:cursor:${cursorUpdatedAtMs || 0}:${cursorId || ''}:${custCursorUpdatedAtMs || 0}:${custCursorId || ''}:${skipJobs}:${skipCustomers}`;
 
+    const sinceEpochMs = effectiveSinceDate.getTime();
+    const canServeFromWarmCache =
+      isInitialPage &&
+      (user.role || '').toLowerCase() !== 'rider' &&
+      dbCache.payload &&
+      dbCache.lastTime > 0 &&
+      Date.now() - dbCache.lastTime < 15000 &&
+      sinceEpochMs >= dbCache.lastTime - 30000;
+
+    const canServeFromWatermark =
+      isInitialPage &&
+      (user.role || '').toLowerCase() !== 'rider' &&
+      deltaWatermarkState !== null &&
+      deltaWatermarkState.dbVersion === dbCache.version &&
+      Date.now() - deltaWatermarkState.checkedAt < 90000 &&
+      sinceEpochMs > deltaWatermarkState.maxJobUpdatedAt &&
+      sinceEpochMs > deltaWatermarkState.maxCustUpdatedAt;
+
     let queryPromise = inFlightDeltaQueries.get(bucketKey);
+    if (!queryPromise && canServeFromWatermark && deltaWatermarkState) {
+      const cachedShifts = !canAccessShifts(user) ? [] : deltaWatermarkState.openShifts || [];
+      queryPromise = Promise.resolve([[], [], cachedShifts, null]);
+    }
+    if (!queryPromise && canServeFromWarmCache) {
+      const warmJobs = (dbCache.payload.jobs || []).filter((j: any) => {
+        const t = j?.updatedAt ? new Date(j.updatedAt).getTime() : 0;
+        return t >= sinceEpochMs;
+      });
+      const warmCusts = !canAccessCustomerRecords(user)
+        ? []
+        : (dbCache.payload.customers || []).filter((c: any) => {
+            const t = c?.updatedAt ? new Date(c.updatedAt).getTime() : 0;
+            return t >= sinceEpochMs;
+          });
+      const warmShifts = !canAccessShifts(user) ? [] : dbCache.payload.openShifts || [];
+      queryPromise = Promise.resolve([warmJobs, warmCusts, warmShifts, null]);
+    }
     if (!queryPromise) {
       // 1. Build stable composite cursor condition for Jobs: (updatedAt, id)
       let jobCursorCondition: any;
@@ -193,6 +237,31 @@ export async function GET(request: NextRequest) {
     }
 
     const [jobsRaw, customersRaw, openShiftsRaw, activeRiderJobIds] = await queryPromise;
+
+    if (
+      isInitialPage &&
+      user.allowedBranchIds === 'ALL' &&
+      (user.role || '').toLowerCase() !== 'rider' &&
+      !canServeFromWatermark
+    ) {
+      let maxJ = deltaWatermarkState?.dbVersion === dbCache.version ? deltaWatermarkState.maxJobUpdatedAt : 0;
+      for (const j of jobsRaw) {
+        const t = j?.updatedAt ? new Date(j.updatedAt).getTime() : 0;
+        if (t > maxJ) maxJ = t;
+      }
+      let maxC = deltaWatermarkState?.dbVersion === dbCache.version ? deltaWatermarkState.maxCustUpdatedAt : 0;
+      for (const c of customersRaw) {
+        const t = c?.updatedAt ? new Date(c.updatedAt).getTime() : 0;
+        if (t > maxC) maxC = t;
+      }
+      deltaWatermarkState = {
+        checkedAt: Date.now(),
+        dbVersion: dbCache.version,
+        maxJobUpdatedAt: maxJ,
+        maxCustUpdatedAt: maxC,
+        openShifts: openShiftsRaw || [],
+      };
+    }
 
     const hasMoreJobs = !skipJobs && jobsRaw.length > limit;
     const pageJobsRaw = (hasMoreJobs ? jobsRaw.slice(0, limit) : jobsRaw).filter((j: any) =>

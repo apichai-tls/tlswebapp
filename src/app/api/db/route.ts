@@ -18,23 +18,27 @@ import {
   canAccessFinancialData,
   type ServerAuthUser
 } from '@/lib/server-auth';
+import {
+  ensureDailyRiderOfflineReset,
+  getRiderGpsTimestampsMap,
+} from '@/lib/rider-presence';
 
 export { invalidateDbCache };
 export const dynamic = 'force-dynamic';
 
-const CACHE_TTL_MS = 45000;           // 45s overall payload cache (patched in-place across instances via PG LISTEN/NOTIFY)
-const CUSTOMERS_TTL_MS = 45000;       // 45s customer master data cache (invalidated on customer mutations)
-const MASTER_DATA_TTL_MS = 60000;     // 60s services, price lists, shop locations, settings cache
-const RIDER_EARNINGS_TTL_MS = 60000;  // 60s rider earnings aggregations cache
+const CACHE_TTL_MS = 120000;          // 120s overall payload cache (patched in-place across instances via PG LISTEN/NOTIFY)
+const CUSTOMERS_TTL_MS = 300000;      // 300s customer master data cache (invalidated immediately on customer mutations)
+const MASTER_DATA_TTL_MS = 300000;    // 300s services, price lists, shop locations, settings cache
+const RIDER_EARNINGS_TTL_MS = 180000; // 180s rider earnings aggregations cache
 
-const INTERNAL_SETTING_KEYS = new Set(['auth_session_revocations']);
+const INTERNAL_SETTING_KEYS = new Set(['auth_session_revocations', 'rider_daily_reset_date']);
 
 export function filterPayloadForUser(payload: any, user: ServerAuthUser): any {
   const role = (user.role || '').toLowerCase();
   const safeSettings: Record<string, string> = {};
   if (payload.settings && typeof payload.settings === 'object') {
     for (const [k, v] of Object.entries(payload.settings)) {
-      if (!INTERNAL_SETTING_KEYS.has(k)) {
+      if (!INTERNAL_SETTING_KEYS.has(k) && !k.startsWith('rider_gps_at:')) {
         safeSettings[k] = String(v);
       }
     }
@@ -145,6 +149,8 @@ export async function GET(request?: NextRequest) {
         { status: 403 }
       );
     }
+
+    await ensureDailyRiderOfflineReset();
 
     const forceFresh = request ? new URL(request.url).searchParams.get('fresh') === 'true' : false;
     const ifNoneMatch = request?.headers.get('if-none-match');
@@ -304,8 +310,8 @@ export async function GET(request?: NextRequest) {
               {
                 status: { in: ['completed', 'cancel'] },
                 OR: [
-                  { completedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
-                  { updatedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+                  { completedAt: { gte: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) } },
+                  { updatedAt: { gte: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) } },
                 ],
               },
             ],
@@ -374,10 +380,13 @@ export async function GET(request?: NextRequest) {
         coords: { lat: s.lat, lng: s.lng },
       }));
 
+      const gpsMap = await getRiderGpsTimestampsMap();
+
       const formattedRiders = riders.map((r: any) => {
         const lifeSum = lifetimeEarnings.find((e: any) => e.riderId === r.id)?._sum?.amount || 0;
         const monSum = monthEarnings.find((e: any) => e.riderId === r.id)?._sum?.amount || 0;
         const jobCnt = completedJobsCounts.find((e: any) => e.riderId === r.id)?._count?.id || 0;
+        const gpsUpdatedAt = gpsMap.get(r.id) || settings[`rider_gps_at:${r.id}`] || null;
 
         return {
           ...r,
@@ -386,6 +395,7 @@ export async function GET(request?: NextRequest) {
           completedJobsCount: jobCnt,
           currentLocation:
             r.currentLat && r.currentLng ? { lat: r.currentLat, lng: r.currentLng } : undefined,
+          gpsUpdatedAt,
         };
       });
 

@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId, formatReceiptCustomerPhone } from "@/lib/utils";
+import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId, formatReceiptCustomerPhone, getCashSuggestions } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
@@ -52,7 +52,10 @@ import { AdminDispatch } from "@/components/admin-dispatch";
 import { AdminVerify } from "@/components/admin-verify";
 import { AdminLogs } from "@/components/admin-logs";
 import { AdminReports } from "@/components/admin-reports";
+import { AdminPettyCash } from "@/components/admin-petty-cash";
+import { AdminBuildingReport } from "@/components/admin-building-report";
 import { AdminMarketing } from "@/components/admin-marketing";
+import { AdminTopSpenders } from "@/components/admin-top-spenders";
 import { AdminTasks, prefetchTasksData } from "@/components/admin-tasks";
 import { NotificationBell } from "@/components/notification-bell";
 import { TopUpDialog } from "@/components/top-up-dialog";
@@ -283,7 +286,7 @@ function AdminPageContent() {
     });
   }, [services]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks">("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTopUpDialog, setShowTopUpDialog] = useState(false);
@@ -317,7 +320,7 @@ function AdminPageContent() {
     const searchParams = new URLSearchParams(window.location.search);
     const tabParam = searchParams.get("tab");
     const hash = window.location.hash.replace('#', '').split('?')[0];
-    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "marketing", "tasks"];
+    const validTabs = ["dashboard", "jobs", "dispatch", "riders", "map", "pos", "services", "customers", "settings", "users", "verify", "calculator", "pois", "activity-logs", "reports", "petty-cash", "building-report", "marketing", "top-spenders", "tasks"];
     const targetTab = (tabParam && validTabs.includes(tabParam)) ? tabParam : hash;
 
     if (validTabs.includes(targetTab)) {
@@ -341,12 +344,13 @@ function AdminPageContent() {
     }
 
     // For all other roles: jump to the first tab they have access to (default is dashboard)
-    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks"> = [
-      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "marketing", "settings", "users", "activity-logs"
+    const tabOrder: Array<"dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks"> = [
+      "dashboard", "jobs", "dispatch", "pos", "customers", "services", "map", "riders", "calculator", "tasks", "reports", "petty-cash", "marketing", "settings", "users", "activity-logs"
     ];
     const hasPermission = (key: string) => {
       if (user.role === 'admin') return true;
       if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
+    if (key === 'building-report' || key === 'top-spenders') return Boolean(user?.permissions?.includes('reports') || user?.permissions?.includes('marketing') || user?.permissions?.includes('customers') || user?.permissions?.includes('building-report') || user?.permissions?.includes('top-spenders'));
       return user.permissions?.includes(key) ?? false;
     };
     const firstTab = tabOrder.find(tab => hasPermission(tab));
@@ -380,7 +384,7 @@ function AdminPageContent() {
 
       if (activeTab === "map") {
         refreshDb();
-      } else {
+      } else if (tickCount % 2 === 0 || realtimeStore.getSnapshot().connectionStatus !== "connected") {
         api.reconcileDelta().catch(() => {});
       }
     }, intervalMs);
@@ -388,7 +392,7 @@ function AdminPageContent() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "marketing" | "tasks") => {
+  const handleTabChange = (tab: "dashboard" | "jobs" | "dispatch" | "riders" | "map" | "pos" | "services" | "customers" | "settings" | "users" | "verify" | "calculator" | "pois" | "activity-logs" | "reports" | "petty-cash" | "building-report" | "marketing" | "top-spenders" | "tasks") => {
     setActiveTab(tab);
     window.history.replaceState(null, '', `#${tab}`);
   };
@@ -403,6 +407,7 @@ function AdminPageContent() {
   const [showSplitPaymentDialog, setShowSplitPaymentDialog] = useState(false);
   const [splitPayments, setSplitPayments] = useState<SplitPaymentLine[]>([]);
   const [cashPlaced, setCashPlaced] = useState(false);
+  const [dialogReceivedCash, setDialogReceivedCash] = useState<string>("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
@@ -1115,6 +1120,7 @@ function AdminPageContent() {
   const hasAccess = (key: string) => {
     if (user?.role === 'admin') return true;
     if (key === 'dashboard' || key === 'tasks' || key === 'calculator' || key === 'pois') return true;
+    if (key === 'building-report' || key === 'top-spenders') return Boolean(user?.permissions?.includes('reports') || user?.permissions?.includes('marketing') || user?.permissions?.includes('customers') || user?.permissions?.includes('building-report') || user?.permissions?.includes('top-spenders'));
     return user?.permissions?.includes(key) ?? false;
   };
 
@@ -1499,11 +1505,44 @@ function AdminPageContent() {
   const [savingJobIds, setSavingJobIds] = useState<Set<string>>(new Set());
   const receiptPaperSize = systemSettings?.receiptPaperSize || "80mm";
 
-  // Wallet Approval review context — set when opening Edit Job from Wallet Approvals table
+  // Wallet Approval review context — set when opening Edit Job from Wallet Approvals table or auto-loaded for the open job
   const [reviewingWalletTx, setReviewingWalletTx] = useState<WalletTransactionItem | null>(null);
+  const [jobPendingWalletTxs, setJobPendingWalletTxs] = useState<WalletTransactionItem[]>([]);
   const [walletRejectModalOpen, setWalletRejectModalOpen] = useState(false);
   const [walletRejectReason, setWalletRejectReason] = useState("");
   const [isWalletActionProcessing, setIsWalletActionProcessing] = useState(false);
+
+  const loadJobPendingWalletTxs = useCallback((targetJobId: string | null) => {
+    if (!targetJobId) {
+      setJobPendingWalletTxs([]);
+      return;
+    }
+    api.getWalletTransactions({ referenceId: targetJobId, approvalStatus: "PENDING" })
+      .then((txs) => {
+        const list = (txs || []) as unknown as WalletTransactionItem[];
+        setJobPendingWalletTxs(list);
+        setReviewingWalletTx((prev) => {
+          if (prev && prev.referenceId === targetJobId && prev.approvalStatus === "PENDING") {
+            const updated = list.find((t) => t.id === prev.id);
+            return updated || list[0] || null;
+          }
+          // Prioritize UNLOCK_PAID / REFUND alerts first so Accounts immediately sees Unlock Paid issues
+          const unlockOrRefund = list.find((t) => t.type === "UNLOCK_PAID" || t.type === "REFUND");
+          return unlockOrRefund || list[0] || prev || null;
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (dialogOpen && editingJobId) {
+      walletApprovalStore.refresh().catch(() => {});
+      import("@/lib/a5-canvas-generator").then(({ clearReceiptCaptureLock }) => clearReceiptCaptureLock(`receipt-${editingJobId}.png`)).catch(() => {});
+      loadJobPendingWalletTxs(editingJobId);
+    } else if (!dialogOpen) {
+      setJobPendingWalletTxs([]);
+    }
+  }, [dialogOpen, editingJobId, loadJobPendingWalletTxs]);
 
   // Unlock Paid states
   const [unlockPaidDialogOpen, setUnlockPaidDialogOpen] = useState(false);
@@ -1644,6 +1683,66 @@ function AdminPageContent() {
     (paymentChannel === "Deduct Member" && (isWalletInsufficient || isCustomerWalletExpired)) ||
     (paymentChannel === "Split Payment" && splitMemberDeductAmt > 0 && (isWalletInsufficient || isCustomerWalletExpired))
   );
+
+  const isDialogCashChannel = useMemo(() => {
+    if (isPaidJob || isRewashJob) return false;
+    if (paymentChannel === "Split Payment") {
+      return splitPayments.some((sp) => (sp.channel || "").toLowerCase().includes("cash"));
+    }
+    return Boolean(paymentChannel && paymentChannel.toLowerCase().includes("cash"));
+  }, [isPaidJob, isRewashJob, paymentChannel, splitPayments]);
+
+  const dialogCashTargetAmount = useMemo(() => {
+    if (!isDialogCashChannel) return 0;
+    if (paymentChannel === "Split Payment") {
+      return Math.round(
+        splitPayments
+          .filter((sp) => (sp.channel || "").toLowerCase().includes("cash"))
+          .reduce((s, sp) => s + (Number(sp.amount) || 0), 0) * 100
+      ) / 100;
+    }
+    const existingJobObj = editingJobId ? jobs.find((j) => j.id === editingJobId) : null;
+    const existingPaid = existingJobObj ? getJobPaymentBreakdown(existingJobObj).totalPaid : 0;
+    return Math.max(0, Math.round((dialogTotal - existingPaid) * 100) / 100);
+  }, [isDialogCashChannel, paymentChannel, splitPayments, dialogTotal, editingJobId, jobs]);
+
+  const parsedDialogCashReceived = useMemo(() => {
+    if (!dialogReceivedCash || !dialogReceivedCash.trim()) return NaN;
+    return parseFloat(dialogReceivedCash);
+  }, [dialogReceivedCash]);
+
+  const isDialogCashInsufficient = Boolean(
+    isDialogCashChannel &&
+    dialogCashTargetAmount > 0 &&
+    dialogReceivedCash.trim() !== "" &&
+    (isNaN(parsedDialogCashReceived) || parsedDialogCashReceived < dialogCashTargetAmount - 0.01)
+  );
+
+  const paidJobCashInfo = useMemo(() => {
+    if (!editingJobId) return null;
+    const j = jobs.find((item) => item.id === editingJobId);
+    if (!j?.adminNotesJson) return null;
+    try {
+      const parsed = JSON.parse(j.adminNotesJson);
+      if (parsed && Array.isArray(parsed.payments)) {
+        const cashEntry = [...parsed.payments].reverse().find(
+          (p: any) =>
+            p &&
+            ((p.method || "").toLowerCase() === "cash" || (p.channel || "").toLowerCase().includes("cash")) &&
+            p.received != null &&
+            Number(p.received) > 0
+        );
+        if (cashEntry) {
+          return {
+            amount: Number(cashEntry.amount) || 0,
+            received: Number(cashEntry.received) || 0,
+            change: Number(cashEntry.change) || 0,
+          };
+        }
+      }
+    } catch {}
+    return null;
+  }, [editingJobId, jobs]);
 
   useEffect(() => {
     if (isWalletBlocked && !isPaidJob) {
@@ -2038,6 +2137,7 @@ function AdminPageContent() {
     setPaymentMethod("unpaid");
     setPaymentChannel("");
     setCashPlaced(false);
+    setDialogReceivedCash("");
     setServiceType("wash_fold");
     setServiceWeight(2);
     setLaundryTypes([]); // H3 Fix: clear laundryTypes to prevent data bleeding from previous Edit Job
@@ -2875,6 +2975,7 @@ function AdminPageContent() {
     setPaymentMethod(job.isPaid ? 'paid' : 'unpaid');
     setShopPaymentMethod(job.isShopPaid ? 'paid' : 'unpaid');
     setCashPlaced(job.cashPlaced || false);
+    setDialogReceivedCash("");
     let fallbackChannel = job.paymentChannel || "";
     if (!fallbackChannel && job.paymentMethod) {
       const pm = job.paymentMethod.toLowerCase();
@@ -3321,7 +3422,14 @@ function AdminPageContent() {
       : 0;
 
     const isAlreadyPaidJob = (isPaidJob || Boolean(existingJob?.isShopPaid)) && remainingToPay <= 0;
-    const isNewDeduction = (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && isPayment && !isAlreadyPaidJob;
+    const isMemberChannelSelected = paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0;
+    const hasCartItemsForPayment = Boolean(dialogCart && dialogCart.length > 0 && calculatedTotal > 0 && remainingToPay > 0);
+    // Guarantee: If staff selected Status: Paid + Deduct Member on an unpaid order with items and clicked "Save Changes",
+    // promote isPayment = true so the wallet deduction and payment entry are ALWAYS executed atomically!
+    if (!isPayment && !isAlreadyPaidJob && paymentMethod === "paid" && isMemberChannelSelected && hasCartItemsForPayment) {
+      isPayment = true;
+    }
+    const isNewDeduction = isMemberChannelSelected && isPayment && !isAlreadyPaidJob;
     const effectiveMemberDeduct = isSplitPayment ? splitMemberDeductAmt : remainingToPay;
 
     if (!isAlreadyPaidJob && (paymentChannel === "Deduct Member" || splitMemberDeductAmt > 0) && !selectedProfileCustomer?.isMember) {
@@ -3562,7 +3670,7 @@ function AdminPageContent() {
       pickupRiderId: isPickup ? pickupRiderId || null : null,
       deliveryRiderId: isDelivery ? deliveryRiderId || null : null,
       paymentMethod: null, // paymentMethod field is legacy — use isPaid + paymentChannel instead
-      isPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (isWalkIn ? false : paymentMethod === 'paid'))),
+      isPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || ((isWalkIn || isMemberChannelSelected) ? false : paymentMethod === 'paid'))),
       isShopPaid: isNoChargePrepaidJob ? true : (cannotDeduct ? false : (isPaidJob || (isPayment && remainingToPay <= 0) || (isPayment && alreadyPaidTotal + remainingToPay >= calculatedTotal) || (alreadyPaidTotal >= calculatedTotal && calculatedTotal > 0) || (editingJobId ? Boolean(existingJob?.isShopPaid) : false))),
 
       fee: isNoChargePrepaidJob ? 0 : ((isAlreadyPaidJob && existingJob && !isCartChangedFromLastProforma && !isPayment) ? (existingJob.fee ?? 0) : fee),
@@ -3633,22 +3741,35 @@ function AdminPageContent() {
         const finalPayments = [...existingPayments];
 
         if (isPayment && remainingToPay > 0 && !isNoChargePrepaidJob) {
+          const rawCashReceived = dialogReceivedCash.trim() !== "" ? parseFloat(dialogReceivedCash) : NaN;
           if (isSplitPayment) {
             splitPayments.forEach((sp) => {
               const pMethod = mapChannelNameToMethod(sp.channel, getPaymentChannels(systemSettings));
+              const spAmt = Number(sp.amount) || 0;
+              const isCashLeg = pMethod === "cash" || (sp.channel || "").toLowerCase().includes("cash");
+              const effReceived = isCashLeg && spAmt > 0
+                ? (!isNaN(rawCashReceived) && rawCashReceived >= spAmt - 0.01 ? Math.round(rawCashReceived * 100) / 100 : spAmt)
+                : undefined;
+              const effChange = effReceived !== undefined ? Math.max(0, Math.round((effReceived - spAmt) * 100) / 100) : undefined;
               finalPayments.push({
                 id: sp.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`),
-                amount: Number(sp.amount) || 0,
+                amount: spAmt,
                 method: pMethod,
                 channel: sp.channel,
                 timestamp: new Date().toISOString(),
                 shiftId: targetShiftId,
                 paidBy: user?.name || user?.email || "Admin",
                 note: sp.note || null,
+                ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
               });
             });
           } else {
             const pMethod = mapChannelNameToMethod(paymentChannel, getPaymentChannels(systemSettings));
+            const isCashLeg = pMethod === "cash" || (paymentChannel || "").toLowerCase().includes("cash");
+            const effReceived = isCashLeg && remainingToPay > 0
+              ? (!isNaN(rawCashReceived) && rawCashReceived >= remainingToPay - 0.01 ? Math.round(rawCashReceived * 100) / 100 : remainingToPay)
+              : undefined;
+            const effChange = effReceived !== undefined ? Math.max(0, Math.round((effReceived - remainingToPay) * 100) / 100) : undefined;
             finalPayments.push({
               id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
               amount: remainingToPay,
@@ -3656,7 +3777,8 @@ function AdminPageContent() {
               channel: paymentChannel || "Cash / COD",
               timestamp: new Date().toISOString(),
               shiftId: targetShiftId,
-              paidBy: user?.name || user?.email || "Admin"
+              paidBy: user?.name || user?.email || "Admin",
+              ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
             });
           }
         }
@@ -3857,6 +3979,7 @@ function AdminPageContent() {
           }
           const packageItems_u = !wasShopPaidBefore_update ? dialogCart.filter(item => item.category === "PACKAGE") : [];
           if (packageItems_u.length > 0) balAdj += packageItems_u.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+          payload.walletBalanceAfter = (selectedProfileCustomer.isMember ? (selectedProfileCustomer.creditBalance ?? 0) : null) as any;
           if (balAdj !== 0) {
             const isDeduct = balAdj < 0;
             const refDisplay = (existingJob as any)?.billNo || targetEditingJobId;
@@ -3880,6 +4003,7 @@ function AdminPageContent() {
             const confirmedBal = updatedCust?.creditBalance ?? ((selectedProfileCustomer.creditBalance || 0) + balAdj);
             payload.walletBalanceAfter = confirmedBal;
             setSelectedProfileCustomer(prev => prev ? { ...prev, creditBalance: confirmedBal, isMember: upd.isMember ?? prev.isMember, priceListId: upd.priceListId ?? prev.priceListId } : null);
+            walletApprovalStore.refresh().catch(() => {});
             toast.success(`Customer wallet updated. New balance: ${formatBaht(confirmedBal)}`);
           }
         }
@@ -4213,9 +4337,10 @@ function AdminPageContent() {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              clearReceiptCaptureLock(receiptFilename);
               if (!markReceiptCaptureStarted(receiptFilename)) return;
 
-              const currentTargetJob = jobStore.getSnapshot().find(j => j.id === targetEditingJobId) || existingJob;
+              const currentTargetJob = { ...(jobStore.getSnapshot().find(j => j.id === targetEditingJobId) || existingJob), ...newJobData, ...payload };
               if (!currentTargetJob) {
                 clearReceiptCaptureLock(receiptFilename);
                 return;
@@ -4306,7 +4431,11 @@ function AdminPageContent() {
           resetDialogForm();
         }
 
-        toast.success(`Job updated successfully!`);
+        const editCashChange = isPayment && isDialogCashChannel && !isNaN(parsedDialogCashReceived) && parsedDialogCashReceived > dialogCashTargetAmount
+          ? Math.round((parsedDialogCashReceived - dialogCashTargetAmount) * 100) / 100
+          : 0;
+        toast.success(editCashChange > 0 ? `บันทึกรายการสำเร็จ! เงินทอนที่ต้องคืน: ฿${editCashChange.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `Job updated successfully!`);
+        setDialogReceivedCash("");
 
       } else {
         // Upload images for NEW job (with 20s safety cap so hung uploads cannot freeze creation)
@@ -4394,6 +4523,7 @@ function AdminPageContent() {
           };
           const updatedCust = await customerStore.updateCustomer(selectedProfileCustomer.id, walletUpdates);
           preDeductedBalance = updatedCust?.creditBalance ?? preDeductedBalance;
+          walletApprovalStore.refresh().catch(() => {});
         }
 
         // [AUTO-PROFORMA for NEW JOB] If previewed or shop paid WITH actual laundry items → auto-assign + capture in background
@@ -4553,9 +4683,10 @@ function AdminPageContent() {
             try {
               const { generateA5ReceiptImage, markReceiptCaptureStarted, clearReceiptCaptureLock } = await import("@/lib/a5-canvas-generator");
               const { generateThermalReceiptImage, uploadReceiptImage } = await import("@/lib/thermal-canvas-generator");
+              clearReceiptCaptureLock(receiptFilename);
               if (!markReceiptCaptureStarted(receiptFilename)) return;
 
-              const currentTargetJob = jobStore.getSnapshot().find(j => j.id === capturedNewJobId) || job;
+              const currentTargetJob = { ...job, ...(jobStore.getSnapshot().find(j => j.id === capturedNewJobId) || {}) };
               if (!currentTargetJob) {
                 clearReceiptCaptureLock(receiptFilename);
                 return;
@@ -4645,7 +4776,11 @@ function AdminPageContent() {
         }
 
 
-        toast.success(`Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+        const newCashChange = isPayment && isDialogCashChannel && !isNaN(parsedDialogCashReceived) && parsedDialogCashReceived > dialogCashTargetAmount
+          ? Math.round((parsedDialogCashReceived - dialogCashTargetAmount) * 100) / 100
+          : 0;
+        toast.success(newCashChange > 0 ? `Job ${job.id} created — เงินทอนที่ต้องคืน: ฿${newCashChange.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `Job ${job.id} created — Fee ฿${job.fee.toFixed(0)} CMS${isFreeDelivery ? ' (Free)' : ''}`);
+        setDialogReceivedCash("");
       }
 
       // Auto-create Tax Invoice Task for Accounting Team if requested
@@ -4842,17 +4977,20 @@ function AdminPageContent() {
     handleEditFullJobRef.current(job);
   }, []);
 
-  const handleApproveFromJobDialog = async () => {
-    if (!reviewingWalletTx) return;
+  const handleApproveFromJobDialog = async (targetTx?: WalletTransactionItem) => {
+    const txToApprove = targetTx || reviewingWalletTx;
+    if (!txToApprove) return;
     setIsWalletActionProcessing(true);
     try {
       await walletApprovalStore.approve(
-        reviewingWalletTx.id,
+        txToApprove.id,
         user?.id || "system",
         user?.name || user?.email || "Admin"
       );
-      toast.success(`Approved ${reviewingWalletTx.type} ฿${reviewingWalletTx.amount.toLocaleString()} สำเร็จ`);
-      setReviewingWalletTx(null);
+      toast.success(`Approved ${txToApprove.type} ฿${txToApprove.amount.toLocaleString()} สำเร็จ`);
+      const remaining = jobPendingWalletTxs.filter((t) => t.id !== txToApprove.id);
+      setJobPendingWalletTxs(remaining);
+      setReviewingWalletTx(remaining[0] || null);
     } catch (e: any) {
       toast.error("ไม่สามารถอนุมัติได้: " + e.message);
     } finally {
@@ -4871,7 +5009,9 @@ function AdminPageContent() {
         walletRejectReason.trim()
       );
       toast.success(`Rejected #${reviewingWalletTx.id.slice(0, 8)} สำเร็จ`);
-      setReviewingWalletTx(null);
+      const remaining = jobPendingWalletTxs.filter((t) => t.id !== reviewingWalletTx.id);
+      setJobPendingWalletTxs(remaining);
+      setReviewingWalletTx(remaining[0] || null);
       setWalletRejectModalOpen(false);
       setWalletRejectReason("");
     } catch (e: any) {
@@ -4914,6 +5054,7 @@ function AdminPageContent() {
         originalJobRef.current.isShopPaid = false;
         originalJobRef.current.shopPaidAt = null;
         originalJobRef.current.csoPaidAt = null;
+        originalJobRef.current.walletBalanceAfter = null;
         originalJobRef.current.adminNotesJson = result.updatedJob?.adminNotesJson;
         if (result.updatedJob?.billImageUrl !== undefined) {
           originalJobRef.current.billImageUrl = result.updatedJob.billImageUrl;
@@ -4927,8 +5068,10 @@ function AdminPageContent() {
         shopPaidAt: null,
         csoPaidAt: null,
         adminNotesJson: result.updatedJob?.adminNotesJson,
+        walletBalanceAfter: null,
         billImageUrl: result.updatedJob?.billImageUrl ?? null,
       } as any);
+      jobStore.notify();
 
       // 4. Update in-memory customer wallet & dialog customer badge if refund occurred
       if (result.walletRefundAmount && result.walletRefundAmount > 0 && selectedProfileCustomer) {
@@ -4939,6 +5082,12 @@ function AdminPageContent() {
         });
         customerStore.notify();
       }
+
+      // 5. Notify Accounts Pending Approvals store & load pending banner for this job immediately
+      walletApprovalStore.refresh().catch(() => {});
+      walletApprovalStore.refresh().catch(() => {});
+      import("@/lib/a5-canvas-generator").then(({ clearReceiptCaptureLock }) => clearReceiptCaptureLock(`receipt-${editingJobId}.png`)).catch(() => {});
+      loadJobPendingWalletTxs(editingJobId);
 
       toast.success(
         `🔓 ปลดล็อค Job สำเร็จ${result.walletRefundAmount && result.walletRefundAmount > 0 
@@ -5222,7 +5371,7 @@ function AdminPageContent() {
             )}
 
             {/* Group 2: Sales & CRM */}
-            {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing")) && (
+            {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing") || hasAccess("top-spenders")) && (
               <div className="space-y-1">
                 {!isSidebarCollapsed ? (
                   <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none">
@@ -5303,6 +5452,26 @@ function AdminPageContent() {
                     )}
                     <Megaphone size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "marketing" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
                     {!isSidebarCollapsed && <span className="truncate">Marketing & Promos</span>}
+                  </motion.a>
+                )}
+
+                {hasAccess("top-spenders") && (
+                  <motion.a
+                    href="#top-spenders"
+                    onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("top-spenders"); }}
+                    whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                    className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                      activeTab === "top-spenders"
+                        ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                    title="Top Spenders (฿)"
+                  >
+                    {activeTab === "top-spenders" && !isSidebarCollapsed && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                    )}
+                    <Sparkles size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "top-spenders" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                    {!isSidebarCollapsed && <span className="truncate">Top Spenders (฿)</span>}
                   </motion.a>
                 )}
               </div>
@@ -5428,6 +5597,46 @@ function AdminPageContent() {
                   )}
                   <BarChart3 size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "reports" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
                   {!isSidebarCollapsed && <span className="truncate">Reports & Analytics</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("petty-cash") && (
+                <motion.a
+                  href="#petty-cash"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("petty-cash"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "petty-cash"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Petty Cash (เงินสดย่อย)"
+                >
+                  {activeTab === "petty-cash" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <Wallet size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "petty-cash" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Petty Cash</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("building-report") && (
+                <motion.a
+                  href="#building-report"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("building-report"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "building-report"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Building BD Report"
+                >
+                  {activeTab === "building-report" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <Building size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "building-report" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Building BD Report</span>}
                 </motion.a>
               )}
 
@@ -5662,7 +5871,7 @@ function AdminPageContent() {
                   </div>
 
                   {/* Sales & CRM */}
-                  {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing")) && (
+                  {(hasAccess("customers") || hasAccess("services") || hasAccess("marketing") || hasAccess("top-spenders")) && (
                     <div className="space-y-1">
                       <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Sales & CRM</p>
                       {hasAccess("customers") && (
@@ -5716,6 +5925,22 @@ function AdminPageContent() {
                         >
                           <Megaphone size={17} className={activeTab === "marketing" ? "text-indigo-600" : "text-slate-400"} />
                           <span>Marketing & Promos</span>
+                        </a>
+                      )}
+                      {hasAccess("top-spenders") && (
+                        <a
+                          href="#top-spenders"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleTabChange("top-spenders");
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                            activeTab === "top-spenders" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                          }`}
+                        >
+                          <Sparkles size={17} className={activeTab === "top-spenders" ? "text-indigo-600" : "text-slate-400"} />
+                          <span>Top Spenders (฿)</span>
                         </a>
                       )}
                     </div>
@@ -5811,7 +6036,43 @@ function AdminPageContent() {
                         <span>Reports & Analytics</span>
                       </a>
                     )}
-                    {hasAccess("activity-logs") && (
+                    {hasAccess("petty-cash") && (
+                      <a
+                        href="#petty-cash"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleTabChange("petty-cash");
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer ${
+                          activeTab === "petty-cash" ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/15" : "text-slate-600 hover:bg-slate-100/70"
+                        }`}
+                      >
+                        <Wallet size={17} className={activeTab === "petty-cash" ? "text-indigo-600" : "text-slate-400"} />
+                        <span>Petty Cash</span>
+                      </a>
+                    )}
+                    {hasAccess("building-report") && (
+                <motion.a
+                  href="#building-report"
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleTabChange("building-report"); }}
+                  whileHover={{ x: isSidebarCollapsed ? 0 : 2 }}
+                  className={`group relative flex items-center gap-3 rounded-xl ${isSidebarCollapsed ? 'px-0 justify-center h-10 w-10 mx-auto' : 'px-3 py-2'} text-[13px] font-semibold transition-all cursor-pointer ${
+                    activeTab === "building-report"
+                      ? "bg-indigo-50/90 text-indigo-700 ring-1 ring-indigo-500/15 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                  }`}
+                  title="Building BD Report"
+                >
+                  {activeTab === "building-report" && !isSidebarCollapsed && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-indigo-600 rounded-r-full" />
+                  )}
+                  <Building size={isSidebarCollapsed ? 20 : 17} className={`shrink-0 transition-colors ${activeTab === "building-report" ? "text-indigo-600" : "text-slate-400 group-hover:text-slate-700"}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Building BD Report</span>}
+                </motion.a>
+              )}
+
+              {hasAccess("activity-logs") && (
                       <a
                         href="#activity-logs"
                         onClick={(e) => {
@@ -5952,12 +6213,15 @@ function AdminPageContent() {
                 customers: { section: "Sales & CRM", title: "Customers (CRM)", subtitle: "Profiles, corporate accounts, wallets & vouchers" },
                 services: { section: "Sales & CRM", title: "Service Menu", subtitle: "Pricing tiers, laundry packages & catalog" },
                 marketing: { section: "Sales & CRM", title: "Marketing & Promos", subtitle: "Campaigns, vouchers & customer acquisition" },
+                "top-spenders": { section: "Sales & CRM", title: "Top Spenders & Loyalty (฿)", subtitle: "Members, VIP & Corporate leaderboards by Baht spent, top-ups & service frequency" },
                 dispatch: { section: "Fleet & Map", title: "Dispatch Schedule", subtitle: "Rider shifts, pickup & delivery routing" },
                 riders: { section: "Fleet & Map", title: "Rider Fleet", subtitle: "Rider profiles, commissions & status" },
                 map: { section: "Fleet & Map", title: "Live GPS Map", subtitle: "Real-time rider locations & branch hubs" },
                 calculator: { section: "Fleet & Map", title: "Distance Calculator", subtitle: "Route fee estimation & POI management" },
                 pois: { section: "Fleet & Map", title: "POI Locations", subtitle: "Saved buildings, condos & coordinates" },
                 reports: { section: "Management", title: "Reports & Analytics", subtitle: "Revenue, payment splits & historical insights" },
+                "petty-cash": { section: "Management", title: "Petty Cash (ระบบเงินสดย่อยรายบุคคล)", subtitle: "Individual petty cash wallets, immediate expense deduction & accounting approvals" },
+                "building-report": { section: "Management", title: "Building Sales & BD Report", subtitle: "Top condos, hotels & buildings in Bangkok & Pattaya for B2B outreach" },
                 "activity-logs": { section: "Management", title: "Activity Logs", subtitle: "System audit trail & staff actions" },
                 users: { section: "Management", title: "Manage Users", subtitle: "Staff accounts, roles & branch permissions" },
                 settings: { section: "Management", title: "System Settings", subtitle: "Branches, payment channels & configurations" },
@@ -6769,52 +7033,83 @@ function AdminPageContent() {
                   );
                 })()}
 
-                {/* Wallet Approval Review Banner */}
-                {reviewingWalletTx && (
-                  <div className="mx-3 mt-2 px-4 py-2.5 bg-amber-500 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md rounded-xl shrink-0">
-                    <div className="flex items-center gap-2 text-xs font-bold min-w-0">
-                      <ShieldCheck size={18} className="text-white shrink-0" />
-                      <span className="truncate">
-                        รออนุมัติ Wallet: {reviewingWalletTx.type === "DEDUCT" ? "ตัดเงินค่าออเดอร์" : (reviewingWalletTx.type === "REFUND" ? "คืนเงินออเดอร์" : reviewingWalletTx.type)} 
-                        {" "}฿{reviewingWalletTx.amount.toLocaleString()} 
-                        {reviewingWalletTx.createdByName && ` (โดย: ${reviewingWalletTx.createdByName})`}
-                      </span>
+                {/* Wallet & Unlock Paid Approval Review Banners */}
+                {(() => {
+                  const bannerTxs = jobPendingWalletTxs.length > 0
+                    ? jobPendingWalletTxs
+                    : (reviewingWalletTx ? [reviewingWalletTx] : []);
+                  if (bannerTxs.length === 0) return null;
+                  return (
+                    <div className="mx-3 mt-2 flex flex-col gap-1.5 shrink-0">
+                      {bannerTxs.map((bTx) => {
+                        const isUnlockOrRefund = bTx.type === "UNLOCK_PAID" || bTx.type === "REFUND";
+                        const labelText =
+                          bTx.type === "UNLOCK_PAID"
+                            ? "🔓 แจ้งเตือนบัญชี (Unlock Paid — ปลดล็อคบิลที่ชำระแล้ว)"
+                            : bTx.type === "REFUND"
+                              ? "🔓 รออนุมัติคืนเงิน Wallet (Unlock Paid / Refund)"
+                              : bTx.type === "DEDUCT"
+                                ? "รออนุมัติ Wallet: ตัดเงินค่าออเดอร์"
+                                : `รออนุมัติ Wallet: ${bTx.type}`;
+                        return (
+                          <div
+                            key={bTx.id}
+                            className={`px-4 py-2 ${isUnlockOrRefund ? "bg-orange-600" : "bg-amber-500"} text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-md rounded-xl`}
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 text-xs font-bold min-w-0">
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <ShieldCheck size={16} className="text-white shrink-0" />
+                                <span>
+                                  {labelText} ฿{Number(bTx.amount || 0).toLocaleString()}
+                                  {bTx.createdByName && ` (โดย: ${bTx.createdByName})`}
+                                </span>
+                              </div>
+                              {bTx.reason && (
+                                <span className="text-[11px] bg-black/20 px-2 py-0.5 rounded-md font-semibold truncate max-w-[360px]" title={bTx.reason}>
+                                  เหตุผล: {bTx.reason}
+                                </span>
+                              )}
+                            </div>
+                            {bTx.approvalStatus === "PENDING" && canApproveWallet && (
+                              <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  className="h-7 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
+                                  onClick={() => handleApproveFromJobDialog(bTx)}
+                                  disabled={isWalletActionProcessing}
+                                >
+                                  <CheckCircle2 size={13} />
+                                  <span>Approve (อนุมัติ)</span>
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-3 bg-rose-600 hover:bg-rose-700 text-white border-none font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
+                                  onClick={() => {
+                                    setReviewingWalletTx(bTx);
+                                    setWalletRejectReason("");
+                                    setWalletRejectModalOpen(true);
+                                  }}
+                                  disabled={isWalletActionProcessing}
+                                >
+                                  <X size={13} />
+                                  <span>Reject (ปฏิเสธ)</span>
+                                </Button>
+                              </div>
+                            )}
+                            {bTx.approvalStatus !== "PENDING" && (
+                              <Badge className={`text-xs font-bold shrink-0 ${bTx.approvalStatus === "APPROVED" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
+                                {bTx.approvalStatus}
+                              </Badge>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                    {reviewingWalletTx.approvalStatus === "PENDING" && (
-                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="h-7 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
-                          onClick={handleApproveFromJobDialog}
-                          disabled={isWalletActionProcessing}
-                        >
-                          <CheckCircle2 size={13} />
-                          <span>Approve (อนุมัติ)</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-3 bg-rose-600 hover:bg-rose-700 text-white border-none font-bold text-xs cursor-pointer shadow-xs rounded-lg gap-1"
-                          onClick={() => {
-                            setWalletRejectReason("");
-                            setWalletRejectModalOpen(true);
-                          }}
-                          disabled={isWalletActionProcessing}
-                        >
-                          <X size={13} />
-                          <span>Reject (ปฏิเสธ)</span>
-                        </Button>
-                      </div>
-                    )}
-                    {reviewingWalletTx.approvalStatus !== "PENDING" && (
-                      <Badge className={`text-xs font-bold shrink-0 ${reviewingWalletTx.approvalStatus === "APPROVED" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
-                        {reviewingWalletTx.approvalStatus}
-                      </Badge>
-                    )}
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Main Content Grid */}
                 <div className="flex-1 overflow-y-auto lg:overflow-hidden p-3.5 min-h-0 flex flex-col">
@@ -7769,29 +8064,29 @@ function AdminPageContent() {
                       </div>
 
                       {/* Admin Notes & Activity Feed Card */}
-                      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2 flex-1 min-h-[220px] overflow-hidden">
-                        <div className="flex items-center justify-between gap-1.5 shrink-0">
-                          <Label className="text-[10.5px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1 shrink-0">
-                            <MessageSquare size={12} className="text-indigo-500 shrink-0" />
+                      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col gap-2.5 flex-1 min-h-[250px] overflow-hidden">
+                        <div className="flex items-center justify-between gap-2 shrink-0 flex-wrap">
+                          <Label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+                            <MessageSquare size={15} className="text-indigo-600 shrink-0" />
                             <span>Admin Note Logs</span>
                             {adminLogs.length > 0 && (
-                              <span className="px-1.5 py-0.2 rounded-full text-[9.5px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200">
                                 {adminLogs.length}
                               </span>
                             )}
                           </Label>
 
-                          <div className="flex items-center gap-1 ml-auto">
+                          <div className="flex items-center gap-1.5 ml-auto">
                             {/* Hanger (H) */}
                             <div
                               title="จำนวนผ้าแขวน (H) แจ้ง Rider"
-                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border transition-colors ${
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded-xl border transition-all ${
                                 hangerCount > 0
-                                  ? "bg-indigo-50/60 border-indigo-400 shadow-2xs"
-                                  : "bg-slate-50/70 border-slate-200/90"
+                                  ? "bg-indigo-50/80 border-indigo-400 shadow-xs"
+                                  : "bg-slate-50/90 border-slate-200/90"
                               }`}
                             >
-                              <div className="flex items-center gap-0.5">
+                              <div className="flex items-center gap-1">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -7801,7 +8096,7 @@ function AdminPageContent() {
                                     setHangerCount(nextQty);
                                     persistPackingCountsToDb(nextHas, nextQty, foldedCount > 0, foldedCount);
                                   }}
-                                  className="w-4 h-4 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-white hover:bg-slate-100 border border-slate-200/90 text-slate-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   -
                                 </button>
@@ -7818,7 +8113,7 @@ function AdminPageContent() {
                                     setHangerCount(val);
                                     persistPackingCountsToDb(nextHas, val, foldedCount > 0, foldedCount);
                                   }}
-                                  className="w-6 h-4 text-center text-[11px] font-black bg-white border border-slate-200 rounded text-indigo-900 focus:outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  className="w-9 h-6 text-center text-[13px] font-black bg-white border border-slate-200/90 rounded-lg text-indigo-950 focus:outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <button
                                   type="button"
@@ -7828,24 +8123,24 @@ function AdminPageContent() {
                                     setHangerCount(nextQty);
                                     persistPackingCountsToDb(true, nextQty, foldedCount > 0, foldedCount);
                                   }}
-                                  className="w-4 h-4 rounded bg-indigo-100/80 hover:bg-indigo-200 text-indigo-700 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   +
                                 </button>
                               </div>
-                              <span className="text-[11px] font-black text-indigo-700 leading-none select-none">H</span>
+                              <span className="text-xs font-black text-indigo-700 leading-none select-none px-0.5">H</span>
                             </div>
 
                             {/* Folded (F) */}
                             <div
                               title="จำนวนผ้าพับ (F) แจ้ง Rider"
-                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border transition-colors ${
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded-xl border transition-all ${
                                 foldedCount > 0
-                                  ? "bg-emerald-50/60 border-emerald-400 shadow-2xs"
-                                  : "bg-slate-50/70 border-slate-200/90"
+                                  ? "bg-emerald-50/80 border-emerald-400 shadow-xs"
+                                  : "bg-slate-50/90 border-slate-200/90"
                               }`}
                             >
-                              <div className="flex items-center gap-0.5">
+                              <div className="flex items-center gap-1">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -7855,7 +8150,7 @@ function AdminPageContent() {
                                     setFoldedCount(nextQty);
                                     persistPackingCountsToDb(hangerCount > 0, hangerCount, nextHas, nextQty);
                                   }}
-                                  className="w-4 h-4 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-white hover:bg-slate-100 border border-slate-200/90 text-slate-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   -
                                 </button>
@@ -7872,7 +8167,7 @@ function AdminPageContent() {
                                     setFoldedCount(val);
                                     persistPackingCountsToDb(hangerCount > 0, hangerCount, nextHas, val);
                                   }}
-                                  className="w-6 h-4 text-center text-[11px] font-black bg-white border border-slate-200 rounded text-emerald-900 focus:outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  className="w-9 h-6 text-center text-[13px] font-black bg-white border border-slate-200/90 rounded-lg text-emerald-950 focus:outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
                                 <button
                                   type="button"
@@ -7882,23 +8177,23 @@ function AdminPageContent() {
                                     setFoldedCount(nextQty);
                                     persistPackingCountsToDb(hangerCount > 0, hangerCount, true, nextQty);
                                   }}
-                                  className="w-4 h-4 rounded bg-emerald-100/80 hover:bg-emerald-200 text-emerald-700 font-bold text-[10px] leading-none flex items-center justify-center cursor-pointer"
+                                  className="w-6 h-6 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-extrabold text-sm leading-none flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 transition-transform"
                                 >
                                   +
                                 </button>
                               </div>
-                              <span className="text-[11px] font-black text-emerald-700 leading-none select-none">F</span>
+                              <span className="text-xs font-black text-emerald-700 leading-none select-none px-0.5">F</span>
                             </div>
 
                             <Button
                               type="button"
                               variant="ghost"
                               size="icon"
-                              className="h-6 w-6 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer shrink-0"
+                              className="h-8 w-8 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 border border-transparent hover:border-indigo-200/60 rounded-xl cursor-pointer shrink-0"
                               onClick={() => setNoteLogsModalOpen(true)}
                               title="Expand Notes"
                             >
-                              <Maximize2 size={12} />
+                              <Maximize2 size={15} />
                             </Button>
                           </div>
                         </div>
@@ -8179,6 +8474,27 @@ function AdminPageContent() {
                                     {dialogCart.length} items ({dialogCart.reduce((sum, i) => sum + (typeof i.quantity === 'number' ? i.quantity : 1), 0)})
                                   </span>
                                 </div>
+                                {paidJobCashInfo && (
+                                  <div className="col-span-2 p-2 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between text-xs shadow-2xs">
+                                    <div className="flex items-center gap-1.5">
+                                      <Banknote size={13} className="text-emerald-600" />
+                                      <span className="text-[10.5px] font-bold text-slate-600">
+                                        {currentLanguage === "en" ? "Cash Received:" : "รับเงินสด:"}
+                                      </span>
+                                      <span className="font-mono font-extrabold text-slate-900">
+                                        ฿{paidJobCashInfo.received.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10.5px] font-bold text-emerald-700">
+                                        {currentLanguage === "en" ? "Change:" : "เงินทอน:"}
+                                      </span>
+                                      <span className="font-mono font-black text-emerald-700 bg-white px-2 py-0.5 rounded-md border border-emerald-200">
+                                        ฿{paidJobCashInfo.change.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
 
                               {/* Mini Cart Breakdown */}
@@ -9134,6 +9450,82 @@ function AdminPageContent() {
                               </div>
                             </div>
 
+                            {/* Cash Received & Change Panel (when Cash / COD or Split Cash is selected) */}
+                            {!isPaidJob && isDialogCashChannel && dialogCashTargetAmount > 0 && (
+                              <div className="p-2 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <Label htmlFor="dialog-cash-received" className="flex items-center gap-1 text-[9.5px] font-bold text-amber-400 uppercase tracking-wider shrink-0">
+                                    <Banknote size={11} className="text-amber-400" />
+                                    <span>{currentLanguage === "en" ? "Cash Received (฿)" : "รับเงินสด (฿)"}</span>
+                                  </Label>
+                                  <div className="relative w-32">
+                                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400">฿</span>
+                                    <input
+                                      id="dialog-cash-received"
+                                      type="number"
+                                      step="any"
+                                      min="0"
+                                      placeholder={dialogCashTargetAmount.toFixed(2)}
+                                      value={dialogReceivedCash}
+                                      onChange={(e) => setDialogReceivedCash(e.target.value)}
+                                      className="h-7 w-full rounded-lg border border-slate-700 bg-slate-800 pl-5 pr-2 text-right font-mono text-xs font-black text-white placeholder:text-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                                    />
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-1 justify-end">
+                                  {getCashSuggestions(dialogCashTargetAmount).map((sug) => (
+                                    <button
+                                      key={sug}
+                                      type="button"
+                                      onClick={() => setDialogReceivedCash(sug.toString())}
+                                      className={`px-2 py-0.5 text-[9.5px] font-bold rounded-md border transition-all cursor-pointer whitespace-nowrap ${
+                                        !isNaN(parsedDialogCashReceived) && Math.abs(parsedDialogCashReceived - sug) < 0.01
+                                          ? "bg-emerald-600 text-white border-emerald-500 shadow-xs"
+                                          : "bg-slate-800/90 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white"
+                                      }`}
+                                    >
+                                      {Math.abs(sug - dialogCashTargetAmount) < 0.01
+                                        ? (currentLanguage === "en" ? `Exact (฿${sug.toLocaleString()})` : `พอดี (฿${sug.toLocaleString()})`)
+                                        : `฿${sug.toLocaleString()}`}
+                                    </button>
+                                  ))}
+                                </div>
+                                {dialogReceivedCash.trim() !== "" && !isNaN(parsedDialogCashReceived) && (
+                                  <div className="pt-1 border-t border-dashed border-slate-800 flex items-center justify-between">
+                                    <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">
+                                      {parsedDialogCashReceived >= dialogCashTargetAmount - 0.01
+                                        ? (currentLanguage === "en" ? "Change to Return" : "เงินทอน (Change)")
+                                        : (currentLanguage === "en" ? "Short Amount" : "ยอดเงินไม่พอ")}
+                                    </span>
+                                    {parsedDialogCashReceived >= dialogCashTargetAmount - 0.01 ? (
+                                      <span className="text-xs font-black font-mono text-emerald-400">
+                                        ฿{Math.max(0, parsedDialogCashReceived - dialogCashTargetAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    ) : (
+                                      <span className="text-xs font-black font-mono text-rose-400">
+                                        {currentLanguage === "en"
+                                          ? `Short by ฿${(dialogCashTargetAmount - parsedDialogCashReceived).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                          : `ขาดอีก ฿${(dialogCashTargetAmount - parsedDialogCashReceived).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Paid Cash Summary on Right Panel */}
+                            {isPaidJob && paidJobCashInfo && (
+                              <div className="p-2 rounded-xl bg-slate-950/80 border border-emerald-800/60 flex items-center justify-between text-[10px]">
+                                <span className="text-slate-300 font-bold flex items-center gap-1">
+                                  <Banknote size={11} className="text-amber-400" />
+                                  {currentLanguage === "en" ? "Cash:" : "รับเงินสด:"} <strong className="font-mono text-white">฿{paidJobCashInfo.received.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                                </span>
+                                <span className="text-emerald-400 font-bold">
+                                  {currentLanguage === "en" ? "Change:" : "เงินทอน:"} <strong className="font-mono text-emerald-300">฿{paidJobCashInfo.change.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                                </span>
+                              </div>
+                            )}
+
                             {/* Row 2: CSO Status & SHOP Status */}
                             <div className="grid grid-cols-2 gap-2 pt-1">
                               {/* Col 1: CSO Status */}
@@ -9396,6 +9788,7 @@ function AdminPageContent() {
                                 isWalletInsufficient || 
                                 (paymentChannel === "Deduct Member" && isCustomerWalletExpired) ||
                                 isSplitAmountInvalid ||
+                                isDialogCashInsufficient ||
                                 (paymentChannel === "Split Payment" && splitPayments.length < 2)
                               }
                               onClick={() => handleCreate(true)}
@@ -10424,7 +10817,7 @@ function AdminPageContent() {
                           className="flex h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs outline-none focus:ring-1 focus:ring-purple-500"
                         >
                           <option value="">{currentLanguage === "en" ? "Assign Later (ยังไม่ระบุไรเดอร์)" : "ยังไม่ระบุไรเดอร์ (Assign Later)"}</option>
-                          {riders.map((r: any) => (
+                          {riders.filter((r: any) => r.isActive !== false || (splitRiderId && r.id === splitRiderId)).map((r: any) => (
                             <option key={r.id} value={r.id}>
                               {r.name || r.phone}
                             </option>
@@ -10607,7 +11000,7 @@ function AdminPageContent() {
                       : (activeJob?.totalAmount || 0);
 
                     const walletAmount = payments
-                      .filter(p => (p.method || "").toLowerCase() === "credit")
+                      .filter(p => Boolean(selectedProfileCustomer?.isMember) && !(p.channel || "").toLowerCase().includes("hq") && ((p.method || "").toLowerCase() === "credit" || (p.channel || "").toLowerCase().includes("member") || (p.channel || "").toLowerCase().includes("wallet")))
                       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
 
                     const cashAmount = payments
@@ -10896,7 +11289,10 @@ function AdminPageContent() {
           {activeTab === "users" && hasAccess("users") && <AdminUsers />}
           {activeTab === "activity-logs" && hasAccess("activity-logs") && <AdminLogs />}
           {activeTab === "reports" && hasAccess("reports") && <AdminReports />}
+          {activeTab === "petty-cash" && hasAccess("petty-cash") && <AdminPettyCash currentUser={user} />}
+          {activeTab === "building-report" && hasAccess("building-report") && <AdminBuildingReport onViewJob={stableHandleEditFullJob} />}
           {activeTab === "marketing" && hasAccess("marketing") && <AdminMarketing onViewJob={stableHandleEditFullJob} />}
+          {activeTab === "top-spenders" && hasAccess("top-spenders") && <AdminTopSpenders onViewJob={stableHandleEditFullJob} />}
 
           {activeTab === "tasks" && hasAccess("tasks") && <AdminTasks />}
 
@@ -10990,6 +11386,7 @@ function AdminPageContent() {
           setProfileOpen(false);
           setCustomerDialogOpen(true);
         }}
+        onViewJob={stableHandleEditFullJob}
       />
 
       <AdminCustomerVouchersDialog

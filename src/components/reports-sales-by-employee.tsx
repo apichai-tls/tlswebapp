@@ -196,11 +196,14 @@ export function ReportsSalesByEmployee({ jobs, selectedBranch = "all", onViewJob
     setDatePreset("custom");
   };
 
-  // Trigger historical jobs load for full range
+  // Trigger historical jobs load for full range (debounced)
   useEffect(() => {
-    jobStore.fetchHistoricalJobs(startDate, endDate).catch(err => {
-      console.error("Failed to load historical jobs for sales by employee:", err);
-    });
+    const timer = setTimeout(() => {
+      jobStore.fetchHistoricalJobs(startDate, endDate).catch(err => {
+        console.error("Failed to load historical jobs for sales by employee:", err);
+      });
+    }, 300);
+    return () => clearTimeout(timer);
   }, [startDate, endDate]);
 
   // Load Top-up Transactions

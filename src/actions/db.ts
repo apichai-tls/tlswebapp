@@ -9,6 +9,7 @@ import { type PromotionCampaign, DEFAULT_PROMOTION_CAMPAIGNS, generateCouponCode
 import { invalidateDbCache, sanitizeCustomerRecord } from '@/lib/db-cache';
 import { publishOrderEvent } from '@/lib/realtime-bus';
 import { assertServerActionAuthorized, resolveServerActionUser, canUserAccessJob, canAccessCustomerRecords, canAccessCustomerOrLinkedJob, isAdminOrSuperadmin } from '@/lib/server-auth';
+import { ensureDailyRiderOfflineReset, recordRiderGpsTimestamp } from '@/lib/rider-presence';
 
 // CUSTOMERS
 function resolveBranchPrefixAndBase(branchId?: string | null): { prefix: string; baseStartingNum: number } {
@@ -859,19 +860,63 @@ export async function updateCustomerAction(
             }
           }
 
-          // 5. Wallet Idempotency Guard (when updating wallet)
+          // 5. Smart Wallet Idempotency Guard (when updating wallet)
           if (isWalletUpdate) {
-            const dedupRef = String(updates.idempotencyKey || updates.walletRefId || '').trim();
-            if (dedupRef) {
-              const existingWalletTx = await tx.walletTransaction.findFirst({
-                where: {
-                  customerId: id,
-                  referenceId: dedupRef,
-                },
-              });
-              if (existingWalletTx) {
-                console.warn(`[WalletIdempotency] Duplicate wallet adjustment ignored for reference: ${dedupRef}`);
-                return { savedCust: lockedCustomer, skippedDuplicateWallet: true };
+            const jobRefId = String(updates.walletRefId || updates.idempotencyKey || '').trim();
+            if (jobRefId) {
+              if (updates.walletRefType === 'job' || updates.walletTxType === 'DEDUCT') {
+                // Smart Net-Deduction Idempotency Guard for Job payments:
+                // Allows re-payment after Unlock Paid / Refund (when netDeducted <= 0 or latest tx is REFUND),
+                // while still blocking rapid accidental double-clicks of the exact same deduction.
+                const jobWalletTxs = await tx.walletTransaction.findMany({
+                  where: {
+                    customerId: id,
+                    referenceId: jobRefId,
+                    type: { in: ['DEDUCT', 'REFUND'] },
+                    approvalStatus: { not: 'REJECTED' },
+                  },
+                  orderBy: { createdAt: 'desc' },
+                });
+                const totalDeducted = jobWalletTxs
+                  .filter((t: any) => t.type === 'DEDUCT')
+                  .reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0);
+                const totalRefunded = jobWalletTxs
+                  .filter((t: any) => t.type === 'REFUND')
+                  .reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0);
+                const netDeducted = Math.round((totalDeducted - totalRefunded) * 100) / 100;
+                const latestTx = jobWalletTxs[0];
+                const incomingAbsAmt = Math.abs(
+                  updates.creditBalanceDelta !== undefined
+                    ? Number(updates.creditBalanceDelta)
+                    : Math.round(((data.creditBalance ?? lockedCustomer.creditBalance) - (lockedCustomer.creditBalance || 0)) * 100) / 100
+                );
+                const isRecentSameDeduct = Boolean(
+                  latestTx &&
+                  latestTx.type === 'DEDUCT' &&
+                  Math.abs((Number(latestTx.amount) || 0) - incomingAbsAmt) < 0.01 &&
+                  Date.now() - new Date(latestTx.createdAt).getTime() < 30000
+                );
+                const isSameIdempKey = Boolean(
+                  updates.idempotencyKey &&
+                  updates.idempotencyKey !== updates.walletRefId &&
+                  jobWalletTxs.some((t: any) => t.type === 'DEDUCT' && t.reason?.includes(`[Key:${updates.idempotencyKey}]`))
+                );
+                if (netDeducted > 0 && (isRecentSameDeduct || isSameIdempKey)) {
+                  console.warn(`[WalletIdempotency] Duplicate job wallet deduction ignored for job: ${jobRefId}`);
+                  return { savedCust: lockedCustomer, skippedDuplicateWallet: true };
+                }
+              } else {
+                const existingWalletTx = await tx.walletTransaction.findFirst({
+                  where: {
+                    customerId: id,
+                    referenceId: jobRefId,
+                    approvalStatus: { not: 'REJECTED' },
+                  },
+                });
+                if (existingWalletTx) {
+                  console.warn(`[WalletIdempotency] Duplicate wallet adjustment ignored for reference: ${jobRefId}`);
+                  return { savedCust: lockedCustomer, skippedDuplicateWallet: true };
+                }
               }
             }
           }
@@ -935,7 +980,7 @@ export async function updateCustomerAction(
                       balanceBefore: balBefore,
                       balanceAfter: balAfter,
                       reason: updates.adjustReason || updates.reason || null,
-                      referenceId: updates.idempotencyKey || updates.walletRefId || null,
+                      referenceId: updates.walletRefId || updates.idempotencyKey || null,
                       referenceType: refType,
                       createdById: updates.actorId || null,
                       createdByName: updates.actorName || (txType === 'DEDUCT' ? 'POS' : 'Admin'),
@@ -2735,7 +2780,7 @@ async function updateJobActionInternal(id: string, updates: any) {
         const existingUrls = JSON.parse(existingJob.billImageUrl);
         if (Array.isArray(incomingUrls) && Array.isArray(existingUrls)) {
           // If incoming has a receipt, replace older receipt from existing
-          const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-"))) || Boolean(updates.isShopPaid === true && !existingJob?.isShopPaid);
+          const incomingHasReceipt = incomingUrls.some(u => typeof u === "string" && (u.includes("/receipt-") || u.includes("receipt-"))) || Boolean(updates.isShopPaid !== undefined || updates.isPaid !== undefined || updates.items !== undefined || updates.totalAmount !== undefined || updates.walletBalanceAfter !== undefined);
           let baseExisting = incomingHasReceipt
             ? existingUrls.filter(u => typeof u === "string" && !u.includes("/receipt-") && !u.includes("receipt-"))
             : existingUrls;
@@ -3350,7 +3395,9 @@ export async function addRiderAction(data: any) {
     rData.currentLng = data.currentLocation.lng;
     delete rData.currentLocation;
   }
-  return prisma.rider.create({ data: rData });
+  const created = await prisma.rider.create({ data: rData });
+  invalidateDbCache('riders');
+  return created;
 }
 
 export async function updateRiderAction(id: string, updates: any) {
@@ -3358,13 +3405,25 @@ export async function updateRiderAction(id: string, updates: any) {
   if (authUser.role === 'rider' && authUser.id !== id) {
     throw new Error('403 Forbidden: Riders can only update their own profile');
   }
+  await ensureDailyRiderOfflineReset();
   const data: any = { ...updates };
+  let hasGpsUpdate = false;
   if (updates.currentLocation) {
     data.currentLat = updates.currentLocation.lat;
     data.currentLng = updates.currentLocation.lng;
     delete data.currentLocation;
+    hasGpsUpdate = true;
+  } else if (typeof updates.currentLat === 'number' && typeof updates.currentLng === 'number') {
+    hasGpsUpdate = true;
   }
+  delete data.gpsUpdatedAt;
+  if (data.isActive === false) data.status = 'offline';
   const updatedRider = await prisma.rider.update({ where: { id }, data });
+  let gpsUpdatedAt: string | undefined;
+  if (hasGpsUpdate) {
+    gpsUpdatedAt = await recordRiderGpsTimestamp(id);
+  }
+  invalidateDbCache('riders');
   if (data.isActive !== undefined) {
     try {
       await prisma.adminUser.update({
@@ -3375,12 +3434,14 @@ export async function updateRiderAction(id: string, updates: any) {
       // Ignore if no linked AdminUser
     }
   }
-  return updatedRider;
+  return gpsUpdatedAt ? { ...updatedRider, gpsUpdatedAt } : updatedRider;
 }
 
 export async function deleteRiderAction(id: string) {
   await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ['rider'] });
-  return prisma.rider.delete({ where: { id } });
+  const deleted = await prisma.rider.delete({ where: { id } });
+  invalidateDbCache('riders');
+  return deleted;
 }
 
 export async function getRiderTransactionsAction(riderId: string) {
@@ -5576,6 +5637,7 @@ export async function createWalletTransactionAction(data: {
 
 export async function getWalletTransactionsAction(filters?: {
   customerId?: string;
+  referenceId?: string;
   approvalStatus?: string;
   type?: string;
   startDate?: string;
@@ -5598,6 +5660,7 @@ export async function getWalletTransactionsAction(filters?: {
   }
   const where: any = {};
   if (filters?.customerId) where.customerId = filters.customerId;
+  if (filters?.referenceId) where.referenceId = filters.referenceId;
   if (filters?.approvalStatus && filters.approvalStatus !== 'all') where.approvalStatus = filters.approvalStatus;
   if (filters?.type && filters.type !== 'all') where.type = filters.type;
   if (filters?.branchId && filters.branchId !== 'all') where.branchId = filters.branchId;
@@ -5750,13 +5813,22 @@ export async function rejectWalletTransactionAction(data: {
   }
   if (originalTx.approvalStatus !== 'PENDING') throw new Error(`Transaction is already ${originalTx.approvalStatus}`);
 
-  const isCreditTopUp = originalTx.type === 'TOPUP' || originalTx.direction === 'CREDIT';
-  const shouldDeduct = Boolean(data.deductFromWallet && isCreditTopUp);
+  const isActualCreditBalanceIncrease =
+    originalTx.type === 'TOPUP' ||
+    (originalTx.direction === 'CREDIT' &&
+      originalTx.type !== 'UNLOCK_PAID' &&
+      Math.abs((Number(originalTx.balanceAfter) || 0) - (Number(originalTx.balanceBefore) || 0)) > 0.001);
+  const shouldDeduct = Boolean(data.deductFromWallet && isActualCreditBalanceIncrease);
 
   // 1. Create a follow-up Task so staff can investigate, resolve, and discuss
-  const cleanJobId = originalTx.referenceType === 'job' || originalTx.referenceId?.startsWith('RF-') || originalTx.type === 'DEDUCT'
-    ? originalTx.referenceId || undefined
-    : undefined;
+  const cleanJobId =
+    originalTx.referenceType === 'job' ||
+    originalTx.referenceId?.startsWith('RF-') ||
+    originalTx.type === 'DEDUCT' ||
+    originalTx.type === 'REFUND' ||
+    originalTx.type === 'UNLOCK_PAID'
+      ? originalTx.referenceId || undefined
+      : undefined;
 
   const taskTitle = `[Wallet Rejected] ${originalTx.type} ฿${originalTx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} - ${originalTx.customerName || "Customer"}`;
 
@@ -6363,7 +6435,7 @@ export async function processRefundAndCorrectAction(data: {
       data: { correctedJobId: duplicatedJob.id }
     });
 
-    // 6. Handle Wallet refund if walletRefundPortion > 0
+    // 6. Handle Wallet refund if walletRefundPortion > 0, and ALWAYS create a PENDING review record for Accounts
     if (walletRefundPortion > 0 && job.customerId) {
       await lockCustomerRowForWallet(tx, job.customerId);
       const currentCust = await tx.customer.findUnique({ where: { id: job.customerId } });
@@ -6376,7 +6448,7 @@ export async function processRefundAndCorrectAction(data: {
           data: { creditBalance: balAfter }
         });
 
-        // Create WalletTransaction record
+        // Create WalletTransaction record in PENDING state so Accounts reviews every refund
         const walletTx = await tx.walletTransaction.create({
           data: {
             customerId: job.customerId,
@@ -6386,13 +6458,14 @@ export async function processRefundAndCorrectAction(data: {
             direction: "CREDIT",
             balanceBefore: balBefore,
             balanceAfter: balAfter,
-            referenceId: creditNoteNumber,
-            referenceType: "refund",
+            referenceId: job.id,
+            referenceType: "job",
+            paymentChannel: data.refundChannel || "Wallet",
             reason: `Full Refund from Job #${job.id} (CN: ${creditNoteNumber}): ${data.reason}`,
             createdById: data.actorId || null,
             createdByName: data.actorName || "Staff",
             branchId: data.branchId || job.branchId || null,
-            approvalStatus: "APPROVED",
+            approvalStatus: "PENDING",
           }
         });
 
@@ -6401,6 +6474,34 @@ export async function processRefundAndCorrectAction(data: {
           data: { walletTxId: walletTx.id }
         });
       }
+    } else if (refundAmount > 0) {
+      const currentCust = job.customerId
+        ? await tx.customer.findUnique({ where: { id: job.customerId } })
+        : null;
+      const custBal = currentCust?.creditBalance || 0;
+      const auditTx = await tx.walletTransaction.create({
+        data: {
+          customerId: job.customerId || "walk-in",
+          customerName: currentCust?.name || job.customerName || "Customer",
+          type: "UNLOCK_PAID",
+          amount: refundAmount,
+          direction: "NEUTRAL",
+          balanceBefore: custBal,
+          balanceAfter: custBal,
+          referenceId: job.id,
+          referenceType: "job",
+          paymentChannel: data.refundChannel || job.paymentChannel || "Cash/Transfer",
+          reason: `Full Refund (${data.refundChannel}) from Job #${job.id} (CN: ${creditNoteNumber}): ${data.reason}`,
+          createdById: data.actorId || null,
+          createdByName: data.actorName || "Staff",
+          branchId: data.branchId || job.branchId || null,
+          approvalStatus: "PENDING",
+        }
+      });
+      await tx.jobRefund.update({
+        where: { id: jobRefund.id },
+        data: { walletTxId: auditTx.id }
+      });
     }
 
     // 7. Handle CashierShift if cashRefundPortion > 0 and active open shift exists
@@ -6586,13 +6687,14 @@ export async function unlockPaidJobAction(data: {
         existingPayments = [{
           amount: job.totalAmount || 0,
           method:
-            legacyMethod.includes("credit") || legacyMethod.includes("wallet") || legacyMethod.includes("member")
+            !legacyMethod.includes("hq") && (legacyMethod.includes("credit") || legacyMethod.includes("wallet") || legacyMethod.includes("member"))
               ? "credit"
               : legacyMethod.includes("transfer") || legacyMethod.includes("promptpay") || legacyMethod.includes("qr") || legacyMethod.includes("bank") || legacyMethod.includes("beam") || legacyMethod.includes("online")
               ? "transfer"
               : legacyMethod.includes("card") || legacyMethod.includes("edc") || legacyMethod.includes("visa") || legacyMethod.includes("master")
               ? "card"
               : "cash",
+          channel: job.paymentChannel || job.paymentMethod || undefined,
           shiftId: job.shiftId || undefined,
           timestamp: job.updatedAt?.toISOString() || new Date().toISOString(),
           paidBy: "Legacy Record"
@@ -6603,14 +6705,44 @@ export async function unlockPaidJobAction(data: {
       const isWalletPay = (p: any) => {
         const m = (p.method || "").toLowerCase();
         const ch = (p.channel || "").toLowerCase();
+        if (ch.includes("hq")) return false;
         return m === "credit" || m.includes("wallet") || m.includes("deduct") || ch.includes("deduct") || ch.includes("wallet") || ch.includes("member");
       };
 
-      const walletRefundAmount = existingPayments
+      const rawWalletRefundAmount = existingPayments
         .filter(isWalletPay)
         .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+      const totalUnlockedAmount =
+        existingPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0) ||
+        Number(job.totalAmount) ||
+        0;
+      const unlockedChannels = Array.from(
+        new Set(existingPayments.map((p: any) => p.channel || p.method).filter(Boolean))
+      ).join(", ") || job.paymentChannel || job.paymentMethod || "Paid";
 
-      if (walletRefundAmount > 0 && job.customerId) {
+      // Annotate any prior PENDING DEDUCT transactions for this job so Accounts sees that this payment was unlocked
+      const priorPendingDeducts = await tx.walletTransaction.findMany({
+        where: {
+          referenceId: job.id,
+          type: "DEDUCT",
+          approvalStatus: "PENDING",
+        },
+      });
+      for (const priorTx of priorPendingDeducts) {
+        if (!priorTx.reason?.includes("[Unlocked:")) {
+          await tx.walletTransaction.update({
+            where: { id: priorTx.id },
+            data: {
+              reason: `${priorTx.reason || `Order Payment #${job.billNo || job.id}`} [Unlocked: ${data.reason}]`,
+            },
+          });
+        }
+      }
+
+      let walletRefundAmount = 0;
+      const preCheckCustomer = job.customerId ? await tx.customer.findUnique({ where: { id: job.customerId }, select: { id: true, isMember: true } }) : null;
+      if (rawWalletRefundAmount > 0 && job.customerId && preCheckCustomer?.isMember) {
+        walletRefundAmount = rawWalletRefundAmount;
         await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
         if (customer) {
@@ -6631,15 +6763,42 @@ export async function unlockPaidJobAction(data: {
               direction: "CREDIT",
               balanceBefore: balBefore,
               balanceAfter: balAfter,
-              reason: `Unlock Paid: ${data.reason}`,
+              reason: `🔓 Unlock Paid: ${data.reason}`,
               referenceId: job.id,
               referenceType: "job",
+              paymentChannel: unlockedChannels,
+              branchId: job.branchId || null,
               createdById: data.actorId || null,
               createdByName: data.actorName || "CSO",
-              approvalStatus: "APPROVED",
+              approvalStatus: "PENDING",
             },
           });
         }
+      } else {
+        // Non-wallet payment unlocked (Cash, Transfer, Card, etc.) -> Create PENDING UNLOCK_PAID review record so Accounts is always notified!
+        const customer = job.customerId
+          ? await tx.customer.findUnique({ where: { id: job.customerId } })
+          : null;
+        const custBal = customer?.creditBalance || 0;
+        await tx.walletTransaction.create({
+          data: {
+            customerId: job.customerId || "walk-in",
+            customerName: customer?.name || job.customerName || "Customer",
+            type: "UNLOCK_PAID",
+            amount: totalUnlockedAmount,
+            direction: "NEUTRAL",
+            balanceBefore: custBal,
+            balanceAfter: custBal,
+            reason: `🔓 Unlock Paid (${unlockedChannels}): ${data.reason}`,
+            referenceId: job.id,
+            referenceType: "job",
+            paymentChannel: unlockedChannels,
+            branchId: job.branchId || null,
+            createdById: data.actorId || null,
+            createdByName: data.actorName || "CSO",
+            approvalStatus: "PENDING",
+          },
+        });
       }
 
       // ──── 4. Cashier Shift Adjustment (สำหรับกะที่ยังเปิดอยู่) ────
@@ -6735,6 +6894,7 @@ export async function unlockPaidJobAction(data: {
           isShopPaid: false,
           shopPaidAt: null,
           csoPaidAt: null,
+          walletBalanceAfter: null,
           adminNotesJson: updatedNotesJson,
           billImageUrl: updatedBillImageUrl,
         },
@@ -6771,7 +6931,7 @@ export async function unlockPaidJobAction(data: {
         type: 'job.updated',
         job: unlockRes.updatedJob,
         action: 'unlock_paid',
-        changedFields: ['isPaid', 'isShopPaid', 'adminNotesJson', 'billImageUrl'],
+        changedFields: ['isPaid', 'isShopPaid', 'walletBalanceAfter', 'adminNotesJson', 'billImageUrl'],
         actorId: data.actorId,
         actorName: data.actorName,
       });
@@ -6801,6 +6961,8 @@ export async function recordJobPaymentAction(data: {
   shiftId?: string | null;
   slipUrl?: string | null;
   note?: string | null;
+  received?: number;
+  change?: number;
 }): Promise<{
   success: boolean;
   error?: string;
@@ -6892,9 +7054,10 @@ export async function recordJobPaymentAction(data: {
             referenceId: job.id,
             referenceType: "job",
             paymentChannel: data.channel,
+            branchId: job.branchId || null,
             createdById: data.actorId || null,
             createdByName: data.actorName || "Staff",
-            approvalStatus: "APPROVED",
+            approvalStatus: "PENDING",
           }
         });
 
@@ -6940,6 +7103,12 @@ export async function recordJobPaymentAction(data: {
       }
 
       // Construct payment entry
+      const effReceived = method === "cash" && data.received != null && !isNaN(Number(data.received)) && Number(data.received) > 0
+        ? Math.round(Number(data.received) * 100) / 100
+        : undefined;
+      const effChange = effReceived !== undefined
+        ? (data.change != null && !isNaN(Number(data.change)) ? Math.max(0, Math.round(Number(data.change) * 100) / 100) : Math.max(0, Math.round((effReceived - amount) * 100) / 100))
+        : undefined;
       const paymentEntry = {
         id: crypto.randomUUID(),
         amount,
@@ -6950,6 +7119,7 @@ export async function recordJobPaymentAction(data: {
         paidBy: data.actorName || "Staff",
         slipUrl: data.slipUrl || null,
         note: data.note || null,
+        ...(effReceived !== undefined ? { received: effReceived, change: effChange } : {}),
       };
 
       const updatedPayments = [...existingPayments, paymentEntry];
@@ -7000,9 +7170,10 @@ export async function recordJobPaymentAction(data: {
           isPaid: isFullyPaid ? true : job.isPaid,
           isShopPaid: isFullyPaid ? true : job.isShopPaid,
           csoPaidAt: isFullyPaid ? (job.csoPaidAt || new Date()) : job.csoPaidAt,
+          walletBalanceAfter: newBalance !== undefined ? newBalance : (isFullyPaid && job.customerId ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { isMember: true, creditBalance: true } }))?.isMember ? ((await tx.customer.findUnique({ where: { id: job.customerId }, select: { creditBalance: true } }))?.creditBalance ?? 0) : null) : job.walletBalanceAfter),
           shopPaidAt: isFullyPaid ? (job.shopPaidAt || new Date()) : job.shopPaidAt,
           paymentChannel: finalChannel,
-          walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+
           billImageUrl: updatedBillImageUrl,
           adminNotesJson: updatedAdminNotesJson,
         }
@@ -7139,8 +7310,10 @@ export async function voidJobPaymentAction(data: {
       let refundedAmount = 0;
       let newBalance: number | undefined = undefined;
 
-      // 1. If method was credit (Member Wallet), refund back to wallet
-      if (targetMethod === "credit" && job.customerId) {
+      // 1. If method was credit (Member Wallet), refund back to wallet and notify Accounts (PENDING)
+      const isTargetMemberWallet = !String(targetChannel || "").toLowerCase().includes("hq") && (targetMethod === "credit" || String(targetChannel || "").toLowerCase().includes("wallet") || String(targetChannel || "").toLowerCase().includes("member"));
+      const preCheckVoidCust = job.customerId ? await tx.customer.findUnique({ where: { id: job.customerId }, select: { id: true, isMember: true } }) : null;
+      if (isTargetMemberWallet && job.customerId && preCheckVoidCust?.isMember) {
         await lockCustomerRowForWallet(tx, job.customerId);
         const customer = await tx.customer.findUnique({ where: { id: job.customerId } });
         if (customer) {
@@ -7161,18 +7334,44 @@ export async function voidJobPaymentAction(data: {
               direction: "CREDIT",
               balanceBefore: balBefore,
               balanceAfter: balAfter,
-              reason: `ยกเลิกการชำระเงิน: ${data.reason.trim()}`,
+              reason: `🔓 ยกเลิกการชำระเงิน (Void Payment): ${data.reason.trim()}`,
               referenceId: job.id,
               referenceType: "job",
+              paymentChannel: targetChannel || "Deduct Member",
+              branchId: job.branchId || null,
               createdById: data.actorId || null,
               createdByName: data.actorName || "CSO",
-              approvalStatus: "APPROVED",
+              approvalStatus: "PENDING",
             }
           });
 
           refundedAmount = targetAmount;
           newBalance = balAfter;
         }
+      } else if (targetAmount > 0) {
+        const customer = job.customerId
+          ? await tx.customer.findUnique({ where: { id: job.customerId } })
+          : null;
+        const custBal = customer?.creditBalance || 0;
+        await tx.walletTransaction.create({
+          data: {
+            customerId: job.customerId || "walk-in",
+            customerName: customer?.name || job.customerName || "Customer",
+            type: "UNLOCK_PAID",
+            amount: targetAmount,
+            direction: "NEUTRAL",
+            balanceBefore: custBal,
+            balanceAfter: custBal,
+            reason: `🔓 ยกเลิกการชำระเงิน (${targetChannel || targetMethod}): ${data.reason.trim()}`,
+            referenceId: job.id,
+            referenceType: "job",
+            paymentChannel: targetChannel || targetMethod,
+            branchId: job.branchId || null,
+            createdById: data.actorId || null,
+            createdByName: data.actorName || "CSO",
+            approvalStatus: "PENDING",
+          }
+        });
       }
 
       // 2. If open shift, adjust shift sales by method
@@ -7264,9 +7463,10 @@ export async function voidJobPaymentAction(data: {
           isPaid: isStillFullyPaid,
           isShopPaid: isStillFullyPaid,
           csoPaidAt: isStillFullyPaid ? job.csoPaidAt : null,
+          walletBalanceAfter: newBalance !== undefined ? newBalance : (isStillFullyPaid ? job.walletBalanceAfter : null),
           shopPaidAt: isStillFullyPaid ? job.shopPaidAt : null,
           paymentChannel: finalChannel,
-          walletBalanceAfter: newBalance !== undefined ? newBalance : job.walletBalanceAfter,
+
           billImageUrl: updatedBillImageUrl,
           adminNotesJson: updatedAdminNotesJson,
         }
@@ -8593,5 +8793,527 @@ export async function getPromotionReportAction(filters?: {
 }
 
 
+// ==========================================
+// PETTY CASH (??????????????????) ACTIONS
+// ==========================================
 
+const DEFAULT_PETTY_CASH_CATEGORIES = [
+  "Laundry Supplies (\u0E19\u0E49\u0E33\u0E22\u0E32/\u0E2D\u0E38\u0E1B\u0E01\u0E23\u0E13\u0E4C\u0E0B\u0E31\u0E01\u0E23\u0E35\u0E14)",
+  "Transport & Fuel (\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E21\u0E31\u0E19/\u0E17\u0E32\u0E07\u0E14\u0E48\u0E27\u0E19/\u0E04\u0E48\u0E32\u0E23\u0E16)",
+  "Maintenance & Parts (\u0E04\u0E48\u0E32\u0E0B\u0E48\u0E2D\u0E21\u0E1A\u0E33\u0E23\u0E38\u0E07/\u0E2D\u0E30\u0E44\u0E2B\u0E25\u0E48)",
+  "Store Misc (\u0E04\u0E48\u0E32\u0E43\u0E0A\u0E49\u0E08\u0E48\u0E32\u0E22\u0E2B\u0E19\u0E49\u0E32\u0E23\u0E49\u0E32\u0E19/\u0E40\u0E1A\u0E47\u0E14\u0E40\u0E15\u0E25\u0E47\u0E14)",
+  "Shipping & Postage (\u0E04\u0E48\u0E32\u0E1E\u0E31\u0E2A\u0E14\u0E38/\u0E44\u0E1B\u0E23\u0E29\u0E13\u0E35\u0E22\u0E4C)",
+  "Office Supplies (\u0E04\u0E48\u0E32\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E40\u0E02\u0E35\u0E22\u0E19/\u0E2D\u0E38\u0E1B\u0E01\u0E23\u0E13\u0E4C)",
+  "Staff Welfare (\u0E2A\u0E27\u0E31\u0E2A\u0E14\u0E34\u0E01\u0E32\u0E23/\u0E19\u0E49\u0E33\u0E14\u0E37\u0E48\u0E21/\u0E2D\u0E32\u0E2B\u0E32\u0E23)",
+];
 
+let pettyCashTableReady = false;
+async function ensurePettyCashTableExists() {
+  if (pettyCashTableReady) return;
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "PettyCashTransaction" (
+        "id" TEXT NOT NULL,
+        "txNumber" TEXT,
+        "type" TEXT NOT NULL,
+        "direction" TEXT NOT NULL,
+        "amount" DOUBLE PRECISION NOT NULL,
+        "balanceBefore" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "balanceAfter" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "holderId" TEXT NOT NULL,
+        "holderName" TEXT NOT NULL,
+        "branchId" TEXT,
+        "relatedTxId" TEXT,
+        "counterpartyId" TEXT,
+        "counterpartyName" TEXT,
+        "category" TEXT NOT NULL,
+        "description" TEXT NOT NULL,
+        "vendorName" TEXT,
+        "invoiceNo" TEXT,
+        "paymentMethod" TEXT,
+        "receiptUrls" TEXT,
+        "slipUrls" TEXT,
+        "status" TEXT NOT NULL DEFAULT 'PENDING',
+        "transactionDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "createdById" TEXT,
+        "createdByName" TEXT,
+        "approvedById" TEXT,
+        "approvedByName" TEXT,
+        "approvedAt" TIMESTAMP(3),
+        "rejectReason" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "PettyCashTransaction_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "relatedTxId" TEXT;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyId" TEXT;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "PettyCashTransaction" ADD COLUMN IF NOT EXISTS "counterpartyName" TEXT;`);
+    pettyCashTableReady = true;
+  } catch (e) {
+    console.warn("[ensurePettyCashTableExists]", e);
+  }
+}
+
+async function recalculateHolderPettyCashBalances(holderId: string) {
+  if (!holderId) return;
+  const rows: any[] = await prisma.$queryRaw`
+    SELECT * FROM "PettyCashTransaction"
+    WHERE "holderId" = ${holderId}
+    ORDER BY "transactionDate" ASC, "createdAt" ASC, "id" ASC
+  `;
+
+  let runningBal = 0;
+  for (const row of rows) {
+    const isRejectedOrVoid = row.status === "REJECTED" || row.status === "VOID";
+    const amt = Math.round((Number(row.amount) || 0) * 100) / 100;
+    const balBefore = runningBal;
+    let balAfter = runningBal;
+    if (!isRejectedOrVoid) {
+      if (row.direction === "CREDIT") {
+        balAfter = Math.round((runningBal + amt) * 100) / 100;
+      } else {
+        balAfter = Math.round((runningBal - amt) * 100) / 100;
+      }
+      runningBal = balAfter;
+    }
+    if (Math.abs((Number(row.balanceBefore) || 0) - balBefore) > 0.001 || Math.abs((Number(row.balanceAfter) || 0) - balAfter) > 0.001) {
+      await prisma.$executeRaw`
+        UPDATE "PettyCashTransaction"
+        SET "balanceBefore" = ${balBefore}, "balanceAfter" = ${balAfter}
+        WHERE "id" = ${row.id}
+      `;
+    }
+  }
+}
+
+export async function getPettyCashDataAction(): Promise<{
+  success: boolean;
+  error?: string;
+  transactions: any[];
+  categories: string[];
+}> {
+  try {
+    await assertServerActionAuthorized({ forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const [rows, catSetting] = await Promise.all([
+      prisma.$queryRaw<any[]>`
+        SELECT * FROM "PettyCashTransaction"
+        ORDER BY "transactionDate" DESC, "createdAt" DESC
+      `,
+      prisma.setting.findUnique({ where: { key: "pettyCashCategories" } }),
+    ]);
+
+    let categories = DEFAULT_PETTY_CASH_CATEGORIES;
+    if (catSetting?.value) {
+      try {
+        const parsed = JSON.parse(catSetting.value);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          categories = parsed.map((c: any) => String(c).trim()).filter(Boolean);
+        }
+      } catch {}
+    }
+
+    const transactions = (rows || []).map((r: any) => {
+      let receiptUrls: string[] = [];
+      let slipUrls: string[] = [];
+      try { if (r.receiptUrls) receiptUrls = JSON.parse(r.receiptUrls); } catch {}
+      try { if (r.slipUrls) slipUrls = JSON.parse(r.slipUrls); } catch {}
+      return {
+        ...r,
+        amount: Number(r.amount) || 0,
+        balanceBefore: Number(r.balanceBefore) || 0,
+        balanceAfter: Number(r.balanceAfter) || 0,
+        receiptUrls: Array.isArray(receiptUrls) ? receiptUrls : [],
+        slipUrls: Array.isArray(slipUrls) ? slipUrls : [],
+      };
+    });
+
+    return {
+      success: true,
+      transactions,
+      categories,
+    };
+  } catch (err: any) {
+    console.error("[getPettyCashDataAction] Error:", err);
+    return {
+      success: false,
+      error: err?.message || "Failed to load petty cash data",
+      transactions: [],
+      categories: DEFAULT_PETTY_CASH_CATEGORIES,
+    };
+  }
+}
+
+export async function createPettyCashTransactionAction(data: {
+  type: "EXPENSE" | "TOPUP" | "RETURN" | "ADJUST_ADD" | "ADJUST_DEDUCT";
+  amount: number;
+  holderId: string;
+  holderName: string;
+  branchId?: string | null;
+  category: string;
+  description: string;
+  vendorName?: string | null;
+  invoiceNo?: string | null;
+  paymentMethod?: string | null;
+  receiptUrls?: string[];
+  slipUrls?: string[];
+  transactionDate?: string | Date;
+}): Promise<{ success: boolean; error?: string; id?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const amt = Math.round((Number(data.amount) || 0) * 100) / 100;
+    if (isNaN(amt) || amt <= 0) {
+      return { success: false, error: "\u0E01\u0E23\u0E38\u0E13\u0E32\u0E23\u0E30\u0E1A\u0E38\u0E08\u0E33\u0E19\u0E27\u0E19\u0E40\u0E07\u0E34\u0E19\u0E17\u0E35\u0E48\u0E21\u0E32\u0E01\u0E01\u0E27\u0E48\u0E32 0" };
+    }
+    if (!data.holderId || !data.holderName) {
+      return { success: false, error: "\u0E01\u0E23\u0E38\u0E13\u0E32\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E1C\u0E39\u0E49\u0E16\u0E37\u0E2D\u0E40\u0E07\u0E34\u0E19\u0E2A\u0E14\u0E22\u0E48\u0E2D\u0E22 (\u0E23\u0E32\u0E22\u0E1A\u0E38\u0E04\u0E04\u0E25)" };
+    }
+
+    const isCredit = data.type === "TOPUP" || data.type === "ADJUST_ADD";
+    const direction = isCredit ? "CREDIT" : "DEBIT";
+
+    // TOPUP / ADJUST_ADD by Accounting/Admin is auto-approved; EXPENSE starts as PENDING (but deducts balance immediately per rule #1!)
+    const initialStatus = isCredit ? "APPROVED" : "PENDING";
+    const now = new Date();
+    const txDate = data.transactionDate ? new Date(data.transactionDate) : now;
+    const id = crypto.randomUUID();
+    const ym = `${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const randSuffix = String(Math.floor(1000 + Math.random() * 9000));
+    const txNumber = `PC-${ym}-${randSuffix}`;
+
+    const receiptJson = JSON.stringify(Array.isArray(data.receiptUrls) ? data.receiptUrls : []);
+    const slipJson = JSON.stringify(Array.isArray(data.slipUrls) ? data.slipUrls : []);
+    const actorName = authUser.name || authUser.email || "Staff";
+
+    await prisma.$executeRaw`
+      INSERT INTO "PettyCashTransaction" (
+        "id", "txNumber", "type", "direction", "amount", "balanceBefore", "balanceAfter",
+        "holderId", "holderName", "branchId", "category", "description", "vendorName",
+        "invoiceNo", "paymentMethod", "receiptUrls", "slipUrls", "status", "transactionDate",
+        "createdById", "createdByName", "approvedById", "approvedByName", "approvedAt",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        ${id}, ${txNumber}, ${data.type}, ${direction}, ${amt}, 0, 0,
+        ${data.holderId}, ${data.holderName}, ${data.branchId || null}, ${data.category.trim()}, ${data.description.trim()}, ${data.vendorName?.trim() || null},
+        ${data.invoiceNo?.trim() || null}, ${data.paymentMethod || (isCredit ? "Transfer" : "Cash")}, ${receiptJson}, ${slipJson}, ${initialStatus}, ${txDate},
+        ${authUser.id}, ${actorName}, ${isCredit ? authUser.id : null}, ${isCredit ? actorName : null}, ${isCredit ? now : null},
+        ${now}, ${now}
+      )
+    `;
+
+    await recalculateHolderPettyCashBalances(data.holderId);
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: isCredit ? "PETTY_CASH_TOPUP" : "PETTY_CASH_EXPENSE",
+        entityType: "petty_cash",
+        entityId: id,
+        details: `[${txNumber}] ${isCredit ? "+" : "-"}฿${amt.toLocaleString()} (${data.holderName}) - ${data.category}: ${data.description}`,
+      },
+    }).catch(() => {});
+
+    return { success: true, id };
+  } catch (err: any) {
+    console.error("[createPettyCashTransactionAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to record petty cash transaction" };
+  }
+}
+
+export async function updatePettyCashTransactionAction(
+  id: string,
+  data: {
+    amount?: number;
+    holderId?: string;
+    holderName?: string;
+    branchId?: string | null;
+    category?: string;
+    description?: string;
+    vendorName?: string | null;
+    invoiceNo?: string | null;
+    paymentMethod?: string | null;
+    receiptUrls?: string[];
+    slipUrls?: string[];
+    transactionDate?: string | Date;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const existingRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${id} LIMIT 1`;
+    const existing = existingRows[0];
+    if (!existing) return { success: false, error: "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E19\u0E35\u0E49\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A" };
+
+    const amt = data.amount !== undefined ? Math.round((Number(data.amount) || 0) * 100) / 100 : Number(existing.amount);
+    if (isNaN(amt) || amt <= 0) {
+      return { success: false, error: "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E40\u0E07\u0E34\u0E19\u0E15\u0E49\u0E2D\u0E07\u0E21\u0E32\u0E01\u0E01\u0E27\u0E48\u0E32 0" };
+    }
+
+    const nextHolderId = data.holderId || existing.holderId;
+    const nextHolderName = data.holderName || existing.holderName;
+    const nextBranchId = data.branchId !== undefined ? data.branchId : existing.branchId;
+    const nextCategory = data.category !== undefined ? data.category.trim() : existing.category;
+    const nextDesc = data.description !== undefined ? data.description.trim() : existing.description;
+    const nextVendor = data.vendorName !== undefined ? (data.vendorName?.trim() || null) : existing.vendorName;
+    const nextInvoice = data.invoiceNo !== undefined ? (data.invoiceNo?.trim() || null) : existing.invoiceNo;
+    const nextMethod = data.paymentMethod !== undefined ? data.paymentMethod : existing.paymentMethod;
+    const nextReceipts = data.receiptUrls !== undefined ? JSON.stringify(data.receiptUrls) : existing.receiptUrls;
+    const nextSlips = data.slipUrls !== undefined ? JSON.stringify(data.slipUrls) : existing.slipUrls;
+    const nextTxDate = data.transactionDate ? new Date(data.transactionDate) : new Date(existing.transactionDate);
+    const now = new Date();
+
+    await prisma.$executeRaw`
+      UPDATE "PettyCashTransaction"
+      SET
+        "amount" = ${amt},
+        "holderId" = ${nextHolderId},
+        "holderName" = ${nextHolderName},
+        "branchId" = ${nextBranchId},
+        "category" = ${nextCategory},
+        "description" = ${nextDesc},
+        "vendorName" = ${nextVendor},
+        "invoiceNo" = ${nextInvoice},
+        "paymentMethod" = ${nextMethod},
+        "receiptUrls" = ${nextReceipts},
+        "slipUrls" = ${nextSlips},
+        "transactionDate" = ${nextTxDate},
+        "updatedAt" = ${now}
+      WHERE "id" = ${id}
+    `;
+
+    await recalculateHolderPettyCashBalances(existing.holderId);
+    if (nextHolderId !== existing.holderId) {
+      await recalculateHolderPettyCashBalances(nextHolderId);
+    }
+
+    // If this transaction is part of a 2-leg internal transfer (TRANSFER_OUT / TRANSFER_IN), sync amount/date/files/description to its paired leg
+    if (existing.relatedTxId) {
+      const pairedRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${existing.relatedTxId} LIMIT 1`;
+      const paired = pairedRows[0];
+      if (paired) {
+        await prisma.$executeRaw`
+          UPDATE "PettyCashTransaction"
+          SET
+            "amount" = ${amt},
+            "description" = ${nextDesc},
+            "paymentMethod" = ${nextMethod},
+            "receiptUrls" = ${nextReceipts},
+            "slipUrls" = ${nextSlips},
+            "transactionDate" = ${nextTxDate},
+            "updatedAt" = ${now}
+          WHERE "id" = ${paired.id}
+        `;
+        await recalculateHolderPettyCashBalances(paired.holderId);
+      }
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("[updatePettyCashTransactionAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to update petty cash transaction" };
+  }
+}
+
+export async function reviewPettyCashTransactionAction(data: {
+  id: string;
+  action: "APPROVE" | "REJECT" | "VOID";
+  reason?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const existingRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${data.id} LIMIT 1`;
+    const existing = existingRows[0];
+    if (!existing) return { success: false, error: "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E19\u0E35\u0E49\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A" };
+
+    const nextStatus = data.action === "APPROVE" ? "APPROVED" : data.action === "REJECT" ? "REJECTED" : "VOID";
+    const now = new Date();
+    const actorName = authUser.name || authUser.email || "Accounting";
+
+    await prisma.$executeRaw`
+      UPDATE "PettyCashTransaction"
+      SET
+        "status" = ${nextStatus},
+        "approvedById" = ${authUser.id},
+        "approvedByName" = ${actorName},
+        "approvedAt" = ${now},
+        "rejectReason" = ${data.reason?.trim() || null},
+        "updatedAt" = ${now}
+      WHERE "id" = ${data.id}
+    `;
+
+    await recalculateHolderPettyCashBalances(existing.holderId);
+
+    // If voiding/rejecting/approving a 2-leg transfer, sync status to the paired leg and recalculate its holder's balance
+    if (existing.relatedTxId) {
+      const pairedRows: any[] = await prisma.$queryRaw`SELECT * FROM "PettyCashTransaction" WHERE "id" = ${existing.relatedTxId} LIMIT 1`;
+      const paired = pairedRows[0];
+      if (paired) {
+        await prisma.$executeRaw`
+          UPDATE "PettyCashTransaction"
+          SET
+            "status" = ${nextStatus},
+            "approvedById" = ${authUser.id},
+            "approvedByName" = ${actorName},
+            "approvedAt" = ${now},
+            "rejectReason" = ${data.reason?.trim() || null},
+            "updatedAt" = ${now}
+          WHERE "id" = ${paired.id}
+        `;
+        await recalculateHolderPettyCashBalances(paired.holderId);
+      }
+    }
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: `PETTY_CASH_${nextStatus}`,
+        entityType: "petty_cash",
+        entityId: data.id,
+        details: `[${existing.txNumber || data.id}] ${nextStatus} (฿${Number(existing.amount).toLocaleString()} - ${existing.holderName})${data.reason ? ` เหตุผล: ${data.reason}` : ""}`,
+      },
+    }).catch(() => {});
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("[reviewPettyCashTransactionAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to review petty cash transaction" };
+  }
+}
+
+export async function transferPettyCashAction(data: {
+  fromHolderId: string;
+  fromHolderName: string;
+  fromBranchId?: string | null;
+  toHolderId: string;
+  toHolderName: string;
+  toBranchId?: string | null;
+  amount: number;
+  description: string;
+  paymentMethod?: string | null;
+  receiptUrls?: string[];
+  slipUrls?: string[];
+  transactionDate?: string | Date;
+}): Promise<{ success: boolean; error?: string; outId?: string; inId?: string }> {
+  try {
+    const authUser = await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    await ensurePettyCashTableExists();
+
+    const amt = Math.round((Number(data.amount) || 0) * 100) / 100;
+    if (isNaN(amt) || amt <= 0) {
+      return { success: false, error: "กรุณาระบุจำนวนเงินที่มากกว่า 0" };
+    }
+    if (!data.fromHolderId || !data.fromHolderName) {
+      return { success: false, error: "ไม่พบข้อมูลผู้โอนต้นทาง" };
+    }
+    if (!data.toHolderId || !data.toHolderName) {
+      return { success: false, error: "กรุณาเลือกผู้รับโอนปลายทาง (หน้าร้าน / พนักงาน)" };
+    }
+    if (data.fromHolderId === data.toHolderId) {
+      return { success: false, error: "ผู้โอนต้นทางและผู้รับปลายทางต้องไม่ใช่คนเดียวกัน" };
+    }
+
+    const now = new Date();
+    const txDate = data.transactionDate ? new Date(data.transactionDate) : now;
+    const outId = crypto.randomUUID();
+    const inId = crypto.randomUUID();
+    const ym = `${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const randSuffix = String(Math.floor(1000 + Math.random() * 9000));
+    const outTxNo = `PC-TR-${ym}-${randSuffix}-OUT`;
+    const inTxNo = `PC-TR-${ym}-${randSuffix}-IN`;
+
+    const receiptJson = JSON.stringify(Array.isArray(data.receiptUrls) ? data.receiptUrls : []);
+    const slipJson = JSON.stringify(Array.isArray(data.slipUrls) ? data.slipUrls : []);
+    const actorName = authUser.name || authUser.email || data.fromHolderName;
+    const cleanDesc = data.description.trim() || `โอนวงเงินสดย่อยให้ ${data.toHolderName}`;
+    const method = data.paymentMethod || "Transfer";
+
+    // Leg 1: TRANSFER_OUT (DEBIT from Accounting staff wallet)
+    await prisma.$executeRaw`
+      INSERT INTO "PettyCashTransaction" (
+        "id", "txNumber", "type", "direction", "amount", "balanceBefore", "balanceAfter",
+        "holderId", "holderName", "branchId", "relatedTxId", "counterpartyId", "counterpartyName",
+        "category", "description", "vendorName", "invoiceNo", "paymentMethod",
+        "receiptUrls", "slipUrls", "status", "transactionDate",
+        "createdById", "createdByName", "approvedById", "approvedByName", "approvedAt",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        ${outId}, ${outTxNo}, 'TRANSFER_OUT', 'DEBIT', ${amt}, 0, 0,
+        ${data.fromHolderId}, ${data.fromHolderName}, ${data.fromBranchId || "HQ"}, ${inId}, ${data.toHolderId}, ${data.toHolderName},
+        'โอนกระจายวงเงินให้หน้าร้าน (Transfer to Store)', ${cleanDesc}, ${data.toHolderName}, null, ${method},
+        ${receiptJson}, ${slipJson}, 'APPROVED', ${txDate},
+        ${authUser.id}, ${actorName}, ${authUser.id}, ${actorName}, ${now},
+        ${now}, ${now}
+      )
+    `;
+
+    // Leg 2: TRANSFER_IN (CREDIT to Store/Branch staff wallet)
+    await prisma.$executeRaw`
+      INSERT INTO "PettyCashTransaction" (
+        "id", "txNumber", "type", "direction", "amount", "balanceBefore", "balanceAfter",
+        "holderId", "holderName", "branchId", "relatedTxId", "counterpartyId", "counterpartyName",
+        "category", "description", "vendorName", "invoiceNo", "paymentMethod",
+        "receiptUrls", "slipUrls", "status", "transactionDate",
+        "createdById", "createdByName", "approvedById", "approvedByName", "approvedAt",
+        "createdAt", "updatedAt"
+      ) VALUES (
+        ${inId}, ${inTxNo}, 'TRANSFER_IN', 'CREDIT', ${amt}, 0, 0,
+        ${data.toHolderId}, ${data.toHolderName}, ${data.toBranchId || "HQ"}, ${outId}, ${data.fromHolderId}, ${data.fromHolderName},
+        'รับโอนวงเงินจากฝ่ายบัญชี (Received from Accounting)', ${cleanDesc}, ${data.fromHolderName}, null, ${method},
+        ${receiptJson}, ${slipJson}, 'APPROVED', ${txDate},
+        ${authUser.id}, ${actorName}, ${authUser.id}, ${actorName}, ${now},
+        ${now}, ${now}
+      )
+    `;
+
+    await recalculateHolderPettyCashBalances(data.fromHolderId);
+    await recalculateHolderPettyCashBalances(data.toHolderId);
+
+    await prisma.activityLog.create({
+      data: {
+        userId: authUser.id,
+        userName: actorName,
+        action: "PETTY_CASH_TRANSFER",
+        entityType: "petty_cash",
+        entityId: outId,
+        details: `[PC-TR-${ym}-${randSuffix}] โอนวงเงินสดย่อย ฿${amt.toLocaleString()} จาก ${data.fromHolderName} -> ${data.toHolderName} (${cleanDesc})`,
+      },
+    }).catch(() => {});
+
+    return { success: true, outId, inId };
+  } catch (err: any) {
+    console.error("[transferPettyCashAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to transfer petty cash" };
+  }
+}
+
+export async function savePettyCashCategoriesAction(categories: string[]): Promise<{
+  success: boolean;
+  error?: string;
+  categories?: string[];
+}> {
+  try {
+    await assertServerActionAuthorized({ requireWrite: true, forbidRoles: ["rider"] });
+    const cleaned = Array.from(new Set((categories || []).map((c) => String(c).trim()).filter(Boolean)));
+    if (cleaned.length === 0) {
+      return { success: false, error: "\u0E15\u0E49\u0E2D\u0E07\u0E21\u0E35\u0E2B\u0E21\u0E27\u0E14\u0E2B\u0E21\u0E39\u0E48\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E19\u0E49\u0E2D\u0E22 1 \u0E23\u0E32\u0E22\u0E01\u0E32\u0E23" };
+    }
+    await prisma.setting.upsert({
+      where: { key: "pettyCashCategories" },
+      update: { value: JSON.stringify(cleaned) },
+      create: { key: "pettyCashCategories", value: JSON.stringify(cleaned) },
+    });
+    return { success: true, categories: cleaned };
+  } catch (err: any) {
+    console.error("[savePettyCashCategoriesAction] Error:", err);
+    return { success: false, error: err?.message || "Failed to save categories" };
+  }
+}

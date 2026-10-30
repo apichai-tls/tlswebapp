@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateGcsPath, generateUploadUrl, bucketName } from '@/lib/gcs';
 import { prisma } from '@/lib/prisma';
+import { dbCache } from '@/lib/db-cache';
 import { resolveRequestUser, canUserAccessJob, canAccessCustomerRecords } from '@/lib/server-auth';
 import { verifyCustomerToken, verifyServiceApiKey } from '@/lib/external-api-auth';
 
@@ -97,19 +98,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid entityId format' }, { status: 400 });
     }
 
+    const hasFullBranchScope =
+      Boolean(user && user.allowedBranchIds === 'ALL' && (user.role || '').toLowerCase() !== 'rider');
+
     // Enforce entity-level authorization when staff/rider uploads to an existing job, customer, or task
-    if (user && normalizedGcsEntityType === 'job' && cleanEntityId !== 'temp') {
-      const targetJob = await prisma.job.findUnique({
-        where: { id: cleanEntityId },
-        select: {
-          id: true,
-          branchId: true,
-          riderId: true,
-          pickupRiderId: true,
-          deliveryRiderId: true,
-          status: true,
-        },
-      });
+    if (user && !hasFullBranchScope && normalizedGcsEntityType === 'job' && cleanEntityId !== 'temp') {
+      const cachedJob =
+        dbCache.jobRevisionCache.get(cleanEntityId)?.job ||
+        dbCache.payload?.jobs?.find((j: any) => j.id === cleanEntityId);
+      const targetJob =
+        cachedJob ||
+        (await prisma.job.findUnique({
+          where: { id: cleanEntityId },
+          select: {
+            id: true,
+            branchId: true,
+            riderId: true,
+            pickupRiderId: true,
+            deliveryRiderId: true,
+            status: true,
+          },
+        }));
       if (targetJob && !canUserAccessJob(user, targetJob)) {
         return NextResponse.json(
           { error: 'Forbidden: You are not authorized to upload files for this job' },
@@ -125,11 +134,14 @@ export async function POST(request: NextRequest) {
           { status: 403 }
         );
       }
-      if (cleanEntityId !== 'temp') {
-        const targetCustomer = await prisma.customer.findUnique({
-          where: { id: cleanEntityId },
-          select: { id: true, branchId: true },
-        });
+      if (!hasFullBranchScope && cleanEntityId !== 'temp') {
+        const cachedCustomer = dbCache.customers?.find((c: any) => c.id === cleanEntityId);
+        const targetCustomer =
+          cachedCustomer ||
+          (await prisma.customer.findUnique({
+            where: { id: cleanEntityId },
+            select: { id: true, branchId: true },
+          }));
         if (targetCustomer && !canAccessCustomerRecords(user, targetCustomer.branchId)) {
           return NextResponse.json(
             { error: 'Forbidden: You do not have access to this customer branch' },

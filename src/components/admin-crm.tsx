@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive, RefreshCw, RotateCcw } from "lucide-react";
+import { Minimize2, Maximize2, Search, UserPlus, Users, Edit, Edit3, Trash2, MapPin, Phone, Star, ShieldCheck, Crown, Medal, Wallet, Eye, Calendar, Tag, CreditCard, Clock, ChevronDown, ChevronUp, Mail, MessageCircle, Globe, Building, FileText, Gift, Database, TrendingUp, Sparkles, Receipt, Coins, ArrowUpDown, SlidersHorizontal, Plus, Minus, ImageIcon, ExternalLink, UploadCloud, Upload, Loader2, CheckCircle2, X, Percent, ClipboardList, Printer, Download, History, Store, Package, Lock, ArrowLeft, AlertTriangle, GitMerge, ArrowRight, Check, Ticket, Copy, Ban, Truck, Layers, Archive, RefreshCw, RotateCcw } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
 import { printImageUrl } from "@/components/ui/multi-image-uploader";
 import { useCustomers } from "@/lib/use-customers";
@@ -192,6 +192,19 @@ export function AdminCRM({
     };
     window.addEventListener("open-crm-tab", handleOpenTab);
     return () => window.removeEventListener("open-crm-tab", handleOpenTab);
+  }, []);
+
+  // Screen Layout Fit for CRM (Fit Screen Mode)
+  const [screenFit, setScreenFit] = useState<"fit" | "standard">("fit");
+
+  // Initialize and persist screen layout preferences from localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedFit = localStorage.getItem("tls_crm_screen_fit");
+      if (savedFit === "fit" || savedFit === "standard") {
+        setScreenFit(savedFit);
+      }
+    }
   }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
@@ -1349,34 +1362,69 @@ export function AdminCRM({
   };
 
   return (
-    <div className="flex-1 overflow-auto p-6 lg:p-8 space-y-6 bg-slate-50/50">
+    <div className={`bg-slate-50/50 ${screenFit === "fit" ? "h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden flex flex-col p-3 sm:p-4 gap-2.5 min-h-0" : "flex-1 overflow-auto p-6 lg:p-8 space-y-6"}`}>
       
       {/* Page Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
         <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
-              <Database size={20} />
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg shrink-0">
+              <Database size={18} />
             </span>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight leading-tight">Customer Database</h1>
+            <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">Customer Database</h1>
+            <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 border border-indigo-200/70 text-xs font-bold px-2 py-0.5 rounded-full shrink-0">
+              {customers.length} {customers.length === 1 ? "Customer" : "Customers"}
+            </Badge>
           </div>
-          <p className="text-sm text-slate-500 font-medium">
-            Customer Relationship Management ({customers.length} customers) - View history, LTV spent, and custom rates.
-          </p>
+          {screenFit !== "fit" && (
+            <p className="text-xs sm:text-sm text-slate-500 font-medium">
+              Customer Relationship Management ({customers.length} customers) - View history, LTV spent, and custom rates.
+            </p>
+          )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* 1-Click Fit Screen Toggle Button */}
+          <button
+            type="button"
+            onClick={() => {
+              const nextMode = screenFit === "fit" ? "standard" : "fit";
+              setScreenFit(nextMode);
+              if (typeof window !== "undefined") {
+                localStorage.setItem("tls_crm_screen_fit", nextMode);
+              }
+              toast.success(
+                nextMode === "fit" 
+                  ? "Fit Screen active: All customer records fitted to screen (พอดีหน้าจอ)" 
+                  : "Standard layout active: Spacious scrollable layout (ขนาดปกติ)"
+              );
+            }}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer border ${
+              screenFit === "fit"
+                ? "bg-indigo-600 text-white border-indigo-700 shadow-2xs font-bold"
+                : "bg-white text-slate-700 hover:text-slate-900 border-slate-200 shadow-2xs hover:bg-slate-50 font-medium"
+            }`}
+            title={
+              screenFit === "fit"
+                ? "Fit Screen is active (Click for Standard Scrollable)"
+                : "Click to fit customer table to screen (ย่อให้พอดีหน้าจอ)"
+            }
+          >
+            {screenFit === "fit" ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            <span>{screenFit === "fit" ? "Fit Screen" : "Fit to Screen"}</span>
+          </button>
+
           <Button 
             onClick={() => onTopUp ? onTopUp() : setTopUpOpen(true)} 
-            className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-md shadow-emerald-100 transition-all rounded-xl h-11 px-5"
+            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-2xs shadow-emerald-100 transition-all rounded-xl h-9 px-3.5 text-xs cursor-pointer"
           >
-            <Wallet size={18} />
+            <Wallet size={15} />
             Top Up Wallet
           </Button>
           <Button 
             onClick={() => openForm()} 
-            className="gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-md shadow-indigo-100 transition-all rounded-xl h-11 px-5"
+            className="gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-2xs shadow-indigo-100 transition-all rounded-xl h-9 px-3.5 text-xs cursor-pointer"
           >
-            <UserPlus size={18} />
+            <UserPlus size={15} />
             Add New Customer
           </Button>
         </div>
@@ -1387,344 +1435,399 @@ export function AdminCRM({
         variants={containerVariants} 
         initial="hidden" 
         animate="visible"
-        className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-4"
+        className={`shrink-0 ${
+          screenFit === "fit"
+            ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2"
+            : "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 sm:gap-4"
+        }`}
       >
         {/* Card 1: Total Customers */}
         <motion.div 
           variants={itemVariants} 
           onClick={() => { setActiveTab("all"); setCurrentPage(1); }}
-          className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all"
+          className={`bg-white border border-slate-200 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-indigo-300 hover:shadow-xs transition-all ${
+            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
+          }`}
         >
-          <div className="absolute right-4 top-4 p-2.5 bg-indigo-50 text-indigo-600 rounded-xl group-hover:scale-110 transition-transform">
-            <Users size={22} />
+          <div className={`absolute right-3 top-3 bg-indigo-50 text-indigo-600 rounded-lg group-hover:scale-110 transition-transform ${
+            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
+          }`}>
+            <Users size={screenFit === "fit" ? 16 : 22} />
           </div>
-          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1.5">Total Customers</p>
-          <div className="flex items-baseline gap-2">
-            <h3 className="text-xl lg:text-2xl xl:text-3xl font-black text-slate-900">{statsCount.all}</h3>
-            <span className="text-xs text-slate-500">retail</span>
+          <p className="text-slate-400 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1">Total Customers</p>
+          <div className="flex items-baseline gap-1.5">
+            <h3 className={`font-black text-slate-900 ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"}`}>{statsCount.all}</h3>
+            <span className="text-[11px] text-slate-500 font-medium">retail</span>
           </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            <Badge variant="secondary" className="bg-amber-50 text-amber-800 border-none font-bold text-[10px] h-5 py-0 px-2">
+          <div className={`flex flex-wrap gap-1 ${screenFit === "fit" ? "mt-1.5" : "mt-3 gap-1.5"}`}>
+            <Badge variant="secondary" className="bg-amber-50 text-amber-800 border-none font-bold text-[9.5px] h-4.5 py-0 px-1.5">
               VIP {statsCount.vip}
             </Badge>
-            <Badge variant="secondary" className="bg-blue-50 text-blue-800 border-none font-bold text-[10px] h-5 py-0 px-2">
+            <Badge variant="secondary" className="bg-blue-50 text-blue-800 border-none font-bold text-[9.5px] h-4.5 py-0 px-1.5">
               Member {statsCount.member}
             </Badge>
-            <Badge variant="secondary" className="bg-slate-50 text-slate-800 border-none font-bold text-[10px] h-5 py-0 px-2">
+            <Badge variant="secondary" className="bg-slate-50 text-slate-800 border-none font-bold text-[9.5px] h-4.5 py-0 px-1.5">
               Corp {statsCount.corporate}
             </Badge>
           </div>
         </motion.div>
         
-        {/* Card 2: Total Wallet Balance (ยอดกระเป๋าเงินรวมทั้งหมด) */}
+        {/* Card 2: Total Wallet Balance */}
         <motion.div 
           variants={itemVariants} 
           onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
-          className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-sky-300 hover:shadow-md transition-all"
+          className={`bg-white border border-slate-200 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-sky-300 hover:shadow-xs transition-all ${
+            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
+          }`}
         >
-          <div className="absolute right-4 top-4 p-2.5 bg-sky-50 text-sky-600 rounded-xl group-hover:scale-110 transition-transform">
-            <Coins size={22} />
+          <div className={`absolute right-3 top-3 bg-sky-50 text-sky-600 rounded-lg group-hover:scale-110 transition-transform ${
+            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
+          }`}>
+            <Coins size={screenFit === "fit" ? 16 : 22} />
           </div>
-          <div className="flex items-center justify-between mb-1.5 pr-8">
-            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">Credit Wallet</p>
-            <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded">ยอดรวม</span>
+          <div className="flex items-center justify-between mb-1 pr-6">
+            <p className="text-slate-400 text-[10px] sm:text-xs font-bold uppercase tracking-wider">Credit Wallet</p>
+            <span className="text-[9px] font-bold text-sky-600 bg-sky-50 px-1 py-0.2 rounded">ยอดรวม</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <h3 className={`text-xl lg:text-2xl xl:text-3xl font-black ${totalCreditBalance < 0 ? "text-rose-600" : "text-slate-800"}`}>
+          <div className="flex items-baseline gap-1.5">
+            <h3 className={`font-black ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"} ${totalCreditBalance < 0 ? "text-rose-600" : "text-slate-800"}`}>
               {formatBaht(totalCreditBalance)}
             </h3>
           </div>
-          <p className="text-xs text-slate-500 mt-3 font-medium">
-            There are <span className="font-bold text-sky-600">{statsCount.allWalletsCount}</span> wallets in system.
+          <p className={`text-[11px] text-slate-500 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
+            <span className="font-bold text-sky-600">{statsCount.allWalletsCount}</span> wallets in system
           </p>
         </motion.div>
 
-        {/* Card 3: Credit Expire (เครดิตหมดอายุ) */}
+        {/* Card 3: Credit Expire */}
         <motion.div 
           variants={itemVariants} 
           onClick={() => { setActiveTab("expired_wallets"); setCurrentPage(1); }}
-          className="bg-white rounded-2xl border border-rose-200/80 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-rose-300 hover:shadow-md transition-all"
+          className={`bg-white border border-rose-200/80 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-rose-300 hover:shadow-xs transition-all ${
+            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
+          }`}
         >
-          <div className="absolute right-4 top-4 p-2.5 bg-rose-50 text-rose-600 rounded-xl group-hover:scale-110 transition-transform">
-            <Clock size={22} />
+          <div className={`absolute right-3 top-3 bg-rose-50 text-rose-600 rounded-lg group-hover:scale-110 transition-transform ${
+            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
+          }`}>
+            <Clock size={screenFit === "fit" ? 16 : 22} />
           </div>
-          <div className="flex items-center justify-between mb-1.5 pr-8">
-            <p className="text-rose-500 text-xs font-bold uppercase tracking-widest">Credit Expire</p>
-            <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">หมดอายุ</span>
+          <div className="flex items-center justify-between mb-1 pr-6">
+            <p className="text-rose-500 text-[10px] sm:text-xs font-bold uppercase tracking-wider">Credit Expire</p>
+            <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1 py-0.2 rounded">หมดอายุ</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <h3 className="text-xl lg:text-2xl xl:text-3xl font-black text-rose-600">
+          <div className="flex items-baseline gap-1.5">
+            <h3 className={`font-black text-rose-600 ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"}`}>
               {formatBaht(expiredCreditBalance)}
             </h3>
           </div>
-          <p className="text-xs text-slate-500 mt-3 font-medium">
-            There are <span className="font-bold text-rose-600">{statsCount.expiredBalance}</span> expired wallets in system.
+          <p className={`text-[11px] text-slate-500 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
+            <span className="font-bold text-rose-600">{statsCount.expiredBalance}</span> expired wallets
           </p>
         </motion.div>
 
-        {/* Card 4: Active Balance (Net) */}
+        {/* Card 4: Active Balance */}
         <motion.div 
           variants={itemVariants} 
           onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
-          className="bg-white rounded-2xl border border-emerald-200/90 p-5 shadow-sm relative overflow-hidden group cursor-pointer hover:border-emerald-400 hover:shadow-md transition-all"
+          className={`bg-white border border-emerald-200/90 shadow-2xs relative overflow-hidden group cursor-pointer hover:border-emerald-400 hover:shadow-xs transition-all ${
+            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
+          }`}
         >
-          <div className="absolute right-4 top-4 p-2.5 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform">
-            <Wallet size={22} />
+          <div className={`absolute right-3 top-3 bg-emerald-50 text-emerald-600 rounded-lg group-hover:scale-110 transition-transform ${
+            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
+          }`}>
+            <Wallet size={screenFit === "fit" ? 16 : 22} />
           </div>
-          <div className="flex items-center justify-between mb-1.5 pr-8">
-            <p className="text-emerald-700 text-xs font-bold uppercase tracking-widest">Active Balance</p>
-            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">Active</span>
+          <div className="flex items-center justify-between mb-1 pr-6">
+            <p className="text-emerald-700 text-[10px] sm:text-xs font-bold uppercase tracking-wider">Active Balance</p>
+            <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded">Active</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <h3 className={`text-xl lg:text-2xl xl:text-3xl font-black ${activeCreditBalance < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+          <div className="flex items-baseline gap-1.5">
+            <h3 className={`font-black ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"} ${activeCreditBalance < 0 ? "text-rose-600" : "text-emerald-600"}`}>
               {formatBaht(activeCreditBalance)}
             </h3>
           </div>
-          <p className="text-xs text-slate-500 mt-3 font-medium">
-            There are <span className="font-bold text-emerald-600">{statsCount.activeBalance}</span> active wallets in system.
+          <p className={`text-[11px] text-slate-500 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
+            <span className="font-bold text-emerald-600">{statsCount.activeBalance}</span> active wallets
           </p>
         </motion.div>
 
-        {/* Card 5: Network LTV Revenue */}
+        {/* Card 5: Customer LTV */}
         <motion.div 
           variants={itemVariants} 
-          className="bg-gradient-to-br from-indigo-900 to-indigo-800 rounded-2xl border border-indigo-750 p-5 shadow-md relative overflow-hidden group"
+          className={`bg-gradient-to-br from-indigo-900 to-indigo-800 border border-indigo-750 shadow-2xs relative overflow-hidden group ${
+            screenFit === "fit" ? "rounded-xl p-2.5 sm:p-3" : "rounded-2xl p-5"
+          }`}
         >
-          <div className="absolute right-4 top-4 p-2.5 bg-indigo-800 text-indigo-200 rounded-xl group-hover:scale-110 transition-transform">
-            <TrendingUp size={22} />
+          <div className={`absolute right-3 top-3 bg-indigo-800 text-indigo-200 rounded-lg group-hover:scale-110 transition-transform ${
+            screenFit === "fit" ? "p-1.5" : "p-2.5 rounded-xl"
+          }`}>
+            <TrendingUp size={screenFit === "fit" ? 16 : 22} />
           </div>
-          <p className="text-indigo-200/70 text-xs font-bold uppercase tracking-widest mb-1.5">Total Customer LTV</p>
-          <div className="flex items-baseline gap-2">
-            <h3 className="text-xl lg:text-2xl xl:text-3xl font-black text-white">
+          <p className="text-indigo-200/70 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1">Customer LTV</p>
+          <div className="flex items-baseline gap-1.5">
+            <h3 className={`font-black text-white ${screenFit === "fit" ? "text-lg sm:text-xl" : "text-xl lg:text-2xl xl:text-3xl"}`}>
               ฿{totalNetworkLTV.toLocaleString()}
             </h3>
           </div>
-          <p className="text-xs text-indigo-200 mt-3 font-medium">
-            Completed order value stats from all customers.
+          <p className={`text-[11px] text-indigo-200 font-medium truncate ${screenFit === "fit" ? "mt-1.5" : "mt-3"}`}>
+            Total completed orders LTV
           </p>
         </motion.div>
       </motion.div>
 
-      {/* Filter and Search Action Bar */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-3">
-        {/* Top Entity Filters: Brand & Branch */}
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Brand Filter Selector */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
-            <span className="text-slate-400 px-2 py-1 text-[11px] uppercase tracking-wider font-bold">Brand:</span>
-            <button
-              type="button"
-              onClick={() => { setSelectedBrand("all"); setCurrentPage(1); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                selectedBrand === "all"
-                  ? "bg-white text-indigo-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              All ({brandStats.all})
-            </button>
-            <button
-              type="button"
-              onClick={() => { setSelectedBrand("that_laundry_shop"); setCurrentPage(1); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                selectedBrand === "that_laundry_shop"
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              TLS ({brandStats.tls})
-            </button>
-            <button
-              type="button"
-              onClick={() => { setSelectedBrand("noname_laundry"); setCurrentPage(1); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                selectedBrand === "noname_laundry"
-                  ? "bg-white text-amber-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              Noname ({brandStats.noname})
-            </button>
-          </div>
-
-          {/* Branch Filter Dropdown */}
-          <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
-            <span className="text-slate-500 pl-2 text-[11px] uppercase tracking-wider font-bold flex items-center gap-1">
-              <Store size={13} className="text-indigo-600" />
-              Branch:
+      {/* Modern Filter & Search Toolbar */}
+      <div className={`shrink-0 bg-white rounded-xl border border-slate-200/80 shadow-2xs ${screenFit === "fit" ? "p-2 sm:p-2.5 space-y-2" : "p-3 sm:p-4 space-y-3"}`}>
+        {/* Top Row: Categories Navigation Strip */}
+        <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
+          <button
+            onClick={() => { setActiveTab("all"); setCurrentPage(1); }}
+            className={`flex items-center gap-1.5 ${screenFit === "fit" ? "px-2.5 py-1 text-xs" : "px-3.5 py-2 text-xs"} font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "all"
+                ? "bg-slate-900 text-white shadow-xs"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
+            }`}
+          >
+            <Users size={13} />
+            <span>All</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "all" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"}`}>
+              {statsCount.all}
             </span>
-            <select
-              value={selectedBranch}
-              onChange={(e) => {
-                setSelectedBranch(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="h-8.5 px-3 py-1 text-xs font-bold rounded-lg border border-slate-200 bg-white text-slate-800 shadow-2xs hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer transition-all"
-            >
-              <option value="all">All Branches</option>
-              <option value="ONLINE">🌐 Online</option>
-              {shops.map((s) => {
-                const cleanName = getCleanBranchName(s.name);
-                return (
-                  <option key={s.id} value={s.id}>
-                    📍 {cleanName}
-                  </option>
-                );
-              })}
-              <option value="unassigned">⚠️ ไม่ระบุสาขา</option>
-            </select>
-          </div>
-        </div>
+          </button>
 
-        {/* Lower Row: Category Tabs & Search Box */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-1 border-t border-slate-100">
-          {/* Quick Filters Tab Layout */}
-          <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
-            <button
-              onClick={() => setActiveTab("all")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "all"
-                  ? "bg-white text-indigo-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Users size={14} />
-              All ({statsCount.all})
-            </button>
-            <button
-              onClick={() => setActiveTab("vip")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "vip"
-                  ? "bg-white text-amber-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Star size={14} className="fill-amber-400 text-amber-500" />
-              VIP ({statsCount.vip})
-            </button>
-            <button
-              onClick={() => setActiveTab("member")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "member"
-                  ? "bg-white text-indigo-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Crown size={14} className="text-indigo-600" />
-              Members ({statsCount.member})
-            </button>
-            <button
-              onClick={() => setActiveTab("corporate")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "corporate"
-                  ? "bg-white text-slate-800 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Building size={14} className="text-slate-600" />
-              Corporate B2B ({statsCount.corporate})
-            </button>
-            <button
-              onClick={() => setActiveTab("balance")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "balance"
-                  ? "bg-white text-emerald-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Wallet size={14} className="text-emerald-600" />
-              Active Wallets ({statsCount.activeBalance})
-            </button>
-            <button
-              onClick={() => setActiveTab("expired_wallets")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "expired_wallets"
-                  ? "bg-white text-rose-700 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Clock size={14} className="text-rose-600" />
-              Credit Expire ({statsCount.expiredBalance})
-            </button>
-            <button
-              onClick={() => setActiveTab("topup_history")}
-              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                activeTab === "topup_history"
-                  ? "bg-emerald-600 text-white shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <Receipt size={14} className={activeTab === "topup_history" ? "text-white" : "text-emerald-600"} />
-              Top-up History ({allTopUpTxs.length})
-            </button>
-            {canApproveWallet && (
-              <button
-                onClick={() => setActiveTab("wallet_approvals")}
-                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                  activeTab === "wallet_approvals"
-                    ? "bg-amber-600 text-white shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                <ShieldCheck size={14} className={activeTab === "wallet_approvals" ? "text-white" : "text-amber-600"} />
-                <span>Wallet Approvals</span>
-                {pendingWalletMap.total > 0 && (
-                  <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
-                    activeTab === "wallet_approvals" ? "bg-white text-amber-700" : "bg-amber-100 text-amber-800"
-                  }`}>
-                    {pendingWalletMap.total}
-                  </span>
-                )}
-              </button>
-            )}
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => setActiveTab("duplicates")}
-                className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${
-                  activeTab === "duplicates"
-                    ? "bg-rose-600 text-white shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                <GitMerge size={14} className={activeTab === "duplicates" ? "text-white" : "text-rose-600"} />
-                <span>Duplicate Customers</span>
-                {duplicateGroups.length > 0 && (
-                  <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
-                    activeTab === "duplicates" ? "bg-white text-rose-700" : "bg-rose-100 text-rose-800"
-                  }`}>
-                    {duplicateGroups.length}
-                  </span>
-                )}
-              </button>
-            )}
-          </div>
+          <button
+            onClick={() => { setActiveTab("vip"); setCurrentPage(1); }}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "vip"
+                ? "bg-amber-500 text-white shadow-xs"
+                : "text-slate-600 hover:text-amber-800 hover:bg-amber-50/70"
+            }`}
+          >
+            <Star size={13} className={activeTab === "vip" ? "fill-white text-white" : "fill-amber-400 text-amber-500"} />
+            <span>VIP</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "vip" ? "bg-white/20 text-white" : "bg-amber-100/70 text-amber-800"}`}>
+              {statsCount.vip}
+            </span>
+          </button>
 
-          {/* Search bar inside the bar (shown when not on customer report or wallet approvals) */}
-          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && (
-            <div className="relative w-full lg:w-80">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <Input 
-                placeholder="Search name, phone, LINE, email, ID..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 h-10 border-slate-200 bg-slate-50 focus-visible:ring-indigo-500 rounded-xl text-xs font-medium"
-              />
-            </div>
+          <button
+            onClick={() => { setActiveTab("member"); setCurrentPage(1); }}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "member"
+                ? "bg-indigo-600 text-white shadow-xs"
+                : "text-slate-600 hover:text-indigo-800 hover:bg-indigo-50/70"
+            }`}
+          >
+            <Crown size={13} />
+            <span>Members</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "member" ? "bg-white/20 text-white" : "bg-indigo-100/70 text-indigo-800"}`}>
+              {statsCount.member}
+            </span>
+          </button>
+
+          <button
+            onClick={() => { setActiveTab("corporate"); setCurrentPage(1); }}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "corporate"
+                ? "bg-slate-800 text-white shadow-xs"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
+            }`}
+          >
+            <Building size={13} />
+            <span>Corporate</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "corporate" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"}`}>
+              {statsCount.corporate}
+            </span>
+          </button>
+
+          <button
+            onClick={() => { setActiveTab("balance"); setCurrentPage(1); }}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "balance"
+                ? "bg-emerald-600 text-white shadow-xs"
+                : "text-slate-600 hover:text-emerald-800 hover:bg-emerald-50/70"
+            }`}
+          >
+            <Wallet size={13} />
+            <span>Active Wallets</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "balance" ? "bg-white/20 text-white" : "bg-emerald-100/70 text-emerald-800"}`}>
+              {statsCount.activeBalance}
+            </span>
+          </button>
+
+          <button
+            onClick={() => { setActiveTab("expired_wallets"); setCurrentPage(1); }}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "expired_wallets"
+                ? "bg-rose-600 text-white shadow-xs"
+                : "text-slate-600 hover:text-rose-800 hover:bg-rose-50/70"
+            }`}
+          >
+            <Clock size={13} />
+            <span>Credit Expired</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "expired_wallets" ? "bg-white/20 text-white" : "bg-rose-100/70 text-rose-800"}`}>
+              {statsCount.expiredBalance}
+            </span>
+          </button>
+
+          <button
+            onClick={() => { setActiveTab("topup_history"); setCurrentPage(1); }}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "topup_history"
+                ? "bg-emerald-700 text-white shadow-xs"
+                : "text-slate-600 hover:text-emerald-900 hover:bg-emerald-50/70"
+            }`}
+          >
+            <Receipt size={13} />
+            <span>Top-up History</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${activeTab === "topup_history" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"}`}>
+              {allTopUpTxs.length}
+            </span>
+          </button>
+
+          {canApproveWallet && (
+            <button
+              onClick={() => { setActiveTab("wallet_approvals"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "wallet_approvals"
+                  ? "bg-amber-600 text-white shadow-xs"
+                  : "text-slate-600 hover:text-amber-900 hover:bg-amber-50/70"
+              }`}
+            >
+              <ShieldCheck size={13} />
+              <span>Wallet Approvals</span>
+              {pendingWalletMap.total > 0 && (
+                <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-md ${
+                  activeTab === "wallet_approvals" ? "bg-white text-amber-700" : "bg-amber-500 text-white"
+                }`}>
+                  {pendingWalletMap.total}
+                </span>
+              )}
+            </button>
           )}
 
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => { setActiveTab("duplicates"); setCurrentPage(1); }}
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "duplicates"
+                  ? "bg-rose-700 text-white shadow-xs"
+                  : "text-slate-600 hover:text-rose-900 hover:bg-rose-50/70"
+              }`}
+            >
+              <GitMerge size={13} />
+              <span>Duplicates</span>
+              {duplicateGroups.length > 0 && (
+                <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-md ${
+                  activeTab === "duplicates" ? "bg-white text-rose-700" : "bg-rose-500 text-white"
+                }`}>
+                  {duplicateGroups.length}
+                </span>
+              )}
+            </button>
+          )}
+        </div>
+
+        {/* Bottom Row: Secondary Filter Badges + Search Input */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2.5 border-t border-slate-100">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Brand Segmented Control */}
+            <div className="inline-flex items-center p-0.5 bg-slate-100/90 rounded-xl border border-slate-200/50">
+              <button
+                type="button"
+                onClick={() => { setSelectedBrand("all"); setCurrentPage(1); }}
+                className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  selectedBrand === "all" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                All Brands ({brandStats.all})
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSelectedBrand("that_laundry_shop"); setCurrentPage(1); }}
+                className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  selectedBrand === "that_laundry_shop" ? "bg-white text-blue-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                TLS ({brandStats.tls})
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSelectedBrand("noname_laundry"); setCurrentPage(1); }}
+                className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  selectedBrand === "noname_laundry" ? "bg-white text-amber-800 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Noname ({brandStats.noname})
+              </button>
+            </div>
+
+            {/* Branch Filter Selector */}
+            <div className="relative">
+              <select
+                value={selectedBranch}
+                onChange={(e) => {
+                  setSelectedBranch(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="h-8 pl-8 pr-7 text-xs font-semibold rounded-xl border border-slate-200 bg-white text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-2xs transition-all appearance-none"
+              >
+                <option value="all">All Branches</option>
+                <option value="ONLINE">🌐 Online</option>
+                {shops.map((s) => {
+                  const cleanName = getCleanBranchName(s.name);
+                  return (
+                    <option key={s.id} value={s.id}>
+                      📍 {cleanName}
+                    </option>
+                  );
+                })}
+                <option value="unassigned">⚠️ Unassigned</option>
+              </select>
+              <Store size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Quick Search */}
+          {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && (
+            <div className="relative w-full sm:w-72 md:w-80">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
+              <Input 
+                placeholder="Search name, phone, member ID..." 
+                value={searchTerm}
+                onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
+                className="pl-9 pr-8 h-8.5 border-slate-200 bg-slate-50/70 focus-visible:bg-white focus-visible:ring-indigo-500/20 rounded-xl text-xs font-medium transition-all"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Main Beautiful Table */}
       <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
+        transition={{ delay: 0.1 }}
+        className={
+          screenFit === "fit"
+            ? "flex-1 min-h-0 flex flex-col bg-white rounded-xl border border-slate-200/80 shadow-2xs overflow-hidden"
+            : "bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
+        }
       >
         {activeTab === "customer_report" ? (
-          <div className="p-5 sm:p-6 space-y-6">
+          <div className={`space-y-6 ${screenFit === "fit" ? "p-4 flex-1 min-h-0 overflow-y-auto custom-scrollbar" : "p-5 sm:p-6"}`}>
             {/* Header & Controls Bar */}
             <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-slate-50/70 p-4 rounded-xl border border-slate-200/80">
               {/* Customer Search Autocomplete */}
@@ -2154,7 +2257,7 @@ export function AdminCRM({
             )}
           </div>
         ) : activeTab === "topup_history" ? (
-          <div className="flex flex-col">
+          <div className={`flex flex-col ${screenFit === "fit" ? "flex-1 min-h-0" : ""}`}>
             {/* Top-up Date & Time Range Filter Toolbar */}
             <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50/60 space-y-4">
               {/* Row 1: Header + Presets + Action Buttons */}
@@ -2301,10 +2404,10 @@ export function AdminCRM({
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <Table>
-              <TableHeader>
-                <TableRow className="bg-emerald-50/70 hover:bg-emerald-50/70 border-b-slate-200">
+            <div className={`overflow-x-auto ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
+              <Table className="relative w-full">
+              <TableHeader className={screenFit === "fit" ? "sticky top-0 z-10 bg-emerald-50/95 backdrop-blur-xs shadow-2xs border-b border-emerald-200" : ""}>
+                <TableRow className="bg-emerald-50/95 hover:bg-emerald-50/95 border-b-slate-200">
                   <TableHead className="font-bold text-emerald-950 pl-6 py-4 text-xs uppercase tracking-wider">Date & Time</TableHead>
                   <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider">Receipt No</TableHead>
                   <TableHead className="font-bold text-emerald-950 py-4 text-xs uppercase tracking-wider">Customer Info</TableHead>
@@ -2514,7 +2617,7 @@ export function AdminCRM({
           </div>
         </div>
         ) : activeTab === "wallet_approvals" ? (
-          <div className="p-1">
+          <div className={`p-1 ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
             <ReportsWalletApprovals onViewJob={onViewJob} />
           </div>
         ) : activeTab === "duplicates" ? (
@@ -2758,15 +2861,15 @@ export function AdminCRM({
             </div>
           )
         ) : (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50/70 hover:bg-slate-50/70 border-b-slate-200">
-                  <TableHead className="font-bold text-slate-700 pl-6 py-4 text-xs uppercase tracking-wider">Profile & Contact Info</TableHead>
-                  <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Address & Building (Delivery)</TableHead>
-                  <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider">Wallet & Pricing</TableHead>
-                  <TableHead className="font-bold text-slate-700 py-4 text-xs uppercase tracking-wider text-center">Accumulated LTV Stats</TableHead>
-                  <TableHead className="font-bold text-slate-700 pr-6 py-4 text-xs uppercase tracking-wider text-right">Actions</TableHead>
+          <div className={`overflow-x-auto ${screenFit === "fit" ? "flex-1 min-h-0 overflow-y-auto custom-scrollbar" : ""}`}>
+            <Table className="relative w-full">
+              <TableHeader className={screenFit === "fit" ? "sticky top-0 z-10 bg-slate-50/95 backdrop-blur-xs shadow-2xs border-b border-slate-200/80" : ""}>
+                <TableRow className="bg-slate-50/95 hover:bg-slate-50/95 border-b-slate-200/80">
+                  <TableHead className={`font-bold text-slate-600 pl-6 text-[11px] uppercase tracking-wider ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Customer & Contact</TableHead>
+                  <TableHead className={`font-bold text-slate-600 text-[11px] uppercase tracking-wider ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Delivery Address</TableHead>
+                  <TableHead className={`font-bold text-slate-600 text-[11px] uppercase tracking-wider ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Wallet & Pricing Tier</TableHead>
+                  <TableHead className={`font-bold text-slate-600 text-[11px] uppercase tracking-wider text-center ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>LTV & Activity</TableHead>
+                  <TableHead className={`font-bold text-slate-600 pr-6 text-[11px] uppercase tracking-wider text-right ${screenFit === "fit" ? "py-2.5" : "py-3.5"}`}>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -2796,11 +2899,11 @@ export function AdminCRM({
                           className="border-b border-slate-100 hover:bg-slate-50/30 transition-colors"
                         >
                           {/* 1. Profile Info & Avatar */}
-                          <TableCell className="pl-6 py-4.5">
+                          <TableCell className={`pl-6 ${screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}`}>
                             <div className="flex items-center gap-3">
                               {/* Initials Avatar with dynamic tier badge */}
                               <div className="relative shrink-0">
-                                <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold text-xs shadow-sm ${getAvatarStyles(customer)}`}>
+                                <div className={`rounded-xl border flex items-center justify-center font-bold text-xs shadow-xs shrink-0 ${screenFit === "fit" ? "w-8 h-8 text-[11px]" : "w-10 h-10"} ${getAvatarStyles(customer)}`}>
                                   {getInitials(customer.name)}
                                 </div>
                                 {getAvatarBadge(customer)}
@@ -2870,7 +2973,7 @@ export function AdminCRM({
                           </TableCell>
 
                           {/* 3. Address Column (Primary Address + secondary room details) */}
-                          <TableCell className="py-4.5">
+                          <TableCell className={screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}>
                             <div className="flex flex-col gap-1 max-w-[220px]">
                               <div className="flex items-start gap-1">
                                 <MapPin size={12} className="text-indigo-500 shrink-0 mt-0.5" />
@@ -2892,7 +2995,7 @@ export function AdminCRM({
                           </TableCell>
 
                           {/* 4. Financial Wallet & Pricing Tier */}
-                          <TableCell className="py-4.5">
+                          <TableCell className={screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}>
                             <div className="space-y-1.5">
                               {/* Wallet Balance */}
                               <div className="flex items-center gap-1">
@@ -2963,7 +3066,8 @@ export function AdminCRM({
                           </TableCell>
 
                           {/* 5. LTV & Activity stats */}
-                          <TableCell className="py-4.5 text-center">
+                          <TableCell className={`text-center ${screenFit === "fit" ? "py-2 sm:py-2.5" : "py-4.5"}`}>
+
                             <div className="flex flex-col items-center gap-1">
                               <span className="text-sm font-black text-slate-900">
                                 ฿{stats.ltv.toLocaleString()}
@@ -2979,16 +3083,15 @@ export function AdminCRM({
                           </TableCell>
 
                           {/* 6. Action buttons */}
-                          <TableCell className="py-4.5 pr-6 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
-                              
+                          <TableCell className={`pr-6 text-right ${screenFit === "fit" ? "py-1.5 sm:py-2" : "py-4"}`}>
 
-                              {/* Top Up button — Package flow, visible to all non-rider roles (Member customers only) */}
+                            <div className="flex items-center justify-end gap-1.5">
+                              {/* Top Up button — Package flow (Member customers only) */}
                               {canTopUp && customer.isMember && (
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-8 border-emerald-250 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
+                                  className="h-8 px-2.5 border-emerald-300/80 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition-all gap-1 text-[11px] font-bold rounded-lg cursor-pointer shadow-2xs"
                                   onClick={() => {
                                     if (onTopUp) {
                                       onTopUp(customer);
@@ -3004,12 +3107,12 @@ export function AdminCRM({
                                 </Button>
                               )}
 
-                              {/* Adjust Balance button — Admin & Accounting only (CSO excluded, Member customers only) */}
+                              {/* Adjust Balance button — Admin & Accounting only (Member customers only) */}
                               {canAdjustBalance && customer.isMember && (
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-8 border-amber-300 bg-amber-50/50 text-amber-700 hover:bg-amber-500 hover:text-white transition-all gap-1 text-[11px] font-bold px-2 rounded-lg"
+                                  className="h-8 px-2 border-amber-300/80 bg-amber-50/60 text-amber-700 hover:bg-amber-600 hover:text-white hover:border-amber-600 transition-all gap-1 text-[11px] font-bold rounded-lg cursor-pointer shadow-2xs"
                                   title="Adjust Balance (Manual)"
                                   onClick={() => {
                                     setTopUpCustomer(customer);
@@ -3022,41 +3125,54 @@ export function AdminCRM({
                                 </Button>
                               )}
 
-                              {/* View detail button */}
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                className="h-8 w-8 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors rounded-lg"
-                                title="View Profile"
-                                onClick={() => {
-                                  setSelectedProfileCustomer(customer);
-                                  setProfileOpen(true);
-                                }}
-                              >
-                                <Eye size={15} />
-                              </Button>
+                              {/* Utility Icon Actions Group */}
+                              <div className="flex items-center gap-0.5 pl-1 border-l border-slate-200/80">
+                                {/* Customer Report / Statement button */}
+                                <button
+                                  type="button"
+                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50/80 rounded-lg transition-colors cursor-pointer"
+                                  title="Customer Statement / Transaction Report"
+                                  onClick={() => {
+                                    setSelectedCustomerForReport(customer);
+                                    setActiveTab("customer_report");
+                                  }}
+                                >
+                                  <FileText size={15} />
+                                </button>
 
-                              {/* Edit button */}
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                className="h-8 w-8 text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors rounded-lg"
-                                title="Edit"
-                                onClick={() => openForm(customer)}
-                              >
-                                <Edit size={15} />
-                              </Button>
+                                {/* View detail button */}
+                                <button 
+                                  type="button"
+                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                                  title="View Customer Profile"
+                                  onClick={() => {
+                                    setSelectedProfileCustomer(customer);
+                                    setProfileOpen(true);
+                                  }}
+                                >
+                                  <Eye size={15} />
+                                </button>
 
-                              {/* Delete button */}
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                className="h-8 w-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors rounded-lg"
-                                title="Delete"
-                                onClick={() => handleDelete(customer.id, customer.name)}
-                              >
-                                <Trash2 size={15} />
-                              </Button>
+                                {/* Edit button */}
+                                <button 
+                                  type="button"
+                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                                  title="Edit Customer"
+                                  onClick={() => openForm(customer)}
+                                >
+                                  <Edit size={15} />
+                                </button>
+
+                                {/* Delete button */}
+                                <button 
+                                  type="button"
+                                  className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                  title="Delete Customer"
+                                  onClick={() => handleDelete(customer.id, customer.name)}
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              </div>
                             </div>
                           </TableCell>
                         </motion.tr>
@@ -3071,7 +3187,7 @@ export function AdminCRM({
 
         {/* Pagination Controls */}
         {activeTab !== "customer_report" && activeTab !== "wallet_approvals" && activeTab !== "duplicates" && totalItems > 0 && (
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+          <div className={`shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/60 ${screenFit === "fit" ? "px-4 sm:px-6 py-2" : "px-6 py-4"}`}>
             <div className="flex items-center gap-4 text-xs font-semibold text-slate-500">
               <span>
                 Showing {Math.min(totalItems, (currentPage - 1) * pageSize + 1)}-{Math.min(totalItems, currentPage * pageSize)} of {totalItems} {activeTab === "topup_history" ? "transactions" : "customers"}
@@ -3367,6 +3483,7 @@ export function AdminCRM({
           setProfileOpen(false);
           openForm(c);
         }}
+        onViewJob={onViewJob}
       />
 
       {/* A5 Receipt Reprint Dialog */}

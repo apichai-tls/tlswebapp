@@ -66,6 +66,10 @@ export function A5ReceiptDialog({
   onBillImageUploadedRef.current = onBillImageUploaded;
 
   useEffect(() => {
+    if (!open) capturedKeysRef.current.clear();
+  }, [open]);
+
+  useEffect(() => {
     setMounted(true);
     return () => setMounted(false);
   }, []);
@@ -105,7 +109,7 @@ export function A5ReceiptDialog({
     }
 
     const captureKey = `${targetJobId}_${snapshotData.isDraft ? "draft" : "paid"}_rev${
-      snapshotData.proformaRevision || 0
+      snapshotData.proformaRevision || 0}_${snapshotData.total ?? ""}_${snapshotData.walletBalanceAfter ?? ""
     }`;
 
     const filename = snapshotData.isDraft
@@ -151,7 +155,7 @@ export function A5ReceiptDialog({
             body: blob,
           });
           if (putRes.ok) {
-            uploadResult = { success: true, publicUrl: signData.publicUrl };
+            uploadResult = { success: true, publicUrl: snapshotData.isDraft ? signData.publicUrl : `${signData.publicUrl}?v=${Date.now()}` };
           } else {
             throw new Error(`GCS PUT failed: ${putRes.status}`);
           }
@@ -233,7 +237,7 @@ export function A5ReceiptDialog({
         try {
           const parsed = JSON.parse(currentJob.billImageUrl);
           const existingBills = Array.isArray(parsed) ? parsed : [parsed];
-          if (existingBills.some((url: string) => url.includes(filename))) {
+          if ((snapshotData.isDraft || !snapshotData.autoCapture) && existingBills.some((url: string) => url.includes(filename))) {
             capturedKeysRef.current.add(captureKey);
             return;
           }
@@ -1147,15 +1151,28 @@ export function A5ReceiptContent({
               {payments.length > 0 && (
                 <div className="mt-1.5 pt-1.5 border-t border-dashed border-neutral-300">
                   {payments.map((p, pIdx) => (
-                    <div
-                      key={pIdx}
-                      className={`flex justify-between ${paymentsRowClass} text-neutral-800`}
-                    >
-                      <span className="uppercase text-[9px] font-bold">
-                        {format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID (
-                        {p.method === "credit" ? "MEMBER" : p.method})
-                      </span>
-                      <span className="font-mono font-bold">฿{formatCurrency(p.amount)}</span>
+                    <div key={pIdx} className="space-y-0.5">
+                      <div
+                        className={`flex justify-between ${paymentsRowClass} text-neutral-800`}
+                      >
+                        <span className="uppercase text-[9px] font-bold">
+                          {format(new Date(p.timestamp), "dd/MM/yyyy")} - PAID (
+                          {p.method === "credit" ? "MEMBER" : p.method})
+                        </span>
+                        <span className="font-mono font-bold">฿{formatCurrency(p.amount)}</span>
+                      </div>
+                      {p.method === "cash" && p.received !== undefined && p.received > 0 && (
+                        <div className="flex justify-between pl-3 text-[9.5px] text-neutral-600 font-mono leading-tight">
+                          <span>{currentLanguage === "en" ? "- Cash Received:" : "- รับเงินสด:"}</span>
+                          <span>฿{formatCurrency(p.received)}</span>
+                        </div>
+                      )}
+                      {p.method === "cash" && p.change !== undefined && p.change > 0 && (
+                        <div className="flex justify-between pl-3 text-[9.5px] text-neutral-600 font-mono leading-tight">
+                          <span>{currentLanguage === "en" ? "- Change Returned:" : "- เงินทอน:"}</span>
+                          <span>฿{formatCurrency(p.change)}</span>
+                        </div>
+                      )}
                     </div>
                   ))}
                   <div className={`flex justify-between mt-0.5 text-neutral-900 border-t border-neutral-200 ${paymentsRowClass} font-black`}>

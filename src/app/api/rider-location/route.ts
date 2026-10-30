@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { resolveRequestUser } from '@/lib/server-auth';
+import {
+  ensureDailyRiderOfflineReset,
+  getRiderGpsTimestampsMap,
+  recordRiderGpsTimestamp,
+} from '@/lib/rider-presence';
+
+let riderLocationCache: { data: any[]; cachedAt: number } | null = null;
+const RIDER_LOC_CACHE_TTL_MS = 5000;
 
 /**
  * PATCH /api/rider-location
@@ -16,6 +24,8 @@ export async function PATCH(req: NextRequest) {
     if (!user.isActive) {
       return NextResponse.json({ error: 'Forbidden: Account is deactivated' }, { status: 403 });
     }
+
+    await ensureDailyRiderOfflineReset();
 
     const body = await req.json();
     const riderId = body.riderId || body.id;
@@ -37,8 +47,10 @@ export async function PATCH(req: NextRequest) {
         currentLng: lng,
       },
     });
+    const gpsUpdatedAt = await recordRiderGpsTimestamp(riderId);
+    riderLocationCache = null;
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, gpsUpdatedAt });
   } catch (err) {
     console.error('[rider-location] Failed to update GPS:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -60,25 +72,43 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden: Account is deactivated' }, { status: 403 });
     }
 
-    const riders = await prisma.rider.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        name: true,
-        nickname: true,
-        status: true,
-        currentLat: true,
-        currentLng: true,
-        branchId: true,
-        avatarUrl: true,
-        rating: true,
-        completedJobs: true,
-        vehicleType: true,
-        vehiclePlate: true,
-      },
-    });
+    const didReset = await ensureDailyRiderOfflineReset();
+    if (didReset) {
+      riderLocationCache = null;
+    }
 
-    return NextResponse.json(riders);
+    if (riderLocationCache && Date.now() - riderLocationCache.cachedAt < RIDER_LOC_CACHE_TTL_MS) {
+      return NextResponse.json(riderLocationCache.data);
+    }
+
+    const [riders, gpsMap] = await Promise.all([
+      prisma.rider.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          nickname: true,
+          status: true,
+          currentLat: true,
+          currentLng: true,
+          branchId: true,
+          avatarUrl: true,
+          rating: true,
+          completedJobs: true,
+          vehicleType: true,
+          vehiclePlate: true,
+        },
+      }),
+      getRiderGpsTimestampsMap(),
+    ]);
+
+    const enrichedRiders = riders.map((r) => ({
+      ...r,
+      gpsUpdatedAt: gpsMap.get(r.id) || null,
+    }));
+
+    riderLocationCache = { data: enrichedRiders, cachedAt: Date.now() };
+    return NextResponse.json(enrichedRiders);
   } catch (err) {
     console.error('[rider-location] Failed to fetch locations:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

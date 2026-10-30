@@ -87,7 +87,7 @@ export async function GET(req: NextRequest) {
     const cacheKey = `${startDate.toISOString()}|${endDate.toISOString()}|${riderId || ""}|${role}|${JSON.stringify(authWhere || {})}`;
     const now = Date.now();
     const cached = historyCache.get(cacheKey);
-    if (cached && now - cached.cachedAt < 15000 && cached.dbVersion === dbCache.version) {
+    if (cached && now - cached.cachedAt < 120000 && cached.dbVersion === dbCache.version) {
       return NextResponse.json(cached.jobs);
     }
 

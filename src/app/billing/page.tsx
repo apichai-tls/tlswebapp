@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef, useSyncExternalStore } from "react";
+import { useState, useEffect, useRef, useMemo, useSyncExternalStore } from "react";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Logo } from "@/components/logo";
 import { useJobs } from "@/lib/use-jobs";
 import { jobStore, shopStore, type Job } from "@/lib/store";
 import { useAuth } from "@/providers/auth-provider";
 import { getUserAssignedBranchIds } from "@/components/branch-filter-dropdown";
+import { formatJobDisplayId, getJobPackingCounts } from "@/lib/utils";
 import { toast } from "sonner";
 import {
   Camera,
@@ -24,7 +25,7 @@ import {
   Users,
   CalendarClock,
   Truck,
-  Map,
+  Map as MapIcon,
   Calculator,
   Settings,
   ShieldCheck,
@@ -39,6 +40,14 @@ import {
   Menu,
   Droplets,
   ExternalLink,
+  ImagePlus,
+  ArrowUpDown,
+  Store,
+  Smartphone,
+  Sparkles,
+  FileText,
+  Clock,
+  ShoppingBag,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -76,11 +85,11 @@ function parseBillUrls(raw: string | null | undefined): string[] {
 }
 
 /** Compress and optionally rotate image before upload (max 1600px, 85 % JPEG quality) */
-function compressImage(file: File, maxDim = 1600, quality = 0.85, rotation = 0): Promise<File> {
+function compressImage(file: File, maxDim = 1280, quality = 0.82, rotation = 0): Promise<File> {
   return new Promise((resolve) => {
     const img = new window.Image();
     img.onload = () => {
-      let { width, height } = img;
+      const { width, height } = img;
       
       const isSwapped = rotation === 90 || rotation === 270;
       const canvasWidth = isSwapped ? height : width;
@@ -125,27 +134,37 @@ function compressImage(file: File, maxDim = 1600, quality = 0.85, rotation = 0):
   });
 }
 
+function getBranchShortLabel(name?: string | null): string {
+  if (!name) return "";
+  return name
+    .replace(/^That Laundry Shop\s*[-–—]?\s*/i, "")
+    .replace(/^TLS\s*[-–—]?\s*/i, "")
+    .trim();
+}
+
 // ---------------------------------------------------------------------------
 // BillingJobCard
 // ---------------------------------------------------------------------------
 
-const statusConfig: Record<string, { label: string; className: string }> = {
-  tba: { label: "TBA", className: "bg-slate-100 text-slate-500 border-slate-300" },
-  pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200" },
-  pickup: { label: "Pickup", className: "bg-amber-50 text-amber-700 border-amber-200" },
-  billing: { label: "Process", className: "bg-blue-50 text-blue-700 border-blue-200" },
-  delivery: { label: "Delivery", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  completed: { label: "Completed", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  cancel: { label: "Cancelled", className: "bg-red-50 text-red-700 border-red-200" },
-  return: { label: "Return", className: "bg-rose-50 text-rose-700 border-rose-200" },
+const statusConfig: Record<string, { label: string; className: string; accentBar: string; dot: string }> = {
+  tba: { label: "TBA", className: "bg-slate-100 text-slate-600 border-slate-300", accentBar: "bg-slate-400", dot: "bg-slate-400" },
+  pending: { label: "Pending", className: "bg-amber-50 text-amber-700 border-amber-200", accentBar: "bg-amber-500", dot: "bg-amber-500" },
+  pickup: { label: "Pickup", className: "bg-amber-50 text-amber-700 border-amber-200", accentBar: "bg-amber-500", dot: "bg-amber-500" },
+  billing: { label: "In Process", className: "bg-indigo-50 text-indigo-700 border-indigo-200", accentBar: "bg-indigo-600", dot: "bg-indigo-600" },
+  delivery: { label: "Delivery", className: "bg-sky-50 text-sky-700 border-sky-200", accentBar: "bg-sky-500", dot: "bg-sky-500" },
+  completed: { label: "Completed", className: "bg-emerald-50 text-emerald-700 border-emerald-200", accentBar: "bg-emerald-500", dot: "bg-emerald-500" },
+  cancel: { label: "Cancelled", className: "bg-red-50 text-red-700 border-red-200", accentBar: "bg-red-500", dot: "bg-red-500" },
+  return: { label: "Return", className: "bg-rose-50 text-rose-700 border-rose-200", accentBar: "bg-rose-500", dot: "bg-rose-500" },
 };
 
 function BillingJobCard({
   job,
+  branchName,
   onUpload,
   onFinish,
 }: {
   job: Job;
+  branchName?: string;
   onUpload?: () => void;
   onFinish?: () => void;
 }) {
@@ -154,45 +173,28 @@ function BillingJobCard({
   const [billUrls, setBillUrls] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [pendingPhoto, setPendingPhoto] = useState<{ file: File; rotation: number; previewUrl: string } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingPhoto, setPendingPhoto] = useState<{
+    file: File;
+    rotation: number;
+    previewUrl: string;
+    preCompressedPromise?: Promise<File>;
+    preSignedUrlPromise?: Promise<{ uploadUrl: string; publicUrl: string } | null>;
+  } | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
-  // Keep bill URLs in sync with job data (updated via polling / store)
+  // Keep bill URLs in sync with job data (updated via polling / store), preserving any in-flight blob: optimistic previews
   useEffect(() => {
-    setBillUrls(parseBillUrls(job.billImageUrl));
+    const serverUrls = parseBillUrls(job.billImageUrl);
+    setBillUrls((prev) => {
+      const optimisticBlobs = prev.filter((u) => u.startsWith("blob:"));
+      if (optimisticBlobs.length === 0) return serverUrls;
+      return [...serverUrls, ...optimisticBlobs].slice(0, 4);
+    });
   }, [job.billImageUrl]);
 
-  // ---- Camera capture → set pending for preview/rotation ----
-  const handleCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = ""; // allow re-selecting same file
-
-    if (billUrls.length >= 4) {
-      toast.error("Maximum 4 photos per job");
-      return;
-    }
-
-    setPendingPhoto({
-      file,
-      rotation: 0,
-      previewUrl: URL.createObjectURL(file),
-    });
-  };
-
-  // ---- Execute upload with selected rotation ----
-  const executeUpload = async () => {
-    if (!pendingPhoto) return;
-    if (billUrls.length >= 4) {
-      toast.error("Maximum 4 photos per job");
-      return;
-    }
-
-    setUploading(true);
+  const requestSignedBillUrl = async (): Promise<{ uploadUrl: string; publicUrl: string } | null> => {
     try {
-      const compressed = await compressImage(pendingPhoto.file, 1600, 0.85, pendingPhoto.rotation);
-
-      // 1) Get signed upload URL
       const { getClientAuthHeaders } = await import("@/lib/api");
       const res = await fetch("/api/upload-url", {
         method: "POST",
@@ -204,44 +206,162 @@ function BillingJobCard({
           entityType: "job",
           entityId: job.id,
           subType: "bills",
-          contentType: compressed.type || "image/jpeg",
+          contentType: "image/jpeg",
         }),
       });
-      if (!res.ok) throw new Error("Failed to get upload URL");
-      const { uploadUrl, publicUrl } = await res.json();
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
 
-      // 2) PUT file to GCS
-      const put = await fetch(uploadUrl, {
+  // ---- Camera selection → pre-warm compression & signed URL immediately while user previews ----
+  const handleCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    e.target.value = ""; // allow re-selecting same file
+
+    const remainingSlots = 4 - billUrls.length;
+    if (remainingSlots <= 0) {
+      toast.error("Maximum 4 photos per job");
+      return;
+    }
+
+    // If user selected multiple photos from Gallery at once, upload them all in parallel immediately!
+    if (files.length > 1) {
+      const batch = files.slice(0, remainingSlots);
+      await uploadMultipleFilesFast(batch);
+      return;
+    }
+
+    const file = files[0];
+    const previewUrl = URL.createObjectURL(file);
+    // Start compressing 0-deg image AND fetching signed GCS URL in the background right now!
+    const preCompressedPromise = compressImage(file, 1280, 0.82, 0);
+    const preSignedUrlPromise = requestSignedBillUrl();
+
+    setPendingPhoto({
+      file,
+      rotation: 0,
+      previewUrl,
+      preCompressedPromise,
+      preSignedUrlPromise,
+    });
+  };
+
+  // ---- Fast parallel batch upload for multi-file Gallery selection ----
+  const uploadMultipleFilesFast = async (files: File[]) => {
+    if (files.length === 0) return;
+    if (onUpload) onUpload();
+    const tempBlobUrls = files.map((f) => URL.createObjectURL(f));
+    const baseUrls = parseBillUrls(job.billImageUrl);
+    setBillUrls([...baseUrls, ...tempBlobUrls].slice(0, 4));
+    setUploading(true);
+
+    try {
+      const uploadedPublicUrls = await Promise.all(
+        files.map(async (file) => {
+          const [compressed, signed] = await Promise.all([
+            compressImage(file, 1280, 0.82, 0),
+            requestSignedBillUrl(),
+          ]);
+          if (!signed?.uploadUrl || !signed?.publicUrl) {
+            throw new Error("Failed to get upload URL");
+          }
+          const put = await fetch(signed.uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": "image/jpeg" },
+            body: compressed,
+          });
+          if (!put.ok) throw new Error("Upload to storage failed");
+          return signed.publicUrl;
+        })
+      );
+
+      const finalUrls = [...baseUrls, ...uploadedPublicUrls].slice(0, 4);
+      setBillUrls(finalUrls);
+      const savedJob = await jobStore.updateJobDetails(job.id, {
+        billImageUrl: JSON.stringify(finalUrls),
+        actorId: user?.id,
+        actorName: user?.name || user?.email,
+        actorRole: user?.role,
+      } as any);
+      if ((savedJob as any)?._saveStatus === "failed") {
+        throw new Error("Failed to save bill photos to database");
+      }
+      toast.success(`Uploaded ${uploadedPublicUrls.length} bill photos ✅`);
+    } catch (err) {
+      console.error("Batch upload error:", err);
+      setBillUrls(parseBillUrls(job.billImageUrl));
+      toast.error("Upload failed. Please try again.");
+    } finally {
+      tempBlobUrls.forEach((u) => URL.revokeObjectURL(u));
+      setUploading(false);
+    }
+  };
+
+  // ---- Execute upload with instant modal dismissal & pre-warmed compression/signed URL ----
+  const executeUpload = async () => {
+    if (!pendingPhoto) return;
+    if (billUrls.length >= 4) {
+      toast.error("Maximum 4 photos per job");
+      return;
+    }
+
+    const snapshot = pendingPhoto;
+    // Close the modal IMMEDIATELY so staff can keep working with zero lag!
+    setPendingPhoto(null);
+    if (onUpload) onUpload();
+
+    const baseUrls = parseBillUrls(job.billImageUrl);
+    // Show optimistic thumbnail in the card slot right away
+    setBillUrls([...baseUrls, snapshot.previewUrl].slice(0, 4));
+    setUploading(true);
+
+    try {
+      // Reuse pre-compressed 0° file and pre-fetched signed URL (already running while user was previewing!)
+      const [compressed, signed] = await Promise.all([
+        snapshot.rotation === 0 && snapshot.preCompressedPromise
+          ? snapshot.preCompressedPromise
+          : compressImage(snapshot.file, 1280, 0.82, snapshot.rotation),
+        snapshot.preSignedUrlPromise
+          ? snapshot.preSignedUrlPromise.then((res) => res || requestSignedBillUrl())
+          : requestSignedBillUrl(),
+      ]);
+
+      if (!signed?.uploadUrl || !signed?.publicUrl) {
+        throw new Error("Failed to get upload URL");
+      }
+
+      // PUT file to GCS
+      const put = await fetch(signed.uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": compressed.type || "image/jpeg" },
         body: compressed,
       });
       if (!put.ok) throw new Error("Upload failed");
 
-      // 3) Mark as active in session BEFORE optimistic update so card stays mounted,
-      //    and never re-adds to sessionUploadedJobIds after Finish Upload is clicked
-      if (onUpload) onUpload();
+      const latestServerUrls = parseBillUrls(job.billImageUrl);
+      const newUrls = [...latestServerUrls, signed.publicUrl].slice(0, 4);
+      setBillUrls(newUrls);
 
-      const newUrls = [...billUrls, publicUrl];
       const savedJob = await jobStore.updateJobDetails(job.id, {
         billImageUrl: JSON.stringify(newUrls),
         actorId: user?.id,
         actorName: user?.name || user?.email,
-        actorRole: user?.role
+        actorRole: user?.role,
       } as any);
       if ((savedJob as any)?._saveStatus === "failed") {
         throw new Error("Failed to save bill photo to database");
       }
-      setBillUrls(newUrls);
       toast.success("Bill uploaded successfully ✅");
-      
-      // Cleanup
-      URL.revokeObjectURL(pendingPhoto.previewUrl);
-      setPendingPhoto(null);
     } catch (err) {
       console.error("Upload error:", err);
+      setBillUrls(parseBillUrls(job.billImageUrl));
       toast.error("Upload failed. Please try again.");
     } finally {
+      URL.revokeObjectURL(snapshot.previewUrl);
       setUploading(false);
     }
   };
@@ -258,7 +378,7 @@ function BillingJobCard({
         billImageUrl: newUrls.length > 0 ? JSON.stringify(newUrls) : (null as any),
         actorId: user?.id,
         actorName: user?.name || user?.email,
-        actorRole: user?.role
+        actorRole: user?.role,
       } as any);
       setBillUrls(newUrls);
       toast.success("Photo deleted successfully");
@@ -281,11 +401,13 @@ function BillingJobCard({
     : "";
 
   const isWalkIn = job.source === "pos" || (job.type as string) === "in_store";
+  const displayId = formatJobDisplayId(job.id);
+  const packing = getJobPackingCounts(job);
+  const itemCount = Array.isArray(job.items)
+    ? job.items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0)
+    : 0;
 
-  // Truncate long IDs for display
-  const shortId = job.id.length > 10 ? job.id.substring(0, 10) : job.id;
-
-  // Filter out system tags (Proforma, Discount, VAT, Promo, Express, Pickup, Delivery, etc.) and keep only actual customer/staff remark
+  // Filter out system tags and keep only actual customer/staff remark
   const cleanRemark = job.remark
     ? job.remark
         .split(" | ")
@@ -312,129 +434,227 @@ function BillingJobCard({
         .trim()
     : "";
 
+  const hasPhotos = billUrls.length > 0;
+
   return (
     <>
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden transition-all">
-        {/* ---- Header ---- */}
-        <div className="px-4 pt-3.5 pb-2.5">
-          <div className="flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[11px] font-mono font-bold text-slate-400 tracking-wide">
-                  #{shortId}
+      <div
+        className={`group relative bg-white rounded-2xl border transition-all duration-200 overflow-hidden flex flex-col justify-between ${
+          hasPhotos
+            ? "border-emerald-300 ring-2 ring-emerald-500/15 shadow-md"
+            : "border-slate-200/90 hover:border-indigo-300 hover:shadow-md shadow-xs"
+        }`}
+      >
+        {/* Top Color Accent Bar */}
+        <div className={`h-1.5 w-full ${hasPhotos ? "bg-emerald-500" : status.accentBar}`} />
+
+        {/* ---- Card Top & Metadata ---- */}
+        <div className="p-4 pb-3 space-y-2.5">
+          {/* Row 1: Order ID + Badges + Status Pill */}
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+              <span className="font-mono text-xs font-black px-2 py-0.5 rounded-lg bg-slate-900 text-white tracking-tight">
+                #{displayId}
+              </span>
+              {branchName && (
+                <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200/80 truncate max-w-[120px]">
+                  {branchName}
                 </span>
-                {isWalkIn && (
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
-                    Walk-In
-                  </span>
-                )}
-              </div>
-              <h3 className="text-[15px] font-extrabold text-slate-900 mt-0.5 truncate">
-                {job.customerName || "General Customer"}
-              </h3>
+              )}
+              {isWalkIn ? (
+                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200">
+                  Walk-In
+                </span>
+              ) : (
+                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+                  Delivery
+                </span>
+              )}
             </div>
-            <span className={`shrink-0 text-[11px] font-bold px-2.5 py-1 rounded-full border ${status.className}`}>
+
+            <span className={`shrink-0 inline-flex items-center gap-1.5 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full border ${status.className}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
               {status.label}
             </span>
           </div>
 
-          {displayDate && (
-            <p className="text-[11px] text-slate-400 mt-1">{displayDate}</p>
-          )}
+          {/* Row 2: Customer Name & Amount/Items Info */}
+          <div className="flex items-baseline justify-between gap-2 pt-0.5">
+            <h3 className="text-base font-black text-slate-900 tracking-tight truncate leading-snug">
+              {job.customerName || "General Customer"}
+            </h3>
+            {typeof job.totalAmount === "number" && job.totalAmount > 0 && (
+              <span className="shrink-0 text-sm font-black text-slate-900 tabular-nums">
+                ฿{job.totalAmount.toLocaleString()}
+              </span>
+            )}
+          </div>
+
+          {/* Row 3: Date, Bill No, Item Count, Hanger/Folded */}
+          <div className="flex items-center justify-between gap-2 flex-wrap text-[11px] text-slate-500 font-semibold">
+            <span className="inline-flex items-center gap-1 text-slate-400">
+              <Clock size={12} className="shrink-0" />
+              {displayDate}
+            </span>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {job.billNo && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold">
+                  <FileText size={10} />
+                  {job.billNo}
+                </span>
+              )}
+              {itemCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold">
+                  {itemCount} pcs
+                </span>
+              )}
+              {(packing.hangerCount > 0 || packing.foldedCount > 0) && (
+                <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200 text-[10px] font-extrabold">
+                  {packing.hangerCount > 0 ? `H:${packing.hangerCount}` : ""}
+                  {packing.hangerCount > 0 && packing.foldedCount > 0 ? " " : ""}
+                  {packing.foldedCount > 0 ? `F:${packing.foldedCount}` : ""}
+                </span>
+              )}
+            </div>
+          </div>
 
           {/* Cleaned Remark */}
           {cleanRemark && (
-            <div className="flex items-start gap-1.5 mt-2 bg-rose-50 text-rose-700 rounded-lg px-2.5 py-1.5 border border-rose-100">
+            <div className="flex items-start gap-1.5 bg-rose-50/90 text-rose-700 rounded-xl px-2.5 py-1.5 border border-rose-200/70">
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
-              <span className="text-[11px] font-semibold leading-tight line-clamp-2">{cleanRemark}</span>
+              <span className="text-[11px] font-bold leading-tight line-clamp-2">{cleanRemark}</span>
             </div>
           )}
         </div>
 
-        {/* ---- Bill section ---- */}
-        <div className="px-4 pb-3.5">
-          {/* Existing bill thumbnails */}
-          {billUrls.length > 0 && (
-            <div className="flex gap-2 mb-2.5 overflow-x-auto pb-1 -mx-0.5 px-0.5">
-              {billUrls.map((url, i) => (
-                <div
-                  key={i}
-                  className="relative shrink-0 w-[72px] h-[72px] rounded-xl border border-slate-200 overflow-hidden bg-slate-100 shadow-sm"
+        {/* ---- 4-Slot Photo Strip & Upload Controls ---- */}
+        <div className="px-4 pb-4 pt-2 border-t border-slate-100 bg-slate-50/50 space-y-2.5">
+          {/* 4 Visual Photo Slots */}
+          <div className="grid grid-cols-4 gap-2">
+            {[0, 1, 2, 3].map((slotIdx) => {
+              const url = billUrls[slotIdx];
+              if (url) {
+                return (
+                  <div
+                    key={slotIdx}
+                    className="relative aspect-square rounded-xl border-2 border-emerald-300 overflow-hidden bg-white shadow-xs group/slot"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={url}
+                      alt={`Bill ${slotIdx + 1}`}
+                      className="w-full h-full object-cover cursor-pointer transition-transform group-hover/slot:scale-105"
+                      onClick={() => setPreviewUrl(url)}
+                    />
+                    <span className="absolute bottom-1 left-1 px-1.5 py-0.2 bg-black/65 text-white text-[9px] font-black rounded">
+                      #{slotIdx + 1}
+                    </span>
+                    {canDeletePhoto && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(slotIdx);
+                        }}
+                        className="absolute top-1 right-1 w-5 h-5 bg-red-600/90 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-md transition-colors cursor-pointer"
+                        title="ลบรูปภาพ (Admin only)"
+                      >
+                        <X size={11} />
+                      </button>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <button
+                  key={slotIdx}
+                  type="button"
+                  disabled={uploading}
+                  onClick={() => cameraInputRef.current?.click()}
+                  className="aspect-square rounded-xl border border-dashed border-slate-300 bg-white/80 hover:bg-indigo-50/50 hover:border-indigo-300 flex flex-col items-center justify-center gap-0.5 text-slate-300 hover:text-indigo-500 transition-colors cursor-pointer disabled:opacity-50"
+                  title={`Slot ${slotIdx + 1} — Tap to take photo`}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={url}
-                    alt={`Bill ${i + 1}`}
-                    className="w-full h-full object-cover cursor-pointer"
-                    onClick={() => setPreviewUrl(url)}
-                  />
-                  {canDeletePhoto && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(i);
-                      }}
-                      className="absolute top-0.5 right-0.5 w-5 h-5 bg-red-500/90 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-md backdrop-blur-sm transition-colors cursor-pointer"
-                      title="ลบรูปภาพ (Admin only)"
-                    >
-                      <X size={11} />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+                  <Camera size={14} />
+                  <span className="text-[9px] font-bold">{slotIdx + 1}/4</span>
+                </button>
+              );
+            })}
+          </div>
 
-          {/* Camera button */}
+          {/* Hidden Inputs: Camera (mobile APK rear camera) & Gallery/File picker */}
           <input
-            ref={fileInputRef}
+            ref={cameraInputRef}
             type="file"
             accept="image/*"
             capture="environment"
             onChange={handleCapture}
             className="hidden"
           />
+          <input
+            ref={galleryInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={handleCapture}
+            className="hidden"
+          />
 
+          {/* Action Buttons */}
           {billUrls.length < 4 ? (
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm transition-all active:scale-[0.97] ${
-                uploading
-                  ? "bg-slate-100 text-slate-400 cursor-not-allowed"
-                  : billUrls.length > 0
-                    ? "bg-slate-50 text-slate-500 border border-slate-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200"
-                    : "bg-blue-50 text-blue-600 border-2 border-dashed border-blue-200 hover:bg-blue-100 hover:border-blue-300"
-              }`}
-            >
-              {uploading ? (
-                <>
-                  <Loader2 size={18} className="animate-spin" />
-                  Uploading...
-                </>
-              ) : (
-                <>
-                  <Camera size={18} />
-                  Upload Bill ({billUrls.length}/4)
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => cameraInputRef.current?.click()}
+                disabled={uploading}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-extrabold text-xs sm:text-sm transition-all active:scale-[0.98] cursor-pointer shadow-xs ${
+                  uploading
+                    ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                    : billUrls.length > 0
+                      ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                      : "bg-indigo-600 hover:bg-indigo-700 text-white"
+                }`}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Uploading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Camera size={16} />
+                    <span>{billUrls.length > 0 ? `Add Photo (${billUrls.length}/4)` : `Take Photo (0/4)`}</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => galleryInputRef.current?.click()}
+                disabled={uploading}
+                className="px-3 py-2.5 rounded-xl font-bold text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/90 transition-all active:scale-[0.98] flex items-center justify-center gap-1.5 cursor-pointer shrink-0 shadow-2xs"
+                title="Choose image from Gallery or Computer"
+              >
+                <ImagePlus size={15} className="text-indigo-600" />
+                <span>Gallery</span>
+              </button>
+            </div>
           ) : (
-            <div className="flex items-center justify-center gap-1.5 text-xs text-emerald-600 font-bold py-2">
-              <CheckCircle2 size={14} />
-              4 photos uploaded
+            <div className="flex items-center justify-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl font-extrabold py-2">
+              <CheckCircle2 size={15} />
+              <span>All 4 Bill Photos Uploaded</span>
             </div>
           )}
 
-          {/* Finish Button - only shown if they have uploaded at least one photo */}
+          {/* Finish Button - shown once at least 1 photo is uploaded */}
           {billUrls.length > 0 && onFinish && (
             <button
+              type="button"
               onClick={onFinish}
-              className="w-full mt-2 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all active:scale-[0.97]"
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-extrabold text-xs sm:text-sm bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all active:scale-[0.98] cursor-pointer"
             >
               <CheckCircle2 size={16} />
-              Finish Upload
+              <span>Finish & Mark Done ({billUrls.length}/4)</span>
             </button>
           )}
         </div>
@@ -453,7 +673,7 @@ function BillingJobCard({
             className="max-w-full max-h-full object-contain rounded-lg"
           />
           <button
-            className="absolute top-4 right-4 w-10 h-10 bg-black/50 text-white rounded-full flex items-center justify-center backdrop-blur-sm"
+            className="absolute top-4 right-4 w-10 h-10 bg-black/50 text-white rounded-full flex items-center justify-center backdrop-blur-sm cursor-pointer"
             onClick={() => setPreviewUrl(null)}
           >
             <X size={24} />
@@ -466,13 +686,18 @@ function BillingJobCard({
         <div className="fixed inset-0 z-50 bg-black/95 flex flex-col justify-between p-4 pb-8 safe-bottom">
           {/* Header */}
           <div className="flex justify-between items-center text-white shrink-0 pt-2">
-            <h4 className="text-xs font-extrabold tracking-wide uppercase">พรีวิวและจัดหมุนรูปภาพบิล (Preview & Rotate)</h4>
-            <button 
+            <div>
+              <h4 className="text-sm font-extrabold tracking-wide">
+                Order #{displayId} — {job.customerName || "Customer"}
+              </h4>
+              <p className="text-[11px] text-slate-400">พรีวิวและจัดหมุนรูปภาพบิลก่อนอัปโหลด (Preview & Rotate)</p>
+            </div>
+            <button
               onClick={() => {
                 URL.revokeObjectURL(pendingPhoto.previewUrl);
                 setPendingPhoto(null);
               }}
-              className="w-8 h-8 bg-white/10 text-white rounded-full flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all"
+              className="w-9 h-9 bg-white/10 text-white rounded-full flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all cursor-pointer"
             >
               <X size={18} />
             </button>
@@ -496,15 +721,15 @@ function BillingJobCard({
             {/* Rotation Control Buttons */}
             <div className="flex justify-center gap-3">
               <button
-                onClick={() => setPendingPhoto(prev => prev ? { ...prev, rotation: (prev.rotation - 90 + 360) % 360 } : null)}
-                className="flex items-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-xs active:scale-95 transition-all border border-white/10"
+                onClick={() => setPendingPhoto((prev) => (prev ? { ...prev, rotation: (prev.rotation - 90 + 360) % 360 } : null))}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-xs active:scale-95 transition-all border border-white/10 cursor-pointer"
               >
                 <RotateCcw size={14} />
                 หมุนซ้าย (90° Left)
               </button>
               <button
-                onClick={() => setPendingPhoto(prev => prev ? { ...prev, rotation: (prev.rotation + 90) % 360 } : null)}
-                className="flex items-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-xs active:scale-95 transition-all border border-white/10"
+                onClick={() => setPendingPhoto((prev) => (prev ? { ...prev, rotation: (prev.rotation + 90) % 360 } : null))}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-xs active:scale-95 transition-all border border-white/10 cursor-pointer"
               >
                 <RotateCw size={14} />
                 หมุนขวา (90° Right)
@@ -518,14 +743,14 @@ function BillingJobCard({
                   URL.revokeObjectURL(pendingPhoto.previewUrl);
                   setPendingPhoto(null);
                 }}
-                className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white rounded-xl font-bold text-sm border border-white/10 active:scale-95 transition-all"
+                className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white rounded-xl font-bold text-sm border border-white/10 active:scale-95 transition-all cursor-pointer"
               >
                 ยกเลิก (Cancel)
               </button>
               <button
                 onClick={executeUpload}
                 disabled={uploading}
-                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-lg active:scale-[0.97] transition-all flex items-center justify-center gap-2"
+                className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-sm shadow-lg active:scale-[0.97] transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 {uploading ? (
                   <>
@@ -551,13 +776,20 @@ function BillingJobCard({
 // Main Page
 // ---------------------------------------------------------------------------
 
+type StageFilter = "all" | "billing" | "delivery" | "completed" | "walk_in" | "uploaded";
+
 export default function BillingPage() {
   const { user, logout } = useAuth();
   const jobs = useJobs();
   const shopLocations = useSyncExternalStore(shopStore.subscribe, shopStore.getSnapshot, shopStore.getSnapshot);
   const [search, setSearch] = useState("");
-  
-  // Track jobs that were uploaded in this session, to keep them visible
+  const [stageFilter, setStageFilter] = useState<StageFilter>("all");
+  const [selectedBranch, setSelectedBranch] = useState<string>("all");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [visibleLimit, setVisibleLimit] = useState<number>(48);
+  const [isSyncingManual, setIsSyncingManual] = useState(false);
+
+  // Track jobs that were uploaded in this session, to keep them visible until finished
   const [sessionUploadedJobIds, setSessionUploadedJobIds] = useState<Set<string>>(new Set());
   // Track jobs that the user clicked "Finish" on, to hide them immediately
   const [hiddenJobIds, setHiddenJobIds] = useState<string[]>([]);
@@ -570,6 +802,10 @@ export default function BillingPage() {
       }
     } catch {}
   }, []);
+
+  useEffect(() => {
+    setVisibleLimit(48);
+  }, [search, stageFilter, selectedBranch, sortOrder]);
 
   const handleFinish = (jobId: string) => {
     setHiddenJobIds((prev) => {
@@ -584,14 +820,28 @@ export default function BillingPage() {
       next.delete(jobId);
       return next;
     });
-    toast.success("Saved successfully ✅");
+    toast.success("Saved & removed from queue ✅");
+  };
+
+  const handleManualSync = async () => {
+    if (isSyncingManual) return;
+    setIsSyncingManual(true);
+    try {
+      const m = await import("@/lib/api");
+      await m.api.reconcileDelta();
+      toast.success("Synced latest orders ✅");
+    } catch {
+      toast.error("Sync failed");
+    } finally {
+      setIsSyncingManual(false);
+    }
   };
 
   // Check billing permission
   const hasAccess = (key: string) => {
     if (!user) return false;
-    if (user.role === 'admin') return true;
-    if (key === 'dashboard' || key === 'tasks' || key === 'calculator') return true;
+    if (user.role === "admin") return true;
+    if (key === "dashboard" || key === "tasks" || key === "calculator") return true;
     return user.permissions?.includes(key);
   };
 
@@ -608,14 +858,13 @@ export default function BillingPage() {
   // Pull-to-refresh state and touch event handling
   const [pullDistance, setPullDistance] = useState(0);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
-  
+
   const pullDistanceRef = useRef(0);
   const isRefreshingRef = useRef(false);
-  
+
   const touchStartY = useRef(0);
   const isPulling = useRef(false);
 
-  // Synchronize state values with refs for touch event handlers
   useEffect(() => {
     pullDistanceRef.current = pullDistance;
   }, [pullDistance]);
@@ -626,8 +875,6 @@ export default function BillingPage() {
 
   useEffect(() => {
     const handleTouchStart = (e: TouchEvent) => {
-      // Trigger pulling only if we are at the top of the window scroll
-      // Using <= 5 to safely account for sub-pixel rendering on high-DPI mobile screens
       const isAtTop = window.scrollY <= 5;
       if (isAtTop && !isRefreshingRef.current) {
         touchStartY.current = e.touches[0].clientY;
@@ -639,14 +886,12 @@ export default function BillingPage() {
       if (!isPulling.current || isRefreshingRef.current) return;
       const currentY = e.touches[0].clientY;
       const diff = currentY - touchStartY.current;
-      
+
       if (diff > 0) {
-        // Resistance: logarithmic feel
         const distance = Math.min(100, Math.pow(diff, 0.85));
         pullDistanceRef.current = distance;
         setPullDistance(distance);
-        
-        // Prevent WebView's default overscroll reload gesture
+
         if (diff > 10) {
           if (e.cancelable) e.preventDefault();
         }
@@ -665,14 +910,13 @@ export default function BillingPage() {
       if (currentDistance >= 60 && !isRefreshingRef.current) {
         setIsPullRefreshing(true);
         isRefreshingRef.current = true;
-        setPullDistance(60); // Stay at active spin position
+        setPullDistance(60);
         pullDistanceRef.current = 60;
 
         toast.promise(
           import("@/lib/api").then(async (m) => {
-            await m.refreshDb();
-            // Aesthetic delay for smooth transition feel
-            await new Promise((r) => setTimeout(r, 600));
+            await m.api.reconcileDelta();
+            await new Promise((r) => setTimeout(r, 400));
           }),
           {
             loading: "Syncing latest bills...",
@@ -686,7 +930,7 @@ export default function BillingPage() {
           isRefreshingRef.current = false;
           setPullDistance(0);
           pullDistanceRef.current = 0;
-        }, 800);
+        }, 600);
       } else {
         setPullDistance(0);
         pullDistanceRef.current = 0;
@@ -711,59 +955,125 @@ export default function BillingPage() {
     });
   }, []);
 
-  // Filter: show all jobs that do not have a bill uploaded yet (only in billing, delivery, or completed status)
-  const billingJobs = jobs
-    .filter((j) => {
-      // Only allow billing, delivery, and completed statuses
-      const allowedStatuses = ["billing", "delivery", "completed"];
-      if (!allowedStatuses.includes(j.status)) return false;
+  const branchMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const s of shopLocations) {
+      map[s.id] = getBranchShortLabel(s.name) || s.name;
+    }
+    return map;
+  }, [shopLocations]);
 
-      // Hide if the user manually finished it in this session
+  const availableBranches = useMemo(() => {
+    if (!user || user.role === "admin") return shopLocations;
+    if ((user.area && user.area !== "ALL") || (user.branchId && user.branchId !== "all" && user.branchId !== "ALL")) {
+      const allowedIds = new Set(getUserAssignedBranchIds(user, shopLocations));
+      return shopLocations.filter((s) => allowedIds.has(s.id));
+    }
+    return shopLocations;
+  }, [user, shopLocations]);
+
+  // Base eligible jobs (before stage/search filters) so stage pill counts stay accurate
+  const baseEligibleJobs = useMemo(() => {
+    const cutOffDate = new Date("2026-05-28T00:00:00.000Z");
+    const allowedStatuses = ["billing", "delivery", "completed"];
+
+    return jobs.filter((j) => {
+      if (!allowedStatuses.includes(j.status)) return false;
       if (hiddenJobIds.includes(j.id)) return false;
 
-      // Hide jobs that already have bill uploaded (unless uploaded in this active session)
       const hasUploadedBills = parseBillUrls(j.billImageUrl).length > 0;
       if (hasUploadedBills && !sessionUploadedJobIds.has(j.id)) {
         return false;
       }
 
-      // Cut-off: Only show orders created on or after May 28, 2026
-      const cutOffDate = new Date("2026-05-28T00:00:00.000Z");
       if (new Date(j.createdAt) < cutOffDate) return false;
 
-      // Filter by user's Area if they have a restricted area (e.g. BKK, PTY)
-      if (user && user.role !== 'admin' && ((user.area && user.area !== 'ALL') || (user.branchId && user.branchId !== 'all' && user.branchId !== 'ALL')) && shopLocations.length > 0) {
+      if (
+        user &&
+        user.role !== "admin" &&
+        ((user.area && user.area !== "ALL") || (user.branchId && user.branchId !== "all" && user.branchId !== "ALL")) &&
+        shopLocations.length > 0
+      ) {
         const allowedIds = getUserAssignedBranchIds(user, shopLocations);
         if (!j.branchId || !allowedIds.includes(j.branchId)) return false;
       }
-      if ((false as boolean) && user?.area && user.area !== 'ALL') {
-        const branch = shopLocations.find(s => s.id === j.branchId);
-        if (branch?.area !== user.area) return false;
+
+      if (selectedBranch !== "all" && j.branchId !== selectedBranch) {
+        return false;
       }
 
       return true;
-    })
-    .filter((j) => {
-      if (!search.trim()) return true;
-      const q = search.toLowerCase();
-      return (
-        j.id.toLowerCase().includes(q) ||
-        (j.customerName || "").toLowerCase().includes(q) ||
-        (j.customerPhone || "").toLowerCase().includes(q)
-      );
-    })
-    .sort((a, b) => {
-      const timeA = new Date(a.scheduledAt || a.deliveryScheduledAt || a.createdAt).getTime();
-      const timeB = new Date(b.scheduledAt || b.deliveryScheduledAt || b.createdAt).getTime();
-      return timeA - timeB;
     });
+  }, [jobs, hiddenJobIds, sessionUploadedJobIds, user, shopLocations, selectedBranch]);
 
-  // Polling — refresh every 10 s (skip when tab hidden)
+  const stageCounts = useMemo(() => {
+    let process = 0;
+    let delivery = 0;
+    let completed = 0;
+    let walkIn = 0;
+    let uploaded = 0;
+
+    for (const j of baseEligibleJobs) {
+      if (j.status === "billing") process++;
+      else if (j.status === "delivery") delivery++;
+      else if (j.status === "completed") completed++;
+
+      if (j.source === "pos" || (j.type as string) === "in_store") walkIn++;
+      if (sessionUploadedJobIds.has(j.id) || parseBillUrls(j.billImageUrl).length > 0) uploaded++;
+    }
+
+    return {
+      all: baseEligibleJobs.length,
+      billing: process,
+      delivery,
+      completed,
+      walk_in: walkIn,
+      uploaded,
+    };
+  }, [baseEligibleJobs, sessionUploadedJobIds]);
+
+  const billingJobs = useMemo(() => {
+    const q = search.trim().toLowerCase();
+
+    return baseEligibleJobs
+      .filter((j) => {
+        if (stageFilter === "billing" && j.status !== "billing") return false;
+        if (stageFilter === "delivery" && j.status !== "delivery") return false;
+        if (stageFilter === "completed" && j.status !== "completed") return false;
+        if (stageFilter === "walk_in" && !(j.source === "pos" || (j.type as string) === "in_store")) return false;
+        if (stageFilter === "uploaded" && !sessionUploadedJobIds.has(j.id) && parseBillUrls(j.billImageUrl).length === 0) return false;
+
+        if (!q) return true;
+        const displayId = formatJobDisplayId(j.id).toLowerCase();
+        return (
+          j.id.toLowerCase().includes(q) ||
+          displayId.includes(q) ||
+          (j.customerName || "").toLowerCase().includes(q) ||
+          (j.customerPhone || "").toLowerCase().includes(q) ||
+          (j.billNo || "").toLowerCase().includes(q) ||
+          ((j as any).proformaNumber || "").toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        // Keep session-uploaded items pinned near top if user is actively working on them
+        const aUploaded = sessionUploadedJobIds.has(a.id) ? 1 : 0;
+        const bUploaded = sessionUploadedJobIds.has(b.id) ? 1 : 0;
+        if (aUploaded !== bUploaded) return bUploaded - aUploaded;
+
+        const timeA = new Date(a.scheduledAt || a.deliveryScheduledAt || a.createdAt).getTime();
+        const timeB = new Date(b.scheduledAt || b.deliveryScheduledAt || b.createdAt).getTime();
+        return sortOrder === "newest" ? timeB - timeA : timeA - timeB;
+      });
+  }, [baseEligibleJobs, stageFilter, search, sortOrder, sessionUploadedJobIds]);
+
+  const visibleJobs = useMemo(() => billingJobs.slice(0, visibleLimit), [billingJobs, visibleLimit]);
+
+  // Lightweight delta reconciliation every 30s (skip when tab hidden; SSE handles live updates)
   useEffect(() => {
     const interval = setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      import("@/lib/api").then((m) => m.refreshDb());
-    }, 10_000);
+      import("@/lib/api").then((m) => m.api.reconcileDelta().catch(() => {}));
+    }, 30_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -809,10 +1119,153 @@ export default function BillingPage() {
     );
   }
 
+  const filterPills: Array<{ id: StageFilter; label: string; count: number; badgeClass: string; activeClass: string }> = [
+    {
+      id: "all",
+      label: "All Queue",
+      count: stageCounts.all,
+      badgeClass: "bg-slate-100 text-slate-700",
+      activeClass: "bg-slate-900 text-white border-slate-900 shadow-xs",
+    },
+    {
+      id: "billing",
+      label: "In Process",
+      count: stageCounts.billing,
+      badgeClass: "bg-indigo-50 text-indigo-700",
+      activeClass: "bg-indigo-600 text-white border-indigo-600 shadow-xs",
+    },
+    {
+      id: "delivery",
+      label: "Delivery",
+      count: stageCounts.delivery,
+      badgeClass: "bg-sky-50 text-sky-700",
+      activeClass: "bg-sky-600 text-white border-sky-600 shadow-xs",
+    },
+    {
+      id: "completed",
+      label: "Completed",
+      count: stageCounts.completed,
+      badgeClass: "bg-emerald-50 text-emerald-700",
+      activeClass: "bg-emerald-600 text-white border-emerald-600 shadow-xs",
+    },
+    {
+      id: "walk_in",
+      label: "Walk-In",
+      count: stageCounts.walk_in,
+      badgeClass: "bg-amber-50 text-amber-800",
+      activeClass: "bg-amber-500 text-white border-amber-500 shadow-xs",
+    },
+    ...(stageCounts.uploaded > 0
+      ? [
+          {
+            id: "uploaded" as StageFilter,
+            label: "Uploading Now",
+            count: stageCounts.uploaded,
+            badgeClass: "bg-emerald-100 text-emerald-800",
+            activeClass: "bg-emerald-700 text-white border-emerald-700 shadow-xs",
+          },
+        ]
+      : []),
+  ];
+
+  const renderFilterAndControls = (compact = false) => (
+    <div className="space-y-3">
+      {/* Search + Branch + Sort Controls */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+        <div className="relative flex-1">
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search #Job ID, Customer name, Phone, Bill No..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-10 pr-9 py-2.5 rounded-xl border border-slate-200 bg-slate-50/80 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {availableBranches.length > 1 && (
+            <div className="relative flex-1 sm:flex-initial">
+              <Store size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <select
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                className="w-full sm:w-auto pl-8 pr-7 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+              >
+                <option value="all">All Branches</option>
+                {availableBranches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {getBranchShortLabel(b.name) || b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setSortOrder((prev) => (prev === "newest" ? "oldest" : "newest"))}
+            className="px-3 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
+            title="Toggle sort order by date"
+          >
+            <ArrowUpDown size={14} className="text-indigo-600" />
+            <span>{sortOrder === "newest" ? "Newest First" : "Oldest First"}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleManualSync}
+            disabled={isSyncingManual}
+            className="p-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-indigo-600 cursor-pointer transition-colors"
+            title="Sync latest orders"
+          >
+            <RefreshCw size={15} className={isSyncingManual ? "animate-spin text-indigo-600" : ""} />
+          </button>
+        </div>
+      </div>
+
+      {/* Stage Filter Pills (Horizontal Scrollable on Mobile APK, Wrap on Desktop) */}
+      <div className={`flex items-center gap-2 overflow-x-auto pb-1 hide-scrollbar ${compact ? "" : "sm:flex-wrap"}`}>
+        {filterPills.map((pill) => {
+          const active = stageFilter === pill.id;
+          return (
+            <button
+              key={pill.id}
+              type="button"
+              onClick={() => setStageFilter(pill.id)}
+              className={`shrink-0 inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-extrabold border transition-all cursor-pointer active:scale-95 ${
+                active
+                  ? pill.activeClass
+                  : "bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+              }`}
+            >
+              <span>{pill.label}</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                  active ? "bg-white/20 text-white" : pill.badgeClass
+                }`}
+              >
+                {pill.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   const mobileLayout = (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100/80 animate-in fade-in duration-200">
-      {/* ============ Header ============ */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 shadow-sm">
+    <div className="min-h-screen bg-slate-100/80 animate-in fade-in duration-200">
+      {/* ============ Sticky Mobile APK Header ============ */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 shadow-xs">
         <div className="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <button
@@ -824,9 +1277,9 @@ export default function BillingPage() {
               <Menu size={20} />
             </button>
             <Logo compact className="h-8" />
-            <div className="flex items-center gap-1.5 bg-blue-50 text-blue-600 rounded-lg px-2.5 py-1">
-              <Receipt size={15} />
-              <span className="text-xs font-bold tracking-wide">BILL UPLOAD</span>
+            <div className="flex items-center gap-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200/60 rounded-lg px-2.5 py-1">
+              <Camera size={14} />
+              <span className="text-xs font-black tracking-wide">BILL APK</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -840,28 +1293,27 @@ export default function BillingPage() {
               className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-500 transition-colors px-2 py-1.5 rounded-lg hover:bg-red-50 cursor-pointer"
             >
               <LogOut size={16} />
-              <span className="hidden sm:inline">Logout</span>
             </button>
           </div>
         </div>
       </header>
 
       {/* ============ Pull to Refresh Indicator ============ */}
-      <div 
+      <div
         className="flex justify-center transition-all duration-150 overflow-hidden bg-white/50 backdrop-blur-sm border-b border-slate-100/50 sticky top-[57px] z-20"
-        style={{ 
+        style={{
           height: pullDistance > 0 || isPullRefreshing ? `${pullDistance}px` : "0px",
-          opacity: pullDistance > 0 || isPullRefreshing ? 1 : 0
+          opacity: pullDistance > 0 || isPullRefreshing ? 1 : 0,
         }}
       >
         <div className="flex items-center justify-center gap-2 py-2">
           {isPullRefreshing ? (
-            <Loader2 className="animate-spin text-blue-600" size={16} />
+            <Loader2 className="animate-spin text-indigo-600" size={16} />
           ) : (
-            <RefreshCw 
-              style={{ transform: `rotate(${pullDistance * 4}deg)` }} 
-              className="text-blue-500 transition-transform" 
-              size={16} 
+            <RefreshCw
+              style={{ transform: `rotate(${pullDistance * 4}deg)` }}
+              className="text-indigo-500 transition-transform"
+              size={16}
             />
           )}
           <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase">
@@ -870,62 +1322,55 @@ export default function BillingPage() {
         </div>
       </div>
 
-      {/* ============ Content ============ */}
-      <main className="max-w-lg mx-auto px-4 py-4 pb-24">
-        {/* Search */}
-        <div className="relative mb-4">
-          <Search
-            size={16}
-            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-          />
-          <input
-            type="text"
-            placeholder="Search Job ID / Customer name..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder:text-slate-300"
-          />
-          {search && (
-            <button
-              onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500"
-            >
-              <X size={16} />
-            </button>
-          )}
+      {/* ============ Mobile Content ============ */}
+      <main className="max-w-lg mx-auto px-3.5 py-3.5 pb-24 space-y-3.5">
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-3.5 shadow-xs">
+          {renderFilterAndControls(true)}
         </div>
 
-        {/* Count */}
-        <p className="text-[11px] font-semibold text-slate-400 mb-3 px-1">
-          Jobs in store:{" "}
-          <span className="text-blue-600 text-sm font-extrabold">{billingJobs.length}</span>{" "}
-          items
-        </p>
+        <div className="flex items-center justify-between px-1">
+          <p className="text-xs font-bold text-slate-500">
+            Showing <span className="text-indigo-600 font-black">{billingJobs.length}</span> orders waiting for bill photo
+          </p>
+        </div>
 
         {/* Job Cards */}
         <div className="space-y-3">
           {billingJobs.length === 0 ? (
-            <div className="text-center py-20">
-              <Receipt size={48} className="mx-auto text-slate-200 mb-3" />
-              <p className="text-sm font-semibold text-slate-400">
-                {search ? "No jobs found" : "No active jobs in store"}
+            <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-200">
+              <Receipt size={48} className="mx-auto text-slate-300 mb-3" />
+              <p className="text-sm font-bold text-slate-700">
+                {search ? "No matching orders found" : "No bills waiting for upload"}
               </p>
+              <p className="text-xs text-slate-400 mt-1">All bills in this filter have been uploaded.</p>
             </div>
           ) : (
-            billingJobs.map((job) => (
-              <BillingJobCard
-                key={job.id}
-                job={job}
-                onUpload={() => {
-                  setSessionUploadedJobIds((prev) => {
-                    const next = new Set(prev);
-                    next.add(job.id);
-                    return next;
-                  });
-                }}
-                onFinish={() => handleFinish(job.id)}
-              />
-            ))
+            <>
+              {visibleJobs.map((job) => (
+                <BillingJobCard
+                  key={job.id}
+                  job={job}
+                  branchName={job.branchId ? branchMap[job.branchId] : undefined}
+                  onUpload={() => {
+                    setSessionUploadedJobIds((prev) => {
+                      const next = new Set(prev);
+                      next.add(job.id);
+                      return next;
+                    });
+                  }}
+                  onFinish={() => handleFinish(job.id)}
+                />
+              ))}
+              {billingJobs.length > visibleLimit && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleLimit((prev) => prev + 48)}
+                  className="w-full py-3 rounded-xl bg-white border border-indigo-200 text-indigo-700 font-extrabold text-xs shadow-xs hover:bg-indigo-50 transition-colors cursor-pointer"
+                >
+                  Show More Orders ({billingJobs.length - visibleLimit} remaining)
+                </button>
+              )}
+            </>
           )}
         </div>
       </main>
@@ -943,9 +1388,9 @@ export default function BillingPage() {
             <Logo />
           )}
         </div>
-        
-        <button 
-          onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
+
+        <button
+          onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
           className="absolute -right-4 top-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-full p-1.5 text-slate-500 hover:text-indigo-600 hover:border-indigo-200 shadow-md z-10 transition-transform cursor-pointer"
           title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
         >
@@ -957,19 +1402,19 @@ export default function BillingPage() {
             <motion.a
               href="/admin#dashboard"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Dashboard"
             >
               <LayoutDashboard size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
               {!isSidebarCollapsed && <span className="truncate">Dashboard</span>}
             </motion.a>
           )}
-          
+
           {hasAccess("services") && (
             <motion.a
               href="/admin#services"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Service Menu"
             >
               <Tag size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -981,7 +1426,7 @@ export default function BillingPage() {
             <motion.a
               href="/admin#pos"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="POS"
             >
               <CreditCard size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -993,7 +1438,7 @@ export default function BillingPage() {
             <motion.a
               href="/admin#jobs"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="All Jobs"
             >
               <Package size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1005,19 +1450,19 @@ export default function BillingPage() {
             <motion.a
               href="/admin#customers"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Customers (CRM)"
             >
               <Users size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
               {!isSidebarCollapsed && <span className="truncate">Customers (CRM)</span>}
             </motion.a>
           )}
-          
+
           {hasAccess("dispatch") && (
             <motion.a
               href="/admin#dispatch"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Dispatch Schedule"
             >
               <CalendarClock size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1029,7 +1474,7 @@ export default function BillingPage() {
             <motion.a
               href="/billing"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer bg-indigo-50 text-indigo-700`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors cursor-pointer bg-indigo-50 text-indigo-700`}
               title="Billing"
             >
               <Camera size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1041,7 +1486,7 @@ export default function BillingPage() {
             <motion.a
               href="/admin#riders"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Riders"
             >
               <Truck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1053,19 +1498,19 @@ export default function BillingPage() {
             <motion.a
               href="/admin#map"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Live Map"
             >
-              <Map size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
+              <MapIcon size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
               {!isSidebarCollapsed && <span className="truncate">Live Map</span>}
             </motion.a>
           )}
-          
+
           {hasAccess("calculator") && (
             <motion.a
               href="/admin#calculator"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Distance Calculator"
             >
               <Calculator size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1077,7 +1522,7 @@ export default function BillingPage() {
             <motion.a
               href="/admin#settings"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Settings"
             >
               <Settings size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1089,7 +1534,7 @@ export default function BillingPage() {
             <motion.a
               href="/admin#activity-logs"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Activity Logs"
             >
               <ClipboardList size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1097,11 +1542,10 @@ export default function BillingPage() {
             </motion.a>
           )}
 
-          {/* Tasks — available to all logged in users */}
           <motion.a
             href="/admin#tasks"
             whileHover={{ x: 2 }}
-            className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+            className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
             title="Tasks"
           >
             <ClipboardCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1113,7 +1557,7 @@ export default function BillingPage() {
             target="_blank"
             rel="noopener noreferrer"
             whileHover={{ x: 2 }}
-            className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+            className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors cursor-pointer text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
             title="Order Detergent"
           >
             <Droplets size={isSidebarCollapsed ? 22 : 18} className="shrink-0 text-sky-500" />
@@ -1124,12 +1568,12 @@ export default function BillingPage() {
               </span>
             )}
           </motion.a>
-          
+
           {hasAccess("users") && (
             <motion.a
               href="/admin#users"
               whileHover={{ x: 2 }}
-              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
+              className={`flex items-center gap-2.5 rounded-lg ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"} py-2.5 text-sm font-medium transition-colors text-slate-500 hover:text-slate-900 hover:bg-slate-50`}
               title="Manage Users"
             >
               <ShieldCheck size={isSidebarCollapsed ? 22 : 18} className="shrink-0" />
@@ -1137,15 +1581,22 @@ export default function BillingPage() {
             </motion.a>
           )}
         </nav>
-        
-        <div className={`border-t border-slate-200 px-3 py-4 space-y-2`}>
 
-          <Link href="/privacy" className={`flex items-center gap-2 rounded-lg py-2.5 text-sm font-medium text-slate-500 hover:text-slate-900 cursor-pointer ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'}`} title="Privacy Policy">
+        <div className="border-t border-slate-200 px-3 py-4 space-y-2">
+          <Link
+            href="/privacy"
+            className={`flex items-center gap-2 rounded-lg py-2.5 text-sm font-medium text-slate-500 hover:text-slate-900 cursor-pointer ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"}`}
+            title="Privacy Policy"
+          >
             <ShieldCheck size={isSidebarCollapsed ? 20 : 16} className="shrink-0" />
             {!isSidebarCollapsed && <span>Privacy Policy</span>}
           </Link>
 
-          <button className={`w-full flex items-center gap-2 rounded-lg py-2.5 text-sm font-medium text-red-500 hover:text-red-600 hover:bg-red-50 cursor-pointer ${isSidebarCollapsed ? 'px-0 justify-center' : 'px-3'}`} onClick={handleLogout} title="Logout">
+          <button
+            className={`w-full flex items-center gap-2 rounded-lg py-2.5 text-sm font-medium text-red-500 hover:text-red-600 hover:bg-red-50 cursor-pointer ${isSidebarCollapsed ? "px-0 justify-center" : "px-3"}`}
+            onClick={handleLogout}
+            title="Logout"
+          >
             <LogOut size={isSidebarCollapsed ? 20 : 16} className="shrink-0" />
             {!isSidebarCollapsed && <span>Logout</span>}
           </button>
@@ -1155,31 +1606,41 @@ export default function BillingPage() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-y-auto h-screen">
         {/* Top Header */}
-        <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm shrink-0">
-          <div className="flex items-center gap-3 lg:hidden px-2 py-2">
+        <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-6 lg:px-8 shadow-2xs shrink-0">
+          <div className="flex items-center gap-3 lg:hidden">
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(true)}
-              className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer mr-1"
+              className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
               title="Open Menu"
             >
               <Menu size={20} />
             </button>
-            <Logo />
+            <Logo compact className="h-8" />
           </div>
-          <h1 className="hidden lg:block text-lg font-semibold text-slate-900">
-            Dashboard - {user?.name || user?.email || ""}
-          </h1>
-          
+          <div className="hidden lg:flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+              <Camera size={18} />
+            </div>
+            <div>
+              <h1 className="text-base font-black text-slate-900 leading-tight">
+                Billing & Photo Capture Hub
+              </h1>
+              <p className="text-xs text-slate-500 font-medium">
+                {user?.name || user?.email || ""} • Synced with Mobile APK & POS
+              </p>
+            </div>
+          </div>
+
           <div className="flex items-center gap-3">
             <NotificationBell
               onSelectTask={() => {
                 window.location.href = `/admin#tasks`;
               }}
             />
-            <button 
-              onClick={() => window.location.href = "/admin?create=true#jobs"}
-              className="gap-2 bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-sm cursor-pointer border-none rounded-lg px-4 py-2 flex items-center text-sm transition-all active:scale-[0.98]"
+            <button
+              onClick={() => (window.location.href = "/admin?create=true#jobs")}
+              className="gap-2 bg-slate-900 hover:bg-slate-800 text-white font-bold shadow-xs cursor-pointer border-none rounded-xl px-4 py-2 flex items-center text-xs sm:text-sm transition-all active:scale-[0.98]"
             >
               <Plus size={16} />
               <span className="hidden sm:inline">Create New Job</span>
@@ -1188,73 +1649,157 @@ export default function BillingPage() {
           </div>
         </header>
 
-        {/* Billing Panel Sub-Header */}
-        <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6 lg:px-8 shadow-sm shrink-0">
-          <div className="flex items-center gap-3">
-            <Logo compact className="h-8 lg:hidden" />
-            <h1 className="text-lg font-bold text-slate-950 flex items-center gap-2">
-              <Receipt size={20} className="text-indigo-600" />
-              Billing Panel
-            </h1>
-          </div>
-        </header>
-
-
-        {/* Spacious Desktop Content Area */}
-        <div className="flex-1 p-6 lg:p-8 max-w-[1400px] w-full mx-auto space-y-6">
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 space-y-6">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-black text-slate-900 tracking-tight">Billing List</h2>
-                <p className="text-sm text-slate-500 font-medium">Manage billing photo uploads and receipts for shop orders.</p>
+        {/* Content Area */}
+        <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1480px] w-full mx-auto space-y-5">
+          {/* Top KPI Summary Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+            <div
+              onClick={() => setStageFilter("all")}
+              className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+                stageFilter === "all"
+                  ? "bg-slate-900 text-white border-slate-900 shadow-md"
+                  : "bg-white text-slate-900 border-slate-200/90 hover:border-slate-300 shadow-2xs"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className={`text-[11px] font-extrabold uppercase tracking-wider ${stageFilter === "all" ? "text-slate-300" : "text-slate-400"}`}>
+                  Total Queue
+                </span>
+                <Receipt size={16} className={stageFilter === "all" ? "text-indigo-400" : "text-slate-400"} />
               </div>
-              <div className="flex items-center gap-3">
-                {/* Search */}
-                <div className="relative w-72">
-                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Search Job ID / Customer name..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="w-full pl-9 pr-8 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
-                  />
-                  {search && (
-                    <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500">
-                      <X size={16} />
-                    </button>
-                  )}
+              <div className="text-2xl font-black mt-1 tabular-nums">{stageCounts.all}</div>
+              <p className={`text-[11px] mt-0.5 ${stageFilter === "all" ? "text-slate-300" : "text-slate-400"}`}>
+                Orders awaiting bill photo
+              </p>
+            </div>
+
+            <div
+              onClick={() => setStageFilter("billing")}
+              className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+                stageFilter === "billing"
+                  ? "bg-indigo-600 text-white border-indigo-600 shadow-md"
+                  : "bg-white text-slate-900 border-slate-200/90 hover:border-indigo-200 shadow-2xs"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className={`text-[11px] font-extrabold uppercase tracking-wider ${stageFilter === "billing" ? "text-indigo-100" : "text-indigo-600"}`}>
+                  In Process
+                </span>
+                <Sparkles size={16} className={stageFilter === "billing" ? "text-white" : "text-indigo-500"} />
+              </div>
+              <div className="text-2xl font-black mt-1 tabular-nums">{stageCounts.billing}</div>
+              <p className={`text-[11px] mt-0.5 ${stageFilter === "billing" ? "text-indigo-100" : "text-slate-400"}`}>
+                Active in shop right now
+              </p>
+            </div>
+
+            <div
+              onClick={() => setStageFilter("delivery")}
+              className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+                stageFilter === "delivery"
+                  ? "bg-sky-600 text-white border-sky-600 shadow-md"
+                  : "bg-white text-slate-900 border-slate-200/90 hover:border-sky-200 shadow-2xs"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className={`text-[11px] font-extrabold uppercase tracking-wider ${stageFilter === "delivery" ? "text-sky-100" : "text-sky-600"}`}>
+                  Out for Delivery
+                </span>
+                <Truck size={16} className={stageFilter === "delivery" ? "text-white" : "text-sky-500"} />
+              </div>
+              <div className="text-2xl font-black mt-1 tabular-nums">{stageCounts.delivery}</div>
+              <p className={`text-[11px] mt-0.5 ${stageFilter === "delivery" ? "text-sky-100" : "text-slate-400"}`}>
+                Ready / with rider
+              </p>
+            </div>
+
+            <div
+              onClick={() => setStageFilter("completed")}
+              className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+                stageFilter === "completed"
+                  ? "bg-emerald-600 text-white border-emerald-600 shadow-md"
+                  : "bg-white text-slate-900 border-slate-200/90 hover:border-emerald-200 shadow-2xs"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className={`text-[11px] font-extrabold uppercase tracking-wider ${stageFilter === "completed" ? "text-emerald-100" : "text-emerald-600"}`}>
+                  Completed (Missing Bill)
+                </span>
+                <CheckCircle2 size={16} className={stageFilter === "completed" ? "text-white" : "text-emerald-500"} />
+              </div>
+              <div className="text-2xl font-black mt-1 tabular-nums">{stageCounts.completed}</div>
+              <p className={`text-[11px] mt-0.5 ${stageFilter === "completed" ? "text-emerald-100" : "text-slate-400"}`}>
+                Past orders needing photo
+              </p>
+            </div>
+          </div>
+
+          {/* Main Workspace Card */}
+          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-5 sm:p-6 space-y-5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-black text-slate-900 tracking-tight">Billing List</h2>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200/60">
+                    <Smartphone size={12} />
+                    Mobile APK Ready
+                  </span>
                 </div>
-                <div className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-xl text-xs font-black border border-indigo-100 whitespace-nowrap">
-                  Total {billingJobs.length} active jobs
+                <p className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
+                  Snap up to 4 bill/receipt photos per order via Mobile APK Camera or upload directly from Gallery.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 self-start md:self-auto">
+                <div className="bg-indigo-50 text-indigo-700 px-3.5 py-2 rounded-xl text-xs font-black border border-indigo-100 whitespace-nowrap">
+                  Showing {billingJobs.length} of {stageCounts.all} jobs
                 </div>
               </div>
             </div>
 
-            {/* Premium Responsive Card Grid */}
+            {renderFilterAndControls(false)}
+
+            {/* Responsive Card Grid */}
             {billingJobs.length === 0 ? (
-              <div className="text-center py-24 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-                <Receipt size={64} className="mx-auto text-slate-300 mb-4 animate-bounce" />
-                <h3 className="text-base font-bold text-slate-800">{search ? "No search results found" : "No bills waiting for upload"}</h3>
-                <p className="text-xs text-slate-400 font-medium mt-1">Congratulations! All bills have been successfully uploaded.</p>
+              <div className="text-center py-20 bg-slate-50/70 rounded-2xl border border-dashed border-slate-200">
+                <Receipt size={56} className="mx-auto text-slate-300 mb-3" />
+                <h3 className="text-base font-bold text-slate-800">
+                  {search ? "No search results found" : "No bills waiting for upload in this category"}
+                </h3>
+                <p className="text-xs text-slate-400 font-medium mt-1">
+                  Try switching the stage filter above or clearing your search query.
+                </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                {billingJobs.map((job) => (
-                  <BillingJobCard
-                    key={job.id}
-                    job={job}
-                    onUpload={() => {
-                      setSessionUploadedJobIds((prev) => {
-                        const next = new Set(prev);
-                        next.add(job.id);
-                        return next;
-                      });
-                    }}
-                    onFinish={() => handleFinish(job.id)}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5">
+                  {visibleJobs.map((job) => (
+                    <BillingJobCard
+                      key={job.id}
+                      job={job}
+                      branchName={job.branchId ? branchMap[job.branchId] : undefined}
+                      onUpload={() => {
+                        setSessionUploadedJobIds((prev) => {
+                          const next = new Set(prev);
+                          next.add(job.id);
+                          return next;
+                        });
+                      }}
+                      onFinish={() => handleFinish(job.id)}
+                    />
+                  ))}
+                </div>
+                {billingJobs.length > visibleLimit && (
+                  <div className="pt-2 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit((prev) => prev + 48)}
+                      className="px-6 py-2.5 rounded-xl bg-white border border-indigo-200 text-indigo-700 font-extrabold text-xs shadow-xs hover:bg-indigo-50 transition-colors cursor-pointer"
+                    >
+                      Show More Orders ({billingJobs.length - visibleLimit} remaining of {billingJobs.length})
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1270,7 +1815,6 @@ export default function BillingPage() {
       <AnimatePresence>
         {isMobileMenuOpen && (
           <>
-            {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 0.4 }}
@@ -1278,7 +1822,6 @@ export default function BillingPage() {
               onClick={() => setIsMobileMenuOpen(false)}
               className="fixed inset-0 bg-black z-40"
             />
-            {/* Sidebar Drawer */}
             <motion.div
               initial={{ x: "-100%" }}
               animate={{ x: 0 }}
@@ -1392,12 +1935,11 @@ export default function BillingPage() {
                     onClick={() => setIsMobileMenuOpen(false)}
                     className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-slate-500 hover:bg-slate-50"
                   >
-                    <Map size={18} />
+                    <MapIcon size={18} />
                     <span>Live Map</span>
                   </Link>
                 )}
 
-                {/* Tasks — available to all logged in users */}
                 <Link
                   href="/admin#tasks"
                   onClick={() => setIsMobileMenuOpen(false)}
@@ -1467,7 +2009,11 @@ export default function BillingPage() {
               </nav>
 
               <div className="border-t border-slate-100 p-4 space-y-2">
-                <Link href="/privacy" onClick={() => setIsMobileMenuOpen(false)} className="flex items-center gap-3 px-4 py-2 text-sm text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-50">
+                <Link
+                  href="/privacy"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="flex items-center gap-3 px-4 py-2 text-sm text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-50"
+                >
                   <ShieldCheck size={16} />
                   <span>Privacy Policy</span>
                 </Link>

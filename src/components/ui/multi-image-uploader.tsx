@@ -271,22 +271,30 @@ export const MultiImageUploader = forwardRef<MultiImageUploaderRef, MultiImageUp
             try {
               updateFileStatus(uploadData.id, { status: "uploading", progress: 10 });
 
-              // Compress the image before uploading (evidence grade: 1600px width/height max, 85% quality)
-              const compressedFile = await compressImage(uploadData.file, 1600, 1600, 0.85);
-              let finalUrl = "";
+              const expectedContentType = uploadData.file.type.startsWith("image/")
+                ? "image/jpeg"
+                : uploadData.file.type || "image/jpeg";
 
-              try {
-                // 1. Get Signed URL
-                const response = await fetchWithUploadTimeout("/api/upload-url", {
+              // Compress image (1280px, 82% JPEG quality for fast upload) AND request Signed URL in parallel!
+              const [compressedFile, signedUrlResponse] = await Promise.all([
+                compressImage(uploadData.file, 1280, 1280, 0.82),
+                fetchWithUploadTimeout("/api/upload-url", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
                     entityType,
                     entityId,
                     subType,
-                    contentType: compressedFile.type,
+                    contentType: expectedContentType,
                   }),
-                });
+                }).catch(() => null),
+              ]);
+              let finalUrl = "";
+
+              try {
+                // 1. Check Signed URL response
+                const response = signedUrlResponse;
+                if (!response) throw new Error("Failed to reach upload authorization endpoint");
 
                 if (!response.ok) throw new Error("Failed to get upload authorization");
 

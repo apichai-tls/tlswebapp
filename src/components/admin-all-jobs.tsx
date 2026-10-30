@@ -94,9 +94,15 @@ export interface JobBillingMeta {
   isDeliveryPhotoSent: boolean;
   deliveryPhotoSentAt: string | null;
   deliveryPhotoSentBy: string | null;
+  isRiderDelivered: boolean;
+  deliveredAt: string | null;
 }
 
+const jobBillingMetaCache = new Map<string, JobBillingMeta>();
 export function getJobBillingMeta(job: Job): JobBillingMeta {
+  const cacheKey = `${job.id}|${job.billNo || ""}|${job.totalAmount || 0}|${job.fee || 0}|${job.items?.length || 0}|${(job as any).proformaNumber || ""}|${job.remark || ""}|${(job.billImageUrl || "").length}|${(job.deliveryProofImageUrl || "").length}|${job.adminNotesJson || ""}`;
+  const cachedMeta = jobBillingMetaCache.get(cacheKey);
+  if (cachedMeta) return cachedMeta;
   const billNoText = (job.billNo || "").trim();
   const hasBillNo = billNoText.length > 0;
   const billPhotos = parseUploadedBillPhotoUrls(job.billImageUrl);
@@ -133,6 +139,8 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
   let isDeliveryPhotoSent = false;
   let deliveryPhotoSentAt: string | null = null;
   let deliveryPhotoSentBy: string | null = null;
+  let isRiderDeliveredFlag = false;
+  let deliveredAt: string | null = null;
 
   let deliveryPhotoUrls: string[] = [];
   if (job.deliveryProofImageUrl && job.deliveryProofImageUrl !== "[]") {
@@ -164,6 +172,10 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
           deliveryPhotoSentAt = parsed.deliveryPhotoSentAt || null;
           deliveryPhotoSentBy = parsed.deliveryPhotoSentBy || null;
         }
+        if (parsed.isRiderDelivered === true || parsed.kanbanStage === "delivered" || Boolean(parsed.deliveredAt)) {
+          isRiderDeliveredFlag = true;
+          deliveredAt = parsed.deliveredAt || null;
+        }
         if (parsed.kanbanStage === "billing" || parsed.kanbanStage === "process") {
           kanbanStage = parsed.kanbanStage;
         }
@@ -173,7 +185,7 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
     }
   }
 
-  return {
+  const resultMeta: JobBillingMeta = {
     hasBillNo,
     billNoText,
     hasBillPhoto,
@@ -193,7 +205,12 @@ export function getJobBillingMeta(job: Job): JobBillingMeta {
     isDeliveryPhotoSent,
     deliveryPhotoSentAt,
     deliveryPhotoSentBy,
+    isRiderDelivered: deliveryPhotoUrls.length > 0 || isRiderDeliveredFlag || job.legs?.deliveryOutbound?.status === "completed" || job.status === "completed",
+    deliveredAt: deliveredAt || (job.legs?.deliveryOutbound?.completedAt ? String(job.legs.deliveryOutbound.completedAt) : null) || (job.completedAt ? String(job.completedAt) : null),
   };
+  if (jobBillingMetaCache.size > 4000) jobBillingMetaCache.clear();
+  jobBillingMetaCache.set(cacheKey, resultMeta);
+  return resultMeta;
 }
 
 export function getJobKanbanColumn(job: Job): KanbanColumnId {
@@ -236,7 +253,27 @@ export function getBranchShortName(nameOrShop?: string | { name?: string } | nul
   return cleaned || name;
 }
 
+export function isRiderDeliveryJob(job: Job): boolean {
+  if (["cancel", "topup", "return"].includes(job.status)) return false;
+  const isWalkIn =
+    (job.type as string) === "in_store" ||
+    (job.source === "pos" && (job.type as string) !== "delivery" && (job.type as string) !== "full_service");
+  if (isWalkIn && !job.deliveryRiderId && !job.deliveryProofImageUrl) return false;
+  if (job.dropoffLocation === "Customer Pickup at Shop" && !job.deliveryRiderId && !job.deliveryProofImageUrl) return false;
+  return true;
+}
+
 export function isRiderDeliveryCompletedJob(job: Job): boolean {
+  if (!isRiderDeliveryJob(job)) return false;
+  if (job.status === "completed") return true;
+  if (job.status === "delivery") {
+    const meta = getJobBillingMeta(job);
+    return meta.hasDeliveryPhoto || meta.isRiderDelivered;
+  }
+  return false;
+}
+
+function isLegacyCompletedOnly_unused(job: Job): boolean {
   if (job.status !== "completed") return false;
   const isWalkIn =
     (job.type as string) === "in_store" ||
@@ -335,6 +372,11 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
   const [receiptJob, setReceiptJob] = useState<Job | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
   const [showDailySale, setShowDailySale] = useState(false);
+  const [deliveryPhotoPreviewJobId, setDeliveryPhotoPreviewJobId] = useState<string | null>(null);
+  const deliveryPhotoPreviewJob = useMemo(
+    () => (deliveryPhotoPreviewJobId ? jobs.find((j) => j.id === deliveryPhotoPreviewJobId) || null : null),
+    [deliveryPhotoPreviewJobId, jobs]
+  );
   
   const [reopenDialog, setReopenDialog] = useState<{
     isOpen: boolean;
@@ -505,6 +547,15 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     // Billing stage transition guard:
     // Orders in Billing stage can ONLY be moved to the next stage (process, delivery, completed, etc.)
     // by employees in CSO, ADMIN, or Branch Manager positions, AND ONLY IF the bill has been marked as Sent to Customer.
+    const isAdvancingFromDelivery = currentCol === "delivery" && targetCol === "completed" && isRiderDeliveryJob(job);
+    if (isAdvancingFromDelivery) {
+      const bMeta = getJobBillingMeta(job);
+      if (!bMeta.isDeliveryPhotoSent) {
+        toast.error("Cannot complete order yet: Please send delivery photo & mark 'Customer Notified / Photo Sent ✓' first");
+        return;
+      }
+    }
+
     const isAdvancingFromBilling = currentCol === "billing" && !["cancel", "tba", "pending", "pickup"].includes(targetCol);
     if (isAdvancingFromBilling) {
       if (!canAdvanceBilling) {
@@ -550,7 +601,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     } else {
       updates.status = targetCol as JobStatus;
       if (targetCol === "completed") {
-        updates.completedAt = new Date().toISOString();
+        updates.completedAt = job.completedAt || new Date().toISOString();
+        updates.adminNotesJson = buildUpdatedAdminNotesJson(job, { kanbanStage: "completed" }, "Order officially completed after customer notification");
       }
       if (["tba", "pending", "pickup"].includes(targetCol)) {
         updates.subStatus = null;
@@ -637,8 +689,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     }
   };
 
-  const today = new Date();
-  const yesterday = subDays(today, 1);
+  const todayDayKey = format(new Date(), "yyyy-MM-dd");
+  const today = useMemo(() => new Date(), [todayDayKey]);
+  const yesterday = useMemo(() => subDays(today, 1), [today]);
 
   const checkIsPinned = (j: Job, u: any) => {
     if (j.status !== 'completed') return false;
@@ -692,38 +745,46 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
     return d;
   };
 
+  const [kanbanVisibleLimit, setKanbanVisibleLimit] = useState<Record<string, number>>({});
+  const [listVisibleLimit, setListVisibleLimit] = useState<number>(80);
+
   useEffect(() => {
-    let start: Date;
-    let end: Date;
-    
+    setKanbanVisibleLimit({});
+    setListVisibleLimit(80);
     if (dateFilter === "today") {
-      start = new Date(today);
-      start.setHours(0, 0, 0, 0);
-      end = new Date(today);
-      end.setHours(23, 59, 59, 999);
       // Today focuses on active work — hide completed/cancelled by default
       setShowCompleted(false);
       setShowCancelled(false);
-    } else if (dateFilter === "yesterday") {
+      // /api/db + SSE/Delta already includes all active jobs and 48h of completed/cancelled jobs.
+      // Prune any multi-month historical jobs loaded in Reports so memoryDb stays fast.
+      jobStore.pruneHistoricalJobs();
+      setIsLoadingHistory(false);
+      return;
+    }
+
+    let start: Date;
+    let end: Date;
+    if (dateFilter === "yesterday") {
       start = new Date(yesterday);
       start.setHours(0, 0, 0, 0);
       end = new Date(yesterday);
       end.setHours(23, 59, 59, 999);
-      // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
     } else if (dateFilter === "custom") {
       start = parseLocalDayDate(startDate, false);
       end = parseLocalDayDate(endDate, true);
-      // Historical view — show all statuses
       setShowCompleted(true);
       setShowCancelled(true);
     } else {
-      return; 
+      return;
     }
-    
-    setIsLoadingHistory(true);
-    jobStore.fetchHistoricalJobs(start, end).finally(() => setIsLoadingHistory(false));
+
+    const timer = setTimeout(() => {
+      setIsLoadingHistory(true);
+      jobStore.fetchHistoricalJobs(start, end).finally(() => setIsLoadingHistory(false));
+    }, 300);
+    return () => clearTimeout(timer);
   }, [dateFilter, startDate, endDate]);
 
   useEffect(() => {
@@ -911,7 +972,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       (job.completedAt ? isSameDay(new Date(job.completedAt), today) : false) ||
                       (job.scheduledAt ? isSameDay(new Date(job.scheduledAt), today) : false) ||
                       (job.deliveryScheduledAt ? isSameDay(new Date(job.deliveryScheduledAt), today) : false) ||
-                      (!job.completedAt && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false);
+                      (!job.completedAt && job.updatedAt ? isSameDay(new Date(job.updatedAt), today) : false) || job.status === "delivery";
       } else if (dateFilter === "yesterday") {
         matchesDate = isSameDay(new Date(job.createdAt), yesterday) ||
                       (job.completedAt ? isSameDay(new Date(job.completedAt), yesterday) : false) ||
@@ -930,7 +991,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       (job.deliveryScheduledAt ? (new Date(job.deliveryScheduledAt) >= start && new Date(job.deliveryScheduledAt) <= end) : false);
       }
       if (!matchesDate) continue;
-      if (statusFilter !== "all" && statusFilter !== "completed") continue;
+      if (statusFilter !== "all" && statusFilter !== "completed" && statusFilter !== "delivery") continue;
       const bm = getJobBillingMeta(job);
       if (!bm.isDeliveryPhotoSent) {
         unsentPhotoCount++;
@@ -1751,7 +1812,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                   setBillingFilterMode(prev => {
                     const next = prev === "UNSENT_PHOTO" ? "ALL" : "UNSENT_PHOTO";
                     if (next === "UNSENT_PHOTO") {
-                      setActiveKanbanColumn("completed");
+                      const hasDeliveryUnsent = jobs.some(j => j.status === "delivery" && isRiderDeliveryCompletedJob(j) && !getJobBillingMeta(j).isDeliveryPhotoSent);
+                      setActiveKanbanColumn(hasDeliveryUnsent ? "delivery" : "completed");
                     }
                     return next;
                   });
@@ -1862,7 +1924,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 title="Filter jobs assigned to a specific Rider"
               >
                 <option value="ALL">All Riders</option>
-                {riders.map(r => (
+                {riders.filter(r => r.isActive !== false).map(r => (
                   <option key={r.id} value={r.id}>🛵 {r.nickname || r.name}</option>
                 ))}
               </select>
@@ -1944,7 +2006,6 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
             </TableRow>
           </TableHeader>
           <TableBody>
-            <AnimatePresence>
               {sortedJobs.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="h-52 text-center text-slate-500">
@@ -1958,7 +2019,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                   </TableCell>
                 </TableRow>
               ) : (
-                sortedJobs.map((job, i) => {
+                <>
+                {sortedJobs.slice(0, listVisibleLimit).map((job) => {
                   const createdDate = new Date(job.createdAt);
                   
                   let durationMin = null;
@@ -2010,12 +2072,9 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                   }
 
                   return (
-                    <motion.tr
+                    <tr
                       key={job.id}
                       onClick={() => { if (onEditJob) onEditJob(job); }}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: Math.min(i * 0.02, 0.25) }}
                       className={`group border-b border-slate-100/90 cursor-pointer transition-colors ${rowThemeClass}`}
                     >
                       {/* Column 1: Order & Schedule */}
@@ -2235,7 +2294,75 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                       </TableCell>
 
                       {/* Column 4: Billing & Customer Sent Status */}
+                      {/* Column 4: Billing & Customer Sent Status */}
                       <TableCell className="align-middle py-3" onClick={(e) => e.stopPropagation()}>
+                        {((job.status === "delivery" && isRiderDeliveryJob(job)) || (job.status === "completed" && isRiderDeliveryCompletedJob(job))) && (() => {
+                          const bMeta = getJobBillingMeta(job);
+                          const hasPhoto = bMeta.hasDeliveryPhoto;
+                          const isDelivered = bMeta.isRiderDelivered || hasPhoto || job.status === "completed";
+                          const isPhotoSent = bMeta.isDeliveryPhotoSent;
+                          return (
+                            <div className="flex flex-col gap-1 mb-1.5 pb-1.5 border-b border-slate-100">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (hasPhoto) {
+                                    setDeliveryPhotoPreviewJobId(job.id);
+                                  } else if (onEditJob) {
+                                    onEditJob(job);
+                                  }
+                                }}
+                                className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded-lg border w-fit cursor-pointer transition-colors ${
+                                  hasPhoto
+                                    ? "bg-teal-50 text-teal-800 border-teal-200 hover:bg-teal-100/80"
+                                    : isDelivered
+                                      ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100/80"
+                                      : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                                }`}
+                                title={hasPhoto ? `Rider Delivered — Click to preview ${bMeta.deliveryPhotoCount} delivery photo(s)` : "Delivery status — Click to open job"}
+                              >
+                                <Camera size={10.5} className={hasPhoto ? "text-teal-600 shrink-0" : "text-slate-400 shrink-0"} />
+                                <span>{hasPhoto ? `Rider Photo (${bMeta.deliveryPhotoCount})` : isDelivered ? "Rider Delivered ✓" : "Out for Delivery"}</span>
+                              </button>
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <button
+                                  type="button"
+                                  disabled={!canManageJobs}
+                                  onClick={(e) => handleToggleDeliveryPhotoSent(job, e)}
+                                  className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-lg border transition-all w-fit ${
+                                    !canManageJobs
+                                      ? "opacity-60 cursor-not-allowed " + (isPhotoSent ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-cyan-50/70 text-cyan-800 border-cyan-200")
+                                      : isPhotoSent
+                                        ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 cursor-pointer"
+                                        : "bg-cyan-50 text-cyan-800 border-cyan-200 hover:bg-cyan-100/80 cursor-pointer"
+                                  }`}
+                                  title={isPhotoSent ? "Customer Notified & Photo Sent — Click to unmark" : "Click to mark Delivery Photo as Sent to Customer"}
+                                >
+                                  {isPhotoSent ? <CheckCircle2 size={10} className="text-emerald-600 shrink-0" /> : <Send size={9.5} className="text-cyan-600 shrink-0" />}
+                                  <span>{isPhotoSent ? "Photo Sent ✓" : "Photo Not Sent"}</span>
+                                </button>
+                                {job.status === "delivery" && canManageJobs && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMoveJobToColumn(job, "completed");
+                                    }}
+                                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-lg border transition-all cursor-pointer ${
+                                      isPhotoSent
+                                        ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-2xs"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-500 border-slate-200"
+                                    }`}
+                                    title={isPhotoSent ? "Complete Order (Move to Completed)" : "Mark Photo Sent first before completing order"}
+                                  >
+                                    <span>Complete ✓</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
                         {(() => {
                           const bMeta = getJobBillingMeta(job);
                           return (
@@ -2329,6 +2456,15 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     <Banknote size={10} /> COD
                                   </span>
                                 )}
+                                {(() => {
+                                  const cashWithChange = breakdown.payments.find(p => ((p.method || "").toLowerCase() === "cash" || (p.channel || "").toLowerCase().includes("cash")) && p.received !== undefined && p.received > 0 && p.change !== undefined && p.change > 0);
+                                  if (!cashWithChange) return null;
+                                  return (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0 h-4 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-mono font-bold" title={`รับเงินสด ฿${cashWithChange.received?.toLocaleString()} / เงินทอน ฿${cashWithChange.change?.toLocaleString()}`}>
+                                      รับ ฿{cashWithChange.received?.toLocaleString()} • ทอน ฿{cashWithChange.change?.toLocaleString()}
+                                    </span>
+                                  );
+                                })()}
                               </div>
 
                               {/* Bottom Line: CSO & Shop Status Pills with Timestamps */}
@@ -2535,11 +2671,26 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           );
                         })()}
                       </TableCell>
-                    </motion.tr>
+                    </tr>
                   );
-                })
+                })}
+                {sortedJobs.length > listVisibleLimit && (
+                  <TableRow>
+                    <TableCell colSpan={8} className="py-4 text-center bg-slate-50/70">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setListVisibleLimit((prev) => prev + 100)}
+                        className="font-bold text-xs text-indigo-700 border-indigo-200 hover:bg-indigo-50 cursor-pointer"
+                      >
+                        Show More Orders ({sortedJobs.length - listVisibleLimit} remaining of {sortedJobs.length})
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                )}
+                </>
               )}
-            </AnimatePresence>
           </TableBody>
         </Table>
       </div>
@@ -2585,7 +2736,8 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                 const colJobs = filteredJobs.filter(j => getJobKanbanColumn(j) === status);
                 const colNoBillCount = status === "billing" ? colJobs.filter(j => !getJobBillingMeta(j).isBillIssued).length : 0;
                 const colUnsentCount = status === "billing" ? colJobs.filter(j => !getJobBillingMeta(j).isBillSent).length : 0;
-                const colUnsentPhotoCount = status === "completed" ? colJobs.filter(j => isRiderDeliveryCompletedJob(j) && !getJobBillingMeta(j).isDeliveryPhotoSent).length : 0;
+                const colUnsentPhotoCount = (status === "completed" || status === "delivery") ? colJobs.filter(j => isRiderDeliveryCompletedJob(j) && !getJobBillingMeta(j).isDeliveryPhotoSent).length : 0;
+                const colRiderDeliveredCount = status === "delivery" ? colJobs.filter(j => isRiderDeliveryCompletedJob(j)).length : 0;
 
                 return (
                   <div 
@@ -2664,6 +2816,24 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                         </span>
                       </div>
 
+                      {/* Delivery Column Summary Sub-bar */}
+                      {status === "delivery" && colJobs.length > 0 && (
+                        <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-slate-100 flex-wrap">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                            colRiderDeliveredCount > 0 ? "bg-teal-50 text-teal-900 border-teal-200" : "bg-slate-50 text-slate-600 border-slate-200"
+                          }`}>
+                            <Truck size={10} className={colRiderDeliveredCount > 0 ? "text-teal-600" : "text-slate-400"} />
+                            {colRiderDeliveredCount} Rider Done
+                          </span>
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                            colUnsentPhotoCount > 0 ? "bg-cyan-50 text-cyan-900 border-cyan-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          }`}>
+                            <Camera size={10} className={colUnsentPhotoCount > 0 ? "text-cyan-600" : "text-emerald-600"} />
+                            {colUnsentPhotoCount > 0 ? `${colUnsentPhotoCount} Photo Not Sent` : "All Notified ✓"}
+                          </span>
+                        </div>
+                      )}
+
                       {/* Completed Column Summary Sub-bar */}
                       {status === "completed" && colJobs.length > 0 && (
                         <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-slate-100">
@@ -2704,8 +2874,18 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           </div>
                           <p className="text-xs font-semibold text-slate-400">No orders in {statusConfig[status].label}</p>
                         </div>
-                      ) : colJobs
-                        .sort((a, b) => {
+                      ) : (() => {
+                        const colLimit = kanbanVisibleLimit[status] || 50;
+                        const sortedColJobs = [...colJobs].sort((a, b) => {
+                          if (status === 'delivery') {
+                            const bmA = getJobBillingMeta(a);
+                            const bmB = getJobBillingMeta(b);
+                            const riderDoneA = bmA.hasDeliveryPhoto || bmA.isRiderDelivered;
+                            const riderDoneB = bmB.hasDeliveryPhoto || bmB.isRiderDelivered;
+                            const scoreA = (riderDoneA && !bmA.isDeliveryPhotoSent ? 3 : 0) + (riderDoneA && bmA.isDeliveryPhotoSent ? 2 : 0);
+                            const scoreB = (riderDoneB && !bmB.isDeliveryPhotoSent ? 3 : 0) + (riderDoneB && bmB.isDeliveryPhotoSent ? 2 : 0);
+                            if (scoreA !== scoreB) return scoreB - scoreA;
+                          }
                           if (status === 'completed') {
                             const unsentPhotoA = isRiderDeliveryCompletedJob(a) && !getJobBillingMeta(a).isDeliveryPhotoSent;
                             const unsentPhotoB = isRiderDeliveryCompletedJob(b) && !getJobBillingMeta(b).isDeliveryPhotoSent;
@@ -2727,8 +2907,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
                           const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
                           return timeB - timeA;
-                        })
-                        .map(job => {
+                        });
+                        const visibleColJobs = sortedColJobs.slice(0, colLimit);
+                        const remainingColCount = sortedColJobs.length - visibleColJobs.length;
+                        return (
+                          <>
+                            {visibleColJobs.map(job => {
                         let durationMin = null;
                         if (job.completedAt) {
                           durationMin = differenceInMinutes(new Date(job.completedAt), new Date(job.createdAt));
@@ -3303,12 +3487,12 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                               </div>
                             </div>
 
-                            {status === 'completed' && isRiderDeliveryCompletedJob(job) && (() => {
+                            {((status === 'delivery' && isRiderDeliveryJob(job)) || (status === 'completed' && isRiderDeliveryCompletedJob(job))) && (() => {
                               const isPhotoSent = bMeta.isDeliveryPhotoSent;
                               const hasPhoto = bMeta.hasDeliveryPhoto;
                               return (
                                 <div
-                                  className="rounded-xl p-2 bg-slate-50/90 border border-slate-200/80 space-y-1.5"
+                                  className={`rounded-xl p-2 border space-y-1.5 ${(bMeta.hasDeliveryPhoto || bMeta.isRiderDelivered) && !isPhotoSent ? "bg-cyan-50/50 border-cyan-300/90 ring-1 ring-cyan-400/20" : "bg-slate-50/90 border-slate-200/80"}`}
                                   onClick={(e) => e.stopPropagation()}
                                 >
                                   <div className="grid grid-cols-2 gap-1.5">
@@ -3318,7 +3502,7 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         if (hasPhoto && bMeta.deliveryPhotoUrls[0]) {
-                                          window.open(bMeta.deliveryPhotoUrls[0], "_blank", "noopener,noreferrer");
+                                          setDeliveryPhotoPreviewJobId(job.id);
                                         } else if (onEditJob) {
                                           onEditJob(job);
                                         }
@@ -3337,10 +3521,10 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                       <Camera size={12} className={hasPhoto ? "text-emerald-600 shrink-0" : "text-slate-400 shrink-0"} />
                                       <div className="min-w-0 flex-1">
                                         <div className="text-[8.5px] uppercase tracking-wider opacity-75 leading-none">
-                                          Delivery Photo
+                                          {bMeta.isRiderDelivered || hasPhoto ? "Rider Delivered ✓" : "Delivery Proof"}
                                         </div>
                                         <div className="truncate leading-tight mt-0.5 flex items-center gap-0.5">
-                                          <span>{hasPhoto ? `View Photo (${bMeta.deliveryPhotoCount})` : "No Photo"}</span>
+                                          <span>{hasPhoto ? `View Photo (${bMeta.deliveryPhotoCount})` : bMeta.isRiderDelivered ? "Delivered" : "Wait Rider"}</span>
                                           {hasPhoto && <ExternalLink size={9} className="opacity-60 shrink-0" />}
                                         </div>
                                       </div>
@@ -3380,6 +3564,36 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                                     </button>
                                   </div>
                                 </div>
+                              );
+                            })()}
+
+                            {status === 'delivery' && isRiderDeliveryJob(job) && canManageJobs && (() => {
+                              const isPhotoSent = bMeta.isDeliveryPhotoSent;
+                              const isRiderDone = bMeta.hasDeliveryPhoto || bMeta.isRiderDelivered;
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleMoveJobToColumn(job, "completed");
+                                  }}
+                                  className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[10.5px] font-bold border transition-all cursor-pointer ${
+                                    isPhotoSent
+                                      ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-xs"
+                                      : isRiderDone
+                                        ? "bg-cyan-100/80 hover:bg-cyan-200/80 text-cyan-900 border-cyan-300"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-500 border-slate-200/80"
+                                  }`}
+                                  title={
+                                    isPhotoSent
+                                      ? "Customer notified & photo sent — Click to officially Complete Order (Move to Completed)"
+                                      : "Please send delivery photo to customer and mark 'Photo Sent ✓' before completing order"
+                                  }
+                                >
+                                  <CheckCircle2 size={12} className={isPhotoSent ? "text-white" : isRiderDone ? "text-cyan-700" : "text-slate-400"} />
+                                  <span>{isPhotoSent ? "Complete Order ✓ (Move to Completed)" : "Notify Customer First → Complete"}</span>
+                                  <ArrowRight size={11} />
+                                </button>
                               );
                             })()}
 
@@ -3423,6 +3637,23 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
                           </div>
                         );
                       })}
+                      {remainingColCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setKanbanVisibleLimit((prev) => ({
+                              ...prev,
+                              [status]: (prev[status] || 50) + 60,
+                            }))
+                          }
+                          className="w-full py-2.5 px-3 rounded-xl border border-indigo-200 bg-white hover:bg-indigo-50 text-indigo-700 font-bold text-xs shadow-2xs transition-colors cursor-pointer shrink-0"
+                        >
+                          Show More (+{Math.min(60, remainingColCount)} of {remainingColCount} remaining)
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
                     </div>
                   </div>
                 );
@@ -3536,6 +3767,149 @@ export const AdminAllJobs = React.memo(function AdminAllJobs({
               Confirm Reopen
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delivery Proof Photos & Customer Notification Dialog */}
+      <Dialog open={!!deliveryPhotoPreviewJob} onOpenChange={(open) => !open && setDeliveryPhotoPreviewJobId(null)}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          {deliveryPhotoPreviewJob && (() => {
+            const bMeta = getJobBillingMeta(deliveryPhotoPreviewJob);
+            const isPhotoSent = bMeta.isDeliveryPhotoSent;
+            const photos = bMeta.deliveryPhotoUrls;
+            const riderObj = riders.find(r => r.id === (deliveryPhotoPreviewJob.deliveryRiderId || deliveryPhotoPreviewJob.riderId));
+            const riderName = riderObj?.nickname || riderObj?.name || deliveryPhotoPreviewJob.deliveryRiderId || deliveryPhotoPreviewJob.riderId || "Rider";
+
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex items-center justify-between gap-2 pr-6">
+                    <div className="flex items-center gap-2">
+                      <Camera className="w-5 h-5 text-teal-600" />
+                      <span>Delivery Proof & Customer Notification — #{formatJobDisplayId(deliveryPhotoPreviewJob.id)}</span>
+                    </div>
+                    <Badge className={isPhotoSent ? "bg-emerald-100 text-emerald-800 border-emerald-300" : "bg-cyan-100 text-cyan-900 border-cyan-300"}>
+                      {isPhotoSent ? "Customer Notified (Photo Sent ✓)" : "Photo Not Sent Yet"}
+                    </Badge>
+                  </DialogTitle>
+                </DialogHeader>
+
+                <div className="space-y-4 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                    <div>
+                      <span className="text-slate-500 font-medium">Customer: </span>
+                      <span className="font-bold text-slate-900">{deliveryPhotoPreviewJob.customerName || "Walk-in"}</span>
+                      {deliveryPhotoPreviewJob.customerPhone && (
+                        <span className="text-slate-500 ml-2">({deliveryPhotoPreviewJob.customerPhone})</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500 font-medium">Delivered by: </span>
+                      <span className="font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded-md border border-teal-200">
+                        {riderName}
+                      </span>
+                      {bMeta.deliveredAt && (
+                        <span className="text-slate-500">
+                          at {format(new Date(bMeta.deliveredAt), "dd MMM HH:mm")}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {photos.length === 0 ? (
+                    <div className="py-10 text-center text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                      No delivery proof photos uploaded for this order yet.
+                    </div>
+                  ) : (
+                    <div className={`grid gap-3 ${photos.length === 1 ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2"}`}>
+                      {photos.map((url, idx) => (
+                        <div key={idx} className="group relative rounded-xl overflow-hidden border border-slate-200 bg-slate-950/5 flex flex-col">
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="block relative">
+                            <img
+                              src={url}
+                              alt={`Delivery proof ${idx + 1}`}
+                              className="w-full max-h-[380px] object-contain bg-slate-900/5"
+                            />
+                          </a>
+                          <div className="flex items-center justify-between px-3 py-2 bg-white border-t border-slate-100 text-xs">
+                            <span className="font-bold text-slate-600">Photo #{idx + 1}</span>
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 font-bold text-indigo-600 hover:text-indigo-700"
+                            >
+                              <span>Open Full Image</span>
+                              <ExternalLink size={12} />
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {bMeta.deliveryPhotoSentAt && (
+                    <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2">
+                      <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                      <span>
+                        Marked as <strong>Photo Sent to Customer</strong>
+                        {bMeta.deliveryPhotoSentBy ? ` by ${bMeta.deliveryPhotoSentBy}` : ""} on{" "}
+                        {format(new Date(bMeta.deliveryPhotoSentAt), "dd MMM yyyy, HH:mm")}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-between items-center pt-2 border-t border-slate-100">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setDeliveryPhotoPreviewJobId(null)}
+                  >
+                    Close
+                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      disabled={!canManageJobs}
+                      onClick={(e) => handleToggleDeliveryPhotoSent(deliveryPhotoPreviewJob, e)}
+                      className={
+                        isPhotoSent
+                          ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300"
+                          : "bg-cyan-600 hover:bg-cyan-700 text-white"
+                      }
+                    >
+                      {isPhotoSent ? "Unmark Photo Sent" : "Mark Photo Sent to Customer ✓"}
+                    </Button>
+                    {deliveryPhotoPreviewJob.status === "delivery" && canManageJobs && (
+                      <Button
+                        type="button"
+                        onClick={async (e) => {
+                          if (!isPhotoSent) {
+                            await handleToggleDeliveryPhotoSent(deliveryPhotoPreviewJob, e);
+                          }
+                          await handleMoveJobToColumn(
+                            {
+                              ...deliveryPhotoPreviewJob,
+                              adminNotesJson: buildUpdatedAdminNotesJson(deliveryPhotoPreviewJob, {
+                                isDeliveryPhotoSent: true,
+                              }),
+                            } as Job,
+                            "completed"
+                          );
+                          setDeliveryPhotoPreviewJobId(null);
+                        }}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+                      >
+                        <CheckCircle2 className="w-4 h-4 mr-1.5" />
+                        {isPhotoSent ? "Complete Order ✓" : "Mark Photo Sent & Complete Order ✓"}
+                      </Button>
+                    )}
+                  </div>
+                </DialogFooter>
+              </>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
