@@ -569,14 +569,24 @@ export default function PortalOrderDetailPage({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <div className="font-extrabold text-slate-900 text-base">
-                  {order.brand === "noname_laundry"
-                    ? "NONAME LAUNDRY"
-                    : "THAT LAUNDRY SHOP"}
-                </div>
-                <div className="text-xs text-slate-500">
-                  {order.isPaid ? "OFFICIAL RECEIPT" : "PROFORMA INVOICE"}
+              <div className="flex items-center gap-2.5">
+                {order.brand !== "noname_laundry" && (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src="/logo.png"
+                    alt="That Laundry Shop"
+                    className="h-10 w-auto object-contain"
+                  />
+                )}
+                <div>
+                  <div className="font-extrabold text-slate-900 text-base">
+                    {order.brand === "noname_laundry"
+                      ? "NONAME LAUNDRY"
+                      : "THAT LAUNDRY SHOP"}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {order.isPaid ? "OFFICIAL RECEIPT" : "PROFORMA INVOICE"}
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-1.5">

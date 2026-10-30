@@ -500,9 +500,12 @@ export default function PortalLoginPage() {
       {/* Top Bar */}
       <div className="max-w-md w-full mx-auto flex items-center justify-between pt-2">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-600 to-indigo-600 flex items-center justify-center text-white shadow-sm">
-            <Sparkles className="w-4 h-4" />
-          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo.png"
+            alt="That Laundry Shop"
+            className="h-10 w-auto object-contain"
+          />
           <span className="font-bold text-slate-900 tracking-tight text-sm">
             That Laundry Shop
           </span>
@@ -521,6 +524,14 @@ export default function PortalLoginPage() {
       {/* Main Card */}
       <div className="max-w-md w-full mx-auto my-6">
         <div className="text-center mb-6">
+          <div className="flex justify-center mb-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo.png"
+              alt="That Laundry Shop Logo"
+              className="h-20 w-auto object-contain drop-shadow-xs"
+            />
+          </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
             {lang === "en" ? "Laundry Concierge Portal" : "ระบบติดตามงานซัก & สมาชิก"}
           </h1>

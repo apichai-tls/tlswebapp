@@ -339,8 +339,13 @@ function PortalShell({ children }: { children: React.ReactNode }) {
       <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-indigo-950 text-white flex flex-col justify-between p-6">
         <div className="max-w-md w-full mx-auto flex items-center justify-between pt-2">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
-              <Sparkles className="w-5 h-5" />
+            <div className="bg-white px-2.5 py-1.5 rounded-xl shadow-md flex items-center justify-center">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/logo.png"
+                alt="That Laundry Shop"
+                className="h-7 w-auto object-contain"
+              />
             </div>
             <span className="font-extrabold text-sm tracking-tight">That Laundry Shop</span>
           </div>
@@ -355,6 +360,17 @@ function PortalShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="max-w-md w-full mx-auto my-auto py-8 text-center space-y-6">
+          <div className="flex justify-center">
+            <div className="bg-white/95 px-6 py-4 rounded-3xl shadow-2xl shadow-black/40 border border-white/20 inline-flex items-center justify-center">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/logo.png"
+                alt="That Laundry Shop Logo"
+                className="h-20 w-auto object-contain"
+              />
+            </div>
+          </div>
+
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-500/15 border border-sky-400/30 text-sky-300 text-xs font-bold">
             <Sparkles className="w-3.5 h-3.5" />
             <span>{lang === "en" ? "Launching Soon" : "เตรียมพบกันเร็วๆ นี้"}</span>
@@ -530,9 +546,18 @@ function PortalShell({ children }: { children: React.ReactNode }) {
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between gap-3">
           {/* Brand Logo */}
           <Link href="/portal" className="flex items-center gap-2.5 group">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-600 to-indigo-600 flex items-center justify-center text-white shadow-sm group-hover:scale-105 transition-transform">
-              <Sparkles className="w-5 h-5" />
-            </div>
+            {customer?.brand === "noname_laundry" ? (
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-600 to-indigo-600 flex items-center justify-center text-white shadow-sm group-hover:scale-105 transition-transform">
+                <Sparkles className="w-5 h-5" />
+              </div>
+            ) : (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src="/logo.png"
+                alt="That Laundry Shop"
+                className="h-10 w-auto object-contain group-hover:scale-105 transition-transform"
+              />
+            )}
             <div>
               <div className="font-bold text-slate-900 tracking-tight leading-none text-base">
                 {customer?.brand === "noname_laundry"
