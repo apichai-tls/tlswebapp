@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useSyncExternalStore, useMemo } from "react";
-import { Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck, Eye, EyeOff, SlidersHorizontal, Compass, Percent, Shield, ArrowRight, Check, X, Layers, Cpu, CreditCard as CardIcon } from "lucide-react";
+﻿import { useState, useEffect, useRef, useCallback, useSyncExternalStore, useMemo } from "react";
+import { Save, Copy, Edit3, Trash2, Settings2, Store, MapPin, Plus, Key, Coins, QrCode, Printer, CreditCard, RotateCcw, Building, Search, Tag, Sparkles, Banknote, CheckCircle2, AlertCircle, Usb, RefreshCw, Ticket, Clock, ShieldCheck, Eye, EyeOff, SlidersHorizontal, Compass, Percent, Shield, ArrowRight, Check, X, Layers, Cpu, CreditCard as CardIcon } from "lucide-react";
 import { priceListStore, serviceStore, shopStore, settingsStore, type PriceList, type PriceListItem, type ShopLocation } from "@/lib/store";
 import { 
   type PaymentChannelItem, 
@@ -21,6 +21,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { LocationInput } from "@/components/location-input";
+import { getWiseLiveBalancesAction, getWiseRecentTransactionsAction, testWiseApiConnectionAction, saveWiseApiCredentialsAction } from "@/actions/wise";
+import type { WiseBalanceItem, WiseActivityItem } from "@/lib/wise";
 
 export function AdminSettings() {
   const priceLists = useSyncExternalStore(priceListStore.subscribe, priceListStore.getSnapshot, priceListStore.getSnapshot);
@@ -77,6 +79,22 @@ export function AdminSettings() {
   const [vatRateInput, setVatRateInput] = useState("7");
   const [sessionTimeoutInput, setSessionTimeoutInput] = useState("20");
   const [enableCustomerPortal, setEnableCustomerPortal] = useState(false);
+  const [enableWise, setEnableWise] = useState(true);
+  const [wiseTag, setWiseTag] = useState("");
+  const [wiseEmail, setWiseEmail] = useState("");
+  const [wiseAccountName, setWiseAccountName] = useState("");
+  const [wiseQrUrl, setWiseQrUrl] = useState("");
+  const [wiseBankDetails, setWiseBankDetails] = useState("");
+  const [wiseInstructions, setWiseInstructions] = useState("");
+  const [isUploadingWiseQr, setIsUploadingWiseQr] = useState(false);
+  const [wiseApiToken, setWiseApiToken] = useState("d1778921-ab96-4bd3-9841-b87c973510c8");
+  const [wiseProfileId, setWiseProfileId] = useState("47558107");
+  const [wiseConnectedName, setWiseConnectedName] = useState("THAT LAUNDRY SHOP CO., LTD");
+  const [wiseBalances, setWiseBalances] = useState<WiseBalanceItem[]>([]);
+  const [wiseActivities, setWiseActivities] = useState<WiseActivityItem[]>([]);
+  const [isLoadingWiseApi, setIsLoadingWiseApi] = useState(false);
+  const [showWiseToken, setShowWiseToken] = useState(false);
+  const wiseQrInputRef = useRef<HTMLInputElement>(null);
 
   const handleToggleCustomerPortal = async (nextVal: boolean) => {
     setEnableCustomerPortal(nextVal);
@@ -244,6 +262,13 @@ export function AdminSettings() {
       setVatRateInput(systemSettings.vatRate || "7");
       setSessionTimeoutInput(systemSettings.sessionTimeoutMinutes ?? "20");
       setEnableCustomerPortal(systemSettings.enableCustomerPortal === "true");
+      setEnableWise(systemSettings.enableWise !== "false");
+      setWiseTag(systemSettings.wiseTag || "");
+      setWiseEmail(systemSettings.wiseEmail || "");
+      setWiseAccountName(systemSettings.wiseAccountName || "");
+      setWiseQrUrl(systemSettings.wiseQrUrl || "");
+      setWiseBankDetails(systemSettings.wiseBankDetails || "");
+      setWiseInstructions(systemSettings.wiseInstructions || "");
 
       // Cash drawer settings
       setCashDrawerAutoOpenOnPay(systemSettings.cashDrawerAutoOpenOnPay !== "false");
@@ -360,6 +385,114 @@ export function AdminSettings() {
       toast.success("PromptPay settings saved successfully");
     } catch (err) {
       toast.error("Failed to save PromptPay settings: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  const handleWiseQrUpload = async (file: File) => {
+    if (!file) return;
+    setIsUploadingWiseQr(true);
+    try {
+      let publicUrl = "";
+      try {
+        const res = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entityType: "system",
+            entityId: "wise_qr",
+            fileName: file.name,
+            mimeType: file.type,
+            fileSize: file.size,
+          }),
+        });
+        if (res.ok) {
+          const { uploadUrl, publicUrl: gcsUrl } = await res.json();
+          await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+          publicUrl = gcsUrl;
+        }
+      } catch {
+        // GCS unavailable - fallback to local
+      }
+
+      if (!publicUrl) {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("subType", "wise_qr");
+        const res = await fetch("/api/upload-local", { method: "POST", body: formData });
+        const data = await res.json();
+        publicUrl = data.publicUrl || "";
+      }
+
+      if (publicUrl) {
+        setWiseQrUrl(publicUrl);
+        toast.success("Wise QR Code uploaded successfully");
+      } else {
+        toast.error("Upload failed");
+      }
+    } catch (err: any) {
+      toast.error("Upload error: " + (err instanceof Error ? err.message : "Unknown error"));
+    } finally {
+      setIsUploadingWiseQr(false);
+    }
+  };
+
+  const loadWiseLiveData = useCallback(async (token?: string, profileId?: string) => {
+    setIsLoadingWiseApi(true);
+    try {
+      const balRes = await getWiseLiveBalancesAction(token, profileId);
+      if (balRes.success && balRes.balances) {
+        setWiseBalances(balRes.balances);
+      }
+      const actRes = await getWiseRecentTransactionsAction(10);
+      if (actRes.success && actRes.activities) {
+        setWiseActivities(actRes.activities);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingWiseApi(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeSettingsTab === "all" || activeSettingsTab === "payments") {
+      loadWiseLiveData();
+    }
+  }, [activeSettingsTab, loadWiseLiveData]);
+
+  const handleTestWiseConnection = async () => {
+    setIsLoadingWiseApi(true);
+    try {
+      const res = await testWiseApiConnectionAction(wiseApiToken);
+      if (res.success && res.selectedProfile) {
+        setWiseConnectedName(res.selectedProfile.businessName || res.selectedProfile.fullName || "Wise Account");
+        setWiseProfileId(String(res.selectedProfile.id));
+        toast.success("Connected to Wise: " + (res.selectedProfile.businessName || res.selectedProfile.fullName));
+        await loadWiseLiveData(wiseApiToken, String(res.selectedProfile.id));
+      } else {
+        toast.error("Wise connection failed: " + (res.error || "Invalid token"));
+      }
+    } catch (err: any) {
+      toast.error("Connection error: " + (err instanceof Error ? err.message : "Failed"));
+    } finally {
+      setIsLoadingWiseApi(false);
+    }
+  };
+
+  const handleSaveWiseSettings = async () => {
+    try {
+      await settingsStore.updateSetting("enableWise", enableWise ? "true" : "false");
+      await settingsStore.updateSetting("wiseTag", wiseTag.trim());
+      await settingsStore.updateSetting("wiseEmail", wiseEmail.trim());
+      await settingsStore.updateSetting("wiseAccountName", wiseAccountName.trim());
+      await settingsStore.updateSetting("wiseQrUrl", wiseQrUrl.trim());
+      await settingsStore.updateSetting("wiseBankDetails", wiseBankDetails.trim());
+      await settingsStore.updateSetting("wiseInstructions", wiseInstructions.trim());
+      const { refreshDb } = await import("@/lib/api");
+      await refreshDb();
+      toast.success("บันทึกการตั้งค่า Wise (TransferWise) สำเร็จแล้ว");
+    } catch (err: any) {
+      toast.error("Failed to save Wise settings: " + (err instanceof Error ? err.message : "Unknown error"));
     }
   };
 
@@ -1109,7 +1242,7 @@ export function AdminSettings() {
       {/* SECTION 3: PAYMENTS & VAT                                                 */}
       {/* ========================================================================= */}
       {(activeSettingsTab === "all" || activeSettingsTab === "payments") && (
-        (!settingsSearch || "payment channel vat tax transfer cash card promptpay".includes(settingsSearch.toLowerCase())) && (
+        (!settingsSearch || "payment channel vat tax transfer cash card promptpay wise".includes(settingsSearch.toLowerCase())) && (
           <div className="space-y-6 animate-in fade-in duration-300">
             {/* Payment Channels Table */}
             <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
@@ -1236,7 +1369,359 @@ export function AdminSettings() {
               </div>
             </div>
 
-            {/* VAT & Tax Settings */}
+            {/* Wise (TransferWise) Payment Integration */}
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-[#163300] text-[#9FE870] flex items-center justify-center font-black text-sm shadow-md shadow-emerald-950/20">
+                    W
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">Wise (TransferWise) Payment Channel</h3>
+                      <Badge className="bg-[#9FE870]/30 text-[#163300] border-none font-bold text-[11px]">
+                        International Transfers
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Configure Wise Tag, Account Email, QR Code, and Bank Details displayed in POS registers and dispatch invoices.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setEnableWise(!enableWise)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer ${
+                      enableWise
+                        ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                        : "bg-slate-100 text-slate-400 hover:bg-slate-200"
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${enableWise ? "bg-emerald-500" : "bg-slate-400"}`} />
+                    {enableWise ? "Wise Active" : "Wise Disabled"}
+                  </button>
+
+                  <Button
+                    type="button"
+                    onClick={handleSaveWiseSettings}
+                    className="bg-[#163300] hover:bg-[#204a00] text-[#9FE870] font-black text-xs h-9 px-4 rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Save size={14} />
+                    <span>Save Wise Settings</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Form Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-1">
+                    <span>Wise Tag / Handle</span>
+                    <span className="text-slate-400 font-normal">(e.g. @thatlaundry)</span>
+                  </Label>
+                  <Input
+                    value={wiseTag}
+                    onChange={(e) => setWiseTag(e.target.value)}
+                    placeholder="@thatlaundryshopcoltd"
+                    className="font-bold text-sm h-11 rounded-xl border-slate-200"
+                  />
+                  <p className="text-[11px] text-slate-400">Wise customers can send payment instantly using this handle.</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-1">
+                    <span>Wise Registered Email</span>
+                  </Label>
+                  <Input
+                    value={wiseEmail}
+                    onChange={(e) => setWiseEmail(e.target.value)}
+                    placeholder="billing@thatlaundryshop.com"
+                    className="font-bold text-sm h-11 rounded-xl border-slate-200"
+                  />
+                  <p className="text-[11px] text-slate-400">Recipient email registered on your Wise Business account.</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-1">
+                    <span>Account Holder Name</span>
+                  </Label>
+                  <Input
+                    value={wiseAccountName}
+                    onChange={(e) => setWiseAccountName(e.target.value)}
+                    placeholder="That Laundry Shop Co., Ltd."
+                    className="font-bold text-sm h-11 rounded-xl border-slate-200"
+                  />
+                  <p className="text-[11px] text-slate-400">Official name on the Wise account for payer verification.</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                    Bank Transfer Details / Multi-Currency Info
+                  </Label>
+                  <textarea
+                    value={wiseBankDetails}
+                    onChange={(e) => setWiseBankDetails(e.target.value)}
+                    placeholder={"Bank: Kasikornbank (KBANK)\nAccount No: 123-4-56789-0\nBranch: Sukhumvit 24\nSWIFT: KASITHBK"}
+                    rows={4}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50/50 p-3 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                  />
+                  <p className="text-[11px] text-slate-400">Shown in POS & payment dialogs when customers pay by bank transfer through Wise.</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                    Customer Payment Reference Instructions
+                  </Label>
+                  <textarea
+                    value={wiseInstructions}
+                    onChange={(e) => setWiseInstructions(e.target.value)}
+                    placeholder={"Please include your Order ID or Phone number as payment reference. Send payment receipt/screenshot to staff for instant confirmation."}
+                    rows={4}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50/50 p-3 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                  />
+                  <p className="text-[11px] text-slate-400">Guidance for international customers on how to identify their payment.</p>
+                </div>
+              </div>
+
+              {/* Wise QR Code Section */}
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <Label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                  <QrCode size={14} className="text-[#163300]" />
+                  <span>Wise Pay QR Code</span>
+                  <span className="text-[11px] font-normal text-slate-400">(QR image from Wise app for scanning)</span>
+                </Label>
+
+                <input
+                  ref={wiseQrInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleWiseQrUpload(file);
+                    e.target.value = "";
+                  }}
+                />
+
+                {wiseQrUrl ? (
+                  <div className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                    <img
+                      src={wiseQrUrl}
+                      alt="Wise QR Preview"
+                      className="h-24 w-24 object-contain rounded-lg border border-slate-200 bg-white p-1 shrink-0"
+                      onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                    />
+                    <div className="flex flex-col gap-1.5 flex-1">
+                      <p className="text-xs font-bold text-slate-800">Wise QR Code พร้อมใช้งาน ✅</p>
+                      <p className="text-[10px] text-slate-400 break-all font-mono leading-tight">{wiseQrUrl.split('/').pop()}</p>
+                      <div className="flex gap-2 mt-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={isUploadingWiseQr}
+                          onClick={() => wiseQrInputRef.current?.click()}
+                          className="h-7 text-[11px] px-3 border-slate-300 cursor-pointer"
+                        >
+                          {isUploadingWiseQr ? "กำลัง Upload..." : "Change QR Code"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setWiseQrUrl("")}
+                          className="h-7 text-[11px] px-3 text-rose-500 hover:text-rose-700 hover:bg-rose-50 cursor-pointer"
+                        >
+                          Remove QR
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    tabIndex={0}
+                    onClick={() => !isUploadingWiseQr && wiseQrInputRef.current?.click()}
+                    onKeyDown={(e) => e.key === 'Enter' && !isUploadingWiseQr && wiseQrInputRef.current?.click()}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files?.[0];
+                      if (file && !isUploadingWiseQr) handleWiseQrUpload(file);
+                    }}
+                    className={`flex flex-col items-center justify-center gap-2 p-5 border-2 border-dashed rounded-xl cursor-pointer transition-colors select-none ${
+                      isUploadingWiseQr ? 'border-[#9FE870] bg-emerald-50' : 'border-slate-300 bg-slate-50/70 hover:border-[#163300] hover:bg-slate-100/50'
+                    }`}
+                  >
+                    {isUploadingWiseQr ? (
+                      <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700">
+                        <RefreshCw size={16} className="animate-spin" />
+                        <span>Uploading Wise QR...</span>
+                      </div>
+                    ) : (
+                      <>
+                        <QrCode size={24} className="text-slate-400" />
+                        <p className="text-xs font-semibold text-slate-700">Upload Wise QR Code Image</p>
+                        <p className="text-[10px] text-slate-400">Click to browse or drop PNG, JPG, or WEBP from Wise app</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Wise Business API Live Status & Balances */}
+              <div className="pt-4 border-t border-slate-100 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#163300]/5 border border-[#163300]/15 p-4 rounded-2xl">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-[#163300] text-[#9FE870] flex items-center justify-center font-black text-xs shrink-0 shadow-xs">
+                      API
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black text-slate-900 tracking-tight">Wise Business API Status:</span>
+                        <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 text-[10px] font-bold gap-1 flex items-center">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          <span>Connected</span>
+                        </Badge>
+                      </div>
+                      <p className="text-[11px] text-slate-600 font-medium">
+                        Profile: <strong className="text-slate-900">{wiseConnectedName || "THAT LAUNDRY SHOP CO., LTD"}</strong> (Profile ID: {wiseProfileId || "47558107"})
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isLoadingWiseApi}
+                      onClick={() => loadWiseLiveData(wiseApiToken, wiseProfileId)}
+                      className="h-8 text-xs font-bold gap-1.5 rounded-xl border-slate-200 cursor-pointer shadow-2xs hover:bg-slate-50"
+                    >
+                      <RefreshCw size={12} className={isLoadingWiseApi ? "animate-spin" : ""} />
+                      <span>Refresh Balances</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isLoadingWiseApi}
+                      onClick={handleTestWiseConnection}
+                      className="h-8 text-xs font-bold gap-1.5 bg-[#163300] hover:bg-[#204a00] text-[#9FE870] rounded-xl cursor-pointer shadow-xs"
+                    >
+                      <ShieldCheck size={13} />
+                      <span>Test Connection</span>
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Live Currency Balance Cards */}
+                <div>
+                  <div className="flex items-center justify-between pb-2">
+                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <Coins size={14} className="text-[#163300]" />
+                      <span>Wise Live Multi-Currency Balances</span>
+                    </Label>
+                    <span className="text-[11px] text-slate-400 font-medium">Live from api.wise.com</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {wiseBalances.filter(b => b.amount.value > 0 || ['THB', 'SGD', 'USD', 'EUR'].includes(b.currency)).map((b) => (
+                      <div key={b.id || b.currency} className="p-3 rounded-2xl bg-white border border-slate-200 shadow-2xs space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">
+                            {b.currency === "THB" ? "🇹🇭 THB" : b.currency === "SGD" ? "🇸🇬 SGD" : b.currency === "USD" ? "🇺🇸 USD" : b.currency === "EUR" ? "🇪🇺 EUR" : b.currency}
+                          </span>
+                          <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1 rounded">Active</span>
+                        </div>
+                        <p className="text-base sm:text-lg font-black font-mono text-slate-900 tracking-tight">
+                          {b.currency === "THB" ? "฿" : b.currency === "SGD" ? "S$" : b.currency === "USD" ? "$" : b.currency === "EUR" ? "€" : ""}
+                          {b.amount.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Live Inbound Transfers Activity */}
+                {wiseActivities.length > 0 && (
+                  <div className="space-y-2 pt-2">
+                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <ArrowRight size={14} className="text-[#163300]" />
+                        <span>Recent Inbound Wise Transfers (Auto-Fetched)</span>
+                      </span>
+                      <span className="text-[10px] font-normal text-slate-400">Latest {wiseActivities.length} transactions</span>
+                    </Label>
+
+                    <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-2xs">
+                      <div className="max-h-60 overflow-y-auto divide-y divide-slate-100">
+                        {wiseActivities.map((act) => (
+                          <div key={act.id} className="p-2.5 px-3.5 flex items-center justify-between hover:bg-slate-50/80 transition-colors">
+                            <div className="min-w-0 pr-2">
+                              <p className="text-xs font-bold text-slate-800 truncate">{act.senderName}</p>
+                              <span className="text-[10px] text-slate-400">
+                                {new Date(act.createdOn).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="text-xs font-black font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200/50">
+                                {act.rawAmount || `+${act.amount} ${act.currency}`}
+                              </span>
+                              <span className="block text-[9px] font-semibold text-slate-400 uppercase tracking-wide mt-0.5">
+                                {act.status}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* API Token Key Management */}
+                <div className="pt-2 border-t border-slate-100 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <Key size={13} className="text-slate-500" />
+                      <span>Wise API Token Configuration</span>
+                    </Label>
+                    <span className="text-[10px] text-slate-400">Read-only token generated from wise.com</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2 relative">
+                      <Input
+                        type={showWiseToken ? "text" : "password"}
+                        value={wiseApiToken}
+                        onChange={(e) => setWiseApiToken(e.target.value)}
+                        placeholder="d1778921-ab96-4bd3-..."
+                        className="font-mono text-xs h-10 pr-10 rounded-xl"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowWiseToken(!showWiseToken)}
+                        className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        {showWiseToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+
+                    <div>
+                      <Input
+                        value={wiseProfileId}
+                        onChange={(e) => setWiseProfileId(e.target.value)}
+                        placeholder="Profile ID: 47558107"
+                        className="font-mono text-xs h-10 rounded-xl"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-7 shadow-xs space-y-5">
               <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
                 <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-500 to-pink-600 text-white flex items-center justify-center shadow-md shadow-rose-500/20">

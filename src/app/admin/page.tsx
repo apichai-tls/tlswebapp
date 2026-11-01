@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { format } from "date-fns";
@@ -27,6 +27,7 @@ import {
 import { cleanProformaNumber, formatProformaNumber, generateProformaBaseNumber, generateReceiptNumber, safeCeil, roundGrandTotal, isWalletExpired, getWalletStatus, isJobFullyPaid, getJobPaymentBreakdown, isValidPhoneNumber, findMatchingCustomer, formatJobDisplayId, computeCartHash, resolveCustomerPhones, isThaiPhoneNumber, isPaidTodayOrYesterday, getJobPaymentDate, matchCustomerSearch, formatBaht, calculateRiderCommission, isRewashOrNoChargeJob, getRewashFromJobId, isNoRiderCommissionJob, isSplitDeliveryJob, isSplitDeliveryChildJob, getSplitDeliveryFromJobId, getJobPackingCounts, getJobProcessingBranchId, formatReceiptCustomerPhone, getCashSuggestions } from "@/lib/utils";
 import { getActivePaymentChannels, getPaymentChannels, mapChannelNameToMethod } from "@/lib/payment-channels";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
+import { WisePaymentDialog } from "@/components/wise-payment-dialog";
 import { AutoReceiptWorker } from "@/components/auto-receipt-worker";
 import { isItemMatchingCategory, getCategoryLabel, getCategoryIcon, resolveEffectiveCategory } from "@/lib/promotions";
 
@@ -412,6 +413,7 @@ function AdminPageContent() {
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [onlinePaymentJob, setOnlinePaymentJob] = useState<Job | null>(null);
+  const [wisePaymentJob, setWisePaymentJob] = useState<Job | any | null>(null);
   const [isStartingBeamPayment, setIsStartingBeamPayment] = useState(false);
   const [isVersionOutdated, setIsVersionOutdated] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -5103,6 +5105,64 @@ function AdminPageContent() {
       setIsUnlockingPaid(false);
     }
   };
+  const handleOpenWisePaymentFromDialog = async () => {
+    if (!editingJobId) return;
+    try {
+      const current = jobs.find((j) => j.id === editingJobId) || activeJob;
+      if (!current) return;
+
+      const itemsPayload = dialogCart.map((item) => ({
+        name: item.name,
+        nameEn: item.nameEn || item.name,
+        quantity: item.quantity,
+        price: item.price,
+        basePrice: item.basePrice,
+        serviceId: item.id,
+        category: item.category,
+        unit: item.unit || "pcs",
+      }));
+
+      const subtotal = dialogCart.reduce(
+        (sum, item) => sum + safeCeil((item.price || 0) * (item.quantity || 0)),
+        0
+      );
+      const expressRate =
+        serviceSpeed === "express_50" ? 0.5 : serviceSpeed === "express_100" ? 1 : 0;
+      const surcharge = expressRate > 0 ? safeCeil(subtotal * expressRate) : 0;
+      const discountVal = showDialogDiscount
+        ? (subtotal + surcharge) * (dialogDiscountPercent / 100)
+        : 0;
+
+      const updatedData: Partial<Job> = {
+        items: itemsPayload as any,
+        totalAmount: dialogTotal,
+        fee,
+        discount: discountVal,
+        discountPercent: showDialogDiscount ? dialogDiscountPercent : 0,
+        paymentChannel: "Wise",
+        serviceType: dialogCart[0]?.id || current.serviceType || "wash_fold",
+      } as any;
+
+      await jobStore.updateJobDetails(editingJobId, updatedData);
+      if (originalJobRef.current && originalJobRef.current.id === editingJobId) {
+        Object.assign(originalJobRef.current, updatedData);
+      }
+
+      setWisePaymentJob({
+        ...current,
+        ...updatedData,
+        id: editingJobId,
+        billNo: billNo || current.billNo,
+        totalAmount: dialogTotal,
+        customerName: selectedProfileCustomer?.name || current.customerName,
+        customerPhone: selectedProfileCustomer?.phone || current.customerPhone,
+      });
+    } catch (err: any) {
+      console.error("Failed to prepare Wise Payment:", err);
+      toast.error("ไม่สามารถเตรียมข้อมูลชำระเงิน Wise ได้");
+    }
+  };
+
   const handleOpenBeamPaymentFromDialog = async () => {
     if (!editingJobId || isStartingBeamPayment) return;
     setIsStartingBeamPayment(true);
@@ -6639,9 +6699,15 @@ function AdminPageContent() {
                                   )}
                                   {(c.isMember || c.memberId) && (
                                     <div className="flex items-center gap-1">
-                                      <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
-                                        {c.memberId ? `#${c.memberId}` : "Member"}
-                                      </Badge>
+                                      {c.isMember ? (
+                                        <Badge variant="outline" className="text-[10px] py-0 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold">
+                                          {c.memberId ? `#${c.memberId}` : "Member"}
+                                        </Badge>
+                                      ) : (
+                                        <Badge variant="outline" className="text-[10px] py-0 h-4 bg-amber-50 text-amber-800 border-amber-300 font-bold">
+                                          ⬇ Ex-Member #{c.memberId} (Standard)
+                                        </Badge>
+                                      )}
                                       <Badge variant="outline" className={`text-[10px] py-0 px-1.5 h-4 font-bold flex items-center gap-0.5 ${(c.creditBalance || 0) < 0 ? "bg-rose-50 text-rose-700 border-rose-300" : "bg-emerald-50 text-emerald-700 border-emerald-300"}`}>
                                         <Wallet size={9} className={(c.creditBalance || 0) < 0 ? "text-rose-600" : "text-emerald-600"} />
                                         <span>{formatBaht(c.creditBalance || 0)}</span>
@@ -7149,6 +7215,16 @@ function AdminPageContent() {
                                 {selectedMemberLabel && (
                                   <Badge variant="outline" className="text-[9px] py-0 px-1.5 h-4 bg-blue-50 text-blue-700 border-blue-200 font-bold shrink-0 select-text cursor-text" style={{ userSelect: 'text' }}>
                                     {selectedMemberId ? `ID: ${selectedMemberId}` : 'Member'}
+                                  </Badge>
+                                )}
+                                {!selectedMemberLabel && selectedProfileCustomer && !selectedProfileCustomer.isMember && selectedProfileCustomer.memberId && (
+                                  <Badge
+                                    variant="outline"
+                                    title={`Former Member (${selectedProfileCustomer.memberId}) downgraded to Standard Tier`}
+                                    className="text-[9px] py-0 px-1.5 h-4 bg-amber-50 text-amber-800 border-amber-300 font-bold shrink-0 select-text cursor-text flex items-center gap-0.5"
+                                    style={{ userSelect: 'text' }}
+                                  >
+                                    <span>⬇ Ex-Member ID: {selectedProfileCustomer.memberId} (Standard)</span>
                                   </Badge>
                                 )}
                                 {selectedProfileCustomer?.isMember && (
@@ -9424,6 +9500,17 @@ function AdminPageContent() {
                                     <span>Beam Payment (฿{dialogTotal.toLocaleString()})</span>
                                   </button>
                                 )}
+                                {editingJobId && !isPaidJob && dialogTotal > 0 && paymentChannel?.toLowerCase().includes("wise") && (
+                                  <button
+                                    type="button"
+                                    onClick={handleOpenWisePaymentFromDialog}
+                                    className="mt-1 w-full flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-[#163300] hover:bg-[#204a00] text-[#9FE870] font-black text-[10px] cursor-pointer shadow-sm transition-colors border border-[#9FE870]/40"
+                                    title="สร้างลิงก์ / QR Code จ่ายเงิน Wise และตรวจจับยอดเงินอัตโนมัติ"
+                                  >
+                                    <span className="w-3.5 h-3.5 rounded bg-[#9FE870] text-[#163300] flex items-center justify-center text-[8px] font-black">W</span>
+                                    <span>Wise Payment (฿{dialogTotal.toLocaleString()})</span>
+                                  </button>
+                                )}
                                 {selectedProfileCustomer?.isMember && (
                                   <div className="mt-0.5 flex items-center justify-between text-[8.5px] px-1.5 py-0.5 rounded-lg bg-slate-950/80 border border-slate-700/50" title="ยอดเงินใน Wallet ปัจจุบัน">
                                     <span className="text-slate-400 flex items-center gap-0.5"><Wallet size={9} className={(selectedProfileCustomer.creditBalance || 0) < 0 ? "text-rose-400" : "text-emerald-400"} /> Wallet:</span>
@@ -10202,6 +10289,17 @@ function AdminPageContent() {
                                   >
                                     <Zap size={11} className="fill-white" />
                                     <span>Beam Payment (฿{dialogTotal.toLocaleString()})</span>
+                                  </button>
+                                )}
+                                {editingJobId && !isPaidJob && dialogTotal > 0 && paymentChannel?.toLowerCase().includes("wise") && (
+                                  <button
+                                    type="button"
+                                    onClick={handleOpenWisePaymentFromDialog}
+                                    className="mt-1 w-full flex items-center justify-center gap-1.5 py-1 px-2 rounded bg-[#163300] hover:bg-[#204a00] text-[#9FE870] font-black text-[9.5px] cursor-pointer shadow-xs transition-colors border border-[#9FE870]/30"
+                                    title="สร้างลิงก์ / QR Code จ่ายเงิน Wise และตรวจจับยอดเงินอัตโนมัติ"
+                                  >
+                                    <span className="w-3.5 h-3.5 rounded bg-[#9FE870] text-[#163300] flex items-center justify-center text-[8px] font-black">W</span>
+                                    <span>Wise Payment (฿{dialogTotal.toLocaleString()})</span>
                                   </button>
                                 )}
                               </div>
@@ -11361,11 +11459,12 @@ function AdminPageContent() {
               setPaymentChannel("Deduct Member");
             } else {
               setSelectedMemberLabel("");
-              setSelectedMemberId("");
+              setSelectedMemberId(c.memberId || "");
               setPaymentChannel(prev => prev === "Deduct Member" ? "" : prev);
             }
-            setCustomerPriceListId(c.priceListId || null);
-            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, c.priceListId || null);
+            const resolvedSavedPl = (!c.isMember && !c.isVIP && !c.isCorporate && c.priceListId === "PL-MP56NWKW") ? "regular" : (c.priceListId || null);
+            setCustomerPriceListId(resolvedSavedPl);
+            handleServiceOrSpeedChange(serviceType, serviceSpeed, serviceWeight, resolvedSavedPl);
             
             setCustomerSearchQuery("");
             setShowCustomerDropdown(false);
@@ -11541,6 +11640,36 @@ function AdminPageContent() {
           setPaymentChannel("Split Payment");
         }}
         currentLanguage={currentLanguage}
+      />
+
+      {/* Wise International Payment Dialog */}
+      <WisePaymentDialog
+        isOpen={!!wisePaymentJob}
+        onClose={() => setWisePaymentJob(null)}
+        job={wisePaymentJob}
+        customAmount={wisePaymentJob?.totalAmount ?? undefined}
+        onPaymentSuccess={async (paidInfo) => {
+          if (wisePaymentJob) {
+            setPaymentMethod("paid");
+            setPaymentChannel("Wise");
+            api.optimisticUpdate(wisePaymentJob.id, {
+              isPaid: true,
+              isShopPaid: true,
+              paymentChannel: paidInfo.channel || "Wise",
+              paymentMethod: "transfer",
+            } as any);
+            jobStore.notify();
+            await refreshDb();
+            const current = jobs.find(j => j.id === wisePaymentJob.id) || activeJob;
+            if (current) {
+              setEditingJobId(current.id);
+              setIsDraftPreview(false);
+              setIsPaymentEvent(true);
+              setShowReceipt(true);
+            }
+          }
+          setWisePaymentJob(null);
+        }}
       />
 
       {/* Beam Online Payment Dialog */}

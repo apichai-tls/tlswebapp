@@ -1,4 +1,4 @@
-/* eslint-disable */
+﻿/* eslint-disable */
 "use client";
 
 import { useState, useMemo, useEffect, useSyncExternalStore, useRef } from "react";
@@ -54,6 +54,7 @@ const PAYMENT_CHANNELS = [
   { id: "Transfer", label: "Transfer", icon: Banknote },
   { id: "Cash / COD", label: "Cash / COD", icon: Banknote },
   { id: "QR Code", label: "QR Code", icon: QrCode },
+  { id: "Wise", label: "Wise", icon: Globe },
   { id: "Credit Card", label: "Credit Card", icon: CreditCard },
   { id: "BEAM Gateway", label: "BEAM Gateway", icon: Globe },
 ];
@@ -1145,6 +1146,130 @@ export function TopUpDialog({ open, onClose, preselectedCustomer, onSuccess }: T
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {paymentChannel === "Wise" && (
+                  <div className="p-3.5 rounded-xl border border-[#9FE870]/40 bg-[#9FE870]/10 space-y-3 animate-in fade-in duration-200">
+                    <div className="flex items-center justify-between pb-1.5 border-b border-[#9FE870]/30">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-lg bg-[#163300] text-[#9FE870] flex items-center justify-center font-black text-xs shadow-xs">
+                          WISE
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900 dark:text-white">Wise (TransferWise) Transfer</h4>
+                          <p className="text-[10px] text-slate-600 dark:text-slate-300">Direct Wise transfer / International remittance</p>
+                        </div>
+                      </div>
+                      <Badge className="bg-[#9FE870]/20 text-[#163300] dark:text-[#9FE870] border-none text-[10px] font-bold">
+                        International
+                      </Badge>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs bg-white dark:bg-card p-2.5 rounded-lg border border-border shadow-2xs">
+                      <span className="text-[11px] font-bold text-muted-foreground uppercase">Top-up Amount (THB):</span>
+                      <span className="font-black text-foreground font-mono text-base">฿{formatCurrency(cartTotal)}</span>
+                    </div>
+
+                    <div className="space-y-1.5 text-xs">
+                      {systemSettings?.wiseTag && (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-card border border-border shadow-2xs">
+                          <div>
+                            <span className="text-muted-foreground text-[10px] block">Wise Tag:</span>
+                            <span className="font-bold font-mono text-foreground">{systemSettings.wiseTag}</span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              navigator.clipboard.writeText(systemSettings.wiseTag || "");
+                              toast.success("Copied Wise Tag: " + systemSettings.wiseTag);
+                            }}
+                            className="h-7 text-[11px] font-bold gap-1 rounded-md cursor-pointer"
+                          >
+                            <Copy size={11} /> Copy
+                          </Button>
+                        </div>
+                      )}
+                      {systemSettings?.wiseEmail && (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-card border border-border shadow-2xs">
+                          <div className="min-w-0 pr-2">
+                            <span className="text-muted-foreground text-[10px] block">Wise Email:</span>
+                            <span className="font-bold text-foreground truncate block">{systemSettings.wiseEmail}</span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              navigator.clipboard.writeText(systemSettings.wiseEmail || "");
+                              toast.success("Copied Wise Email: " + systemSettings.wiseEmail);
+                            }}
+                            className="h-7 text-[11px] font-bold gap-1 rounded-md cursor-pointer shrink-0"
+                          >
+                            <Copy size={11} /> Copy
+                          </Button>
+                        </div>
+                      )}
+                      {systemSettings?.wiseAccountName && (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-card border border-border shadow-2xs">
+                          <div className="min-w-0 pr-2">
+                            <span className="text-muted-foreground text-[10px] block">Account Name:</span>
+                            <span className="font-bold text-foreground truncate block">{systemSettings.wiseAccountName}</span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              navigator.clipboard.writeText(systemSettings.wiseAccountName || "");
+                              toast.success("Copied Account Name: " + systemSettings.wiseAccountName);
+                            }}
+                            className="h-7 text-[11px] font-bold gap-1 rounded-md cursor-pointer shrink-0"
+                          >
+                            <Copy size={11} /> Copy
+                          </Button>
+                        </div>
+                      )}
+                      {systemSettings?.wiseBankDetails && (
+                        <div className="p-2 rounded-lg bg-white dark:bg-card border border-border space-y-1 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground text-[10px]">Bank Details:</span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                navigator.clipboard.writeText(systemSettings.wiseBankDetails || "");
+                                toast.success("Copied Bank Details");
+                              }}
+                              className="h-6 text-[10px] font-bold gap-1 rounded cursor-pointer"
+                            >
+                              <Copy size={10} /> Copy
+                            </Button>
+                          </div>
+                          <pre className="text-[10px] text-foreground font-mono whitespace-pre-wrap leading-tight">
+                            {systemSettings.wiseBankDetails}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+
+                    {systemSettings?.wiseQrUrl && (
+                      <div className="flex flex-col items-center bg-white dark:bg-card p-3 rounded-lg border border-border shadow-2xs">
+                        <img
+                          src={systemSettings.wiseQrUrl}
+                          alt="Wise QR Code"
+                          className="w-36 h-36 object-contain rounded-md"
+                        />
+                        <span className="text-[10px] text-muted-foreground mt-1.5 font-medium">Scan to pay with Wise</span>
+                      </div>
+                    )}
+
+                    <p className="text-[10px] text-muted-foreground text-center leading-tight">
+                      {systemSettings?.wiseInstructions || "Please verify the transfer slip from the customer's Wise app, upload slip below, and confirm top-up."}
+                    </p>
                   </div>
                 )}
 

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
+﻿import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -137,6 +137,16 @@ const getAvatarBadge = (customer: Customer) => {
     return (
       <span className="absolute -top-1 -right-1 w-4.5 h-4.5 rounded-full bg-white border border-amber-200 flex items-center justify-center shadow-sm z-10" title="Corporate B2B">
         <Building size={8} className="text-amber-700" />
+      </span>
+    );
+  }
+  if (!customer.isMember && !customer.isVIP && Boolean(customer.memberId && customer.memberId.trim())) {
+    return (
+      <span
+        className="absolute -top-1 -right-1 w-4.5 h-4.5 rounded-full bg-amber-100 border border-amber-400 flex items-center justify-center shadow-sm z-10 text-[9px] font-black text-amber-800"
+        title={`Downgraded from Member (${customer.memberId}) to Standard Tier`}
+      >
+        ↘
       </span>
     );
   }
@@ -2924,6 +2934,15 @@ export function AdminCRM({
                                       CORP B2B
                                     </Badge>
                                   )}
+                                  {!customer.isMember && !customer.isVIP && !customer.isCorporate && customer.tier !== "corporate" && Boolean(customer.memberId && customer.memberId.trim()) && (
+                                    <Badge
+                                      title={`Former Member (${customer.memberId}) downgraded to Standard Tier`}
+                                      className="bg-amber-50 text-amber-800 border border-amber-300 shadow-2xs py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 rounded-md"
+                                    >
+                                      <Crown size={8} className="text-amber-600" />
+                                      <span>↘ Ex-Member</span>
+                                    </Badge>
+                                  )}
                                   {isNewCustomer ? (
                                     <Badge className="bg-sky-50 text-sky-700 border border-sky-200/40 shadow-sm py-0 px-1.5 h-4.5 text-[9px] font-black uppercase tracking-wider rounded-md">
                                       NEW
@@ -3023,7 +3042,7 @@ export function AdminCRM({
                               
                               {/* Price tier badge */}
                               <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                                {customer.isMember && customer.memberId && (
+                                {Boolean(customer.memberId) && (
                                   <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200/50 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5">
                                     ID: {customer.memberId}
                                   </Badge>
@@ -3036,7 +3055,7 @@ export function AdminCRM({
                                   </Badge>
                                 )}
                                 
-                                {customer.isMember && customer.memberExpiryDate && (
+                                {(customer.isMember || Boolean(customer.memberId)) && customer.memberExpiryDate && (
                                   <Badge className={`border shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5 ${
                                     isWalletExpired(customer)
                                       ? "bg-rose-50 text-rose-700 border-rose-200/50"
@@ -3051,7 +3070,7 @@ export function AdminCRM({
                                 )}
 
                                 
-                                {customer.priceListId && customer.priceListId !== "regular" ? (
+                                {customer.priceListId && customer.priceListId !== "regular" && (customer.isMember || customer.isVIP || customer.isCorporate || customer.priceListId !== "PL-MP56NWKW") ? (
                                   <Badge className="bg-purple-50 text-purple-700 border border-purple-200/30 shadow-none font-bold text-[9px] h-4.5 py-0 px-1.5 flex items-center gap-0.5">
                                     <Crown size={8} className="text-purple-600" /> 
                                     {priceLists.find(p => p.id === customer.priceListId)?.name || "Special Rate"}

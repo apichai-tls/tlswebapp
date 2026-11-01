@@ -75,6 +75,7 @@ const STANDARD_PAYMENT_TYPES = [
   "QR CODE-KBANK",
   "TRANSER-KBANK",
   "TRANSFER - BBL",
+  "WISE",
 ];
 
 export function normalizePaymentType(raw?: string | null): string {
@@ -119,6 +120,9 @@ export function normalizePaymentType(raw?: string | null): string {
   }
   if (lower.includes("bbl") || lower.includes("bangkok bank")) {
     return "TRANSFER - BBL";
+  }
+  if (lower === "wise" || lower.includes("wise") || lower.includes("transferwise")) {
+    return "WISE";
   }
   if (lower.includes("transfer") || lower === "bank transfer") {
     return "TRANSER-KBANK";

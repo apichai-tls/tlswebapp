@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -304,7 +304,7 @@ export function AdminCustomerDialog({
         ? "member"
         : "standard";
     const isCorpBool = resolvedTier === "corporate" || Boolean(cust.isCorporate);
-    const isMemBool = resolvedTier === "member" || resolvedTier === "vip" || Boolean((cust.memberId || "").trim());
+    const isMemBool = resolvedTier === "member" || resolvedTier === "vip";
     const isVipBool = resolvedTier === "vip";
     const phones = resolveDualPhonesFromCustomer(cust);
     const cleanRoom = (cust.roomNo || "").trim();
@@ -345,9 +345,9 @@ export function AdminCustomerDialog({
       branchId: (cust.branchId || "").trim() || null,
       isWhatsapp: phones.resolvedIsWhatsapp,
       passwordHash: (cust.passwordHash || "").trim() || undefined,
-      memberId: isMemBool ? (cust.memberId || "").trim() || null : null,
-      memberStartDate: isMemBool && cust.memberStartDate ? new Date(cust.memberStartDate).toISOString().split("T")[0] : null,
-      memberExpiryDate: isMemBool && cust.memberExpiryDate ? new Date(cust.memberExpiryDate).toISOString().split("T")[0] : null,
+      memberId: (cust.memberId || "").trim() || null,
+      memberStartDate: cust.memberStartDate ? new Date(cust.memberStartDate).toISOString().split("T")[0] : null,
+      memberExpiryDate: cust.memberExpiryDate ? new Date(cust.memberExpiryDate).toISOString().split("T")[0] : null,
     };
   };
 
@@ -630,10 +630,10 @@ export function AdminCustomerDialog({
     setIsSaving(true);
     try {
       const isCorporateBool = customerTier === "corporate" || isCorporate;
-      const isMemberBool = customerTier === "member" || customerTier === "vip" || Boolean(memberId.trim());
+      const isMemberBool = customerTier === "member" || customerTier === "vip";
       const isVIPBool = customerTier === "vip";
 
-      if (isMemberBool && memberId.trim()) {
+      if (memberId.trim()) {
         const cleanMemId = memberId.trim().toUpperCase();
         const dup = allCustomers.find(c => c.id !== customer?.id && c.memberId?.trim().toUpperCase() === cleanMemId);
         if (dup) {
@@ -659,9 +659,14 @@ export function AdminCustomerDialog({
         priceListId !== baseline.priceListId;
 
       let finalPriceListId = priceListId;
-      if (tierOrPriceListChanged) {
+      const currentPlObj = priceLists.find(p => p.id === priceListId);
+      const isCurrentPlMember = Boolean(currentPlObj && currentPlObj.name.toLowerCase().includes("member"));
+      if (customerTier === "standard" && isCurrentPlMember) {
+        const rl = priceLists.find(p => p.isDefault);
+        finalPriceListId = rl ? rl.id : "regular";
+      } else if (tierOrPriceListChanged) {
         if (customerTier === "corporate") {
-          if (priceListId === "regular" || !priceListId) {
+          if (priceListId === "regular" || !priceListId || isCurrentPlMember) {
             const corpPl = priceLists.find(p => p.name.toLowerCase().includes("corporate") || p.name.toLowerCase().includes("b2b"));
             if (corpPl) finalPriceListId = corpPl.id;
           }
@@ -671,10 +676,8 @@ export function AdminCustomerDialog({
             if (ml) finalPriceListId = ml.id;
           }
         } else {
-          if (priceListId === "regular" || !priceListId) {
-            const rl = priceLists.find(p => p.isDefault);
-            if (rl) finalPriceListId = rl.id;
-          }
+          const rl = priceLists.find(p => p.isDefault);
+          finalPriceListId = rl ? rl.id : "regular";
         }
       }
 
@@ -731,9 +734,9 @@ export function AdminCustomerDialog({
         branchId: branchId.trim() || null,
         isWhatsapp,
         passwordHash: initialPin.trim() || undefined,
-        memberId: isMemberBool ? memberId.trim() || null : null,
-        memberStartDate: isMemberBool && memberStartDate ? memberStartDate : null,
-        memberExpiryDate: isMemberBool && memberExpiryDate ? memberExpiryDate : null,
+        memberId: memberId.trim() || null,
+        memberStartDate: memberStartDate ? memberStartDate : null,
+        memberExpiryDate: memberExpiryDate ? memberExpiryDate : null,
         updatedAt: baseCust ? baseCust.updatedAt : undefined,
         expectedUpdatedAt: baseCust ? baseCust.updatedAt : undefined,
         actorId: user?.id || null,
@@ -1067,7 +1070,14 @@ export function AdminCustomerDialog({
                       } else {
                         setIsCorporate(false);
                       }
-                      if (newTier === "member" || newTier === "vip") {
+                      if (newTier === "standard") {
+                        const rl = priceLists.find(p => p.isDefault);
+                        setPriceListId(rl ? rl.id : "regular");
+                      } else if (newTier === "member" || newTier === "vip") {
+                        if (priceListId === "regular" || !priceListId) {
+                          const ml = priceLists.find(p => p.name.toLowerCase().includes("member"));
+                          if (ml) setPriceListId(ml.id);
+                        }
                         if (!memberStartDate) {
                           const today = new Date().toISOString().split("T")[0];
                           setMemberStartDate(today);
@@ -1261,7 +1271,7 @@ export function AdminCustomerDialog({
               )}
 
               {/* Row 3: Membership Details (Member ID, Start Date, Expiry Date) */}
-              {(customerTier === "member" || customerTier === "vip" || Boolean(memberId)) && (
+              {customerTier !== "corporate" && (
                 <div className="bg-gradient-to-r from-indigo-50/90 via-blue-50/70 to-indigo-50/90 border border-indigo-200/90 rounded-2xl p-3.5 space-y-3 shadow-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-black uppercase tracking-wider text-indigo-950 flex items-center gap-1.5">
@@ -1269,7 +1279,7 @@ export function AdminCustomerDialog({
                       ข้อมูลสมาชิก & รหัส Member (Membership Details)
                     </span>
                     <span className="text-[10px] font-extrabold text-indigo-700 bg-white px-2.5 py-0.5 rounded-full border border-indigo-200 shadow-2xs">
-                      {customerTier === "vip" ? "VIP MEMBER" : "MEMBER"}
+                      {customerTier === "vip" ? "VIP MEMBER" : customerTier === "member" ? "MEMBER" : memberId.trim() ? "⬇ DOWNGRADED TO STANDARD (EX-MEMBER)" : "STANDARD TIER"}
                     </span>
                   </div>
 

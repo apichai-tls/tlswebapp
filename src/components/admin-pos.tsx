@@ -1,4 +1,4 @@
-/* eslint-disable */
+﻿/* eslint-disable */
 "use client";
 
 
@@ -44,9 +44,11 @@ import {
   Receipt,
   Ticket,
   Lock,
-  QrCode
+  QrCode,
+  Copy
 } from "lucide-react";
 import { OnlinePaymentDialog } from "@/components/online-payment-dialog";
+import { WisePaymentDialog } from "@/components/wise-payment-dialog";
 import { trousers, skirt, dress, socks } from "@lucide/lab";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1438,6 +1440,7 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
   const [posPaymentChannel, setPosPaymentChannel] = useState<string>("");
   const [isPaid, setIsPaid] = useState(false);
   const [onlinePaymentJob, setOnlinePaymentJob] = useState<any | null>(null);
+  const [wisePaymentJob, setWisePaymentJob] = useState<any | null>(null);
 
   useEffect(() => {
     setReceivedCash("");
@@ -2703,6 +2706,34 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
     };
   }, [isDraftPreview, latestJob, proformaCreatedAt, selectedCustomer, cart, subtotal, expressSurcharge, serviceSpeed, manualAdjustment, discountPercent, discountAmount, totalDiscount, effectivePromoDiscount, appliedPromo, total, isPaid, paymentMethod, remark, vatType, vatRate, vatAmount, deliveryScheduledTime, selectedExpressPercent, proformaReceiptNumber, proformaRevision, deliveryAddress, localDeliveryPrice, deliveryServiceType]);
 
+  const handleStartWisePayment = async () => {
+    if (isSpectatorMode) {
+      toast.error(currentLanguage === "en" ? "Spectator Mode - Actions are disabled" : "โหมดผู้เฝ้าดู - ไม่สามารถทำรายการได้");
+      return;
+    }
+    if (cart.length === 0) {
+      toast.error(currentLanguage === "en" ? "Cart is empty" : "ตะกร้าว่างเปล่า กรุณาเลือกสินค้าก่อน");
+      return;
+    }
+
+    if (loadedJobId) {
+      const targetJob = jobs.find(j => j.id === loadedJobId) || latestJob;
+      setWisePaymentJob({
+        id: loadedJobId,
+        billNo: targetJob?.billNo,
+        totalAmount: total,
+        customerName: selectedCustomer?.name || targetJob?.customerName,
+        customerPhone: selectedCustomer?.phone || targetJob?.customerPhone,
+      });
+      return;
+    }
+
+    // Save order first as unpaid with Wise channel, then open WisePaymentDialog
+    setIsPaid(false);
+    setPosPaymentChannel("Wise");
+    await handleCheckout({ forceUnpaid: true, channelOverride: "Wise" });
+  };
+
   const handleStartBeamPayment = async () => {
     if (isSpectatorMode) {
       toast.error(currentLanguage === "en" ? "Spectator Mode - Actions are disabled" : "โหมดผู้เฝ้าดู - ไม่สามารถทำรายการได้");
@@ -3466,8 +3497,17 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
       }
 
       const isBeamOnline = (finalChannel?.toLowerCase().includes("beam") || finalChannel?.toLowerCase().includes("gateway") || isBeamOnlineChannel) && !isPaidFlag;
+      const isWiseChannel = finalChannel?.toLowerCase().includes("wise") && !isPaidFlag;
       if (isBeamOnline && finalJob) {
         setOnlinePaymentJob({
+          id: finalJob.id,
+          billNo: finalJob.billNo,
+          totalAmount: finalJob.totalAmount || total,
+          customerName: finalJob.customerName,
+          customerPhone: finalJob.customerPhone,
+        });
+      } else if (isWiseChannel && finalJob) {
+        setWisePaymentJob({
           id: finalJob.id,
           billNo: finalJob.billNo,
           totalAmount: finalJob.totalAmount || total,
@@ -5299,6 +5339,138 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                     </motion.div>
                   )}
 
+                  {effectivePaymentChannel.toLowerCase().includes("wise") && (
+                    <motion.div
+                      key="wise-panel"
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="w-full flex flex-col bg-[#9FE870]/10 border border-[#9FE870]/40 rounded-xl p-3 space-y-2 text-left"
+                    >
+                      <div className="w-full flex items-center justify-between pb-1.5 border-b border-[#9FE870]/30">
+                        <div className="flex items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded-md bg-[#163300] text-[#9FE870] text-[10px] font-black tracking-wide">
+                            WISE
+                          </span>
+                          <span className="text-xs font-black text-slate-900 dark:text-white">Wise Transfer</span>
+                        </div>
+                        <Badge className="bg-[#9FE870]/20 text-[#163300] dark:text-[#9FE870] border-none text-[8.5px] font-bold">
+                          International
+                        </Badge>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs bg-card/80 p-2 rounded-lg border border-border">
+                        <span className="text-[10px] font-bold text-muted-foreground uppercase">ยอดที่ต้องโอน (THB):</span>
+                        <span className="font-black text-foreground font-mono text-sm">฿{total.toFixed(2)}</span>
+                      </div>
+
+                      <div className="space-y-1.5 text-[10px]">
+                        {settings?.wiseTag && (
+                          <div className="flex items-center justify-between p-1.5 rounded-md bg-card border border-border">
+                            <div>
+                              <span className="text-muted-foreground text-[9px] block">Wise Tag:</span>
+                              <span className="font-bold font-mono text-foreground">{settings.wiseTag}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(settings.wiseTag || "");
+                                toast.success("Copied Wise Tag: " + settings.wiseTag);
+                              }}
+                              className="px-2 py-0.5 text-[9px] font-bold rounded bg-muted hover:bg-slate-200 dark:hover:bg-slate-700 text-foreground flex items-center gap-1 cursor-pointer"
+                            >
+                              <Copy size={10} />
+                              <span>Copy</span>
+                            </button>
+                          </div>
+                        )}
+                        {settings?.wiseEmail && (
+                          <div className="flex items-center justify-between p-1.5 rounded-md bg-card border border-border">
+                            <div className="min-w-0 pr-1">
+                              <span className="text-muted-foreground text-[9px] block">Wise Email:</span>
+                              <span className="font-bold text-foreground truncate block">{settings.wiseEmail}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(settings.wiseEmail || "");
+                                toast.success("Copied Wise Email: " + settings.wiseEmail);
+                              }}
+                              className="px-2 py-0.5 text-[9px] font-bold rounded bg-muted hover:bg-slate-200 dark:hover:bg-slate-700 text-foreground flex items-center gap-1 cursor-pointer shrink-0"
+                            >
+                              <Copy size={10} />
+                              <span>Copy</span>
+                            </button>
+                          </div>
+                        )}
+                        {settings?.wiseAccountName && (
+                          <div className="flex items-center justify-between p-1.5 rounded-md bg-card border border-border">
+                            <div className="min-w-0 pr-1">
+                              <span className="text-muted-foreground text-[9px] block">Account Name:</span>
+                              <span className="font-bold text-foreground truncate block">{settings.wiseAccountName}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(settings.wiseAccountName || "");
+                                toast.success("Copied Account Name: " + settings.wiseAccountName);
+                              }}
+                              className="px-2 py-0.5 text-[9px] font-bold rounded bg-muted hover:bg-slate-200 dark:hover:bg-slate-700 text-foreground flex items-center gap-1 cursor-pointer shrink-0"
+                            >
+                              <Copy size={10} />
+                              <span>Copy</span>
+                            </button>
+                          </div>
+                        )}
+                        {settings?.wiseBankDetails && (
+                          <div className="p-1.5 rounded-md bg-card border border-border space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground text-[9px]">Bank Details:</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(settings.wiseBankDetails || "");
+                                  toast.success("Copied Bank Details");
+                                }}
+                                className="px-1.5 py-0.5 text-[8.5px] font-bold rounded bg-muted text-foreground flex items-center gap-0.5 cursor-pointer"
+                              >
+                                <Copy size={9} />
+                                <span>Copy</span>
+                              </button>
+                            </div>
+                            <pre className="text-[9px] text-foreground font-mono whitespace-pre-wrap leading-tight">
+                              {settings.wiseBankDetails}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+
+                      {settings?.wiseQrUrl && (
+                        <div className="flex flex-col items-center bg-card p-2 rounded-lg border border-border mt-1">
+                          <img
+                            src={settings.wiseQrUrl}
+                            alt="Wise QR Code"
+                            className="w-32 h-32 object-contain rounded-md"
+                          />
+                          <span className="text-[9px] text-muted-foreground mt-1">Scan to pay with Wise</span>
+                        </div>
+                      )}
+
+                      <Button
+                        type="button"
+                        onClick={handleStartWisePayment}
+                        className="w-full h-8 bg-[#163300] hover:bg-[#204a00] text-[#9FE870] text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <QrCode size={13} />
+                        <span>เปิด QR Code &amp; ตรวจสอบยอด Wise</span>
+                      </Button>
+
+                      <p className="text-[9.5px] text-muted-foreground text-center leading-tight pt-1">
+                        {settings?.wiseInstructions || "ตรวจสอบสลิปการโอนจากแอป Wise ของลูกค้า แล้วกดยืนยันชำระเงิน"}
+                      </p>
+                    </motion.div>
+                  )}
+
 
                   {isPaid && paymentMethod === "transfer" && false && (
                     <motion.div
@@ -5720,9 +5892,11 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
 
 
 
-                onClick={handleCheckout}
+                onClick={effectivePaymentChannel.toLowerCase().includes("wise") ? handleStartWisePayment : handleCheckout}
                 className={`flex-[2] h-11 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 border-none text-white cursor-pointer ${
-                  (effectivePaymentChannel.toLowerCase().includes("beam") || effectivePaymentChannel.toLowerCase().includes("gateway"))
+                  effectivePaymentChannel.toLowerCase().includes("wise")
+                    ? "bg-[#163300] hover:bg-[#204a00] text-[#9FE870] shadow-emerald-950/20"
+                    : (effectivePaymentChannel.toLowerCase().includes("beam") || effectivePaymentChannel.toLowerCase().includes("gateway"))
                     ? "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-950/20"
                     : isPaid 
                       ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-950/20" 
@@ -5737,7 +5911,12 @@ export function AdminPOS({ preselectedCustomer, preselectedCategory, onClearPres
                   />
                 ) : (
                   <>
-                    {(effectivePaymentChannel.toLowerCase().includes("beam") || effectivePaymentChannel.toLowerCase().includes("gateway")) ? (
+                    {effectivePaymentChannel.toLowerCase().includes("wise") ? (
+                      <>
+                        <span className="px-1.5 py-0.5 rounded bg-[#9FE870] text-[#163300] font-black text-[9px]">WISE</span>
+                        <span>Wise Pay ฿{total.toFixed(2)}</span>
+                      </>
+                    ) : (effectivePaymentChannel.toLowerCase().includes("beam") || effectivePaymentChannel.toLowerCase().includes("gateway")) ? (
                       <>
                         <Zap size={14} className="fill-indigo-200 text-indigo-200" />
                         <span>Beam QR Pay ฿{total.toFixed(2)}</span>

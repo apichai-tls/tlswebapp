@@ -1,4 +1,4 @@
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+﻿import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -482,7 +482,7 @@ export function AdminCustomerProfileModal({
         return false;
       }
       const ch = (j.paymentChannel || j.paymentMethod || "").toLowerCase();
-      const isMember = Boolean(customer?.isMember) && !ch.includes("hq") && (ch.includes("deduct") || ch.includes("member") || ch.includes("credit") || ch.includes("wallet"));
+      const isMember = Boolean(customer?.isMember || customer?.memberId) && !ch.includes("hq") && (ch.includes("deduct") || ch.includes("member") || ch.includes("credit") || ch.includes("wallet"));
       return isMember;
     }).map((j: any) => ({
       id: `job-deduct-${j.id}`,
@@ -855,7 +855,7 @@ export function AdminCustomerProfileModal({
                   <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
                     <span className="font-mono font-bold text-slate-700 inline-flex items-center gap-1.5">
                       {custCode}
-                      {customer.isMember && onEditCustomer && (
+                      {(customer.isMember || Boolean(customer.memberId)) && onEditCustomer && (
                         <button
                           type="button"
                           onClick={() => {
@@ -1062,8 +1062,8 @@ export function AdminCustomerProfileModal({
                       <div>
                         <div className="text-[11px] font-semibold text-slate-400 mb-0.5">Tier & Profile ID:</div>
                         <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                          <span>{(customer.isCorporate || customer.tier === "corporate") ? "Corporate B2B" : customer.isVIP ? "VIP" : customer.isMember ? "MEMBER" : "Standard"} • {custCode}</span>
-                          {customer.isMember && onEditCustomer && (
+                          <span>{(customer.isCorporate || customer.tier === "corporate") ? "Corporate B2B" : customer.isVIP ? "VIP" : customer.isMember ? "MEMBER" : customer.memberId ? "⬇ Ex-Member (Downgraded to Standard)" : "Standard"} • {custCode}</span>
+                          {(customer.isMember || Boolean(customer.memberId)) && onEditCustomer && (
                             <button
                               type="button"
                               onClick={() => {

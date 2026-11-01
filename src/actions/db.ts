@@ -1,4 +1,4 @@
-'use server';
+﻿'use server';
 
 import { prisma } from '@/lib/prisma';
 import { listFilesForJob } from '@/lib/gcs';
@@ -635,36 +635,25 @@ export async function updateCustomerAction(
 
           if (updates.isMember !== undefined) {
             data.isMember = updates.isMember;
-            if (updates.isMember === false) {
-              data.memberId = null;
-            } else {
-              if (updates.memberId !== undefined) {
-                if (updates.memberId && updates.memberId.trim()) {
-                  const memberIdUpper = updates.memberId.trim().toUpperCase();
-                  const existing = await tx.customer.findFirst({
-                    where: {
-                      memberId: memberIdUpper,
-                      id: { not: id },
-                    },
-                  });
-                  if (existing) {
-                    return {
-                      earlyReturn: {
-                        success: false,
-                        error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น`,
-                      },
-                    };
-                  }
-                  data.memberId = memberIdUpper;
-                } else {
-                  data.memberId = updates.memberId === "" ? null : lockedCustomer.memberId;
-                }
-              } else {
-                data.memberId = lockedCustomer.memberId;
-              }
-            }
           } else if (updates.tier === "member" || updates.tier === "vip") {
             data.isMember = true;
+          } else if (updates.tier === "standard" || updates.tier === "corporate") {
+            data.isMember = false;
+          }
+
+          // When a customer is changed to standard tier (not member/vip/corporate), ensure they are not stuck on Member Special Pricing
+          const effectiveIsMember = data.isMember !== undefined ? data.isMember : lockedCustomer.isMember;
+          const effectiveTier = data.tier !== undefined ? data.tier : lockedCustomer.tier;
+          const effectiveIsCorp = updates.isCorporate !== undefined ? updates.isCorporate : lockedCustomer.isCorporate;
+          if (!effectiveIsMember && effectiveTier === "standard" && !effectiveIsCorp) {
+            const currentPl = data.priceListId !== undefined ? data.priceListId : lockedCustomer.priceListId;
+            if (currentPl === "PL-MP56NWKW") {
+              data.priceListId = "regular";
+            }
+          }
+
+          // Preserve or update memberId even when customer is changed to standard tier
+          if (updates.memberId !== undefined) {
             if (updates.memberId && updates.memberId.trim()) {
               const memberIdUpper = updates.memberId.trim().toUpperCase();
               const existing = await tx.customer.findFirst({
@@ -687,29 +676,8 @@ export async function updateCustomerAction(
             } else {
               data.memberId = lockedCustomer.memberId;
             }
-          } else if (updates.memberId !== undefined) {
-            if (lockedCustomer.isMember) {
-              if (updates.memberId && updates.memberId.trim()) {
-                const memberIdUpper = updates.memberId.trim().toUpperCase();
-                const existing = await tx.customer.findFirst({
-                  where: {
-                    memberId: memberIdUpper,
-                    id: { not: id },
-                  },
-                });
-                if (existing) {
-                  return {
-                    earlyReturn: {
-                      success: false,
-                      error: `เลขสมาชิก "${memberIdUpper}" มีผู้ใช้งานแล้วในระบบ กรุณาใช้เลขอื่น`,
-                    },
-                  };
-                }
-                data.memberId = memberIdUpper;
-              } else {
-                data.memberId = null;
-              }
-            }
+          } else {
+            data.memberId = lockedCustomer.memberId;
           }
 
           if (updates.branchId !== undefined) data.branchId = updates.branchId || null;

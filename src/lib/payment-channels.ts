@@ -14,6 +14,7 @@ export const DEFAULT_PAYMENT_CHANNELS: PaymentChannelItem[] = [
   { id: "cash_cod", name: "Cash / COD", type: "cash", enabled: true, isSystem: true },
   { id: "transfer", name: "Transfer", type: "transfer", enabled: true, isSystem: true },
   { id: "promptpay", name: "PromptPay", type: "transfer", enabled: true, isSystem: true },
+  { id: "wise", name: "Wise", type: "transfer", enabled: true, isSystem: true, description: "Wise (TransferWise) / Wise Tag / International Transfer" },
   { id: "credit_card", name: "Credit Card", type: "card", enabled: true, isSystem: true },
   { id: "gateway", name: "Gateway", type: "card", enabled: true, isSystem: true, description: "ชำระเงินออนไลน์ผ่าน Beam Gateway (PromptPay / Mobile Banking / Card)" },
   { id: "deduct_member", name: "Deduct Member", type: "wallet", enabled: true, isSystem: true, requiresMember: true },
@@ -37,6 +38,17 @@ export function parsePaymentChannels(rawJson?: string | null): PaymentChannelIte
       const filtered = parsed.filter(
         (c) => c.id !== "beam_checkout" && !c.name?.toLowerCase().includes("beam")
       );
+      // Ensure Wise channel is available if not present in legacy saved settings
+      if (!filtered.some((c: PaymentChannelItem) => c.id === "wise" || c.name?.toLowerCase().includes("wise"))) {
+        filtered.push({
+          id: "wise",
+          name: "Wise",
+          type: "transfer",
+          enabled: true,
+          isSystem: true,
+          description: "Wise (TransferWise) / Wise Tag / International Transfer",
+        });
+      }
       return filtered.length > 0 ? filtered : DEFAULT_PAYMENT_CHANNELS;
     }
   } catch (e) {
@@ -80,7 +92,7 @@ export function mapChannelNameToMethod(
   // Fallback pattern matching
   const lower = channelName.toLowerCase();
   if (lower.includes("beam")) return "card";
-  if (lower.includes("transfer") || lower.includes("promptpay") || lower.includes("โอน")) return "transfer";
+  if (lower.includes("transfer") || lower.includes("promptpay") || lower.includes("wise") || lower.includes("โอน")) return "transfer";
   if (lower.includes("card") || lower.includes("gateway") || lower.includes("บัตร")) return "card";
   if (lower.includes("member") || lower.includes("wallet") || lower.includes("credit") || lower.includes("hq")) return "credit";
   return "cash";

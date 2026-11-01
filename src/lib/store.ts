@@ -1,4 +1,4 @@
-import {
+﻿import {
   api,
   registerOpenShiftsSyncCallback,
   subscribeRealtime,
